@@ -1,0 +1,22 @@
+[package]
+name = "maho-ext-omomeow"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT"
+
+[dependencies]
+maho-agent = { path = "../../maho-agent" }
+maho-ai = { path = "../../maho-ai" }
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-tools = { path = "../../maho-tools" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "process", "macros", "sync"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "process", "sync"] }
+
+[lints]
+workspace = true

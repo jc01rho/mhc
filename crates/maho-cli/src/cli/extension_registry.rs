@@ -609,6 +609,18 @@ fn omo_zcode_oauth() -> Box<dyn Extension> {
 fn commandcode_provider() -> Box<dyn Extension> {
     Box::new(maho_ext_commandcode_provider::CommandCodeProvider::new())
 }
+fn omomeow() -> Box<dyn Extension> {
+    Box::new(maho_ext_omomeow::OmOMeow)
+}
+fn pi_auto_continue() -> Box<dyn Extension> {
+    Box::new(maho_ext_pi_auto_continue::AutoContinue)
+}
+fn omo_wish() -> Box<dyn Extension> {
+    Box::new(maho_ext_omo_wish::OmoWish)
+}
+fn omo_cpa() -> Box<dyn Extension> {
+    Box::new(maho_ext_omo_cpa::OmoCpa)
+}
 /// Installed package entry for a `git:github.com/<owner>/<repo>` user package; the native port
 /// resolves the package's own `node_modules` from here, as the TS entry does via `import.meta.url`.
 fn installed_git_package_entry(owner: &str, repo: &str) -> std::path::PathBuf {
@@ -647,7 +659,7 @@ fn orca_prefill() -> Box<dyn Extension> {
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
 /// `pi-comment-checker` uses the SUL `comment-checker-core` helpers with `omo` and the MIT
 /// `maho-comment-checker` crate without it.
-const USER_FACTORY_COUNT: usize = 14;
+const USER_FACTORY_COUNT: usize = 19;
 static USER_FACTORIES: [NativeExtension; USER_FACTORY_COUNT] = [
     NativeExtension {
         id: "pi-ast-grep",
@@ -718,6 +730,33 @@ static USER_FACTORIES: [NativeExtension; USER_FACTORY_COUNT] = [
         id: "orca-prefill",
         crate_name: "maho-ext-orca-prefill",
         factory: orca_prefill,
+    },
+    // The OmOMeow gateway passes its src/model-provider.ts as --extension; the hub checkout and the
+    // deployed worker copy carry different package names, so both resolve to the same port.
+    NativeExtension {
+        id: "omocat-hub",
+        crate_name: "maho-ext-omomeow",
+        factory: omomeow,
+    },
+    NativeExtension {
+        id: "omomeow-worker",
+        crate_name: "maho-ext-omomeow",
+        factory: omomeow,
+    },
+    NativeExtension {
+        id: "pi-auto-continue",
+        crate_name: "maho-ext-pi-auto-continue",
+        factory: pi_auto_continue,
+    },
+    NativeExtension {
+        id: "omo-wish",
+        crate_name: "maho-ext-omo-wish",
+        factory: omo_wish,
+    },
+    NativeExtension {
+        id: "omo-cpa",
+        crate_name: "maho-ext-omo-cpa",
+        factory: omo_cpa,
     },
 ];
 
