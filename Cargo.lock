@@ -3631,7 +3631,10 @@ dependencies = [
  "maho-ext-mcp",
  "maho-ext-model-fallback",
  "maho-ext-nested-agents-md",
+ "maho-ext-omo-cpa",
+ "maho-ext-omo-wish",
  "maho-ext-omo-zcode-oauth",
+ "maho-ext-omomeow",
  "maho-ext-openai-image-gen",
  "maho-ext-openai-web-search",
  "maho-ext-orca-agent-status",
@@ -3639,6 +3642,7 @@ dependencies = [
  "maho-ext-orca-titlebar-spinner",
  "maho-ext-permission-system",
  "maho-ext-pi-ast-grep",
+ "maho-ext-pi-auto-continue",
  "maho-ext-pi-comment-checker",
  "maho-ext-pi-goal",
  "maho-ext-pi-nested-agents-md",
@@ -4440,6 +4444,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-ext-omo-cpa"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-ext-host",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "maho-ext-omo-wish"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ultrawork",
+]
+
+[[package]]
 name = "maho-ext-omo-zcode-oauth"
 version = "0.0.0"
 dependencies = [
@@ -4458,6 +4487,20 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "maho-ext-omomeow"
+version = "0.0.0"
+dependencies = [
+ "maho-agent",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-tools",
+ "serde",
+ "serde_json",
  "tokio",
  "uuid",
 ]
@@ -4553,6 +4596,14 @@ dependencies = [
  "tempfile",
  "tokio",
  "zip",
+]
+
+[[package]]
+name = "maho-ext-pi-auto-continue"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "tokio",
 ]
 
 [[package]]
