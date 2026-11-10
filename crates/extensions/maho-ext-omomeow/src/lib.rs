@@ -2,6 +2,7 @@
 //! `session-move-extension.ts` and `fleet-tool.ts` it registers). The gateway passes the TS entry as
 //! `--extension`; the CLI maps that path to this crate by package name.
 
+pub mod disable_x_search;
 pub mod fleet_tool;
 pub mod model_provider;
 pub mod session_move_extension;
