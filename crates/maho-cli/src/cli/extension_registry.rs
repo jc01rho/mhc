@@ -612,6 +612,9 @@ fn commandcode_provider() -> Box<dyn Extension> {
 fn omomeow() -> Box<dyn Extension> {
     Box::new(maho_ext_omomeow::OmOMeow)
 }
+fn disable_x_search() -> Box<dyn Extension> {
+    Box::new(maho_ext_omomeow::disable_x_search::DisableXSearch)
+}
 fn pi_auto_continue() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_auto_continue::AutoContinue)
 }
@@ -659,7 +662,7 @@ fn orca_prefill() -> Box<dyn Extension> {
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
 /// `pi-comment-checker` uses the SUL `comment-checker-core` helpers with `omo` and the MIT
 /// `maho-comment-checker` crate without it.
-const USER_FACTORY_COUNT: usize = 19;
+const USER_FACTORY_COUNT: usize = 20;
 static USER_FACTORIES: [NativeExtension; USER_FACTORY_COUNT] = [
     NativeExtension {
         id: "pi-ast-grep",
@@ -742,6 +745,11 @@ static USER_FACTORIES: [NativeExtension; USER_FACTORY_COUNT] = [
         id: "omomeow-worker",
         crate_name: "maho-ext-omomeow",
         factory: omomeow,
+    },
+    NativeExtension {
+        id: "disable-x-search",
+        crate_name: "maho-ext-omomeow",
+        factory: disable_x_search,
     },
     NativeExtension {
         id: "pi-auto-continue",
