@@ -32,7 +32,10 @@ const fn max_model(id: &'static str, name: &'static str, context_window: u64, ma
 /// declares max (owner, 2026-11-11: any model may run at medium, high or max): the proxy answered HTTP 200 to
 /// reasoning.effort "max" for all of them on 2026-11-11, and without the entry the runtime clamps the request to high.
 const fn inferred(entry: ModelEntry) -> ModelEntry {
-    ModelEntry { max_thinking: false, ..entry }
+    ModelEntry {
+        max_thinking: false,
+        ..entry
+    }
 }
 
 /// Every id a gateway-owned session can be set to (the Jev catalog plus the recovery chain). Sessions
@@ -211,7 +214,10 @@ mod tests {
             .filter(|entry| !entry.max_thinking)
             .map(|entry| entry.id)
             .collect();
-        assert_eq!(without_max, ["claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-5"]);
+        assert_eq!(
+            without_max,
+            ["claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-5"]
+        );
     }
 
     #[test]
