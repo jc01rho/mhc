@@ -1134,6 +1134,8 @@ impl MemoryRuntime {
             .and_then(|value| value.as_str().map(str::to_owned))
             .unwrap_or_default();
         let now = memory_core::support::time::now_millis();
+        // The run reads only these conversations, so only their footers may animate for it.
+        let conversation_ids = run.request.conversation_ids.clone();
         let details = maho_omo_memory::status_active_runs::ActiveReflectionRunDetails {
             trigger,
             category,
@@ -1142,6 +1144,7 @@ impl MemoryRuntime {
                 .reserved_at
                 .clone()
                 .unwrap_or_else(|| memory_core::support::time::format_rfc3339_millis(now)),
+            conversation_ids,
         };
         let start_ticker = self.wiring.blocking_lock().on_reflection_launched(
             identity,
@@ -2289,6 +2292,7 @@ mod tests {
                         tool_call_id: "call".into(),
                         tool_name: tool.into(),
                         input: input.clone(),
+                        parent_tool_call_id: None,
                     });
                 if let Ok(maho_ext_api::EventResult::ToolCall(result)) =
                     (handler)(&mut event, &self.context).await
@@ -2405,7 +2409,8 @@ mod tests {
             (denied.static_options.skills_usage.resolve_context)(&maho_ext_api::ToolCallEvent {
                 tool_call_id: "s".into(),
                 tool_name: "read".into(),
-                input: Value::Null
+                input: Value::Null,
+                parent_tool_call_id: None,
             })
             .is_none()
         );
