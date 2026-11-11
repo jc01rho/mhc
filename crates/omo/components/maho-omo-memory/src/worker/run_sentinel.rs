@@ -8,6 +8,38 @@ pub enum SentinelWaitResult {
     Timeout,
 }
 
+/// Watches `directory` and reports each change on the returned channel. The watcher is `None` when
+/// the directory cannot be watched, and the caller then polls.
+///
+/// Access events (open, close, read) are dropped: they say a file was looked at, not that the state
+/// changed. notify's inotify mask includes `IN_OPEN`, and every check of a run re-reads `ledger.json`
+/// in this very directory, so waking on those events made each read start the next one and the
+/// reflection thread spun at 100% CPU for the whole run. Node's `fs.watch`, which the original used,
+/// never reports them.
+fn watch_changes(
+    directory: &Path,
+) -> (
+    Option<notify::RecommendedWatcher>,
+    tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
+) {
+    let (events, received) = tokio::sync::mpsc::unbounded_channel();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.as_ref().is_ok_and(|event| event.kind.is_access()) {
+            return;
+        }
+        let _ = events.send(event);
+    })
+    .ok();
+    if watcher.as_mut().is_some_and(|watcher| {
+        watcher
+            .watch(directory, notify::RecursiveMode::NonRecursive)
+            .is_err()
+    }) {
+        watcher = None;
+    }
+    (watcher, received)
+}
+
 /// Waits for a run's state to become ready, re-arming the deadline whenever the state changes.
 ///
 /// `deadline_at` is read again on every event and every recheck, so a queued run (no deadline) waits
@@ -33,18 +65,7 @@ async fn wait_for_run_state(
         }
     };
     tokio::pin!(abort);
-    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let _ = events.send(event);
-    })
-    .ok();
-    if watcher.as_mut().is_some_and(|watcher| {
-        watcher
-            .watch(directory, notify::RecursiveMode::NonRecursive)
-            .is_err()
-    }) {
-        watcher = None;
-    }
+    let (mut watcher, mut received) = watch_changes(directory);
     // With a live watcher the re-check is only a safety net; without one it is the sole observer.
     let recheck_every = |watched: bool| Duration::from_millis(if watched { 1000 } else { 25 });
     let mut recheck = tokio::time::interval_at(
@@ -236,6 +257,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(wait.await, SentinelWaitResult::Present);
+    }
+    #[tokio::test]
+    async fn reading_a_file_in_the_watched_directory_is_not_a_change() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("ledger.json");
+        std::fs::write(&ledger, "{}").unwrap();
+        let (watcher, mut received) = watch_changes(root.path());
+        assert!(watcher.is_some());
+        // The read opens the file and inotify reports the open; a wait woken by it would read again.
+        std::fs::read(&ledger).unwrap();
+        // Events keep their order, so an unfiltered open would arrive before this real change.
+        std::fs::write(root.path().join("outcome.json"), "{}").unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(10), received.recv())
+            .await
+            .expect("the creation of outcome.json is reported")
+            .expect("the watcher is alive")
+            .expect("a watch event, not a watch error");
+        assert!(
+            !first.kind.is_access(),
+            "an access event woke the wait: {first:?}"
+        );
     }
     #[tokio::test(start_paused = true)]
     async fn an_already_past_dynamic_deadline_times_out() {
