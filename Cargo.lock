@@ -5236,6 +5236,8 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "tempfile",
+ "unicode-general-category",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -5246,6 +5248,7 @@ dependencies = [
  "base64 0.22.1",
  "filetime",
  "flate2",
+ "gethostname",
  "icu_collator",
  "libc",
  "loro",
