@@ -16,7 +16,9 @@ pub use resolver::{
     ResolvedChildSpec, builtin_category_chain_candidates, resolve_available_category_names,
     resolve_category,
 };
-pub(crate) use resolver::{category_model_candidates, exclude_model_patterns};
+pub(crate) use resolver::{
+    category_model_candidates, exclude_model_patterns, missing_chain_providers,
+};
 
 #[cfg(test)]
 #[path = "category_tests.rs"]

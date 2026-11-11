@@ -282,7 +282,7 @@ fn provider_of(model: &str) -> &str {
         .map_or(model, |(provider, _)| provider)
 }
 
-fn missing_chain_providers(
+pub(crate) fn missing_chain_providers(
     chain: &[DelegateFallbackEntry],
     available_models: &[String],
 ) -> Vec<String> {
