@@ -63,6 +63,14 @@ pub trait RunPauseEffects: Send + Sync {
         resume_id: &'a str,
     ) -> Effect<'a, ()>;
     fn cancel<'a>(&'a self, participant: &'a PauseParticipant, parent: &'a str) -> Effect<'a, ()>;
+    /// Ends the run of a participant no Resume could reach; false when it is not this host's to end.
+    fn end_lost<'a>(
+        &'a self,
+        _participant: &'a PauseParticipant,
+        _reason: &'a str,
+    ) -> Effect<'a, bool> {
+        Box::pin(async { Ok(false) })
+    }
     fn observe_hold<'a>(
         &'a self,
         _participant: &'a PauseParticipant,
@@ -312,6 +320,52 @@ impl RunPauseController {
                 ResumeOne::Superseded => break,
                 ResumeOne::Failure(failure) => failures.push(failure),
                 ResumeOne::Done => {}
+            }
+        }
+        Ok(failures)
+    }
+    /// Whether a released Resume at `seq` still left participants outside the run.
+    pub fn has_lost(&self, parent: &str, seq: u64) -> bool {
+        self.registry
+            .load(parent)
+            .ok()
+            .flatten()
+            .is_some_and(|record| {
+                record.pause_seq == seq
+                    && record.phase == PausePhase::Resumed
+                    && record
+                        .participants
+                        .values()
+                        .any(|p| p.state == ParticipantState::Lost)
+            })
+    }
+    /// After the bounded retries a released Resume still could not reach these participants: each
+    /// run ends with its reason, so no child stays paused under a Stop nobody holds any more (#12249).
+    pub async fn end_lost(&self, parent: &str, seq: u64) -> Result<Vec<ResumeFailure>, PauseError> {
+        let mut failures = vec![];
+        let Some(record) = self.registry.load(parent)? else {
+            return Ok(failures);
+        };
+        if record.pause_seq != seq || record.phase != PausePhase::Resumed {
+            return Ok(failures);
+        }
+        for participant in record.participants.values() {
+            if participant.state != ParticipantState::Lost {
+                continue;
+            }
+            let reason = participant
+                .lost_reason
+                .clone()
+                .unwrap_or_else(|| "never acknowledged the pause".into());
+            match self.effects.end_lost(participant, &reason).await {
+                Ok(true) => {
+                    self.registry.drop(parent, seq, &participant.key)?;
+                }
+                Ok(false) => {}
+                Err(error) => failures.push(ResumeFailure {
+                    key: participant.key.clone(),
+                    reason: format!("ending the lost run failed: {error}"),
+                }),
             }
         }
         Ok(failures)

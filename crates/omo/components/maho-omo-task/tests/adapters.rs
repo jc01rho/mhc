@@ -214,6 +214,40 @@ fn background_rows_respect_actual_width() {
             .all(|row| senpi_task::renderer_text::renderer_visible_width(row) <= 40)
     );
 }
+/// #12249: a resident child held by its run's Stop reads paused with a still mark and no clock
+/// climbing from its creation, with or without stats and live activity.
+#[test]
+fn a_run_paused_child_reads_paused_in_the_live_footer() {
+    let mut paused = record("st_paused", TaskStatus::Paused);
+    paused.task_summary = Some("held child".into());
+    paused.residency_state = ResidencyState::Resident;
+    paused.created_at = "2026-11-03T00:02:45.000Z".into();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-03T05:54:45.000Z")
+        .expect("now")
+        .timestamp_millis();
+    let records = [paused];
+    let running = BTreeMap::from([("st_paused".to_string(), "running".to_string())]);
+    let rows = [
+        background_widget_rows(&records, &BTreeMap::new(), now, &|_| None, Some(220)),
+        background_widget_rows(
+            &records,
+            &BTreeMap::new(),
+            now,
+            &|_| Some(senpi_task::state::TaskRunStats::default()),
+            Some(220),
+        ),
+        background_widget_rows(&records, &running, now, &|_| None, Some(220)),
+    ]
+    .concat();
+    assert_eq!(rows.len(), 3);
+    for row in rows {
+        assert!(row.starts_with("‖ "), "{row}");
+        assert!(row.contains("paused"), "{row}");
+        for motion in ["starting", "running", "352m"] {
+            assert!(!row.contains(motion), "{row}");
+        }
+    }
+}
 #[test]
 fn background_spinner_advances_with_clock() {
     let records = [record("st_1", TaskStatus::Running)];

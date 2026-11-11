@@ -127,6 +127,7 @@ async fn selector_admits_exactly_the_source_cancellable_statuses() {
         TaskStatus::Pending,
         TaskStatus::Running,
         TaskStatus::Interrupted,
+        TaskStatus::Paused,
         TaskStatus::Completed,
         TaskStatus::Error,
         TaskStatus::Cancelled,
@@ -143,9 +144,13 @@ async fn selector_admits_exactly_the_source_cancellable_statuses() {
         let mut context = support::context();
         context.ui = ui.clone();
         invoke(&api, "task-kill", "", &context).await;
+        // A child its run's Stop paused is cancellable too (#12249).
         let expected = usize::from(matches!(
             status,
-            TaskStatus::Pending | TaskStatus::Running | TaskStatus::Interrupted
+            TaskStatus::Pending
+                | TaskStatus::Running
+                | TaskStatus::Interrupted
+                | TaskStatus::Paused
         ));
         assert_eq!(manager.cancelled.lock().expect("cancelled").len(), expected);
         assert_eq!(ui.selections.lock().expect("selections").len(), expected);

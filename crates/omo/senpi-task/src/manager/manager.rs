@@ -2356,6 +2356,37 @@ impl TaskManager {
         }
     }
 
+    /// An ended paused child gives back every lane slot it still holds, as a cancel does.
+    pub fn release_task_capacity(&self, task_id: &str) {
+        self.inner.release_slot_for_task(task_id);
+        let grants = lock(&self.inner.concurrency).release_task(task_id);
+        for grant in grants {
+            spawn_grant(grant);
+        }
+    }
+
+    /// `endLostPausedTask`: end the run of a paused child its run's Resume could not restore. A paused
+    /// child a live foreign host still holds is that host's to resume; it is never ended here, and
+    /// that is checked on the fresh record inside the end's own locked write, never on an earlier read.
+    pub fn end_lost_paused_task(
+        &self,
+        run_pause: &crate::manager::run_pause::TaskRunPause,
+        task_id: &str,
+        reason: &str,
+    ) -> bool {
+        let host_pid = self.inner.host_pid;
+        let ended = run_pause.end_lost_paused_task(task_id, reason, |fresh| {
+            fresh.host_pid.is_none_or(|pid| {
+                pid == host_pid
+                    || !u32::try_from(pid).is_ok_and(utils::process_sweep::default_is_process_alive)
+            })
+        });
+        if ended {
+            self.inner.settle_waiters(task_id);
+        }
+        ended
+    }
+
     pub fn park_run_capacity(&self, task_id: &str, epoch: i64) {
         let (lease, grants) = lock(&self.inner.concurrency).park(task_id, epoch);
         if let Some(lease) = lease {

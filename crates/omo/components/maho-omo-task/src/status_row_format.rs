@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 
 pub const LIVE_STATUS_REFRESH_MS: u64 = 250;
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const PAUSED_MARK: &str = "‖";
 
 pub fn is_terminal(status: TaskStatus) -> bool {
     status.is_terminal()
@@ -213,28 +214,42 @@ fn live_row(
     width: usize,
     stats: Option<TaskRunStats>,
 ) -> String {
+    // A child its run's Stop paused is not working: it reads paused with a still mark and no clock
+    // climbing from its creation (#12249).
+    let paused = record.status == TaskStatus::Paused;
     let started = chrono::DateTime::parse_from_rfc3339(&record.created_at)
         .map_or(now, |date| date.timestamp_millis());
     let seconds = now.saturating_sub(started).max(0) / 1000;
-    let elapsed = if seconds < 60 {
-        format!("{seconds}s")
-    } else {
-        format!("{}m {}s", seconds / 60, seconds % 60)
-    };
+    let elapsed = (!paused).then(|| {
+        if seconds < 60 {
+            format!("{seconds}s")
+        } else {
+            format!("{}m {}s", seconds / 60, seconds % 60)
+        }
+    });
     let frame_index = usize::try_from(now.max(0) / 250).unwrap_or(0) % 10;
-    let frame = SPINNER_FRAMES[frame_index];
+    let frame = if paused {
+        PAUSED_MARK
+    } else {
+        SPINNER_FRAMES[frame_index]
+    };
     let identity = task_status_description(record);
     let target = record_status_target(record);
     let activity = if is_suspended(record) {
         "suspended".into()
+    } else if paused {
+        record.status.as_str().into()
     } else {
         normalize_renderer_text(activity)
     };
     let minimum = format!(
-        "{frame} {} · {} · {} · {elapsed}",
+        "{frame} {} · {} · {}{}",
         excerpt_renderer_text(&identity, Some(12)),
         excerpt_renderer_text(&target, Some(20)),
-        excerpt_renderer_text(&activity, Some(8))
+        excerpt_renderer_text(&activity, Some(8)),
+        elapsed
+            .as_ref()
+            .map_or_else(String::new, |elapsed| format!(" · {elapsed}"))
     );
     let mut remaining = width.saturating_sub(renderer_visible_width(&minimum));
     let mut tokens = Vec::new();
@@ -267,10 +282,8 @@ fn live_row(
     let identity_width = 80.min(12 + remaining);
     let mut context = vec![excerpt_renderer_text(&target, Some(target_width))];
     context.extend(tokens);
-    context.extend([
-        excerpt_renderer_text(&activity, Some(activity_width)),
-        elapsed,
-    ]);
+    context.push(excerpt_renderer_text(&activity, Some(activity_width)));
+    context.extend(elapsed);
     excerpt_renderer_text(
         &format!(
             "{frame} {} · {}",
