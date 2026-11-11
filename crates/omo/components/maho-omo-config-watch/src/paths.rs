@@ -156,11 +156,23 @@ pub fn resolve_omo_config_watch_target_resolution_with(
                 targets.push(target(dir, &OMO_CONFIG_FILE_FILTER_GLOBS));
             }
         }
+        // A creation target watches a whole directory, and on macOS (FSEvents) every change beneath it reaches
+        // the session, so an ancestor reaching HOME woke every session on any write in HOME. Stop at the project
+        // root (the first directory holding .git), and never include the user config directory's parent (which
+        // the user-config target above already watches), any directory containing it, or the filesystem root.
+        // Existing .omo directories higher up stay watched.
+        let user_parent = user.parent().unwrap_or(home);
         for ancestor in ancestors {
+            if contains(ancestor, user_parent) || ancestor.parent().is_none() {
+                break;
+            }
             targets.push(target(
                 ancestor.to_owned(),
                 &OMO_CONFIG_DIRECTORY_FILTER_GLOBS,
             ));
+            if ancestor.join(".git").exists() {
+                break;
+            }
         }
     }
     let agent = resolve_agent_home(env, home, cwd, Path::exists);

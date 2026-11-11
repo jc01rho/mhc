@@ -172,7 +172,6 @@ fn default_agent_protected_paths_are_never_covered() -> Result<(), Box<dyn std::
             cwd,
             home.join("work/project"),
             home.join("work"),
-            home
         ]
     );
     Ok(())
@@ -216,8 +215,8 @@ fn every_ancestor_creation_target_is_root_anchored() -> Result<(), Box<dyn std::
         .iter()
         .filter(|t| t.filter_globs.iter().any(|g| g == "/.omo/omo.jsonc"))
         .collect();
-    // Four ancestors including HOME plus HOME's user-config creation target.
-    assert_eq!(creation.len(), 5);
+    // Three ancestors below HOME plus HOME's user-config creation target.
+    assert_eq!(creation.len(), 4);
     for target in creation {
         assert_eq!(
             target.filter_globs,
@@ -373,4 +372,145 @@ fn protected_paths_reject_unanchored_and_covering_globs_but_permit_safe_anchored
         &target("/home/u", &["/.omo", "/.omo/omo.jsonc", "/.omo/omo.json"]),
         &protected
     ));
+}
+
+struct BoundFixture {
+    _root: tempfile::TempDir,
+    home: std::path::PathBuf,
+    work: std::path::PathBuf,
+    project: std::path::PathBuf,
+    cwd: std::path::PathBuf,
+    env: BTreeMap<String, String>,
+}
+
+fn bound_fixture() -> Result<BoundFixture, Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let work = home.join("work");
+    let project = work.join("project");
+    let cwd = project.join("child");
+    std::fs::create_dir_all(&cwd)?;
+    std::fs::create_dir_all(home.join(".omo"))?;
+    let env = BTreeMap::from([(
+        "SENPI_CODING_AGENT_DIR".into(),
+        root.path()
+            .join("senpi-agent")
+            .to_string_lossy()
+            .into_owned(),
+    )]);
+    Ok(BoundFixture {
+        _root: root,
+        home,
+        work,
+        project,
+        cwd,
+        env,
+    })
+}
+
+fn creation_paths(resolution: &OmoConfigWatchTargetResolution) -> Vec<std::path::PathBuf> {
+    resolution
+        .targets
+        .iter()
+        .filter(|t| t.filter_globs.iter().any(|g| g == "/.omo"))
+        .map(|t| t.path.clone())
+        .collect()
+}
+
+#[test]
+fn creation_watches_stop_below_the_user_config_parent() -> Result<(), Box<dyn std::error::Error>> {
+    let f = bound_fixture()?;
+    let r = resolve_omo_config_watch_target_resolution(&f.cwd, &f.home, &f.env);
+    assert_eq!(creation_paths(&r), vec![f.cwd, f.project, f.work]);
+    Ok(())
+}
+
+#[test]
+fn creation_watches_stop_at_a_project_root_holding_git_while_higher_omo_stays_watched()
+-> Result<(), Box<dyn std::error::Error>> {
+    let f = bound_fixture()?;
+    std::fs::create_dir(f.project.join(".git"))?;
+    std::fs::create_dir(f.work.join(".omo"))?;
+    std::fs::write(f.work.join(".omo/omo.jsonc"), "{}")?;
+    let r = resolve_omo_config_watch_target_resolution(&f.cwd, &f.home, &f.env);
+    assert_eq!(creation_paths(&r), vec![f.cwd, f.project]);
+    assert!(
+        r.targets
+            .iter()
+            .any(|t| t.path == f.work.join(".omo")
+                && t.filter_globs.iter().any(|g| g == "/omo.jsonc"))
+    );
+    Ok(())
+}
+
+#[test]
+fn creation_watches_stop_at_a_git_file() -> Result<(), Box<dyn std::error::Error>> {
+    let f = bound_fixture()?;
+    std::fs::write(
+        f.project.join(".git"),
+        "gitdir: /somewhere/else/.git/worktrees/project\n",
+    )?;
+    let r = resolve_omo_config_watch_target_resolution(&f.cwd, &f.home, &f.env);
+    assert_eq!(creation_paths(&r), vec![f.cwd, f.project]);
+    Ok(())
+}
+
+#[test]
+fn creation_watches_stop_at_the_nearest_repo_root() -> Result<(), Box<dyn std::error::Error>> {
+    let f = bound_fixture()?;
+    std::fs::create_dir(f.work.join(".git"))?;
+    std::fs::create_dir(f.cwd.join(".git"))?;
+    let r = resolve_omo_config_watch_target_resolution(&f.cwd, &f.home, &f.env);
+    assert_eq!(creation_paths(&r), vec![f.cwd]);
+    Ok(())
+}
+
+#[test]
+fn cwd_at_home_adds_no_ancestor_creation_target() -> Result<(), Box<dyn std::error::Error>> {
+    let f = bound_fixture()?;
+    let r = resolve_omo_config_watch_target_resolution(&f.home, &f.home, &f.env);
+    assert!(creation_paths(&r).is_empty());
+    assert!(
+        r.targets
+            .iter()
+            .any(|t| t.path == f.home.join(".omo")
+                && t.filter_globs.iter().any(|g| g == "/omo.jsonc"))
+    );
+    Ok(())
+}
+
+#[test]
+fn cwd_outside_home_and_any_repo_never_watches_the_filesystem_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let f = bound_fixture()?;
+    let outside = f.home.parent().expect("home parent").join("elsewhere/a/b");
+    std::fs::create_dir_all(&outside)?;
+    let paths = creation_paths(&resolve_omo_config_watch_target_resolution(
+        &outside, &f.home, &f.env,
+    ));
+    assert_eq!(paths.first(), Some(&outside));
+    assert!(paths.iter().all(|path| path.parent().is_some()));
+    Ok(())
+}
+
+#[test]
+fn cwd_outside_home_never_watches_a_directory_containing_home()
+-> Result<(), Box<dyn std::error::Error>> {
+    let f = bound_fixture()?;
+    let home_parent = f.home.parent().expect("home parent").to_owned();
+    let shared = home_parent.join("shared/runs/x");
+    std::fs::create_dir_all(&shared)?;
+    let paths = creation_paths(&resolve_omo_config_watch_target_resolution(
+        &shared, &f.home, &f.env,
+    ));
+    assert_eq!(
+        paths,
+        vec![
+            shared.clone(),
+            home_parent.join("shared/runs"),
+            home_parent.join("shared"),
+        ]
+    );
+    assert!(!paths.contains(&home_parent));
+    Ok(())
 }
