@@ -15,24 +15,36 @@ pub struct ModelEntry {
     pub name: &'static str,
     pub context_window: u64,
     pub max_tokens: Option<u64>,
-    /// The proxy accepts reasoning.effort "max" for this id; without the map entry the runtime clamps max to high.
+    /// True when `model_config` puts max into the id's thinkingLevelMap. Without that entry the runtime clamps a max request
+    /// to high unless it infers max from the id, so it is false only for the ids it infers (see `inferred`).
     pub max_thinking: bool,
 }
 
 const fn model(id: &'static str, name: &'static str, context_window: u64, max_tokens: Option<u64>) -> ModelEntry {
-    ModelEntry { id, name, context_window, max_tokens, max_thinking: false }
+    ModelEntry { id, name, context_window, max_tokens, max_thinking: true }
 }
 
 const fn max_model(id: &'static str, name: &'static str, context_window: u64, max_tokens: u64) -> ModelEntry {
     ModelEntry { id, name, context_window, max_tokens: Some(max_tokens), max_thinking: true }
 }
 
+/// An id the runtime already infers max for (the opus-5 and sonnet-5 families), so it needs no map entry. Every other id
+/// declares max (owner, 2026-11-11: any model may run at medium, high or max): the proxy answered HTTP 200 to
+/// reasoning.effort "max" for all of them on 2026-11-11 (accepted, not proof that max is applied upstream), and without the
+/// entry the runtime clamps the request to high.
+const fn inferred(entry: ModelEntry) -> ModelEntry {
+    ModelEntry {
+        max_thinking: false,
+        ..entry
+    }
+}
+
 /// Every id a gateway-owned session can be set to (the Jev catalog plus the recovery chain). Sessions
 /// run with --no-model-fallback, so an id missing here is "Model not found", not a fallback.
 pub const MODELS: &[ModelEntry] = &[
     max_model("ollama-deepseek-v4.1-flash", "DeepSeek V4.1 Flash (OmOMeow)", 256_000, 64_000),
-    model("claude-opus-5-5", "Opus 5.5 (OmOMeow)", 1_000_000, None),
-    model("claude-sonnet-5-5", "Sonnet 5.5 (OmOMeow)", 1_000_000, None),
+    inferred(model("claude-opus-5-5", "Opus 5.5 (OmOMeow)", 1_000_000, None)),
+    inferred(model("claude-sonnet-5-5", "Sonnet 5.5 (OmOMeow)", 1_000_000, None)),
     model("gemini-4-carbon-high", "Gemini 4 Carbon High (OmOMeow)", 1_048_576, Some(250_000)),
     model("claude-haiku-5-5", "Haiku 5.5 (OmOMeow)", 200_000, Some(64_000)),
     model("glm-5.3", "GLM 5.3 (OmOMeow)", 200_000, Some(64_000)),
@@ -44,7 +56,7 @@ pub const MODELS: &[ModelEntry] = &[
     max_model("oc-deepseek-v4.1-flash-free", "DeepSeek V4.1 Flash Free (OmOMeow)", 256_000, 64_000),
     model("higher-coding", "Higher Coding (OmOMeow)", 1_000_000, Some(64_000)),
     model("lower-coding", "Lower Coding (OmOMeow)", 200_000, Some(64_000)),
-    model("claude-opus-5", "Opus 5 (OmOMeow)", 1_000_000, None),
+    inferred(model("claude-opus-5", "Opus 5 (OmOMeow)", 1_000_000, None)),
     model("gemini-3.1-pro", "Gemini 3.1 Pro (OmOMeow)", 200_000, Some(64_000)),
     model("grok-4.7-high", "Grok 4.7 High (OmOMeow)", 200_000, Some(64_000)),
     model("mistral-large-4", "Mistral Large 4 (OmOMeow)", 1_048_576, None),
@@ -190,10 +202,28 @@ mod tests {
             flash.thinking_level_map.as_ref().unwrap().get(&ModelThinkingLevel::Max),
             Some(&Some("max".to_owned()))
         );
+        let carbon = list.iter().find(|m| m.id == "gemini-4-carbon-high").unwrap();
+        assert_eq!(
+            carbon.thinking_level_map.as_ref().unwrap().get(&ModelThinkingLevel::Max),
+            Some(&Some("max".to_owned()))
+        );
         let opus = list.iter().find(|m| m.id == "claude-opus-5-5").unwrap();
         assert_eq!(opus.max_tokens, DEFAULT_MAX_TOKENS);
         assert!(opus.thinking_level_map.is_none());
         assert_eq!(opus.compat.as_ref().unwrap().0.get("supportsForcedToolChoice"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn every_model_declares_max_except_the_ids_the_runtime_infers() {
+        let without_max: Vec<&str> = MODELS
+            .iter()
+            .filter(|entry| !entry.max_thinking)
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(
+            without_max,
+            ["claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-5"]
+        );
     }
 
     #[test]
