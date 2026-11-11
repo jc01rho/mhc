@@ -33,7 +33,7 @@ pub const MODELS: &[ModelEntry] = &[
     max_model("ollama-deepseek-v4.1-flash", "DeepSeek V4.1 Flash (OmOMeow)", 256_000, 64_000),
     model("claude-opus-5-5", "Opus 5.5 (OmOMeow)", 1_000_000, None),
     model("claude-sonnet-5-5", "Sonnet 5.5 (OmOMeow)", 1_000_000, None),
-    model("gemini-4-argon-high", "Gemini 4 Argon High (OmOMeow)", 1_048_576, Some(250_000)),
+    model("gemini-4-carbon-high", "Gemini 4 Carbon High (OmOMeow)", 1_048_576, Some(250_000)),
     model("claude-haiku-5-5", "Haiku 5.5 (OmOMeow)", 200_000, Some(64_000)),
     model("glm-5.3", "GLM 5.3 (OmOMeow)", 200_000, Some(64_000)),
     model("glm-5.3-flash", "GLM 5.3 Flash (OmOMeow)", 200_000, Some(64_000)),
