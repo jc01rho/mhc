@@ -42,8 +42,8 @@ use senpi_task::{
         },
         output::{
             output::{
-                TASK_OUTPUT_DESCRIPTION, TaskOutputInput, run_task_output,
-                task_output_params_schema,
+                TASK_OUTPUT_DESCRIPTION, TaskOutputInput, TaskOutputStatusReads,
+                run_task_output_with_status_reads, task_output_params_schema,
             },
             types::TaskOutputDeps,
         },
@@ -76,6 +76,8 @@ pub struct TaskToolsDeps {
     pub spawn: TaskToolDeps,
     pub policy: Arc<dyn SpawnPolicyDeps + Send + Sync>,
     pub team_routing: Arc<std::sync::Mutex<Option<TaskSendTeamRouting>>>,
+    /// task_output status-peek cache; accepted compaction forgets the session's reads.
+    pub output_status_reads: Arc<TaskOutputStatusReads>,
 }
 
 fn native_result(result: impl Serialize) -> Result<ToolResult, ToolError> {
@@ -328,7 +330,12 @@ pub fn register_task_tools_with_sync(
                     resolve_caller_session_id: None,
                     now: None,
                 };
-                native_result(run_task_output(&output_deps, &params, session)?)
+                native_result(run_task_output_with_status_reads(
+                    &output_deps,
+                    &params,
+                    session,
+                    Some(&deps.output_status_reads),
+                )?)
             })
         }),
     );

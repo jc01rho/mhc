@@ -6,7 +6,9 @@ use crate::{
     timers::HostTimers,
     tools::TaskToolsDeps,
 };
-use maho_ext_api::{EventKind, EventResult, ExtensionApi, ExtensionEvent, FlagValue};
+use maho_ext_api::{
+    EventKind, EventResult, ExtensionApi, ExtensionEvent, FlagValue, SessionCompactEvent,
+};
 use senpi_task::{
     completion::{CompletionRequest, ReconcileUnnotifiedNotificationsInput, TransitionReason},
     manager::{AbortSignal, types::ListScope},
@@ -115,6 +117,7 @@ pub struct TaskComponent {
     waiters: Mutex<BTreeMap<String, CompletionWaiter>>,
     disposed: std::sync::atomic::AtomicBool,
     rpc: Mutex<Option<Arc<crate::task_rpc_bridge::TaskRpcBridge>>>,
+    output_status_reads: Arc<senpi_task::tools::output::output::TaskOutputStatusReads>,
     terminal: Mutex<Option<crate::completion_bridge::TerminalObserver>>,
     delivery: Mutex<()>,
     terminal_epochs: Mutex<std::collections::BTreeSet<(String, i64)>>,
@@ -132,6 +135,15 @@ pub struct TaskComponent {
     pub bridge: crate::event_bridge::EventBridge,
 }
 impl TaskComponent {
+    /// `forgetTaskOutputReads` + `taskRpc.forgetOutputReads`: the next task_output status peek of
+    /// this session, by tool or RPC, reissues the full snapshot.
+    pub fn forget_task_output_reads(&self, session_id: &str) {
+        self.output_status_reads.forget_session(session_id);
+        if let Some(rpc) = &*self.rpc.lock().unwrap_or_else(PoisonError::into_inner) {
+            rpc.forget_output_reads(session_id);
+        }
+    }
+
     /// `event-bridge.ts` pause custody: restored on session start, applied on the host's Resume edge.
     pub fn pause_custody(&self) -> Option<crate::event_bridge::TaskPauseCustody> {
         self.pause_custody
@@ -333,6 +345,7 @@ impl TaskComponent {
             waiters: Mutex::new(BTreeMap::new()),
             disposed: std::sync::atomic::AtomicBool::new(false),
             rpc: Mutex::new(None),
+            output_status_reads: Arc::default(),
             terminal: Mutex::new(None),
             delivery: Mutex::new(()),
             terminal_epochs: Mutex::new(std::collections::BTreeSet::new()),
@@ -534,6 +547,7 @@ impl TaskComponent {
                 spawn,
                 policy: tracker.clone(),
                 team_routing: component.team_routing.clone(),
+                output_status_reads: component.output_status_reads.clone(),
             },
             Arc::new(move || {
                 if let Some(component) = weak.upgrade() {
@@ -652,6 +666,14 @@ impl TaskComponent {
                             // session_before_compact/session_compact; resolve failed compactions so transitions clear and flush.
                             ExtensionEvent::SessionCompact(_)
                             | ExtensionEvent::SessionCompactFailed { .. } => {
+                                // Accepted compaction invalidates the task_output progress cache: the first
+                                // peek after a compact reissues the full snapshot (final_response rehydrates).
+                                if matches!(
+                                    event,
+                                    ExtensionEvent::SessionCompact(SessionCompactEvent::Accepted { .. })
+                                ) {
+                                    component.forget_task_output_reads(session);
+                                }
                                 component
                                     .transitions
                                     .lock()

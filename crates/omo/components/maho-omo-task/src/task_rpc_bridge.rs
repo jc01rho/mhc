@@ -9,7 +9,10 @@ use senpi_task::{
     state::{ResidencyState, TaskRecord, TaskStatus},
     tools::{
         control::{cancel::run_task_cancel, send::run_task_send},
-        output::{output::run_task_output, types::TaskOutputDeps},
+        output::{
+            output::{TaskOutputStatusReads, run_task_output_with_status_reads},
+            types::TaskOutputDeps,
+        },
     },
 };
 use serde_json::{Value, json};
@@ -52,6 +55,7 @@ pub struct TaskRpcBridge {
     state_dir: String,
     emit: TaskRpcEmit,
     state: Mutex<State>,
+    output_status_reads: TaskOutputStatusReads,
 }
 pub fn wire_task_rpc_bridge(
     api: &mut ExtensionApi,
@@ -66,6 +70,7 @@ pub fn wire_task_rpc_bridge(
         state_dir,
         emit,
         state: Mutex::new(State::default()),
+        output_status_reads: TaskOutputStatusReads::default(),
     });
     for name in ["omo.task.send", "omo.task.cancel", "omo.task.output"] {
         let bridge = bridge.clone();
@@ -140,14 +145,23 @@ impl TaskRpcBridge {
                     now: None,
                 };
                 bounded_task_output(
-                    &run_task_output(&deps, &input, Some(&session))
-                        .map_err(|failure| error(failure.to_string()))?
-                        .details,
+                    &run_task_output_with_status_reads(
+                        &deps,
+                        &input,
+                        Some(&session),
+                        Some(&self.output_status_reads),
+                    )
+                    .map_err(|failure| error(failure.to_string()))?
+                    .details,
                 )
                 .map_err(|failure| error(failure.to_string()))
             }
             _ => Ok(invalid_arguments("Unknown task query.")),
         }
+    }
+    /// `forgetOutputReads`: the next `omo.task.output` status request of this session is a fresh snapshot.
+    pub fn forget_output_reads(&self, session_id: &str) {
+        self.output_status_reads.forget_session(session_id);
     }
     pub fn attach(self: &Arc<Self>) {
         if self

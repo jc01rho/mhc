@@ -340,3 +340,23 @@ fn snapshots_preserve_full_durable_stats_and_prefer_live_stats_when_supplied() {
         "failed"
     );
 }
+#[test]
+fn no_progress_output_is_bounded_without_snapshot_or_transcript_fields() {
+    let task_id = format!("st_{}", "x".repeat(300));
+    let reason = "x".repeat(2001);
+    let value = bounded_task_output(&TaskOutputDetails::NoProgress {
+        task_id: task_id.clone(),
+        status: senpi_task::state::TaskStatus::Running,
+        reason: reason.clone(),
+    })
+    .unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "kind": "no_progress",
+            "task_id": task_id[..256],
+            "status": "running",
+            "reason": reason[..2000],
+        })
+    );
+}

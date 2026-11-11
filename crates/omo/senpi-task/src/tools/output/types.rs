@@ -180,6 +180,12 @@ pub enum TaskOutputDetails {
     Status {
         snapshot: TaskSnapshot,
     },
+    NoProgress {
+        task_id: String,
+        #[serde(serialize_with = "serialize_task_status")]
+        status: TaskStatus,
+        reason: String,
+    },
     Transcript {
         mode: TranscriptMode,
         source: TranscriptSource,
@@ -200,6 +206,7 @@ impl TaskOutputDetails {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Status { .. } => "status",
+            Self::NoProgress { .. } => "no_progress",
             Self::Transcript { .. } => "transcript",
             Self::NotFound { .. } => "not_found",
             Self::InvalidArguments { .. } => "invalid_arguments",

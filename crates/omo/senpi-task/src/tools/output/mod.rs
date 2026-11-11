@@ -11,6 +11,8 @@ mod output_block_tests;
 #[cfg(test)]
 mod output_tests;
 #[cfg(test)]
+mod polling_guard_tests;
+#[cfg(test)]
 mod records_fakes;
 pub mod render;
 #[cfg(test)]
