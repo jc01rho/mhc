@@ -4208,32 +4208,34 @@ impl Inner {
     }
 
     fn record_spawn_facts(&self, task_id: &str, handle: &dyn ManagedChildHandle) {
-        let Some(current) = self.try_load(task_id) else {
-            return;
-        };
-        if is_terminal_record(&current) {
-            return;
-        }
-        let with_pid =
-            record_spawned_pid(&current, handle.pid()).unwrap_or_else(|| current.clone());
-        let keeps_v1 = current
-            .spawn_spec
-            .as_ref()
-            .is_some_and(|spec| spec.as_v1().is_some());
-        let updated = match handle.spawn_spec() {
-            Some(spawn) if !keeps_v1 => TaskRecord {
-                spawn_spec: Some(TaskSpawnSpec::LegacyProcess {
-                    cwd: spawn.cwd,
-                    extensions: spawn.extensions,
-                    member_env: spawn.member_env.map(|env| env.into_iter().collect()),
-                }),
-                ..with_pid
-            },
-            _ => with_pid,
-        };
-        if updated != current
-            && let Err(error) = self.store.replace(&updated)
-        {
+        // The stamp rewrites the whole record, so it reads and writes under the record lock: sends mint
+        // input ids into the same record (runners/input_effects.rs), and a stamp built from an unlocked
+        // read wrote a minted effect_seq back to its old value (omo#10708). The child's facts are read
+        // first, outside the lock.
+        let pid = handle.pid();
+        let spawn = handle.spawn_spec();
+        let stamped = self.store.mutate(task_id, |current| {
+            if is_terminal_record(current) {
+                return current.clone();
+            }
+            let with_pid = record_spawned_pid(current, pid).unwrap_or_else(|| current.clone());
+            let keeps_v1 = current
+                .spawn_spec
+                .as_ref()
+                .is_some_and(|spec| spec.as_v1().is_some());
+            match spawn {
+                Some(spawn) if !keeps_v1 => TaskRecord {
+                    spawn_spec: Some(TaskSpawnSpec::LegacyProcess {
+                        cwd: spawn.cwd,
+                        extensions: spawn.extensions,
+                        member_env: spawn.member_env.map(|env| env.into_iter().collect()),
+                    }),
+                    ..with_pid
+                },
+                _ => with_pid,
+            }
+        });
+        if let Err(error) = stamped {
             log("senpi-task manager spawn facts failed", task_id, &error);
         }
     }
