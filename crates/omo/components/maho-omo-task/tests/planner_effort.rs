@@ -305,6 +305,12 @@ fn unknown_target_and_dead_agent_chain_preserve_available_target_metadata() {
         error.code,
         senpi_task::manager::types::PlanResolutionCode::ModelUnavailable
     );
+    assert!(
+        error.message.contains("Agent \"explore\""),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("agents.explore.model"));
     assert_eq!(
         error.available_agents,
         Some(vec![

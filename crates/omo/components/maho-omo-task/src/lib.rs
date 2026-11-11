@@ -38,6 +38,7 @@ pub mod lifecycle_adapters;
 pub mod member_extension;
 pub mod member_liveness;
 pub mod memory_reporter;
+pub mod model_error_text;
 pub mod own_task_identity;
 pub mod owned_member_liveness;
 pub mod parent_notifier;
