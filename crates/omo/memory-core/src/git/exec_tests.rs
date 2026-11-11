@@ -673,3 +673,135 @@ fn normal_exit_is_bounded_when_hook_descendant_holds_pipes() {
     assert!(result.stderr.contains("hook-output"));
     task.join().unwrap();
 }
+
+#[test]
+fn given_windows_fallback_when_bare_git_is_absent_then_every_attempt_carries_the_fsmonitor_override_ahead_of_the_caller_argv()
+ {
+    let argvs = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&argvs);
+    let exec = create_git_exec(GitExecRuntime {
+        platform: Some(GitPlatform::Windows),
+        run_command: Some(Arc::new(
+            move |exe: &str, argv: &[String], _options: &GitExecOptions| {
+                recorded.lock().expect("argvs").push(argv.to_vec());
+                if exe == "git" {
+                    Err(missing_git())
+                } else {
+                    Ok(success())
+                }
+            },
+        )),
+    });
+
+    exec.run(
+        &argv(&["-c", "user.name=fixture-writer", "status", "--porcelain"]),
+        &env_options(&[("ProgramFiles", "C:\\Program Files")]),
+    )
+    .expect("run");
+
+    let expected = argv(&[
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "user.name=fixture-writer",
+        "status",
+        "--porcelain",
+    ]);
+    assert_eq!(
+        argvs.lock().expect("argvs").clone(),
+        vec![expected.clone(), expected]
+    );
+}
+
+/// Writes an executable script from a child `sh`: a write descriptor held by this multi-threaded test
+/// binary can be inherited by another test's concurrent fork, and exec of the script then fails with
+/// ETXTBSY ("Text file busy").
+#[cfg(unix)]
+fn write_executable_script(path: &std::path::Path, content: &str) {
+    let status = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+            "sh",
+            content,
+        ])
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "write {}", path.display());
+}
+
+/// The builtin fsmonitor daemon exists on macOS and Windows only, but `core.fsmonitor` naming a hook
+/// runs that hook on every index read on any platform, so a hook that records its calls proves
+/// whether a memory git command honoured the user's `core.fsmonitor` (omo #12097).
+#[cfg(unix)]
+#[test]
+fn given_core_fsmonitor_in_the_global_config_when_the_clean_tree_status_runs_through_the_exec_then_fsmonitor_never_runs()
+ {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let global_config = root.path().join("gitconfig");
+    std::fs::write(&global_config, "").unwrap();
+    let env = BTreeMap::from([
+        (
+            "GIT_CONFIG_GLOBAL".to_string(),
+            global_config.to_string_lossy().into_owned(),
+        ),
+        ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
+    ]);
+    let raw_git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .envs(&env)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    raw_git(&["init", "--quiet"]);
+    std::fs::write(repo.join("a.md"), "a\n").unwrap();
+    raw_git(&["add", "a.md"]);
+    let calls = root.path().join("fsmonitor.calls");
+    let hook = root.path().join("fsmonitor-hook");
+    write_executable_script(
+        &hook,
+        &format!("#!/bin/sh\necho called >> '{}'\nexit 1\n", calls.display()),
+    );
+    std::fs::write(
+        &global_config,
+        format!("[core]\n\tfsmonitor = {}\n", hook.display()),
+    )
+    .unwrap();
+    let clean_tree_status = [
+        "-c",
+        "core.quotePath=false",
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+    ];
+
+    // Positive control: the same status without the exec boundary runs the hook.
+    raw_git(&clean_tree_status);
+    assert!(calls.exists(), "positive control: fsmonitor hook must run");
+    std::fs::remove_file(&calls).unwrap();
+
+    let exec = system_git_exec();
+    let options = GitExecOptions {
+        cwd: repo.clone(),
+        timeout_ms: 30_000,
+        env: env.clone(),
+        stdin: None,
+    };
+    let status = exec.run(&argv(&clean_tree_status), &options).unwrap();
+    let bytes = exec.run_bytes(&argv(&clean_tree_status), &options).unwrap();
+
+    assert_eq!((status.code, bytes.code), (0, 0));
+    assert!(
+        !calls.exists(),
+        "fsmonitor ran: {:?}",
+        std::fs::read_to_string(&calls)
+    );
+}

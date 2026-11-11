@@ -145,8 +145,27 @@ struct RuntimeGitExec {
     run_command: Arc<GitRunCommand>,
 }
 
+/// Any index-reading command (`status`, `add`, `diff`), not only commit, starts the builtin
+/// fsmonitor daemon when a user's config enables it; the daemon then outlives git, holds the
+/// activity fd and keeps the repo busy (omo #10391). Command-line `-c` outranks every config file
+/// and reaches hooks too.
+const NO_FSMONITOR: [&str; 2] = ["-c", "core.fsmonitor=false"];
+
+fn with_no_fsmonitor(caller_argv: &[String]) -> Vec<String> {
+    NO_FSMONITOR
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .chain(caller_argv.iter().cloned())
+        .collect()
+}
+
 impl GitExec for RuntimeGitExec {
-    fn run(&self, argv: &[String], options: &GitExecOptions) -> std::io::Result<GitExecResult> {
+    fn run(
+        &self,
+        caller_argv: &[String],
+        options: &GitExecOptions,
+    ) -> std::io::Result<GitExecResult> {
+        let argv = &with_no_fsmonitor(caller_argv);
         let err = match (self.run_command)("git", argv, options) {
             Ok(result) => return Ok(result),
             Err(err) => err,
@@ -170,9 +189,10 @@ impl GitExec for RuntimeGitExec {
     /// completion secret scan's `cat-file --batch`) needs it.
     fn run_bytes(
         &self,
-        argv: &[String],
+        caller_argv: &[String],
         options: &GitExecOptions,
     ) -> std::io::Result<GitExecBytesResult> {
+        let argv = &with_no_fsmonitor(caller_argv);
         let err = match run_git_command_bytes("git", argv, options) {
             Ok(result) => return Ok(result),
             Err(err) => err,
