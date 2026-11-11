@@ -328,3 +328,38 @@ fn identity_received_before_listener_is_replayed_without_waiting_for_another_eve
         .unwrap();
     assert_eq!(receive.recv_timeout(WAIT).unwrap(), "durable-late");
 }
+
+// ---- runners/rpc/handle-dispose-timers.test.ts (omo#11673) ----
+
+#[test]
+fn given_request_in_flight_when_client_detaches_then_it_fails_at_once() {
+    let child = spawn_fake_child(&[]);
+    let _guard = ChildGuard(Arc::clone(&child));
+    let client = client_for(&child);
+    // The child answers this prompt only after a minute: nothing but the detach can end the wait.
+    let pending = client
+        .request(json!({ "type": "prompt", "message": "delay:60000" }))
+        .expect("request");
+
+    client.detach();
+
+    let error = pending
+        .wait_until(std::time::Instant::now() + WAIT)
+        .expect_err("detached request fails");
+    assert_eq!(error.to_string(), "RPC client detached");
+}
+
+#[test]
+fn given_detached_client_when_a_command_follows_then_it_is_refused_unwritten() {
+    let child = spawn_fake_child(&[]);
+    let _guard = ChildGuard(Arc::clone(&child));
+    let client = client_for(&child);
+
+    client.detach();
+
+    let error = client
+        .request(json!({ "type": "get_state" }))
+        .err()
+        .expect("detached client refuses the command");
+    assert_eq!(error.to_string(), "RPC client detached");
+}
