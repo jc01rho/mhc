@@ -15,22 +15,16 @@ pub struct ModelEntry {
     pub name: &'static str,
     pub context_window: u64,
     pub max_tokens: Option<u64>,
-    /// The proxy accepts reasoning.effort "max" for this id; without the map entry the runtime clamps max to high.
-    pub max_thinking: bool,
 }
 
 const fn model(id: &'static str, name: &'static str, context_window: u64, max_tokens: Option<u64>) -> ModelEntry {
-    ModelEntry { id, name, context_window, max_tokens, max_thinking: false }
-}
-
-const fn max_model(id: &'static str, name: &'static str, context_window: u64, max_tokens: u64) -> ModelEntry {
-    ModelEntry { id, name, context_window, max_tokens: Some(max_tokens), max_thinking: true }
+    ModelEntry { id, name, context_window, max_tokens }
 }
 
 /// Every id a gateway-owned session can be set to (the Jev catalog plus the recovery chain). Sessions
 /// run with --no-model-fallback, so an id missing here is "Model not found", not a fallback.
 pub const MODELS: &[ModelEntry] = &[
-    max_model("ollama-deepseek-v4.1-flash", "DeepSeek V4.1 Flash (OmOMeow)", 256_000, 64_000),
+    model("ollama-deepseek-v4.1-flash", "DeepSeek V4.1 Flash (OmOMeow)", 256_000, Some(64_000)),
     model("claude-opus-5-5", "Opus 5.5 (OmOMeow)", 1_000_000, None),
     model("claude-sonnet-5-5", "Sonnet 5.5 (OmOMeow)", 1_000_000, None),
     model("gemini-4-carbon-high", "Gemini 4 Carbon High (OmOMeow)", 1_048_576, Some(250_000)),
@@ -41,7 +35,7 @@ pub const MODELS: &[ModelEntry] = &[
     model("oc-beam", "OC Beam (OmOMeow)", 872_000, Some(64_000)),
     model("beam-free", "Beam Free (OmOMeow)", 872_000, Some(64_000)),
     model("crouton-alpha-free", "Crouton Alpha Free (OmOMeow)", 1_048_576, Some(64_000)),
-    max_model("oc-deepseek-v4.1-flash-free", "DeepSeek V4.1 Flash Free (OmOMeow)", 256_000, 64_000),
+    model("oc-deepseek-v4.1-flash-free", "DeepSeek V4.1 Flash Free (OmOMeow)", 256_000, Some(64_000)),
     model("higher-coding", "Higher Coding (OmOMeow)", 1_000_000, Some(64_000)),
     model("lower-coding", "Lower Coding (OmOMeow)", 200_000, Some(64_000)),
     model("claude-opus-5", "Opus 5 (OmOMeow)", 1_000_000, None),
@@ -77,11 +71,12 @@ pub fn proxy_base_url(models_path: &Path, override_url: Option<&str>) -> Result<
 fn model_config(entry: &ModelEntry) -> ProviderModelConfig {
     let mut compat = serde_json::Map::new();
     compat.insert("supportsForcedToolChoice".into(), Value::Bool(false));
-    let thinking_level_map = entry.max_thinking.then(|| {
-        let mut map = ThinkingLevelMap::new();
-        map.insert(ModelThinkingLevel::Max, Some("max".to_owned()));
-        map
-    });
+    // Every id takes max (owner, 2026-11-11: any model may run at medium, high or max, and the gateway's Jev call picks
+    // the level). The proxy answered HTTP 200 to reasoning.effort "max" for all 21 ids on 2026-11-11. Without this map the
+    // runtime only offers max to ids whose family it infers (opus-5, sonnet-5, fable-5) and clamps the rest to high.
+    let mut thinking_level_map = ThinkingLevelMap::new();
+    thinking_level_map.insert(ModelThinkingLevel::Max, Some("max".to_owned()));
+    let thinking_level_map = Some(thinking_level_map);
     ProviderModelConfig {
         model_type: None,
         output: None,
