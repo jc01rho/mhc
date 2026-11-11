@@ -27,30 +27,38 @@ const fn max_model(id: &'static str, name: &'static str, context_window: u64, ma
     ModelEntry { id, name, context_window, max_tokens: Some(max_tokens), max_thinking: true }
 }
 
+/// Declares max for an id the runtime would not infer it for (owner, 2026-11-11: any model may run at medium, high or
+/// max). The proxy answered HTTP 200 to reasoning.effort "max" for every id on 2026-11-11. The runtime infers max for the
+/// opus-5 and sonnet-5 ids, so those stay without a map; every other id needs the entry or a max request is clamped to
+/// high before it is sent.
+const fn with_max(entry: ModelEntry) -> ModelEntry {
+    ModelEntry { max_thinking: true, ..entry }
+}
+
 /// Every id a gateway-owned session can be set to (the Jev catalog plus the recovery chain). Sessions
 /// run with --no-model-fallback, so an id missing here is "Model not found", not a fallback.
 pub const MODELS: &[ModelEntry] = &[
     max_model("ollama-deepseek-v4.1-flash", "DeepSeek V4.1 Flash (OmOMeow)", 256_000, 64_000),
     model("claude-opus-5-5", "Opus 5.5 (OmOMeow)", 1_000_000, None),
     model("claude-sonnet-5-5", "Sonnet 5.5 (OmOMeow)", 1_000_000, None),
-    model("gemini-4-carbon-high", "Gemini 4 Carbon High (OmOMeow)", 1_048_576, Some(250_000)),
-    model("claude-haiku-5-5", "Haiku 5.5 (OmOMeow)", 200_000, Some(64_000)),
-    model("glm-5.3", "GLM 5.3 (OmOMeow)", 200_000, Some(64_000)),
-    model("glm-5.3-flash", "GLM 5.3 Flash (OmOMeow)", 200_000, Some(64_000)),
-    model("gemini-3.8-flash-high", "Gemini 3.8 Flash High (OmOMeow)", 1_000_000, None),
-    model("oc-beam", "OC Beam (OmOMeow)", 872_000, Some(64_000)),
-    model("beam-free", "Beam Free (OmOMeow)", 872_000, Some(64_000)),
-    model("crouton-alpha-free", "Crouton Alpha Free (OmOMeow)", 1_048_576, Some(64_000)),
+    with_max(model("gemini-4-carbon-high", "Gemini 4 Carbon High (OmOMeow)", 1_048_576, Some(250_000))),
+    with_max(model("claude-haiku-5-5", "Haiku 5.5 (OmOMeow)", 200_000, Some(64_000))),
+    with_max(model("glm-5.3", "GLM 5.3 (OmOMeow)", 200_000, Some(64_000))),
+    with_max(model("glm-5.3-flash", "GLM 5.3 Flash (OmOMeow)", 200_000, Some(64_000))),
+    with_max(model("gemini-3.8-flash-high", "Gemini 3.8 Flash High (OmOMeow)", 1_000_000, None)),
+    with_max(model("oc-beam", "OC Beam (OmOMeow)", 872_000, Some(64_000))),
+    with_max(model("beam-free", "Beam Free (OmOMeow)", 872_000, Some(64_000))),
+    with_max(model("crouton-alpha-free", "Crouton Alpha Free (OmOMeow)", 1_048_576, Some(64_000))),
     max_model("oc-deepseek-v4.1-flash-free", "DeepSeek V4.1 Flash Free (OmOMeow)", 256_000, 64_000),
-    model("higher-coding", "Higher Coding (OmOMeow)", 1_000_000, Some(64_000)),
-    model("lower-coding", "Lower Coding (OmOMeow)", 200_000, Some(64_000)),
+    with_max(model("higher-coding", "Higher Coding (OmOMeow)", 1_000_000, Some(64_000))),
+    with_max(model("lower-coding", "Lower Coding (OmOMeow)", 200_000, Some(64_000))),
     model("claude-opus-5", "Opus 5 (OmOMeow)", 1_000_000, None),
-    model("gemini-3.1-pro", "Gemini 3.1 Pro (OmOMeow)", 200_000, Some(64_000)),
-    model("grok-4.7-high", "Grok 4.7 High (OmOMeow)", 200_000, Some(64_000)),
-    model("mistral-large-4", "Mistral Large 4 (OmOMeow)", 1_048_576, None),
-    model("muse-spark-1.3-high", "Muse Spark 1.3 (OmOMeow)", 1_000_000, Some(64_000)),
-    model("muse-wonder-1.0-high", "Muse Wonder (OmOMeow)", 200_000, Some(64_000)),
-    model("kimi-k3-high", "Kimi K3 High (OmOMeow)", 256_000, Some(64_000)),
+    with_max(model("gemini-3.1-pro", "Gemini 3.1 Pro (OmOMeow)", 200_000, Some(64_000))),
+    with_max(model("grok-4.7-high", "Grok 4.7 High (OmOMeow)", 200_000, Some(64_000))),
+    with_max(model("mistral-large-4", "Mistral Large 4 (OmOMeow)", 1_048_576, None)),
+    with_max(model("muse-spark-1.3-high", "Muse Spark 1.3 (OmOMeow)", 1_000_000, Some(64_000))),
+    with_max(model("muse-wonder-1.0-high", "Muse Wonder (OmOMeow)", 200_000, Some(64_000))),
+    with_max(model("kimi-k3-high", "Kimi K3 High (OmOMeow)", 256_000, Some(64_000))),
 ];
 
 /// The shared proxy endpoint: the hub passes it in `OMOMEOW_PROVIDER_BASE_URL` (workers have no
@@ -194,6 +202,12 @@ mod tests {
         assert_eq!(opus.max_tokens, DEFAULT_MAX_TOKENS);
         assert!(opus.thinking_level_map.is_none());
         assert_eq!(opus.compat.as_ref().unwrap().0.get("supportsForcedToolChoice"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn every_model_declares_max_except_the_ids_the_runtime_infers() {
+        let without_max: Vec<&str> = MODELS.iter().filter(|entry| !entry.max_thinking).map(|entry| entry.id).collect();
+        assert_eq!(without_max, ["claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-5"]);
     }
 
     #[test]
