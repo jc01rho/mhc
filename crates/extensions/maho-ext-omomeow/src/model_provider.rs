@@ -15,8 +15,8 @@ pub struct ModelEntry {
     pub name: &'static str,
     pub context_window: u64,
     pub max_tokens: Option<u64>,
-    /// The proxy accepts reasoning.effort "max" for this id; without the map entry the runtime clamps max to high.
-    /// True for every id except the ones the runtime infers it for (see `inferred`).
+    /// True when `model_config` puts max into the id's thinkingLevelMap. Without that entry the runtime clamps a max request
+    /// to high unless it infers max from the id, so it is false only for the ids it infers (see `inferred`).
     pub max_thinking: bool,
 }
 
@@ -30,7 +30,8 @@ const fn max_model(id: &'static str, name: &'static str, context_window: u64, ma
 
 /// An id the runtime already infers max for (the opus-5 and sonnet-5 families), so it needs no map entry. Every other id
 /// declares max (owner, 2026-11-11: any model may run at medium, high or max): the proxy answered HTTP 200 to
-/// reasoning.effort "max" for all of them on 2026-11-11, and without the entry the runtime clamps the request to high.
+/// reasoning.effort "max" for all of them on 2026-11-11 (accepted, not proof that max is applied upstream), and without the
+/// entry the runtime clamps the request to high.
 const fn inferred(entry: ModelEntry) -> ModelEntry {
     ModelEntry {
         max_thinking: false,
@@ -199,6 +200,11 @@ mod tests {
         assert_eq!(flash.max_tokens, 64_000);
         assert_eq!(
             flash.thinking_level_map.as_ref().unwrap().get(&ModelThinkingLevel::Max),
+            Some(&Some("max".to_owned()))
+        );
+        let carbon = list.iter().find(|m| m.id == "gemini-4-carbon-high").unwrap();
+        assert_eq!(
+            carbon.thinking_level_map.as_ref().unwrap().get(&ModelThinkingLevel::Max),
             Some(&Some("max".to_owned()))
         );
         let opus = list.iter().find(|m| m.id == "claude-opus-5-5").unwrap();
