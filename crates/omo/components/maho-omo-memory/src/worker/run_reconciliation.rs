@@ -161,6 +161,20 @@ pub async fn reconcile_run_with_signal(
     recovery: &dyn ReflectionRecoveryPort,
     signal: Option<&maho_ext_api::AbortSignal>,
 ) -> Result<Option<ReservationRunResult>, String> {
+    reconcile_run_observing(context, dir, ledger, recovery, signal, true).await
+}
+/// [`reconcile_run_with_signal`] with a choice for a run whose supervisor is still alive and whose deadline has not
+/// passed. `wait_for_live` waits for its outcome (up to its deadline); without it the run is left to its supervisor
+/// and owner and settled by a later pass, so a session that only sweeps at start is not held behind another
+/// session's reflection or dream run, which can run for a quarter of an hour.
+pub async fn reconcile_run_observing(
+    context: &RunFinalizationContext<'_>,
+    dir: &Path,
+    ledger: ReservationRunLedger,
+    recovery: &dyn ReflectionRecoveryPort,
+    signal: Option<&maho_ext_api::AbortSignal>,
+    wait_for_live: bool,
+) -> Result<Option<ReservationRunResult>, String> {
     use super::run_liveness::throw_if_aborted;
     let outcome = dir.join("outcome.json");
     let is_matching = matching(&outcome, &ledger)?;
@@ -193,6 +207,17 @@ pub async fn reconcile_run_with_signal(
             supervisor,
             RunProcessVerdict::Alive | RunProcessVerdict::Unknown
         )
+    {
+        return Ok(None);
+    }
+    if !wait_for_live
+        && matches!(
+            supervisor,
+            RunProcessVerdict::Alive | RunProcessVerdict::Unknown
+        )
+        && ledger.value()["deadlineAt"]
+            .as_f64()
+            .is_some_and(|deadline| (context.now_ms)() as f64 <= deadline)
     {
         return Ok(None);
     }
@@ -406,7 +431,15 @@ pub async fn reconcile_reflection_runs_with_signal(
         .map_err(|error| error.to_string())?;
         throw_if_aborted(signal)?;
         if let Some(result) =
-            reconcile_run_with_signal(context, &path, ledger, recovery, signal).await?
+            reconcile_run_observing(
+                context,
+                &path,
+                ledger,
+                recovery,
+                signal,
+                !defer_on_scheduler_contention,
+            )
+            .await?
         {
             results.push((result.run_id, result.outcome));
         }
@@ -879,6 +912,101 @@ mod tests {
         )
         .unwrap();
         parse_reservation_run_ledger(value).unwrap()
+    }
+    // A session that only sweeps at start must not be held behind another session's live reflection or dream run
+    // (2026-11-11: new sessions on a box sat 12 minutes at the memory step until the previous run's deadline).
+    fn live_context<'a>(
+        identity: &'a memory_core::identity::resolve::MemoryIdentity,
+        receipts: &'a crate::receipts_port::DefaultReceiptsPort,
+        warn: &'a (dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync),
+        now_ms: &'a dyn Fn() -> i64,
+    ) -> RunFinalizationContext<'a> {
+        RunFinalizationContext {
+            identity,
+            reservation: &Reservation,
+            launch: None,
+            now_ms,
+            receipts: Some(receipts),
+            warn: Some(warn),
+        }
+    }
+    #[tokio::test]
+    async fn a_sweep_that_does_not_wait_leaves_a_live_run_before_its_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = memory_core::identity::resolve::MemoryIdentity {
+            id: "agent".into(),
+            safe_slug: "agent".into(),
+            paths: memory_core::identity::layout::build_identity_paths(root.path(), "agent"),
+        };
+        let receipts = crate::receipts_port::DefaultReceiptsPort;
+        let warn = |_: &str, _: &std::collections::BTreeMap<String, String>| {};
+        let now = || 50;
+        let context = live_context(&identity, &receipts, &warn, &now);
+        for verdict in [RunProcessVerdict::Alive, RunProcessVerdict::Unknown] {
+            let recovery = Recovery {
+                verdicts: std::cell::RefCell::new([verdict].into()),
+                calls: Default::default(),
+            };
+            let result = reconcile_run_observing(
+                &context,
+                root.path(),
+                ledger(root.path()),
+                &recovery,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+            assert!(result.is_none());
+            assert!(recovery.calls.borrow().is_empty(), "no wait, signal or terminal claim");
+        }
+    }
+    #[tokio::test]
+    async fn a_sweep_that_does_not_wait_still_settles_a_run_past_its_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = memory_core::identity::resolve::MemoryIdentity {
+            id: "agent".into(),
+            safe_slug: "agent".into(),
+            paths: memory_core::identity::layout::build_identity_paths(root.path(), "agent"),
+        };
+        let receipts = crate::receipts_port::DefaultReceiptsPort;
+        let warn = |_: &str, _: &std::collections::BTreeMap<String, String>| {};
+        let now = || 200;
+        let context = live_context(&identity, &receipts, &warn, &now);
+        let recovery = Recovery {
+            verdicts: std::cell::RefCell::new(
+                [RunProcessVerdict::Unknown, RunProcessVerdict::Unknown].into(),
+            ),
+            calls: Default::default(),
+        };
+        reconcile_run_observing(&context, root.path(), ledger(root.path()), &recovery, None, false)
+            .await
+            .unwrap();
+        // Past deadlineAt (105) nothing is skipped: the same wait and abandon as the waiting pass.
+        assert_eq!(*recovery.calls.borrow(), ["outcome:105", "abandon"]);
+    }
+    #[tokio::test]
+    async fn a_waiting_pass_still_waits_for_a_live_run() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = memory_core::identity::resolve::MemoryIdentity {
+            id: "agent".into(),
+            safe_slug: "agent".into(),
+            paths: memory_core::identity::layout::build_identity_paths(root.path(), "agent"),
+        };
+        let receipts = crate::receipts_port::DefaultReceiptsPort;
+        let warn = |_: &str, _: &std::collections::BTreeMap<String, String>| {};
+        let now = || 50;
+        let context = live_context(&identity, &receipts, &warn, &now);
+        let recovery = Recovery {
+            verdicts: std::cell::RefCell::new(
+                [RunProcessVerdict::Unknown, RunProcessVerdict::Unknown].into(),
+            ),
+            calls: Default::default(),
+        };
+        reconcile_run(&context, root.path(), ledger(root.path()), &recovery)
+            .await
+            .unwrap();
+        assert_eq!(*recovery.calls.borrow(), ["outcome:105", "abandon"]);
     }
     #[tokio::test]
     async fn a_queued_live_supervisor_survives_its_old_deadline() {
