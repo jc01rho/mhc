@@ -1004,7 +1004,19 @@ async fn start_hanging_server(
                 let request: serde_json::Value =
                     serde_json::from_slice(&bytes[header_end..header_end + length])
                         .expect("request JSON");
-                if request.get("id").is_none() || request["method"] != "tools/call" {
+                let hangs = request["method"] == "tools/call"
+                    || (mode == "hang-all"
+                        && matches!(
+                            request["method"].as_str(),
+                            Some(
+                                "tools/list"
+                                    | "resources/list"
+                                    | "prompts/list"
+                                    | "resources/read"
+                                    | "prompts/get"
+                            )
+                        ));
+                if request.get("id").is_none() || !hangs {
                     let body = match request["method"].as_str() {
                         Some("initialize") => json!({"jsonrpc":"2.0","id":request["id"],"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"hanging","version":"1"}}}).to_string(),
                         _ if request.get("id").is_none() => String::new(),
@@ -1096,4 +1108,157 @@ async fn aborting_the_caller_signal_closes_the_in_flight_http_request_so_the_ser
             .unwrap_or_else(|_| panic!("the server to see the {mode} request disconnect"))
             .expect("closed signal");
     }
+}
+
+#[test]
+fn resolve_request_timeout_ms_uses_the_configured_timeout_else_the_default() {
+    use super::request_options::*;
+    let remote =
+        |timeout: serde_json::Value| json!({"url":"https://mcp.example.com/mcp","timeout":timeout});
+    assert_eq!(
+        resolve_request_timeout_ms(&remote(json!(120_000))),
+        Some(120_000.0)
+    );
+    assert_eq!(
+        resolve_request_timeout_ms(&remote(json!(2_147_483_647u64))),
+        Some(2_147_483_647.0)
+    );
+    assert_eq!(
+        resolve_request_timeout_ms(&json!({"url":"https://mcp.example.com/mcp"})),
+        None
+    );
+    assert_eq!(
+        request_timeout(&remote(json!(5_000))),
+        std::time::Duration::from_secs(5)
+    );
+    assert_eq!(
+        request_timeout(&json!({"url":"https://mcp.example.com/mcp"})),
+        DEFAULT_SKILL_MCP_REQUEST_TIMEOUT
+    );
+}
+
+#[test]
+fn resolve_request_timeout_ms_ignores_values_that_would_arm_an_immediate_or_never_firing_timer() {
+    use super::request_options::*;
+    for invalid in [
+        json!(0),
+        json!(-1),
+        json!(2_147_483_648u64),
+        json!(3_000_000_000u64),
+        json!("5000"),
+        json!(null),
+    ] {
+        let config = json!({"url":"https://mcp.example.com/mcp","timeout":invalid});
+        assert_eq!(resolve_request_timeout_ms(&config), None, "{invalid}");
+        assert_eq!(request_timeout(&config), DEFAULT_SKILL_MCP_REQUEST_TIMEOUT);
+    }
+}
+
+#[tokio::test]
+async fn every_direct_operation_times_out_at_the_configured_timeout_against_a_server_that_never_answers()
+ {
+    let (address, _received, _closed) = start_hanging_server("hang-all").await;
+    let root = tempfile::tempdir().expect("root");
+    let manager = SkillMcpManager::new(Some(root.path()), None, None);
+    let info = SkillMcpClientInfo {
+        session_id: "timeout-live".into(),
+        skill_name: "timeout-skill".into(),
+        server_name: "timeout-server".into(),
+        scope: Some("user".into()),
+        ..Default::default()
+    };
+    let context = SkillMcpServerContext {
+        config: json!({"url":format!("http://{address}/mcp"),"timeout":300}),
+        skill_name: "timeout-skill".into(),
+    };
+    // The bound sits far below the 30 s default, so only the configured 300 ms timeout can meet it.
+    let bound = std::time::Duration::from_secs(10);
+    let outcomes = [
+        (
+            "listTools",
+            tokio::time::timeout(bound, manager.list_tools(&info, &context, None))
+                .await
+                .map(|r| r.map(|_| ())),
+        ),
+        (
+            "listResources",
+            tokio::time::timeout(bound, manager.list_resources(&info, &context, None))
+                .await
+                .map(|r| r.map(|_| ())),
+        ),
+        (
+            "listPrompts",
+            tokio::time::timeout(bound, manager.list_prompts(&info, &context, None))
+                .await
+                .map(|r| r.map(|_| ())),
+        ),
+        (
+            "callTool",
+            tokio::time::timeout(
+                bound,
+                manager.call_tool(&info, &context, "never_answers", json!({}), None),
+            )
+            .await
+            .map(|r| r.map(|_| ())),
+        ),
+        (
+            "readResource",
+            tokio::time::timeout(
+                bound,
+                manager.read_resource(&info, &context, "file:///x", None),
+            )
+            .await
+            .map(|r| r.map(|_| ())),
+        ),
+        (
+            "getPrompt",
+            tokio::time::timeout(
+                bound,
+                manager.get_prompt(&info, &context, "greet", json!({}), None),
+            )
+            .await
+            .map(|r| r.map(|_| ())),
+        ),
+    ];
+    manager.disconnect_all().await;
+    for (op, outcome) in outcomes {
+        let error = outcome
+            .unwrap_or_else(|_| panic!("{op} ignored the configured timeout"))
+            .expect_err(op);
+        assert!(error.contains("timed out"), "{op}: {error}");
+    }
+}
+
+#[tokio::test]
+async fn a_call_carrying_an_abort_signal_still_times_out_at_the_configured_timeout() {
+    let (address, _received, _closed) = start_hanging_server("hang-all").await;
+    let root = tempfile::tempdir().expect("root");
+    let manager = SkillMcpManager::new(Some(root.path()), None, None);
+    let info = SkillMcpClientInfo {
+        session_id: "timeout-signal".into(),
+        skill_name: "timeout-skill".into(),
+        server_name: "timeout-server".into(),
+        scope: Some("user".into()),
+        ..Default::default()
+    };
+    let context = SkillMcpServerContext {
+        config: json!({"url":format!("http://{address}/mcp"),"timeout":300}),
+        skill_name: "timeout-skill".into(),
+    };
+    // The signal is never aborted: the call must end through the configured timeout, not the abort.
+    let options = SkillMcpClientOptions {
+        signal: Some(maho_ext_api::AbortSignal::default()),
+        ..Default::default()
+    };
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        manager.call_tool(&info, &context, "never_answers", json!({}), Some(&options)),
+    )
+    .await;
+    manager.disconnect_all().await;
+    let error = outcome
+        .expect("the signalled call ignored the configured timeout")
+        .expect_err("the hanging call resolved");
+    assert!(error.contains("timed out"), "{error}");
+    assert_ne!(error, SKILL_MCP_ABORTED_MESSAGE);
 }

@@ -5,7 +5,7 @@ use super::{
     types::{Environment, McpClient, SharedState, SkillMcpClientInfo, SkillMcpServerContext},
 };
 use serde_json::{Value, json};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 #[derive(Default)]
 pub struct SkillMcpClientOptions {
     pub cdp_url: Option<String>,
@@ -180,6 +180,7 @@ impl SkillMcpManager {
         let client = self
             .get_or_create_client_with_retry(info, &context.config, options)
             .await?;
+        let timeout = super::request_options::request_timeout(&context.config);
         collect_pages(|cursor| {
             let client = client.clone();
             async move {
@@ -187,7 +188,7 @@ impl SkillMcpManager {
                     .request(
                         method,
                         cursor.map(|c| json!({"cursor":c})).unwrap_or(json!({})),
-                        Duration::from_secs(30),
+                        timeout,
                     )
                     .await
                     .map_err(|e| e.to_string())?;
@@ -260,6 +261,7 @@ impl SkillMcpManager {
         params: Value,
     ) -> super::Result<Value> {
         let signal = options.and_then(|options| options.signal.as_ref());
+        let timeout = super::request_options::request_timeout(config);
         for attempt in 1..=3 {
             let result = async {
                 let client = self
@@ -268,19 +270,10 @@ impl SkillMcpManager {
                 match signal {
                     Some(signal) => {
                         client
-                            .request_with_signal(
-                                method,
-                                params.clone(),
-                                Duration::from_secs(30),
-                                signal,
-                            )
+                            .request_with_signal(method, params.clone(), timeout, signal)
                             .await
                     }
-                    None => {
-                        client
-                            .request(method, params.clone(), Duration::from_secs(30))
-                            .await
-                    }
+                    None => client.request(method, params.clone(), timeout).await,
                 }
                 .map_err(|error| error.to_string())
             }
