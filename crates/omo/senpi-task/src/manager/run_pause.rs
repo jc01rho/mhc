@@ -173,6 +173,8 @@ pub trait TaskRunPausePorts: Send + Sync {
     );
     /// A revive transition for an idle resident child joining a pause.
     fn revive(&self, record: &TaskRecord, timestamp: String) -> TaskRecord;
+    /// `concurrency.releaseTask`: an ended paused child gives back every lane slot it still holds.
+    fn release_task_capacity(&self, _task_id: &str) {}
 }
 
 fn now_iso(now: i64) -> String {
@@ -675,6 +677,65 @@ impl TaskRunPause {
         Ok(ack)
     }
 
+    /// `endLostPausedTask`: a paused child the run's Resume could not reach, with no live handle
+    /// left, ends as an error the parent is told about; its transcript stays readable through
+    /// task_output (#12249). The status check, the caller's ownership check and the end are one
+    /// locked read-modify-write, so a host that takes the record over in between is never ended here.
+    pub fn end_lost_paused_task(
+        &self,
+        task_id: &str,
+        reason: &str,
+        may_end: impl Fn(&TaskRecord) -> bool,
+    ) -> bool {
+        if self.ports.live_handle(task_id).is_some() {
+            return false;
+        }
+        let timestamp = now_iso(self.ports.now());
+        let mut ended: Option<crate::state::TaskTransitionResult> = None;
+        let written = self.ports.store().mutate(task_id, |fresh: &TaskRecord| {
+            if fresh.status != TaskStatus::Paused || !may_end(fresh) {
+                return fresh.clone();
+            }
+            // The Rust `Fail` transition carries no failure kind, so upstream's narrow
+            // `paused -> fail(session_unavailable)` edge is taken here: the store already encodes a
+            // paused child as a running one, and only this end gives it `session_unavailable`.
+            let mut unpaused = fresh.clone();
+            unpaused.run_pause = None;
+            unpaused.status = TaskStatus::Running;
+            let result = crate::state::transition_task_record(
+                &unpaused,
+                &crate::state::TaskTransition::Fail {
+                    timestamp: timestamp.clone(),
+                    error_message: format!(
+                        "The run's Resume could not restore this paused child ({reason}), so its run ended. Its transcript is kept for task_output."
+                    ),
+                    killed: false,
+                    run_stats: None,
+                },
+            );
+            if !result.applied {
+                return fresh.clone();
+            }
+            let mut next = result.record.clone();
+            next.failure_kind = Some("session_unavailable".to_string());
+            ended = Some(result);
+            next
+        });
+        let Some(ended) = ended.filter(|_| written.is_ok()) else {
+            return false;
+        };
+        let _ = self.ports.store().append_event(
+            task_id,
+            &crate::store::PersistedTaskEvent {
+                event_type: ended.audit.type_name().to_string(),
+                payload: serde_json::to_value(&ended.audit).unwrap_or(serde_json::Value::Null),
+            },
+        );
+        self.forget(task_id);
+        self.ports.release_task_capacity(task_id);
+        true
+    }
+
     /// `park`: a child that stays held gives its slot back and settles its pause intent.
     pub fn park(&self, task_id: &str, epoch: i64) {
         self.capacity.park(task_id, epoch);
@@ -760,6 +821,297 @@ mod tests {
         let mut receiver = intents.begin("t1", 7);
         intents.acknowledge("t1", 7);
         assert!(receiver.try_recv().is_ok());
+    }
+
+    /// `run-pause-end-lost.test.ts`: a paused child with a held lane slot, and an optional live handle.
+    struct EndLostPorts {
+        store: TaskRecordStore,
+        concurrency: Mutex<crate::manager::concurrency::TaskConcurrency>,
+        live: bool,
+    }
+
+    struct IdleHandle;
+    impl ManagedChildHandle for IdleHandle {
+        fn task_id(&self) -> &str {
+            "st_0e1d0001"
+        }
+        fn session_id(&self) -> Option<String> {
+            None
+        }
+        fn pid(&self) -> Option<i64> {
+            None
+        }
+        fn steer(&self, _: &str) -> Result<(), crate::host::HostError> {
+            Ok(())
+        }
+        fn follow_up(&self, _: &str) -> Result<(), crate::host::HostError> {
+            Ok(())
+        }
+        fn abort(&self) -> Result<(), crate::host::HostError> {
+            Ok(())
+        }
+        fn subscribe(
+            &self,
+            _: crate::manager::ManagedChildListener,
+        ) -> crate::manager::Unsubscribe {
+            Box::new(|| {})
+        }
+        fn wait_for_outcome(&self) -> crate::runners::RunnerOutcome {
+            crate::runners::RunnerOutcome::Cancelled
+        }
+        fn last_assistant_text(&self) -> Option<String> {
+            None
+        }
+        fn dispose(&self) -> Result<(), crate::host::HostError> {
+            Ok(())
+        }
+    }
+
+    impl TaskRunPausePorts for EndLostPorts {
+        fn store(&self) -> &TaskRecordStore {
+            &self.store
+        }
+        fn now(&self) -> i64 {
+            chrono::DateTime::parse_from_rfc3339("2026-11-03T04:28:14.000Z")
+                .expect("fixed clock")
+                .timestamp_millis()
+        }
+        fn live_handle(&self, _: &str) -> Option<Arc<dyn ManagedChildHandle>> {
+            self.live
+                .then(|| Arc::new(IdleHandle) as Arc<dyn ManagedChildHandle>)
+        }
+        fn child(&self) -> Option<Arc<dyn TaskChildPausePort>> {
+            None
+        }
+        fn barrier(&self) -> Option<AdmissionBarrier> {
+            None
+        }
+        fn remember_owner(&self, _: &str, _: &RunPauseOwner) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn forget_owner(&self, _: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn apply_pause(&self, _: &str, _: &str) -> bool {
+            false
+        }
+        fn apply_unpause(&self, _: &str, _: &str) -> bool {
+            false
+        }
+        fn restore(&self, _: &TaskRecord) -> Option<Result<Arc<dyn ManagedChildHandle>, String>> {
+            None
+        }
+        fn track(
+            &self,
+            _: &str,
+            _: Arc<dyn ManagedChildHandle>,
+            _: &str,
+            _: i64,
+            _: TaskResumedTurn,
+        ) {
+        }
+        fn revive(&self, record: &TaskRecord, _: String) -> TaskRecord {
+            record.clone()
+        }
+        fn release_task_capacity(&self, task_id: &str) {
+            let _ = lock(&self.concurrency).release_task(task_id);
+        }
+    }
+
+    const PAUSED_TASK: &str = "st_0e1d0001";
+
+    fn paused_child(live: bool) -> (tempfile::TempDir, Arc<EndLostPorts>, TaskRunPause) {
+        let root = tempfile::tempdir().expect("project");
+        let store = TaskRecordStore::new(&crate::store::StateDirConfig {
+            project_dir: root.path().into(),
+            task_state_dir: None,
+        });
+        let mut record = crate::test_support::base_record(PAUSED_TASK, "parent-1");
+        record.status = TaskStatus::Paused;
+        record.final_response = None;
+        record.model = "test/model".into();
+        record.run_pause = Some(RecordedRunPause {
+            parent_session_id: "parent-1".into(),
+            parent_pause_seq: 16,
+            run_ref: crate::state::RunPauseRef {
+                kind: RunPauseKind::Task,
+                id: PAUSED_TASK.into(),
+            },
+        });
+        store.save(&record).expect("seed");
+        let mut concurrency = crate::manager::concurrency::TaskConcurrency::new(
+            crate::manager::concurrency::TaskConcurrencyConfig {
+                provider_concurrency: Some(BTreeMap::from([("test".to_string(), 1)])),
+                ..Default::default()
+            },
+        );
+        assert!(concurrency.try_acquire("test/model", PAUSED_TASK, 0));
+        let ports = Arc::new(EndLostPorts {
+            store,
+            concurrency: Mutex::new(concurrency),
+            live,
+        });
+        let pause = TaskRunPause::new(ports.clone());
+        (root, ports, pause)
+    }
+
+    #[test]
+    fn an_unrestorable_paused_child_ends_as_session_unavailable_with_its_pause_cleared_and_slot_freed()
+     {
+        let (_root, ports, pause) = paused_child(false);
+
+        let ended = pause.end_lost_paused_task(
+            PAUSED_TASK,
+            "paused child restore failed (respawn_failed): rpc respawn failed",
+            |_| true,
+        );
+
+        assert!(ended);
+        let record = ports
+            .store
+            .load(PAUSED_TASK)
+            .expect("load")
+            .expect("record");
+        assert_eq!(record.status, TaskStatus::Error);
+        assert_eq!(record.failure_kind.as_deref(), Some("session_unavailable"));
+        assert!(
+            record
+                .error_message
+                .as_deref()
+                .is_some_and(|message| message.contains("respawn_failed")),
+            "{:?}",
+            record.error_message
+        );
+        assert_eq!(record.run_pause, None);
+        let mut concurrency = lock(&ports.concurrency);
+        assert_eq!(concurrency.lease_state(PAUSED_TASK, 0), None);
+        assert!(concurrency.try_acquire("test/model", "st_0e1d0002", 0));
+    }
+
+    #[test]
+    fn a_paused_child_another_host_took_over_stays_paused_under_the_fresh_ownership_check() {
+        let (_root, ports, pause) = paused_child(false);
+        ports
+            .store
+            .mutate(PAUSED_TASK, |fresh| {
+                let mut next = fresh.clone();
+                next.host_pid = Some(424_242);
+                next
+            })
+            .expect("take over");
+
+        assert!(
+            !pause.end_lost_paused_task(PAUSED_TASK, "respawn_failed", |fresh| {
+                fresh.host_pid != Some(424_242)
+            })
+        );
+
+        let record = ports
+            .store
+            .load(PAUSED_TASK)
+            .expect("load")
+            .expect("record");
+        assert_eq!(record.status, TaskStatus::Paused);
+        assert_eq!(
+            record.run_pause.map(|owner| owner.parent_pause_seq),
+            Some(16)
+        );
+        assert_eq!(
+            lock(&ports.concurrency).lease_state(PAUSED_TASK, 0),
+            Some("held")
+        );
+    }
+
+    #[test]
+    fn a_paused_child_whose_handle_is_still_live_stays_paused_for_the_next_resume() {
+        let (_root, ports, pause) = paused_child(true);
+
+        assert!(!pause.end_lost_paused_task(PAUSED_TASK, "resume_for_run timed out", |_| true));
+
+        let record = ports
+            .store
+            .load(PAUSED_TASK)
+            .expect("load")
+            .expect("record");
+        assert_eq!(record.status, TaskStatus::Paused);
+        assert_eq!(
+            lock(&ports.concurrency).lease_state(PAUSED_TASK, 0),
+            Some("held")
+        );
+    }
+
+    struct RecordingParent(Arc<Mutex<Vec<crate::completion::ParentNotifierMessage>>>);
+    impl crate::completion::ParentNotifier for RecordingParent {
+        fn enqueue_with_callbacks(
+            &self,
+            message: &crate::completion::ParentNotifierMessage,
+            callbacks: crate::completion::DeliveryCallbacks,
+        ) -> Result<(), crate::host::HostError> {
+            lock(&self.0).push(message.clone());
+            callbacks.delivered();
+            Ok(())
+        }
+    }
+
+    /// `completion-bridge.test.ts` (#12249): in mhc the parent hears about a settled child through
+    /// the completion waiter the task component holds for it, which hands the record to the
+    /// completion notifier. Ending the run its Resume could not restore settles that waiter with
+    /// the error, and the parent is told exactly once.
+    #[test]
+    fn an_ended_lost_paused_run_settles_its_waiter_and_tells_the_parent_once_that_it_failed() {
+        use std::future::Future;
+        let harness = crate::manager::manager_tests::fakes::make_manager(Default::default());
+        let mut record = crate::test_support::base_record(PAUSED_TASK, "parent-session");
+        record.status = TaskStatus::Paused;
+        record.final_response = None;
+        record.notify_on_terminal = true;
+        harness.store.save(&record).expect("seed");
+        let pause = TaskRunPause::new(Arc::new(EndLostPorts {
+            store: harness.store.clone(),
+            concurrency: Mutex::new(crate::manager::concurrency::TaskConcurrency::new(
+                Default::default(),
+            )),
+            live: false,
+        }));
+        let (_cancel, mut cancelled) = tokio::sync::watch::channel(false);
+        let mut waiting =
+            std::pin::pin!(harness.manager.wait_for_async(PAUSED_TASK, &mut cancelled));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        // The first poll registers the waiter and finds the run still paused.
+        assert!(waiting.as_mut().poll(&mut context).is_pending());
+
+        assert!(harness.manager.end_lost_paused_task(
+            &pause,
+            PAUSED_TASK,
+            "paused child restore failed (respawn_failed)"
+        ));
+
+        let std::task::Poll::Ready(settled) = waiting.as_mut().poll(&mut context) else {
+            panic!("ending the run never settled its waiter");
+        };
+        let ended = settled.expect("the ended record");
+        assert_eq!(ended.status, TaskStatus::Error);
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let notifier = crate::completion::create_completion_notifier(
+            crate::completion::CompletionNotifierDeps::new(
+                Arc::new(RecordingParent(messages.clone())),
+                Arc::new(harness.store.clone()),
+            ),
+        );
+        for _ in 0..2 {
+            notifier
+                .notify_terminal(&crate::completion::CompletionRequest {
+                    record: ended.clone(),
+                    parent_state: crate::completion::ParentState::Idle,
+                    run_in_background: true,
+                    tokens: None,
+                })
+                .expect("notify");
+        }
+        let messages = lock(&messages);
+        assert_eq!(messages.len(), 1, "told once");
+        assert_eq!(messages[0].details[0].task_id, PAUSED_TASK);
+        assert_eq!(messages[0].details[0].status, TaskStatus::Error);
     }
 
     #[test]

@@ -112,10 +112,15 @@ pub async fn run_task_kill(
             ctx.session_manager.session_id().into(),
         ))
         .into_iter()
+        // Cancellable = anything still holding a live/resident child worth stopping, a run-paused
+        // one included (#12249).
         .filter(|record| {
             matches!(
                 record.status,
-                TaskStatus::Running | TaskStatus::Pending | TaskStatus::Interrupted
+                TaskStatus::Running
+                    | TaskStatus::Pending
+                    | TaskStatus::Interrupted
+                    | TaskStatus::Paused
             )
         })
         .collect();

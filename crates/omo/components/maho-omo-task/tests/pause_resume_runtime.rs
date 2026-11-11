@@ -72,6 +72,7 @@ fn held_wakes_resume_does_not_starve_the_current_thread_host_runtime() {
         fence_run: Arc::new(|_| Ok(())),
         release_fences: Arc::new(|_| Ok(())),
         cancel_task: Arc::new(|_| Ok(())),
+        end_lost_task: Arc::new(|_, _, _| Ok(false)),
     };
     let engine = Arc::new(EngineRunPause::new(dir.path(), Arc::new(effects)));
     let custody = maho_omo_task::event_bridge::TaskPauseCustody {
