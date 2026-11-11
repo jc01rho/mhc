@@ -459,6 +459,31 @@ fn given_a_snapshot_without_run_stats_when_the_status_row_renders_then_no_runtim
     assert!(!line.contains("tok/s"));
 }
 
+#[test]
+fn given_no_progress_output_without_a_pending_notification_when_the_row_renders_then_it_shows_the_factual_reason()
+ {
+    // given
+    let detail = TaskOutputDetails::NoProgress {
+        task_id: "st_done".to_string(),
+        status: TaskStatus::Completed,
+        reason: "Task st_done is completed. It will not send a completion notification."
+            .to_string(),
+    };
+
+    // when
+    let line = first_line(
+        &render_task_output_result(&tool_result("ignored", detail), &RESULT_OPTIONS, &TestTheme),
+        200,
+    );
+
+    // then
+    assert!(
+        line.contains("It will not send a completion notification."),
+        "{line}"
+    );
+    assert!(!line.contains("await notification"));
+}
+
 // ---- task_output suspended residency rendering ----
 // Rendering keys the suspended label off `snapshot.suspended`; the residency state itself is
 // not read by the row renderer.

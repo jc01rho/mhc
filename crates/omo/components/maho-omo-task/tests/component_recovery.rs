@@ -1099,3 +1099,130 @@ async fn recovery(case: Case) {
         );
     }
 }
+
+#[tokio::test]
+async fn only_accepted_compaction_forgets_task_output_status_reads() {
+    let root = tempfile::tempdir().expect("root");
+    let runner = Arc::new(NoLaunch);
+    let engine = compose_task_engine(ComposeTaskEngineDeps {
+        cwd: root.path().into(),
+        config: serde_json::json!({}),
+        runners: ManagedRunners {
+            in_process: runner.clone(),
+            process: runner,
+        },
+        actions: Arc::new(Actions::default()),
+        coordinator: None,
+        resolve_registry: Arc::new(|| None),
+        host_transport: None,
+    });
+    let mut api = support::api();
+    let component = TaskComponent::register_with_status_timers(
+        &mut api,
+        engine,
+        Default::default(),
+        TeamMemberOwnershipDeps {
+            state_dir: StateDirConfig {
+                project_dir: root.path().into(),
+                task_state_dir: None,
+            },
+            team_bounds: TeamTaskBounds {
+                max_members: 4,
+                max_parallel_members: 2,
+                max_wall_clock_minutes: 10,
+            },
+            load_runtime_state: None,
+        },
+        false,
+        Arc::new(Timers::default()),
+    )
+    .expect("register")
+    .expect("component");
+    let mut record = senpi_task::state::create_task_record(
+        senpi_task::state::TaskRecordInput {
+            parent_session_id: "session".into(),
+            root_session_id: "session".into(),
+            ..Default::default()
+        },
+        Some(1),
+    )
+    .expect("record");
+    record.status = senpi_task::state::TaskStatus::Completed;
+    record.final_response = Some("done".into());
+    component.engine.store.save(&record).expect("save");
+    let execute = api
+        .registered
+        .tools
+        .iter()
+        .find(|tool| tool.definition.name == "task_output")
+        .expect("task_output")
+        .definition
+        .execute
+        .clone();
+    let mut context = support::context();
+    context.cwd = root.path().into();
+    let read = || async {
+        execute(ToolCall {
+            id: "output",
+            params: serde_json::json!({"task_id": record.task_id, "mode": "status"}),
+            signal: Default::default(),
+            on_update: None,
+            context: Some(&context),
+        })
+        .await
+        .expect("task_output")
+        .details
+        .expect("details")
+    };
+    let entry = SessionEntry {
+        id: "compact".into(),
+        parent_id: None,
+        timestamp: "fixed".into(),
+        kind: "compaction".into(),
+        data: serde_json::json!({}),
+    };
+    let mut rejected = ExtensionEvent::SessionCompact(SessionCompactEvent::Rejected {
+        reason: CompactionReason::Manual,
+        request_id: "rejected".into(),
+        rejection_cause: CompactionRejectionCause::CancelledByExtension,
+    });
+    let mut failed = ExtensionEvent::SessionCompactFailed {
+        reason: CompactionReason::Manual,
+        error_message: Some("compaction failed".into()),
+        aborted: false,
+        will_retry: false,
+        from_extension: false,
+    };
+    let mut accepted = ExtensionEvent::SessionCompact(SessionCompactEvent::Accepted {
+        reason: CompactionReason::Manual,
+        request_id: "accepted".into(),
+        compaction_entry: entry,
+        from_extension: false,
+        will_retry: false,
+    });
+
+    assert_eq!(read().await["kind"], "status");
+    assert_eq!(read().await["kind"], "no_progress");
+    for (kind, event) in [
+        (EventKind::SessionCompact, &mut rejected),
+        (EventKind::SessionCompactFailed, &mut failed),
+    ] {
+        for handler in &api.registered.handlers[&kind] {
+            handler(event, &context).await.expect("compact handler");
+        }
+        assert_eq!(read().await["kind"], "no_progress");
+    }
+    for handler in &api.registered.handlers[&EventKind::SessionCompact] {
+        handler(&mut accepted, &context)
+            .await
+            .expect("accepted compact");
+    }
+    let fresh = read().await;
+    assert_eq!(fresh["kind"], "status");
+    assert_eq!(fresh["snapshot"]["final_response"], "done");
+    component.dispose();
+    drop(execute);
+    drop(api);
+    drop(component);
+    root.close().expect("cleanup");
+}
