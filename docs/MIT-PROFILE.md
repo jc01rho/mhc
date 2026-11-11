@@ -113,7 +113,10 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   [--json]` (or `/memory import-legacy`) reads the legacy Markdown store (`$MAHO_MEMORY_HOME`, else
   `~/.omo/memory`) read-only and writes each Markdown block as an imported memory into the global
   bank; re-running skips what is already there, and `people/` files are skipped unless
-  `memory.people.enabled` is true or `--include-people` is given. Format and mapping:
+  `memory.people.enabled` is true or `--include-people` is given. It resolves the real store layout:
+  every `<root>/agents/<id>/repo/` is one content tree (the older flat `<root>/` layout also works),
+  `runtime/` trees are never read, and content homes are `system/`, `notes/`, `people/`, `project/`,
+  `reference/` and `skills/<slug>/SKILL.md`. Format and mapping:
   `docs/cleanroom/specs/memory-format.md`.
 - `<builtin:browser>` (`maho-browser`, ported from the MIT omowright @ a019fdf, pi-cua-integration @
   9ba0c9e and oh-my-pi @ f59bbac; tool behaviour in `docs/cleanroom/specs/browser-tools.md`):
@@ -374,6 +377,45 @@ The `license-audit` job also runs `bun tools/package-native.mjs --self-test`, wh
 
 `tools/license-audit.mjs` also requires every crate under `crates/omo/` to be `LicenseRef-SUL-1.0`
 and every crate under `crates/desktop/` to be MIT.
+
+## Shipping an MIT artifact
+
+Both profiles ship from one release. The default (SUL) payload keeps its asset names
+(`mhc-<target>.tar.gz`, `mhc-windows-x86_64.zip`); the MIT payload is the same source built with
+`--no-default-features` and published beside it as `mhc-<target>-mit.tar.gz` /
+`mhc-windows-x86_64-mit.zip`, with the same `.sha256` and `.minisig` files. Nothing about the
+default install path changes, and the MIT job is skipped for candidate-pair runs.
+
+```sh
+cargo build --release --locked --no-default-features -p maho-cli --bins
+bun tools/package-native.mjs --mit --output dist/mhc-linux-x86_64-mit \
+  --binary target/release/mhc --launcher-binary target/release/mhc-launcher \
+  --build-version 2026.11.09
+bun tools/package-native.mjs --verify-only dist/mhc-linux-x86_64-mit
+```
+
+The separator between the two profiles is the **default-features flag**, not the staging flags:
+`--mit` refuses a payload whose `mhc ulw-loop` does not answer "is not available in this build",
+so a default build cannot be mislabelled as MIT, and `--verify-only` rejects a stage that contains
+`licenses/SUL-1.0.md`, skills, the omo schema or a SUL sibling.
+
+Install and update follow the profile of the binary that is running:
+
+- `MHC_PROFILE=mit` makes `install.sh` / `install.ps1` fetch the `-mit` asset and refuse a package
+  whose `manifest.json` is not the MIT profile. The default is `sul`.
+- `mhc update` resolves the asset for the profile it was built as (`native_update::signature::PROFILE`,
+  set from the `omo` feature at build time), so an MIT install updates to MIT and a full install to the
+  full payload.
+- `native_update::manifest::validate` accepts the MIT shape (no skills, no schema, only `mhc` and
+  `mhc-launcher` as required executables) and refuses a package from the other profile, so a profile
+  cannot be swapped by pointing an update at the wrong archive.
+
+Remaining gap for a complete commercial product: an MIT skill set under `skills/`. The loader already
+reads a bundled root beside the binary, so staging it is an asset task; until then the MIT payload
+ships no skills and `manifest.json` carries no `skills` key, which the MIT validator allows.
+
+`bun tools/package-native.mjs --self-test` covers the staging and `--verify-only` contract
+(115 checks, including MIT stage contents and refusals) in the `license-audit` job.
 
 ## Known leftovers (not linked SUL code)
 
