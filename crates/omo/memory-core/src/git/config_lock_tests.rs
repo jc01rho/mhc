@@ -60,6 +60,7 @@ fn given_transient_config_lock_failures_when_mutation_runs_then_it_retries() {
                 code: 1,
                 stdout: String::new(),
                 stderr: "could not lock config file .git/config: File exists".to_string(),
+                termination: None,
             });
         }
         Ok("success")
@@ -146,6 +147,7 @@ fn given_transient_index_lock_failures_when_operation_runs_then_it_retries() {
                 stdout: String::new(),
                 stderr: "fatal: Unable to create '/tmp/r/.git/index.lock': File exists."
                     .to_string(),
+                termination: None,
             });
         }
         Ok("committed")
@@ -167,6 +169,7 @@ fn given_lock_that_never_clears_when_exhausted_then_error_surfaces() {
             code: 1,
             stdout: String::new(),
             stderr: "fatal: Unable to create '/x/.git/index.lock': File exists.".to_string(),
+            termination: None,
         })
     });
 
@@ -186,6 +189,7 @@ fn given_non_lock_git_failure_when_operation_runs_then_it_surfaces_immediately()
             code: 1,
             stdout: String::new(),
             stderr: "error: pathspec 'nope.txt' did not match any file(s) known to git".to_string(),
+            termination: None,
         })
     });
 

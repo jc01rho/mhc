@@ -329,6 +329,7 @@ impl<'a> MirrorSync<'a> {
                     code: 1,
                     stdout: String::new(),
                     stderr: error.to_string(),
+                    termination: None,
                 });
         }
 
@@ -339,6 +340,7 @@ impl<'a> MirrorSync<'a> {
                 code: 1,
                 stdout: String::new(),
                 stderr: error.to_string(),
+                termination: None,
             })
     }
 }

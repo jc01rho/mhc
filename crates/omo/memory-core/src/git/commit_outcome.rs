@@ -86,6 +86,7 @@ mod tests {
                     }
                     .into(),
                     stderr: String::new(),
+                    termination: None,
                 })
             },
             "write\n\nbody",
@@ -117,7 +118,8 @@ mod tests {
                         "another write"
                     }
                     .into(),
-                    stderr: String::new()
+                    stderr: String::new(),
+                    termination: None,
                 })
             )
             .unwrap(),

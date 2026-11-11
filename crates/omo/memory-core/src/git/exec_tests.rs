@@ -185,6 +185,7 @@ fn success() -> GitExecResult {
         code: 0,
         stdout: "git version test\n".to_string(),
         stderr: String::new(),
+        termination: None,
     }
 }
 
@@ -222,6 +223,7 @@ fn given_bare_runner_reports_missing_cwd_result_when_run_then_windows_fallbacks_
         code: 128,
         stdout: String::new(),
         stderr: "fatal: cannot change directory".to_string(),
+        termination: None,
     };
     let expected = missing_cwd.clone();
     let rec = hermetic(
@@ -517,6 +519,7 @@ fn given_fallback_nonzero_result_when_fallback_runs_then_result_returns_without_
         code: 128,
         stdout: String::new(),
         stderr: "fatal: command failed".to_string(),
+        termination: None,
     };
     let expected = nonzero.clone();
     let rec = hermetic(
@@ -804,4 +807,131 @@ fn given_core_fsmonitor_in_the_global_config_when_the_clean_tree_status_runs_thr
         "fsmonitor ran: {:?}",
         std::fs::read_to_string(&calls)
     );
+}
+
+// --- omo #11943: a git child that exits non-zero without writing anything used to surface as a
+// bare "exit code 1", which cannot tell a real silent failure from a child killed by something else.
+
+use super::exec::GitTermination;
+use super::repo_arguments::command_error;
+
+#[test]
+fn given_a_git_command_that_fails_without_output_when_it_runs_then_the_result_records_how_the_child_ended_and_the_error_names_it()
+ {
+    let dir = tempfile::tempdir().unwrap();
+    let options = GitExecOptions {
+        cwd: dir.path().to_path_buf(),
+        timeout_ms: 30_000,
+        ..Default::default()
+    };
+    let exec = system_git_exec();
+    assert_eq!(exec.run(&argv(&["init", "-q"]), &options).unwrap().code, 0);
+    let args = argv(&["rev-parse", "--verify", "--quiet", "refs/heads/missing"]);
+
+    let result = exec.run(&args, &options).unwrap();
+
+    assert_eq!(result.code, 1);
+    assert_eq!(format!("{}{}", result.stdout, result.stderr), "");
+    let termination = result.termination.clone().expect("termination recorded");
+    assert_eq!(termination.signal, None);
+    assert!(
+        command_error(&args, &result)
+            .to_string()
+            .contains("with no output (no signal, after "),
+        "{}",
+        command_error(&args, &result)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn given_a_git_child_killed_by_a_signal_when_it_runs_then_the_result_names_the_signal() {
+    let bin = tempfile::tempdir().unwrap();
+    let fake_git = bin.path().join("git");
+    write_executable_script(&fake_git, "#!/bin/sh\nkill -KILL $$\n");
+    let options = GitExecOptions {
+        cwd: bin.path().to_path_buf(),
+        timeout_ms: 30_000,
+        env: BTreeMap::from([(
+            "PATH".to_string(),
+            bin.path().to_string_lossy().into_owned(),
+        )]),
+        stdin: None,
+    };
+    let args = argv(&["add", "-A"]);
+
+    let result = system_git_exec().run(&args, &options).unwrap();
+
+    assert_eq!(
+        result
+            .termination
+            .as_ref()
+            .and_then(|t| t.signal.as_deref()),
+        Some("SIGKILL")
+    );
+    assert!(
+        command_error(&args, &result)
+            .to_string()
+            .starts_with("git add -A failed: exit code 1 with no output (signal SIGKILL, after "),
+        "{}",
+        command_error(&args, &result)
+    );
+}
+
+#[test]
+fn given_a_child_ended_by_an_external_signal_when_the_error_is_built_then_the_signal_is_in_the_message()
+ {
+    let error = GitError::Command {
+        argv: argv(&["add", "-A"]),
+        code: 1,
+        stdout: String::new(),
+        stderr: String::new(),
+        termination: Some(GitTermination {
+            signal: Some("SIGKILL".to_string()),
+            elapsed_ms: 34_226,
+        }),
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "git add -A failed: exit code 1 with no output (signal SIGKILL, after 34226ms)"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn given_a_signal_without_a_mapped_name_when_the_error_is_built_then_the_signal_is_named_by_its_number()
+ {
+    assert_eq!(super::exec::signal_name(libc::SIGKILL), "SIGKILL");
+    let error = GitError::Command {
+        argv: argv(&["add"]),
+        code: 1,
+        stdout: String::new(),
+        stderr: String::new(),
+        termination: Some(GitTermination {
+            signal: Some(super::exec::signal_name(64)),
+            elapsed_ms: 5,
+        }),
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "git add failed: exit code 1 with no output (signal 64, after 5ms)"
+    );
+}
+
+#[test]
+fn given_git_wrote_stderr_when_the_error_is_built_then_stderr_stays_the_detail() {
+    let error = GitError::Command {
+        argv: argv(&["add"]),
+        code: 128,
+        stdout: String::new(),
+        stderr: "fatal: bad\n".to_string(),
+        termination: Some(GitTermination {
+            signal: None,
+            elapsed_ms: 3,
+        }),
+    };
+
+    assert_eq!(error.to_string(), "git add failed: fatal: bad");
 }

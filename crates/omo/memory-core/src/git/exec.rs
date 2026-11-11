@@ -23,6 +23,18 @@ pub struct GitExecResult {
     pub code: i32,
     pub stdout: String,
     pub stderr: String,
+    /// How the child ended, so a silent non-zero exit can be told apart from an external kill
+    /// (omo #11943). `None` when no child ran or an injected exec did not record it.
+    pub termination: Option<GitTermination>,
+}
+
+/// How a Git child ended: the terminating signal (if any) and the wall time it ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitTermination {
+    /// Signal name such as `SIGKILL` (the bare number for a signal without a mapped name); `None`
+    /// when the child exited on its own.
+    pub signal: Option<String>,
+    pub elapsed_ms: u64,
 }
 
 /// Raw result of a finished Git process whose stdout must survive byte-for-byte.
@@ -238,11 +250,12 @@ fn run_git_command(
     argv: &[String],
     options: &GitExecOptions,
 ) -> std::io::Result<GitExecResult> {
-    let (code, stdout, stderr) = run_git_command_raw(executable, argv, options)?;
+    let (code, stdout, stderr, termination) = run_git_command_raw(executable, argv, options)?;
     Ok(GitExecResult {
         code,
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        termination,
     })
 }
 
@@ -251,7 +264,7 @@ fn run_git_command_bytes(
     argv: &[String],
     options: &GitExecOptions,
 ) -> std::io::Result<GitExecBytesResult> {
-    let (code, stdout, stderr) = run_git_command_raw(executable, argv, options)?;
+    let (code, stdout, stderr, _) = run_git_command_raw(executable, argv, options)?;
     Ok(GitExecBytesResult {
         code,
         stdout,
@@ -259,11 +272,13 @@ fn run_git_command_bytes(
     })
 }
 
+type RawGitOutput = (i32, Vec<u8>, Vec<u8>, Option<GitTermination>);
+
 fn run_git_command_raw(
     executable: &str,
     argv: &[String],
     options: &GitExecOptions,
-) -> std::io::Result<(i32, Vec<u8>, Vec<u8>)> {
+) -> std::io::Result<RawGitOutput> {
     // A missing cwd behaves like git itself (exit 128), never like a missing binary.
     if !options.cwd.exists() {
         return Ok((
@@ -274,6 +289,7 @@ fn run_git_command_raw(
                 options.cwd.display()
             )
             .into_bytes(),
+            None,
         ));
     }
     spawn_and_capture(executable, argv, options)
@@ -353,11 +369,49 @@ fn resolve_executable_path(executable: &str, custom_path: &str, cwd: &Path) -> O
     None
 }
 
+#[cfg(unix)]
+fn termination_signal(status: std::process::ExitStatus) -> Option<String> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal().map(signal_name)
+}
+
+/// Node-style name (`SIGKILL`) of a terminating signal; a number without a mapped name stays a number.
+#[cfg(unix)]
+pub(crate) fn signal_name(signal: i32) -> String {
+    let name = match signal {
+        libc::SIGHUP => "SIGHUP",
+        libc::SIGINT => "SIGINT",
+        libc::SIGQUIT => "SIGQUIT",
+        libc::SIGILL => "SIGILL",
+        libc::SIGTRAP => "SIGTRAP",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGFPE => "SIGFPE",
+        libc::SIGKILL => "SIGKILL",
+        libc::SIGUSR1 => "SIGUSR1",
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGUSR2 => "SIGUSR2",
+        libc::SIGPIPE => "SIGPIPE",
+        libc::SIGALRM => "SIGALRM",
+        libc::SIGTERM => "SIGTERM",
+        libc::SIGXCPU => "SIGXCPU",
+        libc::SIGXFSZ => "SIGXFSZ",
+        _ => return signal.to_string(),
+    };
+    name.to_string()
+}
+
+#[cfg(not(unix))]
+fn termination_signal(_status: std::process::ExitStatus) -> Option<String> {
+    None
+}
+
 fn spawn_and_capture(
     executable: &str,
     argv: &[String],
     options: &GitExecOptions,
-) -> std::io::Result<(i32, Vec<u8>, Vec<u8>)> {
+) -> std::io::Result<RawGitOutput> {
+    let started_at = Instant::now();
     let explicit_path = options
         .env
         .iter()
@@ -553,5 +607,14 @@ fn spawn_and_capture(
         stderr_bytes.extend_from_slice(format!("\nstdin: {error}").as_bytes());
     }
 
-    Ok((status.code().unwrap_or(1), stdout_bytes, stderr_bytes))
+    let termination = GitTermination {
+        signal: termination_signal(status),
+        elapsed_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+    };
+    Ok((
+        status.code().unwrap_or(1),
+        stdout_bytes,
+        stderr_bytes,
+        Some(termination),
+    ))
 }

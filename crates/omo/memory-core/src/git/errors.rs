@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use super::exec::GitTermination;
+
 /// Typed Git error representing command failure, timeout, missing binary, or repository state conflict.
 #[derive(Debug)]
 pub enum GitError {
@@ -10,6 +12,7 @@ pub enum GitError {
         code: i32,
         stdout: String,
         stderr: String,
+        termination: Option<GitTermination>,
     },
     Timeout {
         argv: Vec<String>,
@@ -40,13 +43,14 @@ impl fmt::Display for GitError {
                 code,
                 stdout,
                 stderr,
+                termination,
             } => {
                 let detail = if !stderr.trim().is_empty() {
                     stderr.trim()
                 } else if !stdout.trim().is_empty() {
                     stdout.trim()
                 } else {
-                    &format!("exit code {code}")
+                    &silent_exit_detail(*code, termination.as_ref())
                 };
                 write!(f, "git {} failed: {detail}", argv.join(" "))
             }
@@ -92,6 +96,20 @@ impl fmt::Display for GitError {
             Self::Other(msg) => write!(f, "{msg}"),
         }
     }
+}
+
+fn silent_exit_detail(code: i32, termination: Option<&GitTermination>) -> String {
+    let Some(termination) = termination else {
+        return format!("exit code {code}");
+    };
+    let signal = match &termination.signal {
+        None => "no signal".to_string(),
+        Some(signal) => format!("signal {signal}"),
+    };
+    format!(
+        "exit code {code} with no output ({signal}, after {}ms)",
+        termination.elapsed_ms
+    )
 }
 
 impl std::error::Error for GitError {

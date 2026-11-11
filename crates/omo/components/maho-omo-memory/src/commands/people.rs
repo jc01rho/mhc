@@ -535,6 +535,7 @@ mod tests {
                     code: 128,
                     stdout: String::new(),
                     stderr: "fatal: not a git repository".to_owned(),
+                    termination: None,
                 });
             }
             memory_core::git::system_git_exec().run(argv, options)

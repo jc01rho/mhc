@@ -373,6 +373,7 @@ fn paged_and_unbounded_scans_use_the_captured_commit() {
                 code: 0,
                 stdout,
                 stderr: String::new(),
+                termination: None,
             })
         }
     }

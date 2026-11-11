@@ -51,6 +51,7 @@ impl GitExec for OverlapTrackingGitExec {
             code: 0,
             stdout: String::new(),
             stderr: String::new(),
+            termination: None,
         })
     }
 }

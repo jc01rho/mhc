@@ -276,6 +276,7 @@ impl GitExec for CommitRejectingExec {
                 code: 1,
                 stdout: String::new(),
                 stderr: "injected commit failure".to_string(),
+                termination: None,
             });
         }
         self.base.run(argv, options)
