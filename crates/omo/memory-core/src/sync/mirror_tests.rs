@@ -216,6 +216,7 @@ mod bounded_exec {
                     code: 0,
                     stdout: String::new(),
                     stderr: String::new(),
+                    termination: None,
                 })
             }
         }
@@ -281,6 +282,7 @@ mod bounded_exec {
                                 code: status.code().unwrap_or(1),
                                 stdout: String::new(),
                                 stderr: String::new(),
+                                termination: None,
                             });
                         }
                         if start.elapsed() >= timeout {

@@ -497,6 +497,7 @@ mod tests {
                     stdout: String::new(),
                     stderr: "fatal: not a git repository (or any parent up to mount point /)"
                         .to_string(),
+                    termination: None,
                 })
             })),
         });

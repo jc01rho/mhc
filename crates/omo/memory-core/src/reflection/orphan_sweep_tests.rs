@@ -479,6 +479,7 @@ impl GitExec for RefusingBranchDelete<'_> {
                 code: 1,
                 stdout: String::new(),
                 stderr: "refusing to delete".to_owned(),
+                termination: None,
             });
         }
         self.inner.run(argv, options)

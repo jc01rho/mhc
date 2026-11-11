@@ -104,6 +104,7 @@ mod committed_cache {
                     code: 128,
                     stdout: String::new(),
                     stderr: "unavailable object".into(),
+                    termination: None,
                 });
             }
             let revision = if argv[0] == "ls-tree" {
@@ -127,6 +128,7 @@ mod committed_cache {
                 code: 0,
                 stdout,
                 stderr: String::new(),
+                termination: None,
             })
         }
     }
