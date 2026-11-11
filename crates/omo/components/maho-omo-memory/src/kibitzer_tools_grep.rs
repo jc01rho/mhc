@@ -637,6 +637,7 @@ mod tests {
                 code: self.code,
                 stdout: String::new(),
                 stderr: "fatal: not a git repository".to_string(),
+                termination: None,
             })
         }
     }

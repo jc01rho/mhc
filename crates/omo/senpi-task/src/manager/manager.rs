@@ -2356,6 +2356,37 @@ impl TaskManager {
         }
     }
 
+    /// An ended paused child gives back every lane slot it still holds, as a cancel does.
+    pub fn release_task_capacity(&self, task_id: &str) {
+        self.inner.release_slot_for_task(task_id);
+        let grants = lock(&self.inner.concurrency).release_task(task_id);
+        for grant in grants {
+            spawn_grant(grant);
+        }
+    }
+
+    /// `endLostPausedTask`: end the run of a paused child its run's Resume could not restore. A paused
+    /// child a live foreign host still holds is that host's to resume; it is never ended here, and
+    /// that is checked on the fresh record inside the end's own locked write, never on an earlier read.
+    pub fn end_lost_paused_task(
+        &self,
+        run_pause: &crate::manager::run_pause::TaskRunPause,
+        task_id: &str,
+        reason: &str,
+    ) -> bool {
+        let host_pid = self.inner.host_pid;
+        let ended = run_pause.end_lost_paused_task(task_id, reason, |fresh| {
+            fresh.host_pid.is_none_or(|pid| {
+                pid == host_pid
+                    || !u32::try_from(pid).is_ok_and(utils::process_sweep::default_is_process_alive)
+            })
+        });
+        if ended {
+            self.inner.settle_waiters(task_id);
+        }
+        ended
+    }
+
     pub fn park_run_capacity(&self, task_id: &str, epoch: i64) {
         let (lease, grants) = lock(&self.inner.concurrency).park(task_id, epoch);
         if let Some(lease) = lease {
@@ -4208,32 +4239,34 @@ impl Inner {
     }
 
     fn record_spawn_facts(&self, task_id: &str, handle: &dyn ManagedChildHandle) {
-        let Some(current) = self.try_load(task_id) else {
-            return;
-        };
-        if is_terminal_record(&current) {
-            return;
-        }
-        let with_pid =
-            record_spawned_pid(&current, handle.pid()).unwrap_or_else(|| current.clone());
-        let keeps_v1 = current
-            .spawn_spec
-            .as_ref()
-            .is_some_and(|spec| spec.as_v1().is_some());
-        let updated = match handle.spawn_spec() {
-            Some(spawn) if !keeps_v1 => TaskRecord {
-                spawn_spec: Some(TaskSpawnSpec::LegacyProcess {
-                    cwd: spawn.cwd,
-                    extensions: spawn.extensions,
-                    member_env: spawn.member_env.map(|env| env.into_iter().collect()),
-                }),
-                ..with_pid
-            },
-            _ => with_pid,
-        };
-        if updated != current
-            && let Err(error) = self.store.replace(&updated)
-        {
+        // The stamp rewrites the whole record, so it reads and writes under the record lock: sends mint
+        // input ids into the same record (runners/input_effects.rs), and a stamp built from an unlocked
+        // read wrote a minted effect_seq back to its old value (omo#10708). The child's facts are read
+        // first, outside the lock.
+        let pid = handle.pid();
+        let spawn = handle.spawn_spec();
+        let stamped = self.store.mutate(task_id, |current| {
+            if is_terminal_record(current) {
+                return current.clone();
+            }
+            let with_pid = record_spawned_pid(current, pid).unwrap_or_else(|| current.clone());
+            let keeps_v1 = current
+                .spawn_spec
+                .as_ref()
+                .is_some_and(|spec| spec.as_v1().is_some());
+            match spawn {
+                Some(spawn) if !keeps_v1 => TaskRecord {
+                    spawn_spec: Some(TaskSpawnSpec::LegacyProcess {
+                        cwd: spawn.cwd,
+                        extensions: spawn.extensions,
+                        member_env: spawn.member_env.map(|env| env.into_iter().collect()),
+                    }),
+                    ..with_pid
+                },
+                _ => with_pid,
+            }
+        });
+        if let Err(error) = stamped {
             log("senpi-task manager spawn facts failed", task_id, &error);
         }
     }

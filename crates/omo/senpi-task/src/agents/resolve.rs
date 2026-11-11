@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use super::builtin::agent_fallback_chain;
 use super::types::{AgentDefinition, AgentModelEntry, agent_model_candidates};
 use crate::delegate_adapter::{
-    DelegateModelResolutionInput, DelegateModelResolutionResult, resolve_model_for_delegate_task,
-    warm_cache_deps,
+    DelegateFallbackEntry, DelegateModelResolutionInput, DelegateModelResolutionResult,
+    resolve_model_for_delegate_task, warm_cache_deps,
 };
 use crate::host::{
     ParsedModel, SenpiModelRegistry, parse_available_models, parse_model, parse_registry_model,
@@ -69,6 +69,10 @@ pub enum AgentResolutionResult {
         agent: String,
         attempted_model: Option<String>,
         available_agents: Vec<String>,
+        /// The builtin chain this machine could not serve, and the chain providers it has not
+        /// connected: carried so the spawn refusal can name every model instead of one "attempted" id.
+        attempted_chain: Option<Vec<DelegateFallbackEntry>>,
+        missing_providers: Option<Vec<String>>,
     },
 }
 
@@ -170,6 +174,8 @@ pub fn resolve_agent(
             agent: name.to_string(),
             attempted_model,
             available_agents,
+            attempted_chain: fallback_chain.map(<[DelegateFallbackEntry]>::to_vec),
+            missing_providers: None,
         };
     };
 
@@ -298,10 +304,22 @@ pub fn resolve_agent(
         }
     }
 
+    let (attempted_chain, missing_providers) = match (fallback_chain, &available_models) {
+        (Some(chain), Some(available)) => (
+            Some(chain.to_vec()),
+            Some(crate::category::missing_chain_providers(
+                chain,
+                &available.iter().cloned().collect::<Vec<_>>(),
+            )),
+        ),
+        _ => (None, None),
+    };
     AgentResolutionResult::ModelUnavailable {
         agent: name.to_string(),
         attempted_model,
         available_agents,
+        attempted_chain,
+        missing_providers,
     }
 }
 

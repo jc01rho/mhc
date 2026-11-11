@@ -42,6 +42,64 @@ pub fn wire_task_usage_guidance(
 /// Ends a task whose Resume never brought it back.
 pub type FailResume = dyn Fn(&str) -> Result<(), String> + Send + Sync;
 
+/// Releases a run's Stop the bridge missed, for one session, reading the live ledger off the
+/// turn's context. An `Err` is reported, never raised: a failed release must not fail the turn.
+pub type StaleStopRelease =
+    dyn Fn(&str, &maho_ext_api::ExtensionContext) -> Result<(), String> + Send + Sync;
+
+/// The session a turn start re-checks for a stale Stop: every real turn (person, extension or
+/// delivery) names its live session; a prompt composition preview names none.
+pub fn stale_stop_release_session(
+    event: &maho_ext_api::ExtensionEvent,
+    context: &maho_ext_api::ExtensionContext,
+) -> Option<String> {
+    match event {
+        maho_ext_api::ExtensionEvent::BeforeAgentStart(start) if !start.preview => {
+            Some(context.session_manager.session_id().to_string())
+        }
+        _ => None,
+    }
+}
+
+/// `event-bridge.ts` before_agent_start (#12343): every real turn re-checks the run's Stop against
+/// the engine's live ledger, which is what proves a Stop the bridge missed was released. The
+/// release resumes children, which can take as long as their resume turns, so it runs in the
+/// background and never holds the turn; a failure is reported.
+pub fn wire_stale_stop_release(
+    api: &mut ExtensionApi,
+    release: Arc<StaleStopRelease>,
+    report: Arc<dyn Fn(&str) + Send + Sync>,
+) {
+    api.on(
+        EventKind::BeforeAgentStart,
+        Arc::new(move |event, context| {
+            if let Some(session) = stale_stop_release_session(event, context) {
+                let release = release.clone();
+                let report = report.clone();
+                let context = context.clone();
+                let work = move || {
+                    if let Err(error) = release(&session, &context) {
+                        report(&format!(
+                            "omo-senpi task stale run Stop release failed: {error}"
+                        ));
+                    }
+                };
+                // Off the host runtime thread, as the held-wakes Resume: a native child admits its
+                // resumed turn on that runtime.
+                match tokio::runtime::Handle::try_current() {
+                    Ok(runtime) => {
+                        runtime.spawn_blocking(work);
+                    }
+                    Err(_) => {
+                        std::thread::spawn(work);
+                    }
+                }
+            }
+            Box::pin(async { Ok(EventResult::None) })
+        }),
+    );
+}
+
 /// The pause custody the component restores BEFORE its lifecycle reconcile and applies on the
 /// host's Resume edge. `event-bridge.ts` owns this seam: custody must exist before the reconcile
 /// reads records, or a restored Stop looks like an ordinary running session.
@@ -68,6 +126,26 @@ impl TaskPauseCustody {
         match (self.session_id)() {
             Some(session) => self.bridge.apply(&session, event),
             None => crate::run_pause_bridge::BridgeOutcome::Ignored,
+        }
+    }
+
+    /// `releaseStale` for one session; the live ledger is read only once the recorded Stop could be
+    /// stale. `Err` when the release ran and did not reopen admission.
+    pub fn release_stale(
+        &self,
+        session: &str,
+        live: impl FnOnce() -> Option<crate::engine_hold_reader::EngineHoldState>,
+    ) -> Result<(), String> {
+        match self.bridge.release_stale(session, live) {
+            crate::run_pause_bridge::BridgeOutcome::Failed(error) => Err(error),
+            crate::run_pause_bridge::BridgeOutcome::Resumed {
+                installed: false,
+                failures,
+                ..
+            } => Err(format!(
+                "admission was not released; {failures} participant(s) stayed outside the run"
+            )),
+            _ => Ok(()),
         }
     }
 
@@ -182,6 +260,24 @@ impl TaskPauseCustody {
                 })
             }),
         );
+        // A Resume the held-wake edge never delivered leaves no engine hold to release again, so
+        // the next real turn proves the release from the engine's live ledger (#12343).
+        let custody = self.clone();
+        wire_stale_stop_release(
+            api,
+            Arc::new(
+                move |session: &str, context: &maho_ext_api::ExtensionContext| {
+                    custody.release_stale(session, || {
+                        context
+                            .get_pause_state()
+                            .ok()
+                            .as_ref()
+                            .and_then(crate::engine_hold_reader::native_pause_state)
+                    })
+                },
+            ),
+            Arc::new(maho_ext_api::diagnostic),
+        );
         stop
     }
 }
@@ -269,7 +365,12 @@ fn finish_held_wakes_reported(
             maho_ext_api::diagnostic(&format!(
                 "run Resume propagated with {failures} failed participant(s), admission released: {installed}"
             ));
-            escalate(&failed_keys);
+            // A released Resume hands its lost participants to the bridge's recovery, which retries
+            // them on a schedule and only then ends their runs (#12249); ending them here would
+            // throw away those retries. Only a Resume that never released admission escalates.
+            if !installed {
+                escalate(&failed_keys);
+            }
         }
         _ => {}
     }
@@ -421,10 +522,11 @@ mod tests {
         }
     }
 
-    /// A participant a Resume left behind must not stay `Paused` with nobody owning the wake: the
-    /// failed keys are handed to the escalation port exactly once, after the retry gave up.
+    /// A participant a Resume left behind must not stay `Paused` with nobody owning the wake: when
+    /// admission was never released, the failed keys are handed to the escalation port exactly
+    /// once, after the retry gave up.
     #[test]
-    fn a_partial_resume_hands_every_stranded_participant_to_escalation() {
+    fn an_unreleased_resume_hands_every_stranded_participant_to_escalation() {
         let attempts = std::sync::atomic::AtomicUsize::new(0);
         let mut escalated: Vec<String> = Vec::new();
         let result = finish_held_wakes_reported(
@@ -432,7 +534,7 @@ mod tests {
             || {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 crate::run_pause_bridge::BridgeOutcome::Resumed {
-                    installed: true,
+                    installed: false,
                     failures: 2,
                     failed_keys: vec!["task-a".into(), "task-b".into()],
                 }
@@ -440,8 +542,30 @@ mod tests {
             |failed| escalated.extend(failed.iter().cloned()),
         );
         assert!(result.is_ok());
-        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(escalated, vec!["task-a".to_string(), "task-b".to_string()]);
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            escalated,
+            vec!["task-a".to_string(), "task-b".to_string()],
+            "escalated once, after the retry"
+        );
+    }
+
+    /// #12249: a released Resume's lost participants belong to the bridge's scheduled recovery,
+    /// which retries them before it ends their runs; escalating here would end them at once.
+    #[test]
+    fn a_released_partial_resume_leaves_its_lost_participants_to_the_recovery() {
+        let mut escalated: Vec<String> = Vec::new();
+        let result = finish_held_wakes_reported(
+            Vec::new(),
+            || crate::run_pause_bridge::BridgeOutcome::Resumed {
+                installed: true,
+                failures: 2,
+                failed_keys: vec!["task-a".into(), "task-b".into()],
+            },
+            |failed| escalated.extend(failed.iter().cloned()),
+        );
+        assert!(result.is_ok());
+        assert!(escalated.is_empty(), "{escalated:?}");
     }
 
     /// A clean Resume must not touch any task record.

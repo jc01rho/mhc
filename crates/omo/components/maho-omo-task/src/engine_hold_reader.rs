@@ -62,6 +62,28 @@ fn push_unique(refs: &mut Vec<RunRef>, candidate: RunRef) {
     }
 }
 
+/// The host's `getPauseState()` answer (`{pauseSeq, holds: [{kind, key, data}]}`) as the native
+/// projection. `None` when it is not one: a ledger that cannot be read proves nothing was released.
+pub fn native_pause_state(value: &Value) -> Option<EngineHoldState> {
+    let pause_seq = value.get("pauseSeq")?.as_u64()?;
+    let holds = value
+        .get("holds")?
+        .as_array()?
+        .iter()
+        .map(|hold| {
+            Some(EngineHoldEntry {
+                kind: hold.get("kind")?.as_str()?.to_string(),
+                key: hold.get("key")?.as_str()?.to_string(),
+                data: hold.get("data").filter(|data| !data.is_null()).cloned(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(EngineHoldState::Native(EnginePauseState {
+        pause_seq,
+        holds,
+    }))
+}
+
 /// `readEngineRunHold`: the pause sequence, whether the parent is stopped, and the fenced runs.
 pub fn read_engine_run_hold(state: &EngineHoldState) -> EngineRunHold {
     let (pause_seq, stopped, refs) = match state {
@@ -207,5 +229,28 @@ mod tests {
         assert_eq!(hold.run_refs.len(), 1);
         assert_eq!(hold.run_refs[0].id, "d1");
         assert!(!hold.stopped);
+    }
+
+    #[test]
+    fn the_hosts_pause_state_reads_as_the_native_projection_and_a_malformed_hold_proves_nothing() {
+        let stopped = native_pause_state(&json!({"pauseSeq": 8, "holds": [
+            {"kind": "session_hold", "key": "session_hold:7", "since": "t", "data": null},
+            {"kind": "run_fence", "key": "run_fence:task:st_1",
+             "data": {"runRef": {"kind": "task", "id": "st_1"}}},
+        ]}))
+        .expect("native state");
+        let hold = read_engine_run_hold(&stopped);
+        assert_eq!(hold.pause_seq, 8);
+        assert!(hold.stopped);
+        assert_eq!(hold.run_refs, vec![RunRef::task("st_1")]);
+
+        let released = native_pause_state(&json!({"pauseSeq": 8, "holds": []})).expect("state");
+        assert!(!read_engine_run_hold(&released).stopped);
+
+        assert_eq!(
+            native_pause_state(&json!({"pauseSeq": 8, "holds": [{"key": "no kind"}]})),
+            None
+        );
+        assert_eq!(native_pause_state(&json!({"holds": []})), None);
     }
 }

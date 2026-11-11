@@ -59,5 +59,6 @@ pub fn command_error(argv: &[String], result: &GitExecResult) -> GitError {
         code: result.code,
         stdout: result.stdout.clone(),
         stderr: result.stderr.clone(),
+        termination: result.termination.clone(),
     }
 }

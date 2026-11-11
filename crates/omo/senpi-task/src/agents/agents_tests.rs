@@ -1187,6 +1187,8 @@ fn resolve_no_match_is_model_unavailable() {
             agent: "custom".to_string(),
             attempted_model: text("local/missing"),
             available_agents: vec!["custom".to_string()],
+            attempted_chain: None,
+            missing_providers: None,
         }
     );
 }
@@ -1723,6 +1725,8 @@ fn resolve_treats_an_excluded_only_model_as_unavailable() {
             agent: "custom".to_string(),
             attempted_model: text("openai/gpt-6-luna-fast"),
             available_agents: vec!["custom".to_string()],
+            attempted_chain: None,
+            missing_providers: None,
         }
     );
 }

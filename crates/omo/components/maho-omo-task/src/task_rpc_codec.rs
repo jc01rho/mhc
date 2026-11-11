@@ -183,6 +183,11 @@ pub fn bounded_task_output(
             return Ok(serde_json::json!({"kind":"not_found","reason":"Task not found."}));
         }
         Some("invalid_arguments") => return Ok(value),
+        Some("no_progress") => {
+            bound_field(&mut value, "task_id", 256, false);
+            bound_field(&mut value, "reason", 2000, false);
+            return Ok(value);
+        }
         _ => {}
     }
     if let Some(snapshot) = value.get_mut("snapshot") {

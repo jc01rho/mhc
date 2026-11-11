@@ -122,6 +122,8 @@ struct ClientState {
     exit_listeners: Vec<(u64, RpcExitListener)>,
     stderr: String,
     exit: Option<ChildExitInput>,
+    /// `detach()` ran: nothing more is written to the child (omo#11673).
+    detached: bool,
 }
 
 struct ClientShared {
@@ -268,6 +270,9 @@ impl RpcProtocolClient {
         let (sender, receiver) = mpsc::channel();
         {
             let mut state = self.shared.lock();
+            if state.detached {
+                return Err(detached_error());
+            }
             if state.exit.is_some() {
                 return Err(RpcClientError::NotRunning {
                     stderr_tail: tail_stderr(&state.stderr, STDERR_TAIL_CAP),
@@ -359,14 +364,27 @@ impl RpcClientPort for RpcProtocolClient {
     }
 
     fn detach(&self) {
-        let mut state = self.shared.lock();
-        state.event_listeners.clear();
-        state.durable_listeners.clear();
-        state.exit_listeners.clear();
+        let pending = {
+            let mut state = self.shared.lock();
+            state.detached = true;
+            state.event_listeners.clear();
+            state.durable_listeners.clear();
+            state.exit_listeners.clear();
+            std::mem::take(&mut state.pending)
+        };
+        for (_, sender) in pending {
+            let _ = sender.send(Err(detached_error()));
+        }
     }
 
     fn terminate(&self, options: TerminateOptions) -> io::Result<()> {
         terminate_rpc_child(&self.child, options)
+    }
+}
+
+fn detached_error() -> RpcClientError {
+    RpcClientError::Write {
+        message: "RPC client detached".to_string(),
     }
 }
 
@@ -435,7 +453,10 @@ fn handle_line(
             }
         }
         Some("extension_ui_request") => {
-            if auto_answer_ui && let Some(answer) = build_auto_ui_response(&parsed) {
+            if auto_answer_ui
+                && !shared.lock().detached
+                && let Some(answer) = build_auto_ui_response(&parsed)
+            {
                 let _ = child.write_line(&answer.to_string());
             }
         }

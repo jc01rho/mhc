@@ -65,6 +65,8 @@ pub mod lifecycle_adapters;
 pub mod member_liveness;
 #[path = "message_renderers.rs"]
 pub mod message_renderers;
+#[path = "model_error_text.rs"]
+pub mod model_error_text;
 #[path = "parent_notifier.rs"]
 pub mod parent_notifier;
 #[path = "pause_resume_runtime.rs"]
@@ -73,6 +75,8 @@ pub mod pause_resume_runtime;
 pub mod planner_effort;
 #[path = "planner_fallback.rs"]
 pub mod planner_fallback;
+#[path = "planner_refusals.rs"]
+pub mod planner_refusals;
 #[path = "process_sweep.rs"]
 pub mod process_sweep;
 #[path = "production_composition.rs"]

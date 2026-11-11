@@ -201,6 +201,19 @@ fn task_output_result_row(details: &TaskOutputDetails) -> ResultRow {
                 ),
             }
         }
+        TaskOutputDetails::NoProgress {
+            task_id,
+            status,
+            reason,
+        } => ResultRow {
+            color: status_theme_color(status.as_str()),
+            text: format!(
+                "task_output {} {} · {}",
+                normalize_renderer_text(task_id),
+                normalize_renderer_text(status.as_str()),
+                normalize_renderer_text(reason)
+            ),
+        },
         TaskOutputDetails::Transcript {
             mode,
             source,

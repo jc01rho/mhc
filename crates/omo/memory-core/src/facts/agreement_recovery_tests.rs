@@ -166,6 +166,7 @@ impl crate::git::GitExec for RejectCommit {
                 code: 1,
                 stdout: String::new(),
                 stderr: "fixture commit failure".into(),
+                termination: None,
             });
         }
         crate::git::system_git_exec().run(argv, options)

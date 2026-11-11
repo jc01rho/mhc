@@ -22,8 +22,10 @@ pub(crate) struct RecordOverrides {
     pub(crate) updated_at: Option<String>,
     pub(crate) final_response: Option<String>,
     pub(crate) error_message: Option<String>,
+    pub(crate) notify_on_terminal: Option<bool>,
     pub(crate) run_epoch: Option<i64>,
     pub(crate) notified_epoch: Option<i64>,
+    pub(crate) notification_failed_epoch: Option<i64>,
     pub(crate) residency_state: Option<ResidencyState>,
 }
 
@@ -55,9 +57,10 @@ pub(crate) fn make_record(overrides: RecordOverrides) -> TaskRecord {
         .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
     record.created_at = overrides.created_at.unwrap_or_else(|| timestamp.clone());
     record.updated_at = timestamp;
-    record.notify_on_terminal = false;
+    record.notify_on_terminal = overrides.notify_on_terminal.unwrap_or(false);
     record.notification.run_epoch = overrides.run_epoch.unwrap_or(0);
     record.notification.notified_epoch = overrides.notified_epoch.unwrap_or(-1);
+    record.notification.notification_failed_epoch = overrides.notification_failed_epoch;
     record.name = overrides.name;
     record.resolved_model = overrides.resolved_model;
     record.agent_type = overrides.agent_type;

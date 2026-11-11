@@ -481,6 +481,58 @@ fn record_store_external_mutation_is_reflected() {
 }
 
 #[test]
+fn record_store_same_size_rewrite_within_one_mtime_tick_is_reflected() {
+    let project = project();
+    let reader = store_for(project.path());
+    let writer = store_for(project.path());
+    let task_id = "st_00000003";
+    reader
+        .save(&TaskRecord {
+            name: Some("name-1".into()),
+            ..base_record(task_id)
+        })
+        .expect("save");
+    let path = tasks_dir(project.path()).join(format!("{task_id}.json"));
+    // Whole seconds, so the restored mtime is bit-identical to the cached one.
+    let tick = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let set_tick = || {
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open")
+            .set_modified(tick)
+            .expect("set mtime");
+    };
+    set_tick();
+    // Warm the reader's cache.
+    assert_eq!(
+        reader.load(task_id).expect("load").and_then(|r| r.name),
+        Some("name-1".into())
+    );
+    let cached = std::fs::metadata(&path).expect("stat");
+
+    // The rewrite keeps the byte length, and a coarse filesystem clock gives it the same mtime (omo#10708).
+    writer
+        .mutate(task_id, |record| TaskRecord {
+            name: Some("name-2".into()),
+            ..record.clone()
+        })
+        .expect("mutate");
+    set_tick();
+    let rewritten = std::fs::metadata(&path).expect("stat");
+    assert_eq!(rewritten.len(), cached.len());
+    assert_eq!(
+        rewritten.modified().expect("mtime"),
+        cached.modified().expect("mtime")
+    );
+
+    assert_eq!(
+        reader.load(task_id).expect("load").and_then(|r| r.name),
+        Some("name-2".into())
+    );
+}
+
+#[test]
 fn record_store_externally_removed_record_disappears() {
     let project = project();
     let store = store_for(project.path());

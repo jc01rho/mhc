@@ -1,4 +1,7 @@
 use crate::fast_mode_inheritance::{ResolveParentServiceTier, inherit_parent_fast_mode};
+use crate::model_error_text::{
+    AgentUnavailable, agent_model_failure_text, category_model_failure_text,
+};
 use crate::planner_explicit_pin::{
     ExplicitPinResolution, ResolveDefaultRoute, resolve_explicit_pin,
 };
@@ -241,24 +244,34 @@ pub fn create_task_child_planner_with_tiers(
                     }));
                 }
                 AgentResolutionResult::ModelUnavailable {
+                    agent,
                     attempted_model,
                     available_agents,
-                    ..
+                    attempted_chain,
+                    missing_providers,
                 } => {
+                    if registry.is_none() {
+                        return Err(Box::new(PlanResolutionError::new(
+                            PlanResolutionCode::ModelUnavailable,
+                            NO_REGISTRY_MESSAGE,
+                        )));
+                    }
                     let mut error = PlanResolutionError::new(
                         PlanResolutionCode::ModelUnavailable,
-                        if registry.is_none() {
-                            NO_REGISTRY_MESSAGE.into()
-                        } else {
-                            format!(
-                                "No available model for agent \"{name}\" (attempted {}).",
-                                attempted_model.as_deref().unwrap_or("none")
-                            )
-                        },
+                        agent_model_failure_text(
+                            name,
+                            AgentUnavailable {
+                                agent: Some(&agent),
+                                attempted_model: attempted_model.as_deref(),
+                                attempted_chain: attempted_chain.as_deref(),
+                                missing_providers: missing_providers.as_deref(),
+                            },
+                            &agents,
+                        ),
                     );
-                    if registry.is_some() {
-                        error.available_agents = Some(available_agents);
-                    }
+                    error.available_agents = Some(available_agents);
+                    error.attempted_chain = attempted_chain;
+                    error.missing_providers = missing_providers;
                     return Err(Box::new(error));
                 }
                 AgentResolutionResult::NotFound { .. } => {}
@@ -374,6 +387,13 @@ pub fn create_task_child_planner_with_tiers(
                 error.category = Some(category.into());
                 error.attempted_chain = unavailable.attempted_chain;
                 error.missing_providers = unavailable.missing_providers;
+                // A chain ends in a typed failure that names each model, so the parent reads the
+                // whole chain and the fix instead of retrying a dead binding. No substitution happens.
+                if let Some(message) =
+                    category_model_failure_text(&error, &config, Some(&unavailable.category))
+                {
+                    error.message = message;
+                }
                 Err(Box::new(error))
             }
         }

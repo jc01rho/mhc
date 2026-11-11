@@ -339,3 +339,54 @@ async fn registered_output_reads_owned_record_and_invalid_controls_preserve_stat
     );
     f.bridge.dispose();
 }
+fn saved_parent_task(f: &Fixture, status: senpi_task::state::TaskStatus) -> String {
+    let mut record = create_task_record(
+        TaskRecordInput {
+            parent_session_id: "parent".into(),
+            root_session_id: "parent".into(),
+            ..Default::default()
+        },
+        Some(1),
+    )
+    .expect("record");
+    record.status = status;
+    if status == senpi_task::state::TaskStatus::Completed {
+        record.final_response = Some("done".into());
+    }
+    f.store.save(&record).expect("save");
+    record.task_id
+}
+#[test]
+fn repeated_unchanged_status_request_returns_no_progress() {
+    let f = fixture();
+    let task_id = saved_parent_task(&f, senpi_task::state::TaskStatus::Running);
+    f.bridge.attach();
+    let request = json!({"task_id":task_id,"mode":"status"});
+    let first = f
+        .bridge
+        .request("omo.task.output", &request)
+        .expect("first");
+    assert_eq!(first["kind"], "status");
+    let second = f
+        .bridge
+        .request("omo.task.output", &request)
+        .expect("second");
+    assert_eq!(second["kind"], "no_progress");
+    assert_eq!(second["task_id"], json!(task_id));
+    assert_eq!(second["status"], "running");
+    assert!(second.get("snapshot").is_none());
+}
+#[test]
+fn forgetting_the_session_returns_a_fresh_status_snapshot() {
+    let f = fixture();
+    let task_id = saved_parent_task(&f, senpi_task::state::TaskStatus::Completed);
+    f.bridge.attach();
+    let request = json!({"task_id":task_id,"mode":"status"});
+    let read = || f.bridge.request("omo.task.output", &request).expect("read");
+    assert_eq!(read()["kind"], "status");
+    assert_eq!(read()["kind"], "no_progress");
+    f.bridge.forget_output_reads("parent");
+    let fresh = read();
+    assert_eq!(fresh["kind"], "status");
+    assert_eq!(fresh["snapshot"]["final_response"], "done");
+}

@@ -37,6 +37,10 @@ pub type HoldTaskInputCallback = Arc<
 >;
 pub type FenceRunCallback = Arc<dyn Fn(&RunRef) -> Result<(), String> + Send + Sync>;
 pub type CancelTaskCallback = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+/// Ends a lost paused task's run: (task id, the participant's run epoch, the reason). `Ok(true)`
+/// drops the participant from custody; `Ok(false)` leaves it for its owner.
+pub type EndLostTaskCallback =
+    Arc<dyn Fn(&str, Option<u64>, &str) -> Result<bool, String> + Send + Sync>;
 use senpi_task::pause::registry::PauseError;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -96,6 +100,7 @@ pub struct EngineRunPauseEffects {
     pub fence_run: FenceRunCallback,
     pub release_fences: FenceRunCallback,
     pub cancel_task: CancelTaskCallback,
+    pub end_lost_task: EndLostTaskCallback,
 }
 
 impl RunPauseEffects for EngineRunPauseEffects {
@@ -366,6 +371,22 @@ impl RunPauseEffects for EngineRunPauseEffects {
             Ok(())
         })
     }
+    fn end_lost<'a>(
+        &'a self,
+        participant: &'a PauseParticipant,
+        reason: &'a str,
+    ) -> Effect<'a, bool> {
+        Box::pin(async move {
+            let Some(task) = participant
+                .task_id
+                .as_deref()
+                .filter(|_| participant.kind != ParticipantKind::HeldAdmission)
+            else {
+                return Ok(false);
+            };
+            (self.end_lost_task)(task, participant.run_epoch, reason).map_err(PauseError::message)
+        })
+    }
     fn observe_hold<'a>(
         &'a self,
         participant: &'a PauseParticipant,
@@ -511,6 +532,26 @@ impl EngineRunPause {
         }
     }
 
+    /// Whether the released Resume at `pause_seq` left participants outside the run.
+    pub fn has_lost(&self, parent_session_id: &str, pause_seq: u64) -> bool {
+        self.controller.has_lost(parent_session_id, pause_seq)
+    }
+
+    /// End the runs of the participants no retry could reach (#12249).
+    pub fn end_lost(
+        &self,
+        parent_session_id: &str,
+        pause_seq: u64,
+    ) -> Vec<senpi_task::pause::run_controller::ResumeFailure> {
+        match block_on_nested(self.controller.end_lost(parent_session_id, pause_seq)) {
+            Ok(failures) => failures,
+            Err(error) => vec![senpi_task::pause::run_controller::ResumeFailure {
+                key: parent_session_id.into(),
+                reason: error.to_string(),
+            }],
+        }
+    }
+
     pub fn release(&self, parent_session_id: &str, pause_seq: u64, resume_id: &str) -> bool {
         match self
             .controller
@@ -608,6 +649,9 @@ impl senpi_task::manager::run_pause::TaskRunPausePorts for ManagerRunPausePorts 
     }
     fn park_capacity(&self, task_id: &str, epoch: i64) {
         self.manager.park_run_capacity(task_id, epoch);
+    }
+    fn release_task_capacity(&self, task_id: &str) {
+        self.manager.release_task_capacity(task_id);
     }
 
     fn begin_native_pause(&self, task_id: &str, epoch: i64) {
@@ -809,6 +853,20 @@ impl EngineRunPause {
                     .map_err(|error| error.to_string())
             })
         };
+        let end_lost_task = {
+            let manager = manager.clone();
+            let run_pause = run_pause.clone();
+            Arc::new(move |task_id: &str, run_epoch: Option<u64>, reason: &str| {
+                // A record that moved past the participant's run is no longer this Stop's to end.
+                let current = manager
+                    .get(task_id)
+                    .and_then(|record| u64::try_from(record.notification.run_epoch).ok());
+                if current != run_epoch {
+                    return Ok(true);
+                }
+                Ok(manager.end_lost_paused_task(&run_pause, task_id, reason))
+            })
+        };
         let effects = Arc::new(EngineRunPauseEffects {
             sources: Arc::new(Mutex::new(dag.into_iter().collect())),
             task_records: {
@@ -850,6 +908,7 @@ impl EngineRunPause {
                     .map_err(|error| error.to_string())
             }),
             cancel_task,
+            end_lost_task,
         });
         let engine = EngineRunPause::new_with_barrier(state_dir, effects, barrier);
         (engine, run_pause)
@@ -976,6 +1035,7 @@ mod parity_tests {
             fence_run: Arc::new(|_| Ok(())),
             release_fences: Arc::new(|_| Ok(())),
             cancel_task: Arc::new(|_| Ok(())),
+            end_lost_task: Arc::new(|_, _, _| Ok(false)),
         }
     }
     struct Source;
