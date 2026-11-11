@@ -12,12 +12,12 @@ tmp=$(mktemp -d)
 trap 'git worktree remove --force "$tmp/w" 2>/dev/null || true; git branch -D sync-tmp 2>/dev/null || true; rm -rf "$tmp"' EXIT
 git worktree add -q -B sync-tmp "$tmp/w" fork/main
 cd "$tmp/w"
-if ! git merge --no-edit -m "chore(sync): merge upstream main" origin/main; then
+if ! git merge --no-commit --no-ff origin/main; then
   git merge --abort || true
   echo "CONFLICT: upstream merge needs a person" >&2
   exit 2
 fi
 git checkout fork/main -- .github/workflows
-git diff --cached --quiet || git commit -q -m "chore(sync): keep our workflows"
+git commit -q -m "chore(sync): merge upstream main"
 git push -q fork HEAD:main
 echo "synced to $(git rev-parse --short HEAD)"
