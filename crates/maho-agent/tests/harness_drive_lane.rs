@@ -676,6 +676,7 @@ async fn options_constructor_installs_custom_provider_messages_and_projectors() 
                 "hi",
             )]),
             timestamp: 1,
+            client_message_id: None,
         }),
     )];
     assert!(
@@ -1434,6 +1435,7 @@ async fn compact_composes_admission_with_drive() {
             maho_ai::types::UserMessage {
                 content: maho_ai::types::UserContent::Text("history".into()),
                 timestamp: 1,
+                client_message_id: None,
             },
         )),
         &BACKGROUND_CONTEXT,

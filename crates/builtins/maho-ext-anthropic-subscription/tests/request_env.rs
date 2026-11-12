@@ -93,6 +93,7 @@ async fn turn_with_request_env(request: BTreeMap<String, String>) -> String {
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("hello".into()),
                 timestamp: 1,
+                client_message_id: None,
             })],
             ..Default::default()
         },

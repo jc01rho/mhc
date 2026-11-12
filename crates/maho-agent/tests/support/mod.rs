@@ -303,6 +303,7 @@ pub fn user_message(text: &str) -> AgentMessage {
     AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Text(text.to_owned()),
         timestamp: 0,
+        client_message_id: None,
     }))
 }
 

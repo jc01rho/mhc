@@ -3546,6 +3546,7 @@ mod audit_compat_tests {
                 Message::User(crate::types::UserMessage {
                     content: UserContent::Text("go".into()),
                     timestamp: 0,
+                    client_message_id: None,
                 }),
                 Message::System(system),
             ],

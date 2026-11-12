@@ -813,6 +813,7 @@ pub async fn generate_summary_with_request(
     let summarization_messages = vec![Message::User(maho_ai::types::UserMessage {
         content: UserContent::Blocks(vec![ContentBlock::text(prompt_text)]),
         timestamp: now_ms(),
+        client_message_id: None,
     })];
 
     let mut completion_options = SimpleStreamOptions::default();
@@ -1238,6 +1239,7 @@ async fn generate_turn_prefix_summary(
     let summarization_messages = vec![Message::User(maho_ai::types::UserMessage {
         content: UserContent::Blocks(vec![ContentBlock::text(prompt_text)]),
         timestamp: now_ms(),
+        client_message_id: None,
     })];
 
     let mut completion_options = SimpleStreamOptions::default();

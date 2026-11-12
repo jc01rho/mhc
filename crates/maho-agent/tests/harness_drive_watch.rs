@@ -256,6 +256,7 @@ fn user(id: &str, parent: Option<String>) -> NewEntry {
         maho_ai::types::Message::User(maho_ai::types::UserMessage {
             content: maho_ai::types::UserContent::Text(id.into()),
             timestamp: 2,
+            client_message_id: None,
         })
         .into(),
     )
@@ -627,6 +628,7 @@ async fn returns_snapshot_before_plus_buffered_events_when_watch_wins_the_lane_l
                     maho_ai::types::UserMessage {
                         content: maho_ai::types::UserContent::Text("later".into()),
                         timestamp: 2,
+                        client_message_id: None,
                     },
                 )),
                 &append_context,

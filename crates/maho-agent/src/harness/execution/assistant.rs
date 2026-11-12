@@ -481,6 +481,7 @@ mod execution_assistant_tests {
         AgentMessage::Llm(Message::User(UserMessage {
             content: UserContent::Text(text.into()),
             timestamp: 1,
+            client_message_id: None,
         }))
     }
 

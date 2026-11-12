@@ -258,6 +258,7 @@ fn transform_tool_result_message(
     UserMessage {
         content: UserContent::Text(formatted_response),
         timestamp: message.timestamp,
+        client_message_id: None,
     }
 }
 
@@ -416,6 +417,7 @@ mod tests {
         let user = Message::User(UserMessage {
             content: UserContent::Text("hi".into()),
             timestamp: 1,
+            client_message_id: None,
         });
         assert_eq!(
             transform_message(&user, get_protocol(ToolCallFormat::Antml)),
@@ -515,6 +517,7 @@ mod tests {
         Message::User(UserMessage {
             content: UserContent::Text(content.into()),
             timestamp: 0,
+            client_message_id: None,
         })
     }
 

@@ -462,6 +462,7 @@ mod tests {
                 }),
             ]),
             timestamp: 0,
+            client_message_id: None,
         })
     }
 
@@ -480,6 +481,7 @@ mod tests {
                 ContentBlock::text("after"),
             ]),
             timestamp: 0,
+            client_message_id: None,
         })];
         let transformed = transform_messages(
             &messages,
@@ -509,6 +511,7 @@ mod tests {
                 mime_type: "video/mp4".into(),
             })]),
             timestamp: 0,
+            client_message_id: None,
         })];
         let transformed = transform_messages(
             &messages,

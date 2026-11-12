@@ -111,6 +111,7 @@ pub(crate) fn fixture_context() -> Context {
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("fixture".into()),
             timestamp: 1,
+            client_message_id: None,
         })],
         ..Context::default()
     }

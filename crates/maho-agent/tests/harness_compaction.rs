@@ -37,6 +37,7 @@ fn user_message(text: &str) -> AgentMessage {
     AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Blocks(vec![ContentBlock::text(text)]),
         timestamp: 1,
+        client_message_id: None,
     }))
 }
 
@@ -355,6 +356,7 @@ fn serializes_a_conversation_for_summarization() {
         Message::User(UserMessage {
             content: UserContent::Blocks(vec![ContentBlock::text("hello")]),
             timestamp: 1,
+            client_message_id: None,
         }),
         Message::Assistant(std::sync::Arc::new(
             match assistant_message("world", usage(1, 1, 0, 0)) {

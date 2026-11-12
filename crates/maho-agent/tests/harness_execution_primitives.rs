@@ -25,6 +25,7 @@ fn user(content: &str, timestamp: i64) -> AgentMessage {
     AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Text(content.to_owned()),
         timestamp,
+        client_message_id: None,
     }))
 }
 

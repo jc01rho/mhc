@@ -24,6 +24,7 @@ fn user_message(text: &str, timestamp: i64) -> AgentMessage {
     AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Blocks(vec![ContentBlock::text(text)]),
         timestamp,
+        client_message_id: None,
     }))
 }
 

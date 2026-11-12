@@ -6875,6 +6875,7 @@ mod tests {
             Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("read the file".to_owned()),
                 timestamp: 0,
+                client_message_id: None,
             }),
             Message::Assistant(std::sync::Arc::new(AssistantMessage {
                 content: vec![
@@ -6897,6 +6898,7 @@ mod tests {
             Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("now summarize".to_owned()),
                 timestamp: 0,
+                client_message_id: None,
             }),
         ];
 
@@ -6933,6 +6935,7 @@ mod tests {
             Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("hi".to_owned()),
                 timestamp: 0,
+                client_message_id: None,
             }),
             Message::ToolResult(tool_result_message(
                 "orphan-1",
@@ -6944,6 +6947,7 @@ mod tests {
             Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("next".to_owned()),
                 timestamp: 0,
+                client_message_id: None,
             }),
         ];
         let history = build_cursor_history_for_test(&messages, None).expect("history");
@@ -7330,6 +7334,7 @@ mod tests {
             messages: vec![Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("hello".to_owned()),
                 timestamp: 0,
+                client_message_id: None,
             })],
             tools: None,
         };
@@ -7374,6 +7379,7 @@ mod tests {
             messages: vec![Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("hello".to_owned()),
                 timestamp: 0,
+                client_message_id: None,
             })],
             tools: None,
         };

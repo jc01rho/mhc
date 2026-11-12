@@ -278,6 +278,7 @@ pub(crate) mod test_support {
         AgentMessage::Llm(Message::User(UserMessage {
             content: UserContent::Text(text.to_owned()),
             timestamp: 1,
+            client_message_id: None,
         }))
     }
 

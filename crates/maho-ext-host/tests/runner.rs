@@ -1376,6 +1376,7 @@ async fn context_clones_and_isolates_original_messages() {
     let messages = vec![AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Text("original".into()),
         timestamp: 1,
+        client_message_id: None,
     }))];
     assert!(
         runner(vec![extension("a", EventKind::Context, handler)])
@@ -1390,6 +1391,7 @@ fn user(text: &str) -> AgentMessage {
     AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Text(text.into()),
         timestamp: 1,
+        client_message_id: None,
     }))
 }
 fn context_with_mutation_option(
@@ -1502,6 +1504,7 @@ async fn context_entry_ids_drop_for_replaced_messages() {
         AgentMessage::Llm(Message::User(UserMessage {
             content: UserContent::Text(text.into()),
             timestamp: 1,
+            client_message_id: None,
         }))
     };
     let replace: ExtensionHandler = Arc::new(move |event, _| {
@@ -1512,6 +1515,7 @@ async fn context_entry_ids_drop_for_replaced_messages() {
             AgentMessage::Llm(Message::User(UserMessage {
                 content: UserContent::Text("changed".into()),
                 timestamp: 1,
+                client_message_id: None,
             })),
             messages[1].clone(),
         ];
@@ -2284,6 +2288,7 @@ async fn message_end_chains_same_role_replacements() {
                     message: Some(AgentMessage::Llm(Message::User(UserMessage {
                         content: UserContent::Text(text.into()),
                         timestamp: 1,
+                        client_message_id: None,
                     }))),
                 })
             })
@@ -2292,6 +2297,7 @@ async fn message_end_chains_same_role_replacements() {
     let original = AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Text("original".into()),
         timestamp: 1,
+        client_message_id: None,
     }));
     let result = runner(vec![
         extension("a", EventKind::MessageEnd, handler("one")),
@@ -2305,7 +2311,8 @@ async fn message_end_chains_same_role_replacements() {
         result,
         AgentMessage::Llm(Message::User(UserMessage {
             content: UserContent::Text("two".into()),
-            timestamp: 1
+            timestamp: 1,
+            client_message_id: None,
         }))
     );
 }
@@ -2314,6 +2321,7 @@ async fn message_end_no_replacement_returns_none() {
     let original = AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Text("original".into()),
         timestamp: 1,
+        client_message_id: None,
     }));
     assert!(
         runner(vec![extension("a", EventKind::MessageEnd, none())])
@@ -2328,6 +2336,7 @@ async fn message_end_event_replacement_does_not_change_later_handler_input() {
     let original = AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Text("original".into()),
         timestamp: 1,
+        client_message_id: None,
     }));
     let mutation: ExtensionHandler = Arc::new(|event, _| {
         Box::pin(async move {

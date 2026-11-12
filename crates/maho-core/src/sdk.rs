@@ -1524,6 +1524,7 @@ mod tests {
             AgentMessage::Llm(Message::User(UserMessage {
                 content: UserContent::Text("hi".into()),
                 timestamp: 1,
+                client_message_id: None,
             })),
             AgentMessage::Custom(CustomAgentMessage::Custom(CustomMessage {
                 role: "custom".into(),
@@ -1621,6 +1622,7 @@ mod tests {
                 mime_type: "image/png".into(),
             })]),
             timestamp: 1,
+            client_message_id: None,
         }))];
         let context = created
             .session

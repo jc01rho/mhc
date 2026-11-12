@@ -104,6 +104,7 @@ pub fn build_edited_user_message(
     Ok(UserMessage {
         content: UserContent::Blocks(content),
         timestamp: chrono::Utc::now().timestamp_millis(),
+        client_message_id: None,
     })
 }
 

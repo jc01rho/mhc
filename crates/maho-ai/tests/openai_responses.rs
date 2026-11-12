@@ -175,6 +175,7 @@ fn user_message(text: &str) -> Message {
     Message::User(UserMessage {
         content: UserContent::Text(text.into()),
         timestamp: 0,
+        client_message_id: None,
     })
 }
 
@@ -2115,6 +2116,7 @@ fn responses_message_conversion_keeps_the_system_role_and_image_inputs() {
             }),
         ]),
         timestamp: 0,
+        client_message_id: None,
     })]);
 
     let input = convert(&model, &context);
@@ -2726,6 +2728,7 @@ fn configuration_updates_place_the_update_immediately_before_the_next_user_messa
         Message::User(UserMessage {
             content: UserContent::Text("next".into()),
             timestamp: 3,
+            client_message_id: None,
         }),
     ];
 

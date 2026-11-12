@@ -160,6 +160,7 @@ fn user(content: &str, timestamp: i64) -> maho_agent::types::AgentMessage {
     maho_agent::types::AgentMessage::from(Message::User(UserMessage {
         content: UserContent::Text(content.into()),
         timestamp,
+        client_message_id: None,
     }))
 }
 

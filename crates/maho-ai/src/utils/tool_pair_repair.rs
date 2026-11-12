@@ -110,6 +110,7 @@ mod tests {
         Message::User(UserMessage {
             content: UserContent::Text(text.into()),
             timestamp,
+            client_message_id: None,
         })
     }
 

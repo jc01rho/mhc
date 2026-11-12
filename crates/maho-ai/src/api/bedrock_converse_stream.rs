@@ -2189,6 +2189,7 @@ mod tests {
                 crate::types::Message::User(crate::types::UserMessage {
                     content: crate::types::UserContent::Text("  ".into()),
                     timestamp: 0,
+                    client_message_id: None,
                 }),
                 crate::types::Message::ToolResult(crate::types::ToolResultMessage {
                     nested_calls: None,

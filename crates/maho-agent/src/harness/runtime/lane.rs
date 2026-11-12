@@ -1733,6 +1733,7 @@ impl Lane {
                         maho_ai::types::Message::User(maho_ai::types::UserMessage {
                             content: maho_ai::types::UserContent::Blocks(content),
                             timestamp: started_at,
+                            client_message_id: None,
                         }),
                     )]
                 }
@@ -2234,6 +2235,7 @@ impl Lane {
                     maho_ai::types::UserMessage {
                         content: maho_ai::types::UserContent::Blocks(content),
                         timestamp: at,
+                        client_message_id: None,
                     },
                 ))
             }

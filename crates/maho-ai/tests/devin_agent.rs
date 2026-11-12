@@ -68,6 +68,7 @@ fn context() -> Context {
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("hi".into()),
             timestamp: 0,
+            client_message_id: None,
         })],
         tools: None,
     }
@@ -80,6 +81,7 @@ fn wire_context() -> Context {
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("hello".into()),
             timestamp: 0,
+            client_message_id: None,
         })],
         tools: None,
     }
@@ -320,6 +322,7 @@ fn request_context() -> Context {
                     },
                 )]),
                 timestamp: 0,
+                client_message_id: None,
             }),
             Message::Assistant(std::sync::Arc::new(foreign_assistant_message(vec![
                 ContentBlock::Thinking(maho_ai::types::ThinkingContent {
@@ -550,6 +553,7 @@ fn replays_a_native_devin_assistant_turn_under_its_own_response_id_and_thinking_
             Message::User(UserMessage {
                 content: UserContent::Text("hi".into()),
                 timestamp: 0,
+                client_message_id: None,
             }),
             Message::Assistant(std::sync::Arc::new(native)),
             Message::Assistant(std::sync::Arc::new(assistant_message(Vec::new()))),
@@ -583,6 +587,7 @@ fn carries_inline_images_on_user_prompts_and_tool_results() {
                     }),
                 ]),
                 timestamp: 0,
+                client_message_id: None,
             }),
             Message::ToolResult(maho_ai::types::ToolResultMessage {
                 tool_call_id: "call-1".into(),

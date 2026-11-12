@@ -58,6 +58,7 @@ mod tests {
         Message::User(UserMessage {
             content,
             timestamp: 0,
+            client_message_id: None,
         })
     }
 

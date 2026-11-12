@@ -117,6 +117,7 @@ fn case_context(spec: &Value) -> Context {
             Message::User(UserMessage {
                 content: UserContent::Text(content.to_owned()),
                 timestamp: 0,
+                client_message_id: None,
             })
         })
         .collect();
@@ -250,6 +251,7 @@ async fn a_529_overloaded_response_is_retried_as_a_transient_http_failure() {
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Hello".into()),
             timestamp: 0,
+            client_message_id: None,
         })],
         tools: None,
     };

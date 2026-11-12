@@ -910,6 +910,7 @@ mod tests {
         let user = AgentMessage::from(Message::User(UserMessage {
             content: UserContent::Text("Hi".into()),
             timestamp: 1,
+            client_message_id: None,
         }));
         c.observe_activity(&AgentEvent::MessageStart {
             message: user,

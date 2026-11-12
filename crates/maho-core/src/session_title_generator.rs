@@ -91,6 +91,7 @@ pub fn build_title_context(first_prompt: &str) -> Context {
                 text_signature: None,
             })]),
             timestamp: chrono::Utc::now().timestamp_millis(),
+            client_message_id: None,
         })],
         ..Context::default()
     }

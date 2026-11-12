@@ -73,6 +73,7 @@ pub fn user_text(text: &str) -> Message {
     Message::User(UserMessage {
         content: UserContent::Text(text.to_owned()),
         timestamp: 0,
+        client_message_id: None,
     })
 }
 
