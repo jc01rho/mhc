@@ -17502,3 +17502,32 @@ async fn local_bash_records_native_custom_context_and_history() {
     assert_eq!(entry["message"]["command"], "printf native");
     assert_eq!(entry["message"]["excludeFromContext"], true);
 }
+
+
+#[tokio::test]
+async fn a_queued_prompt_keeps_its_client_message_id() {
+    // The hub attributes a lane's events from the clientMessageId echoed on the user message_start, so the id has to
+    // survive queueing: the queue record keeps it and the message built from it carries it (2026-11-12).
+    let session = test_session();
+    session
+        .queue_expanded_input(
+            "hello".to_string(),
+            None,
+            StreamingBehavior::FollowUp,
+            None,
+            Some(InputSource::Interactive),
+            Some("sl:C1:1.2".to_string()),
+        );
+    let queued = session.state().queued_messages.clone();
+    assert_eq!(queued.len(), 1, "the prompt is queued");
+    match queued[0].1.try_as_llm() {
+        Some(maho_ai::types::Message::User(user)) => {
+            assert_eq!(user.client_message_id.as_deref(), Some("sl:C1:1.2"))
+        }
+        other => panic!("expected a user message, got {other:?}"),
+    }
+    assert_eq!(
+        queued_input_client_message_id(&session.state(), "hello").as_deref(),
+        Some("sl:C1:1.2")
+    );
+}

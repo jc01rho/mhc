@@ -3156,7 +3156,7 @@ impl SessionExtensionActions {
                         mode,
                         None,
                         Some(InputSource::Extension),
-                        options.client_message_id.clone(),
+                        None,
                     );
                 }
                 session.emit(AgentSessionEvent::ContinuationError {

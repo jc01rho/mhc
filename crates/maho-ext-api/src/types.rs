@@ -4175,8 +4175,6 @@ impl Drop for MessageDeliveryGuard {
 pub struct SendUserMessageOptions {
     pub deliver_as: Option<StreamingBehavior>,
     pub expand_prompt_templates: bool,
-    /// The client's `clientMessageId` for this message, echoed on the user `message_start`.
-    pub client_message_id: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub enum UserMessageContent {

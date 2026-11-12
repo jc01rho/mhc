@@ -95,7 +95,6 @@ fn settle_unrestorable(
             maho_ext_api::SendUserMessageOptions {
                 deliver_as: Some(deliver_as),
                 expand_prompt_templates: false,
-            client_message_id: None,
             },
         )?;
     }

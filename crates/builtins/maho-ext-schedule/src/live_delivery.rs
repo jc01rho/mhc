@@ -194,7 +194,6 @@ impl Delivery for SteerDelivery {
                 SendUserMessageOptions {
                     deliver_as: Some(StreamingBehavior::Steer),
                     expand_prompt_templates: false,
-            client_message_id: None,
                 },
             )
             .map_err(|error| error.message)

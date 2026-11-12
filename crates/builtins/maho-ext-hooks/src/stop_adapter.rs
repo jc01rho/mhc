@@ -134,7 +134,6 @@ pub async fn apply_stop_hook_result(
             SendUserMessageOptions {
                 deliver_as: Some(StreamingBehavior::FollowUp),
                 expand_prompt_templates: false,
-            client_message_id: None,
             },
         )?;
         for _ in 0..64 {
