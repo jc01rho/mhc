@@ -17531,3 +17531,35 @@ async fn a_queued_prompt_keeps_its_client_message_id() {
         Some("sl:C1:1.2")
     );
 }
+
+#[test]
+fn a_queued_text_two_inputs_share_keeps_no_client_message_id() {
+    // The message knows only its text, so two queued inputs with the same text cannot be told apart: attributing
+    // either would settle the wrong request, so the lookup refuses both (2026-11-12 review).
+    let session = test_session();
+    for id in ["sl:C1:1.2", "sl:C1:1.3"] {
+        session.queue_expanded_input(
+            "same".to_string(),
+            None,
+            StreamingBehavior::FollowUp,
+            None,
+            Some(InputSource::Interactive),
+            Some(id.to_string()),
+        );
+    }
+    assert_eq!(queued_input_client_message_id(&session.state(), "same"), None);
+    // One input alone still resolves, and an unknown text has no id.
+    session.queue_expanded_input(
+        "only".to_string(),
+        None,
+        StreamingBehavior::FollowUp,
+        None,
+        Some(InputSource::Interactive),
+        Some("sl:C1:1.4".to_string()),
+    );
+    assert_eq!(
+        queued_input_client_message_id(&session.state(), "only").as_deref(),
+        Some("sl:C1:1.4")
+    );
+    assert_eq!(queued_input_client_message_id(&session.state(), "absent"), None);
+}

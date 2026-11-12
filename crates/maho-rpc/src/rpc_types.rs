@@ -183,6 +183,8 @@ pub enum RpcCommandBody {
         images: Option<Vec<Value>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         enqueue_order: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_message_id: Option<String>,
     },
     FollowUp {
         message: String,
@@ -190,6 +192,8 @@ pub enum RpcCommandBody {
         images: Option<Vec<Value>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         enqueue_order: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_message_id: Option<String>,
     },
     HoldInput {
         input_id: String,

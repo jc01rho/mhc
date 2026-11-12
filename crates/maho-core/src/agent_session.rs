@@ -9654,12 +9654,15 @@ impl AgentSession {
                 .map(|input| input.text.clone())
                 .collect()
         };
-        let id_by_text: std::collections::HashMap<String, Option<String>> = {
+        let ids_by_text: Vec<Option<String>> = {
             let state = self.state();
-            state.queued_input_order.iter().map(|input| (input.text.clone(), input.client_message_id.clone())).collect()
+            newer_texts
+                .iter()
+                .map(|text| queued_input_client_message_id(&state, text))
+                .collect()
         };
-        for text in newer_texts {
-            let msg = make_user_message(&text, None, id_by_text.get(&text).cloned().flatten());
+        for (text, client_message_id) in newer_texts.into_iter().zip(ids_by_text) {
+            let msg = make_user_message(&text, None, client_message_id);
             if !parked.contains(&msg) && self.agent.remove_queued_message(&msg) {
                 to_requeue.push(msg);
             }
@@ -22316,8 +22319,19 @@ fn clamp_thinking_level(
         .unwrap_or(ModelThinkingLevel::Off)
 }
 
+/// The client id of the queued input that carries `text`. A message knows only its text, so two queued inputs with
+/// the same text cannot be told apart: attributing either would settle the wrong request, so an ambiguous text keeps
+/// no id. Every lookup goes through here so both the steer consumption path and the requeue path agree.
 fn queued_input_client_message_id(state: &AgentSessionState, text: &str) -> Option<String> {
-    state.queued_input_order.iter().find(|input| input.text == text).and_then(|input| input.client_message_id.clone())
+    let mut matches = state
+        .queued_input_order
+        .iter()
+        .filter(|input| input.text == text);
+    let first = matches.next()?;
+    if matches.any(|input| input.client_message_id != first.client_message_id) {
+        return None;
+    }
+    first.client_message_id.clone()
 }
 fn make_user_message(text: &str, images: Option<Vec<ImageContent>>, client_message_id: Option<String>) -> AgentMessage {
     let mut content = vec![maho_ai::types::ContentBlock::Text(
