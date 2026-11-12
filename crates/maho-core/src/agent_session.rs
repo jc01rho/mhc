@@ -3361,6 +3361,9 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
     fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, maho_ext_api::ExtensionFailure> {
         Ok(self.session()?.get_all_tools())
     }
+    fn has_tool(&self, name: &str) -> Result<bool, maho_ext_api::ExtensionFailure> {
+        Ok(self.session()?.has_tool(name))
+    }
 }
 
 impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
@@ -3792,6 +3795,12 @@ impl maho_ext_api::SessionManager for SessionContextManager {
             .into_iter()
             .map(session_entry_from_value)
             .collect()
+    }
+    fn has_entry(&self, id: &str) -> bool {
+        let indexed = self
+            .session
+            .with_session_manager(|manager| manager.contains_entry(id));
+        indexed || self.get_branch().iter().any(|entry| entry.id == id)
     }
     fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
         self.session
@@ -7782,12 +7791,18 @@ impl AgentSession {
         }
         self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
         lock(&self.transcript_write_failures).start_run();
-        if let Some(kept) = lock(&self.transcript_write_failures).take_refused_out(&self.messages())
+        // Only a refused write can keep the transcript from being read here: `messages()`
+        // re-materializes every spilled tool result on the interactive thread, and this runs on every
+        // prompt (2.6 s of a 6.6 s frame on a 132 MB session) while the common case has nothing
+        // refused at all.
+        if lock(&self.transcript_write_failures).has_refusals()
+            && let Some(kept) =
+                lock(&self.transcript_write_failures).take_refused_out(&self.messages())
         {
             self.agent.set_messages(kept);
         }
         self.agent_run_active.store(true, Ordering::SeqCst);
-        self.hydrate_runtime_messages_for_run();
+        self.hydrate_runtime_messages_for_run_offloaded().await;
         // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
         // allows it and a configured fallback chain can take over.
         self.agent
@@ -14955,9 +14970,45 @@ impl AgentSession {
             .runtime_messages_tokenized
             .swap(false, Ordering::SeqCst)
         {
-            let messages =
-                self.materialize_resident_messages(self.agent.state().messages().to_vec());
-            self.agent.set_messages(messages);
+            self.rehydrate_parked_transcript();
+        }
+    }
+
+    /// Re-inline every spilled tool result into the parked transcript.
+    ///
+    /// Idle parking tokenizes the transcript and moves the large strings to the resident store, so a
+    /// run must restore them before the provider request. That work is proportional to the whole
+    /// conversation: on a 132 MB session it blocked the interactive thread for ~2.5 s of the ~2.6 s
+    /// post-Enter freeze, which is why prompt paths await `hydrate_runtime_messages_for_run_offloaded`
+    /// instead of calling this inline.
+    fn rehydrate_parked_transcript(&self) {
+        let messages = self.materialize_resident_messages(self.agent.state().messages().to_vec());
+        self.agent.set_messages(messages);
+    }
+
+    /// `hydrate_runtime_messages_for_run` on the blocking pool, awaited before the provider request.
+    ///
+    /// `swap(false)` happens on the caller's thread so a concurrent reader cannot start a second
+    /// pass. The snapshot is taken inside the blocking task as well: `Agent::state` deep-clones the
+    /// message list, and leaving that on the interactive thread kept most of the freeze.
+    async fn hydrate_runtime_messages_for_run_offloaded(&self) {
+        if !self
+            .runtime_messages_tokenized
+            .swap(false, Ordering::SeqCst)
+        {
+            return;
+        }
+        let session = self.clone();
+        let rehydrated = tokio::task::spawn_blocking(move || {
+            let messages = session.agent.state().messages().to_vec();
+            session.materialize_resident_messages(messages)
+        })
+        .await;
+        match rehydrated {
+            Ok(messages) => self.agent.set_messages(messages),
+            // A panicked or cancelled blocking task must not silently drop the transcript: fall back
+            // to the inline path, whose failure mode is the one callers already handle.
+            Err(_) => self.rehydrate_parked_transcript(),
         }
     }
 
@@ -15291,6 +15342,14 @@ impl AgentSession {
 
     pub fn get_active_tool_names(&self) -> Vec<String> {
         self.agent.tool_names()
+    }
+
+    /// Presence check that never materializes tool definitions: `get_all_tools` rebuilds every
+    /// `ToolInfo` (parameters, descriptions), which the terminal extension triggered on each
+    /// `BeforeAgentStart` only to learn whether `eval` existed.
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.agent.tool_names().iter().any(|tool| tool == name)
+            || self.state().tool_definitions.contains_key(name)
     }
 
     /// A runtime extension flag value (constructor input in TS).
@@ -17768,7 +17827,7 @@ impl AgentSession {
             }
         }
         self.agent_run_active.store(true, Ordering::SeqCst);
-        self.hydrate_runtime_messages_for_run();
+        self.hydrate_runtime_messages_for_run_offloaded().await;
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         if let Err(error) = self
@@ -19751,7 +19810,7 @@ impl AgentSession {
         }
         self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
         self.agent_run_active.store(true, Ordering::SeqCst);
-        self.hydrate_runtime_messages_for_run();
+        self.hydrate_runtime_messages_for_run_offloaded().await;
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         // Boxed: the agent run and its retry/compaction recovery futures are large enough that
@@ -21144,7 +21203,10 @@ impl AgentSession {
                 manager.leaf_id().map(str::to_owned),
             )
         });
-        let last_fingerprint = message_fingerprint(self.messages().last());
+        // The fingerprint only needs the newest message, and the interactive footer asks for
+        // context usage on every frame: `self.messages()` clones the whole transcript (2.6 s of
+        // a 6.6 s frame on a 132 MB session), so it is read under the agent's own lock instead.
+        let last_fingerprint = self.agent.with_last_message(message_fingerprint);
         let key = {
             let state = self.state();
             ContextUsageCacheKey {
