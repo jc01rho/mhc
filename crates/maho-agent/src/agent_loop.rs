@@ -52,36 +52,6 @@ async fn send(emit: &AgentEventSink, event: AgentEvent) {
     emit(event).await;
 }
 
-/// Announces the user messages a turn is about to take in. senpi announces a user message like any other, and the
-/// host watching the lane attributes the turn to the request that asked it from the message_start's
-/// clientMessageId; mhc appended prompts silently, so on an mhc worker every progress line, activity line and
-/// settle arrived unattributed (2026-11-12: a plan reached its execution model only on the recovery tick, and a
-/// running lane showed nothing in the owner's thread).
-async fn announce_pending_user_messages(emit: &AgentEventSink, pending: &[AgentMessage]) {
-    for message in pending {
-        if matches!(
-            message.try_as_llm(),
-            Some(maho_ai::types::Message::User(_))
-        ) {
-            send(
-                emit,
-                AgentEvent::MessageStart {
-                    message: message.clone(),
-                    streaming: None,
-                },
-            )
-            .await;
-            send(
-                emit,
-                AgentEvent::MessageEnd {
-                    message: message.clone(),
-                },
-            )
-            .await;
-        }
-    }
-}
-
 /// `emit(carryAssistantCapture(source, event, terminal))`: with a capture-aware sink (a run that
 /// started with an internal listener) the event keeps its carrier; otherwise it is emitted bare.
 async fn send_captured(
@@ -354,7 +324,6 @@ async fn run_loop(
                 return;
             }
             {
-                announce_pending_user_messages(&emit, &pending_messages).await;
                 prepared_messages.append(&mut pending_messages);
                 for message in declare_tool_changes(
                     &current_context,
@@ -2890,43 +2859,6 @@ async fn emit_tool_result_message(tool_result_message: &ToolResultMessage, emit:
 mod provider_context_tests {
     use super::*;
 
-    /// The hub attributes a lane's events to the owner request from the clientMessageId the session echoes on the
-    /// user message_start; without the announcement a prompt reached the context silently and every progress line,
-    /// activity line and settle arrived unattributed (2026-11-12).
-    #[tokio::test]
-    async fn a_pending_user_message_is_announced_with_its_client_message_id() {
-        use std::sync::Mutex as StdMutex;
-        let seen: Arc<StdMutex<Vec<AgentEvent>>> = Arc::new(StdMutex::new(Vec::new()));
-        let sink: AgentEventSink = {
-            let seen = seen.clone();
-            Arc::new(move |event| {
-                let seen = seen.clone();
-                Box::pin(async move {
-                    seen.lock().unwrap().push(event);
-                })
-            })
-        };
-        let message: AgentMessage = serde_json::from_value(serde_json::json!({
-            "role": "user", "content": "hi", "timestamp": 0, "clientMessageId": "sl:C1:1.2"
-        }))
-        .expect("user message");
-        announce_pending_user_messages(&sink, std::slice::from_ref(&message)).await;
-        let events = seen.lock().unwrap();
-        assert_eq!(events.len(), 2, "a user message is announced like any other");
-        for event in events.iter() {
-            let announced = match event {
-                AgentEvent::MessageStart { message, .. } | AgentEvent::MessageEnd { message } => message,
-                other => panic!("unexpected event: {other:?}"),
-            };
-            match announced.try_as_llm() {
-                Some(maho_ai::types::Message::User(user)) => {
-                    assert_eq!(user.client_message_id.as_deref(), Some("sl:C1:1.2"));
-                }
-                other => panic!("expected the user message, got {other:?}"),
-            }
-        }
-    }
-
 
     #[test]
     fn typed_stream_failures_project_without_losing_classification() {
@@ -3452,6 +3384,64 @@ mod audit_gap_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(restored.load(Ordering::SeqCst), 1);
         assert!(!events.lock().expect("events").iter().any(|event| matches!(event, AgentEvent::MessageStart { message, .. } if message.role() == "user")));
+    }
+
+    /// The hub attributes a lane's events to the owner request from the clientMessageId on the user message_start.
+    /// The loop already emits one message_start/message_end for every message it takes in; a second announcement
+    /// would persist a queued message twice (2026-11-12 regression), so the id has to ride on that single emission.
+    #[tokio::test]
+    async fn a_consumed_queued_user_message_is_emitted_once_with_its_client_message_id() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut config = AgentLoopConfig::new(
+            crate::agent::default_model(),
+            crate::types::identity_convert_to_llm(),
+        );
+        let delivered = Arc::new(AtomicUsize::new(0));
+        config.get_steering_messages = Some(Arc::new(move || {
+            let first = delivered.fetch_add(1, Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                if !first {
+                    return Vec::new();
+                }
+                let message: AgentMessage = serde_json::from_value(serde_json::json!({
+                    "role": "user", "content": "hi", "timestamp": 0, "clientMessageId": "sl:C1:1.2"
+                }))
+                .expect("user message");
+                vec![message]
+            })
+        }));
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_agent_loop(
+                Vec::new(),
+                AgentContext::default(),
+                config,
+                sink(events.clone()),
+                None,
+                Some(stream(calls.clone())),
+            ),
+        )
+        .await
+        .expect("bounded loop");
+        let events = events.lock().expect("events");
+        let ids_of = |wanted_start: bool| -> Vec<Option<String>> {
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    AgentEvent::MessageStart { message, .. } if wanted_start => Some(message),
+                    AgentEvent::MessageEnd { message } if !wanted_start => Some(message),
+                    _ => None,
+                })
+                .filter_map(|message| match message.try_as_llm() {
+                    Some(Message::User(user)) => Some(user.client_message_id.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let expected = vec![Some("sl:C1:1.2".to_string())];
+        assert_eq!(ids_of(true), expected, "one user message_start, carrying the id");
+        assert_eq!(ids_of(false), expected, "one user message_end, carrying the id");
     }
 
     #[tokio::test(start_paused = true)]
