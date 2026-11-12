@@ -10,6 +10,9 @@ pub const DEFAULT_PROVIDER_API_BASE: &str = "https://api.commandcode.ai/provider
 pub const DEFAULT_MODELS_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 65_536;
 pub const MODEL_CACHE_VERSION: u32 = 1;
+/// How old the cached catalog may be before a launch refreshes it in the background. A fresh
+/// cache skips the network entirely, so startup never pays for a fetch it does not need.
+pub const MODEL_CACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 pub const GENERATE_MAX_TOKENS_CAP: u64 = 64_000;
 pub const OVERFLOW_PREFIX: &str = "context_length_exceeded:";
 pub const PROVIDER_ID: &str = "commandcode";
@@ -23,9 +26,7 @@ pub const QUOTA_DETAIL_URL: &str = "https://commandcode.ai/usage";
 pub fn zdr_headers() -> Option<std::collections::BTreeMap<String, String>> {
     let enabled = std::env::var("CMD_ZDR").ok().as_deref() == Some("1")
         || std::env::var("COMMANDCODE_ZDR").ok().as_deref() == Some("1");
-    enabled.then(|| {
-        std::collections::BTreeMap::from([("x-cmd-zdr".to_owned(), "1".to_owned())])
-    })
+    enabled.then(|| std::collections::BTreeMap::from([("x-cmd-zdr".to_owned(), "1".to_owned())]))
 }
 
 /// One model as discovered from the live catalog or restored from cache.
@@ -103,12 +104,7 @@ pub fn model_compat(model_id: &str, reasoning: bool) -> maho_ai::model::ModelCom
             "maxTokensField": "max_tokens",
         })
     };
-    maho_ai::model::ModelCompat(
-        value
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-    )
+    maho_ai::model::ModelCompat(value.as_object().cloned().unwrap_or_default())
 }
 
 /// Result of a catalog load, mirroring `LoadCommandCodeModelsResult` in the TypeScript source.

@@ -72,7 +72,30 @@ impl ReflectionLockProbe for SystemReflectionLockProbe {
                 ProcessLiveness::Dead
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        // A signal-0 send performs only an existence/permission check; no signal is delivered.
+        // `nix` wraps the syscall safely, so this crate keeps `unsafe_code = "forbid"`.
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            let Ok(raw) = i32::try_from(pid) else {
+                return ProcessLiveness::Unknown;
+            };
+            match nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None) {
+                Ok(()) => ProcessLiveness::Alive,
+                Err(nix::errno::Errno::ESRCH) => ProcessLiveness::Dead,
+                // The process exists but belongs to another user.
+                Err(nix::errno::Errno::EPERM) => ProcessLiveness::Alive,
+                Err(_) => ProcessLiveness::Unknown,
+            }
+        }
+        #[cfg(windows)]
+        {
+            match windows_process_liveness(pid) {
+                Some(true) => ProcessLiveness::Alive,
+                Some(false) => ProcessLiveness::Dead,
+                None => ProcessLiveness::Unknown,
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             ProcessLiveness::Unknown
         }
@@ -81,6 +104,33 @@ impl ReflectionLockProbe for SystemReflectionLockProbe {
     fn process_start_identity(&self, pid: u32) -> Result<Option<String>, String> {
         use crate::lock_record::LockHost;
         Ok(crate::host_identity::SystemLockHost.process_start(pid))
+    }
+}
+
+/// `OpenProcess` + `WaitForSingleObject`: `Some(true)` while the process runs, `Some(false)` once it
+/// has exited or never existed, `None` when access is denied (an elevated process we can see but not
+/// signal) or the wait itself fails. `winsafe` wraps both calls safely, so this crate keeps
+/// `unsafe_code = "forbid"`.
+#[cfg(windows)]
+fn windows_process_liveness(pid: u32) -> Option<bool> {
+    use winsafe::{HPROCESS, co};
+
+    let process = match HPROCESS::OpenProcess(
+        co::PROCESS::QUERY_LIMITED_INFORMATION | co::PROCESS::SYNCHRONIZE,
+        false,
+        pid,
+    ) {
+        Ok(process) => process,
+        // Access denied means the process exists but is not ours to inspect.
+        Err(co::ERROR::ACCESS_DENIED) => return Some(true),
+        // A pid that never existed (or the idle process) is rejected as an invalid parameter.
+        Err(co::ERROR::INVALID_PARAMETER) => return Some(false),
+        Err(_) => return None,
+    };
+    match process.WaitForSingleObject(Some(0)) {
+        Ok(co::WAIT::OBJECT_0) => Some(false),
+        Ok(co::WAIT::TIMEOUT) => Some(true),
+        _ => None,
     }
 }
 
@@ -336,10 +386,12 @@ mod tests {
             self
         }
 
+        /// Fixture keys are POSIX-style (`runs/r1/outcome.json`) while a Windows path joins with `\`,
+        /// so both sides are compared as normalized forward-slash text.
         fn key(path: &Path) -> String {
-            path.strip_prefix("/refl")
-                .map(|rest| rest.to_string_lossy().into_owned())
-                .unwrap_or_default()
+            let text = path.to_string_lossy().replace('\\', "/");
+            let trimmed = text.strip_prefix("/refl").unwrap_or(&text);
+            trimmed.trim_start_matches('/').to_owned()
         }
     }
 

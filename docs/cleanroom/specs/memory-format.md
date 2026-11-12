@@ -107,8 +107,20 @@ aliases: [<name>, ...]         # optional, list of alternative names (system/hum
 ```
 
 - Frontmatter is present only when the file's first line is exactly `---`; it ends at the next
-  line that is exactly `---`. A file whose frontmatter does not close, or does not parse as a YAML
-  mapping, is read as body-only (the whole text is body) and reported as a warning.
+  line that is exactly `---`. A file whose frontmatter does not close is read as body-only (the
+  whole text is body), because no closing delimiter means no reliable point to cut at, and a
+  warning is reported.
+- A file whose frontmatter *closes but does not parse* as a YAML mapping is cut at the closing
+  delimiter: the frontmatter is dropped and the body after it is imported, with one warning. The
+  frontmatter text is **never** promoted to memory content. Real stores contain such files
+  (`description: Foo: bar` is not valid YAML), and reading them whole turned the YAML delimiters
+  and the description line into a memory that could be recalled and searched — 138 of 18 454
+  imported blocks on a real store. Only the body carries meaning to a reader; the unparseable
+  header is a formatting defect in the legacy file, not a memory.
+- Frontmatter blocks may be **stacked**: a real file can open with two complete `---` … `---`
+  blocks before the body. Each leading block is stripped in turn, and the first one that parses as
+  a mapping becomes the file's frontmatter. Stripping only the first block leaves the second one at
+  the head of the body, which reintroduces the leak above for 69 blocks on a real store.
 - The body is free Markdown. The documents call the store a "block store": the unit of memory is
   a block of text inside a file. The block boundaries are not documented, so the migrator uses the
   Markdown structure as the block boundary (next section).
@@ -166,14 +178,60 @@ copied into a new place unless the user enabled people memory.
   skipped people files, skipped non-Markdown files, warnings (path + reason).
 - Symbolic links are not followed (a link is reported and skipped).
 - Files larger than 4 MiB are skipped with a warning.
+- `--history` replays each file's git revisions (off by default: it runs git per file). The
+  working tree is what a reader sees now; history is what lets the store answer "what did this say
+  last month". Each commit that changed a file contributes its blocks with that commit's own
+  timestamp, immediately closed by the next revision, so a recall for now returns the current text
+  and a recall for a past instant returns the text that was true then. Measured on one real
+  identity repo: 129 current blocks plus 399 recovered revisions. Four rules the importer must
+  keep, each learned from a defect:
+  - Commits are ordered by commit time, not graph order: after a rebase the two disagree, and
+    closing a revision by its graph successor records a `valid_until` earlier than the row's own
+    `timestamp`.
+  - A revision is closed by a successor that is not earlier than it. Commit times have one-second
+    precision, so consecutive revisions of a fast-moving file routinely share a second.
+  - A revision byte-identical to the one before it is dropped: a commit touching other files still
+    appears in this file's history, and importing unchanged text stores the same memory twice.
+  - With history on, the newest revision *is* the current file, so the working-tree pass covers
+    only files whose history could not be read (untracked files, or a root outside a work tree).
+- Reading history back out: `mhc memory search --at <iso> <query>` answers against that instant
+  rather than now (`MemoryContext::recall_at`; the same `RecallOptions::valid_at` the library has
+  had all along). The argument is parsed and re-rendered in the storage shape before it reaches
+  SQL, because rows are `YYYY-MM-DDTHH:MM:SS.mmmZ` and a date-only or offset argument compared as
+  text lands on the wrong side of a deadline; an unparseable argument is an error rather than a
+  silent fallback to now. The listing header names the resolved instant, so
+  `2026-06-01T00:30:00+09:00` reports `2026-05-31T15:30:00.000Z`.
+    Importing both stores every block twice under two different timestamps.
+- The repo is resolved per file, not per content root: `--from` may point at an identity directory
+  or the store root, neither of which is itself a work tree, while the repo is `agents/<id>/repo/`
+  below it.
+
+### 1.4 Cost of a full history import
+
+`--history` is off by default because it is not free, and the cost is entirely in git subprocesses,
+not in SQLite. Measured on one real identity repo of 260 Markdown files:
+
+| pass | wall time |
+|---|---|
+| working tree only | 1.3 s |
+| with history | 38 s |
+
+The delta is one `git log` and one `git show` per (file, revision): 753 revisions, so roughly 1,000
+subprocess spawns. Resolving the work tree once per root rather than per file was measured and
+saved 0.7 s of 38 s, so it was not kept -- the spawns are the cost, not the repository lookup.
+
+Across a whole real store (275 identity repos, 2,212 Markdown files, 6,092 Markdown-touching
+commits) the result is 1,427,740 rows, of which 23,046 are live now; the database reaches about
+1.6 GB because both the full-text and vector indexes carry every historical revision. That is
+inherent to keeping history rather than a defect, but it is the reason the flag is opt-in: a
+caller who wants a fast import of the current state should not pay for it.
 
 ## Open points (still not established)
 
 - Whether `project/` is written by every build or only by some workflows. The migrator imports it
   as notes either way, because real stores contain it.
-- The git history (older versions of a block) is not imported; only the working tree is. History
-  is available on disk and is used by the SUL store (`compile/changes`, `facts/recovery`,
-  `soul/watermark`, `commands/agreements`), so a future importer could replay it.
+- The git history is replayed only with `--history`; see Migrator behaviour above for the rules it
+  follows.
 - Whether legacy blocks carry ids or timestamps inside the Markdown is unknown; such text is kept
   verbatim in `content`.
 - Runtime bookkeeping (recall ledgers, sync queues, locks, transcripts, facts queues, reflection

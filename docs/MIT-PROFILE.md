@@ -90,8 +90,10 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   default. Only the main session delegates by default (`task.max_depth` = 1); concurrency follows
   `task.default_concurrency`. Isolated tasks (`isolated: true`, default `task.isolation.enabled`)
   run through `maho-isolation` and team runs / tmux panes through `maho-team` (Phase 3, below).
-  The `task` tool also accepts `pane`. Not included: `workflow`/DAG and `workpool` tools,
-  `/task-kill`, `/dag`.
+  The `task` tool also accepts `pane`, and `/task-kill` cancels one of the session's tasks.
+  The extension also mounts the `workflow` addon (`crates/maho-workflow`: a dependency graph of
+  delegated tasks run in waves, the `workflow` tool and `/dag`), and `<builtin:workpool>`
+  (`maho-workpool`) sits beside it sharing the same task runner.
 - `<builtin:memory>` (`maho-memory`, ported from the MIT mnemopi engine in oh-my-pi @ f59bbac):
   long-term memory in SQLite banks under `$MNEMOPI_DATA_DIR`, else `<agent dir>/memories/mnemopi`
   (`mnemopi.db` is the global bank, `banks/<name>/mnemopi.db` the others). Tools `retain` (one or
@@ -99,16 +101,24 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   (lexical hybrid recall: FTS5 rank, keyword/word-form relevance, synonyms, importance, recency,
   trust weights), `memory_get` and `memory_forget`; a memory section in the system prompt; on the
   first prompt of a session the best matches are recalled into a hidden `<memories>` message; and
-  `/memory` (`status`, `search <query>`, `prune`, `import-legacy [--dry-run] [--include-people]`). Sessions
+  `/memory` (`status`, `search <query>`, `forget <id>`, `update <id>`, `prune`, `import-legacy [--dry-run] [--include-people]`). Sessions
   write to a per-project bank and also recall the global bank (`MAHO_MEMORY_SCOPING` =
   `per-project-tagged` (default) | `per-project` | `global`). `memory.enabled: false` in the omo
-  config turns it off. Shell: `mhc memory status|search|remember [--global]|search-sessions|prune|import-legacy|mcp`.
+  config turns it off. Shell: `mhc memory status|search|remember [--global]|forget <id>|update <id> [--content <text>] [--importance <0..1>]|search-sessions|prune|import-legacy|mcp`.
+  `forget` deletes one memory for good and `update` replaces its text and/or importance; both act
+  only on banks this directory can see, so an id from another project reports `No memory <id>`, and
+  both refuse to touch a row this session does not own. `update --content` takes the rest of the
+  line in `/memory` and one argument on the shell, because shell words are already separated.
   `search-sessions [--include-hidden] <query>` ranks every message in the session JSONL store, including
   thinking and tool-call arguments; the excerpt names which one matched. See
   `docs/cleanroom/specs/memory-session-provider.md` and `memory-transcript-search.md`.
   `prune` (both surfaces) drops rows past the retention windows — 30 days for working memory, 90 for
-  episodic — and never touches a row this session does not own, one still valid, or one at or above
-  the keep-importance threshold (0.9). See `docs/cleanroom/specs/memory-retention.md`.
+  episodic — and never touches a row this session does not own, one still valid, one at or above
+  the keep-importance threshold (0.9), or one imported from the legacy Markdown store. Without that
+  last exemption a single `prune` after `import-legacy --history` deleted the entire imported corpus,
+  because every imported row is stamped with its revision's commit date and `notes/`, `project/`,
+  `reference/` and `people/` rows import below the keep threshold. See
+  `docs/cleanroom/specs/memory-retention.md`.
   The memory MCP server (`mhc memory mcp`, `mhc --memory-mcp`, and the legacy `--omo-memory-mcp`
   entry) serves the `mnemopi_*` tools (remember, recall, get, update, forget, invalidate, stats,
   scratchpad, triples, export/import) over stdio; `--bank`, `MNEMOPI_MCP_BANK` and
@@ -321,7 +331,7 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 
 | Area | In the MIT profile |
 | --- | --- |
-| omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`, and from `maho-team` `team_create`, `team_members`, `team_message`, `team_wait`, `team_stop`, `/team`) |
+| omo mount (`<builtin:omo>`): its task/subagent tools, `team_*` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `task_send`, `/tasks`, `/task-kill`, the `workflow` tool with `/dag`, `workpool`, and from `maho-team` `team_create`, `team_members`, `team_message`, `team_wait`, `team_stop`, `/team`) |
 | omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
 | ast-grep MCP; the omo builtin MCPs; `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools; MIT `<builtin:mcp-builtins>` declares `context7` and `grep_app`) |
 | omo gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:gateway>` provides `session_list`, `session_send` and `mhc gateway list|send`; MIT `maho-onboarding` provides `mhc setup` and the first-run gate; MIT `<builtin:context-files>` provides `/init-deep`, `mhc init-deep` and the session-start suggestion; MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export; MIT `<builtin:git>` provides read-only git inspection tools) |
@@ -427,8 +437,9 @@ ships no skills and `manifest.json` carries no `skills` key, which the MIT valid
 
 - The directive dedupe in `maho-ext-anthropic-subscription` and the prompt-border glow in
   `maho-interactive` are neutral: they act only on tags/keywords registered at startup, and only the
-  `maho-cli` registers `<omo-ultrawork-directive>` and `ulw`/`ultrawork` at startup in both
-  profiles (`register_ultrawork_keywords`, main.rs), for the MIT `maho-ultrawork` engine.
+  `maho-cli` registers `<omo-ultrawork-directive>` and the ultrawork aliases (`ulw`,
+  `ultrawork`, `mulw`, `meth`, `massulw`, `mass_ulw`) at startup in both profiles
+  (`register_ultrawork_keywords`, main.rs), for the MIT `maho-ultrawork` engine.
   Still left: ulw tips in `maho-interactive` (hidden without the task command), the `omo` builtin
   id in the extension registry, and the `ultrawork`/`ulw-loop` wording in a `maho-ext-prompt-preset`
   directive and `senpi_install.rs`.

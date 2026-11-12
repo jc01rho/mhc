@@ -8,6 +8,7 @@ use crate::store::{RememberOptions, Store, now_iso, sha256_hex16};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Files larger than this are skipped.
 pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -19,6 +20,9 @@ pub struct ImportOptions {
     pub root: PathBuf,
     pub include_people: bool,
     pub dry_run: bool,
+    /// Import earlier file revisions from each identity repo's git history. Off by default: it runs
+    /// git once per changed file, which is far slower than reading the working tree.
+    pub history: bool,
 }
 
 /// One problem met during the import.
@@ -42,6 +46,8 @@ pub struct ImportReport {
     pub skipped_non_markdown: u64,
     /// Files whose readable `expires` instant was not later than the import time.
     pub expired_on_import: u64,
+    /// Earlier block revisions recovered from git history, each closed by its successor.
+    pub revisions_imported: u64,
     pub warnings: Vec<Warning>,
 }
 
@@ -84,6 +90,12 @@ impl ImportReport {
             },
             format_args!(", {} file(s) expired on import", self.expired_on_import),
         );
+        if self.revisions_imported > 0 {
+            out.push_str(&format!(
+                "\n  {} earlier revision(s) recovered from git history",
+                self.revisions_imported
+            ));
+        }
         for warning in &self.warnings {
             out.push_str(&format!(
                 "\n  warning: {}: {}",
@@ -170,37 +182,51 @@ pub struct Block {
 }
 
 fn split_frontmatter(text: &str) -> (Option<Value>, &str, Option<String>) {
-    let mut lines = text.split_inclusive('\n');
-    let Some(first) = lines.next() else {
-        return (None, text, None);
-    };
-    if first.trim_end_matches(['\r', '\n']) != "---" {
-        return (None, text, None);
-    }
-    let mut offset = first.len();
-    for line in lines {
-        if line.trim_end_matches(['\r', '\n']) == "---" {
-            let yaml = &text[first.len()..offset];
-            let body = &text[offset + line.len()..];
-            return match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
-                Ok(value @ serde_yaml::Value::Mapping(_)) => {
-                    (serde_json::to_value(value).ok(), body, None)
-                }
-                Ok(serde_yaml::Value::Null) => (None, body, None),
-                _ => (
-                    None,
-                    text,
-                    Some("frontmatter is not a YAML mapping; read as body".into()),
-                ),
-            };
+    let mut frontmatter: Option<Value> = None;
+    let mut warning: Option<String> = None;
+    let mut rest = text;
+    // Real stores contain files with two stacked frontmatter blocks, so each leading block is
+    // stripped the same way. Only the first block that parses as a mapping is kept as frontmatter.
+    loop {
+        let mut lines = rest.split_inclusive('\n');
+        let Some(first) = lines.next() else {
+            break;
+        };
+        if first.trim_end_matches(['\r', '\n']) != "---" {
+            break;
         }
-        offset += line.len();
+        let mut offset = first.len();
+        let mut closed = None;
+        for line in lines {
+            if line.trim_end_matches(['\r', '\n']) == "---" {
+                closed = Some((offset, line.len()));
+                break;
+            }
+            offset += line.len();
+        }
+        let Some((close_offset, close_len)) = closed else {
+            // No closing delimiter means no reliable point to cut at, so everything left is body.
+            warning.get_or_insert_with(|| "frontmatter is not closed; read as body".into());
+            break;
+        };
+        let yaml = &rest[first.len()..close_offset];
+        let body = &rest[close_offset + close_len..];
+        match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+            Ok(value @ serde_yaml::Value::Mapping(_)) => {
+                if frontmatter.is_none() {
+                    frontmatter = serde_json::to_value(value).ok();
+                }
+            }
+            Ok(serde_yaml::Value::Null) => {}
+            _ => {
+                warning.get_or_insert_with(|| {
+                    "frontmatter is not a YAML mapping; skipped, body kept".into()
+                });
+            }
+        }
+        rest = body;
     }
-    (
-        None,
-        text,
-        Some("frontmatter is not closed; read as body".into()),
-    )
+    (frontmatter, rest, warning)
 }
 
 /// Parses an `expires` value into epoch milliseconds (UTC).
@@ -209,76 +235,12 @@ fn split_frontmatter(text: &str) -> (Option<Value>, &str, Option<String>) {
 /// `+HH:MM` / `-HH:MM`; surrounding whitespace is ignored and sub-millisecond digits are
 /// truncated. Anything else (impossible dates, out-of-range fields, no zone) yields `None`.
 pub fn parse_expires(value: &str) -> Option<i64> {
-    let text = value.trim();
-    let bytes = text.as_bytes();
-    let digits = |range: std::ops::Range<usize>| -> Option<u32> {
-        let part = bytes.get(range)?;
-        if part.is_empty() || !part.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        part.iter()
-            .try_fold(0u32, |acc, digit| Some(acc * 10 + u32::from(digit - b'0')))
-    };
-    if bytes.len() < 10 || bytes[4] != b'-' || bytes[7] != b'-' {
-        return None;
-    }
-    let year = i32::try_from(digits(0..4)?).ok()?;
-    let date = chrono::NaiveDate::from_ymd_opt(year, digits(5..7)?, digits(8..10)?)?;
-    if bytes.len() == 10 {
-        return Some(date.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis());
-    }
-    if bytes[10] != b'T' || bytes.get(13) != Some(&b':') {
-        return None;
-    }
-    let hour = digits(11..13)?;
-    let minute = digits(14..16)?;
-    let mut at = 16;
-    let mut second = 0;
-    let mut millis = 0;
-    if bytes.get(at) == Some(&b':') {
-        second = digits(at + 1..at + 3)?;
-        at += 3;
-        if bytes.get(at) == Some(&b'.') {
-            let start = at + 1;
-            let len = bytes[start..]
-                .iter()
-                .take_while(|byte| byte.is_ascii_digit())
-                .count();
-            if !(1..=9).contains(&len) {
-                return None;
-            }
-            let fraction = &text[start..start + len.min(3)];
-            millis = format!("{fraction:0<3}").parse().ok()?;
-            at = start + len;
-        }
-    }
-    if hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    let offset_minutes: i64 = match &bytes[at..] {
-        [b'Z'] => 0,
-        [sign @ (b'+' | b'-'), _, _, b':', _, _] => {
-            let offset_hour = digits(at + 1..at + 3)?;
-            let offset_minute = digits(at + 4..at + 6)?;
-            if offset_hour > 23 || offset_minute > 59 {
-                return None;
-            }
-            let total = i64::from(offset_hour * 60 + offset_minute);
-            if *sign == b'-' { -total } else { total }
-        }
-        _ => return None,
-    };
-    let local = date
-        .and_hms_milli_opt(hour, minute, second, millis)?
-        .and_utc()
-        .timestamp_millis();
-    Some(local - offset_minutes * 60_000)
+    crate::expiry::parse_expiry_instant(value.trim())
 }
 
 /// Formats epoch milliseconds the way the store stamps times (`YYYY-MM-DDTHH:MM:SS.mmmZ`).
 pub fn format_instant(millis: i64) -> Option<String> {
-    chrono::DateTime::from_timestamp_millis(millis)
-        .map(|time| time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+    crate::time_format::format_millis(millis)
 }
 
 /// The `expires` key of a file's frontmatter.
@@ -560,7 +522,19 @@ pub fn import_at(
     for content in content_roots(root) {
         let mut files = Vec::new();
         collect_files(&content.path, &content.path, &mut report, &mut files);
+        // With history on, the newest revision of a file is its current text, so the working-tree
+        // pass only covers files whose repo history could not be read (untracked files, or a root
+        // outside any work tree). Importing both would store the same block twice under two
+        // different timestamps.
+        let covered = if options.history {
+            import_history(store, options, &content, &files, &imported_at, &mut report)
+        } else {
+            Vec::new()
+        };
         for path in files {
+            if covered.contains(&path) {
+                continue;
+            }
             import_file(
                 store,
                 options,
@@ -573,6 +547,235 @@ pub fn import_at(
         }
     }
     Ok(report)
+}
+
+/// Recovers earlier revisions of the collected files from each content root's git history.
+///
+/// The working tree is what a reader sees now; history is what the store can show when asked what
+/// changed. Each revision's blocks are inserted with the commit's own timestamp and immediately
+/// closed by its successor, so a recall for "now" returns the current text and a recall for a past
+/// instant returns the text that was true then. A root that is not a git work tree is skipped, not
+/// an error: a flat `--from <dir>` export has no history.
+fn import_history(
+    store: &Store,
+    options: &ImportOptions,
+    content: &ContentRoot,
+    files: &[PathBuf],
+    imported_at: &str,
+    report: &mut ImportReport,
+) -> Vec<PathBuf> {
+    let mut covered: Vec<PathBuf> = Vec::new();
+    for path in files {
+        let rel = relative(&content.path, path);
+        if !content.label.is_empty() && !is_content(&rel) {
+            continue;
+        }
+        if content.label.is_empty()
+            && (rel.starts_with("runtime/") || rel.starts_with("transient-runs/"))
+        {
+            continue;
+        }
+        let history = match file_history(path) {
+            Ok(history) => history,
+            Err(reason) => {
+                report.warnings.push(Warning { path: rel, reason });
+                continue;
+            }
+        };
+        if history.is_empty() {
+            continue;
+        }
+        covered.push(path.clone());
+        report.files_imported += 1;
+        report.files_scanned += 1;
+        // Oldest first, so each revision can be closed by the next one. Revisions that leave a
+        // file byte-identical are dropped: a commit touching other files still appears in the
+        // file's history, and importing its unchanged text would store the same memory again.
+        let mut seen: Vec<&str> = Vec::new();
+        let history: Vec<&Revision> = history
+            .iter()
+            .filter(|revision| {
+                if seen.contains(&revision.text.as_str()) {
+                    return false;
+                }
+                seen.push(&revision.text);
+                true
+            })
+            .collect();
+        for (index, revision) in history.iter().enumerate() {
+            let next = history.get(index + 1);
+            let kind = kind_of(&rel);
+            let parsed = parse_markdown(&revision.text);
+            for (block_index, block) in parsed.blocks.iter().enumerate() {
+                let content_text = block.text.clone();
+                let id = sha256_hex16(&format!(
+                    "{rel}\0{block_index}\0{content_text}\0{}",
+                    revision.committed_at_millis
+                ));
+                if !options.dry_run && store.contains(&id).unwrap_or(false) {
+                    report.skipped_existing += 1;
+                    continue;
+                }
+                report.revisions_imported += 1;
+                report.blocks_imported += 1;
+                if options.dry_run {
+                    continue;
+                }
+                let metadata = json!({
+                    "legacy_path": rel,
+                    "section": block.section,
+                    "block": block_index,
+                    "frontmatter": parsed.frontmatter,
+                    "importer": IMPORTER,
+                    "revision_of": revision.sha,
+                    "revision_subject": revision.subject,
+                });
+                let timestamp = format_instant(revision.committed_at_millis)
+                    .unwrap_or_else(|| imported_at.to_owned());
+                // A revision is closed only by a successor that is not earlier than it. Git commit
+                // times have one-second precision, so two revisions of a fast-moving file routinely
+                // share a second; refusing to close on equality would leave both texts active at
+                // once, which is worse than a zero-length validity window. What must never happen
+                // is a `valid_until` *before* the row's own `timestamp`.
+                let closing = next
+                    .filter(|n| n.committed_at_millis >= revision.committed_at_millis)
+                    .and_then(|n| format_instant(n.committed_at_millis));
+                // An `expires` in this revision's own frontmatter ends the row sooner than a
+                // successor commit does, and it must win when it is earlier: the file said of
+                // itself that it stopped being true then. Taking the minimum keeps both rules
+                // without either overwriting the other.
+                let expiry = match expiry_of(parsed.frontmatter.as_ref()) {
+                    Expiry::At { millis, .. } => format_instant(millis),
+                    _ => None,
+                };
+                let closing = match (closing, expiry) {
+                    (Some(a), Some(b)) => Some(if b < a { b } else { a }),
+                    (a, b) => a.or(b),
+                };
+                if let Err(error) = store.remember(
+                    &content_text,
+                    &RememberOptions {
+                        source: "import".into(),
+                        importance: kind.importance,
+                        timestamp: Some(timestamp),
+                        scope: "global".into(),
+                        veracity: "imported".into(),
+                        trust_tier: Some("IMPORTED".into()),
+                        memory_type: kind.memory_type.into(),
+                        memory_id: Some(id),
+                        valid_until: closing,
+                        metadata: Some(metadata),
+                        ..Default::default()
+                    },
+                ) {
+                    report.warnings.push(Warning {
+                        path: rel.clone(),
+                        reason: format!("revision {sha} not stored: {error}", sha = revision.sha),
+                    });
+                    report.revisions_imported -= 1;
+                    report.blocks_imported -= 1;
+                }
+            }
+        }
+    }
+    covered
+}
+
+/// One historical revision of one file.
+struct Revision {
+    sha: String,
+    subject: String,
+    committed_at_millis: i64,
+    text: String,
+}
+
+/// Whether the directory is inside a git work tree, and its top level.
+fn git_toplevel(dir: &Path) -> Result<PathBuf, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .map_err(|error| format!("git is unavailable: {error}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(if stderr.contains("not a git repository") {
+            "not a git repository; history skipped".into()
+        } else {
+            format!("git rev-parse failed: {}", stderr.trim())
+        });
+    }
+    Ok(PathBuf::from(
+        String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+    ))
+}
+
+/// Revisions of one file from whichever git work tree contains it, oldest first.
+///
+/// The repo is resolved per file rather than per content root: `--from` may point at an identity
+/// directory or the store root, neither of which is itself a work tree, while the actual repo is
+/// `agents/<id>/repo/` below it. A file outside any work tree has no history and yields nothing.
+fn file_history(path: &Path) -> Result<Vec<Revision>, String> {
+    let Some(dir) = path.parent() else {
+        return Ok(Vec::new());
+    };
+    let Ok(top) = git_toplevel(dir) else {
+        return Ok(Vec::new());
+    };
+    // `git rev-parse --show-toplevel` reports the work tree's *real* path, so a `/var/...` tempdir
+    // comes back as `/private/var/...` on macOS and an 8.3 short name comes back long on Windows.
+    // Comparing `path` against that without canonicalizing both sides finds no repository and silently
+    // imports zero revisions, so both sides are resolved the same way.
+    let top = top.canonicalize().unwrap_or(top);
+    let path = &path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let Ok(rel) = path.strip_prefix(&top) else {
+        return Ok(Vec::new());
+    };
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&top)
+        .arg("log")
+        .arg("--reverse")
+        .arg(crate::git_log::LOG_FORMAT)
+        .arg("--")
+        .arg(&rel)
+        .output()
+        .map_err(|error| format!("git log failed: {error}"))?;
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+    let mut revisions = Vec::new();
+    for commit in crate::git_log::parse_log(&String::from_utf8_lossy(&out.stdout)) {
+        let Ok(when) = chrono::DateTime::parse_from_rfc3339(&commit.committed_at) else {
+            continue;
+        };
+        let blob = Command::new("git")
+            .arg("-C")
+            .arg(&top)
+            .arg("show")
+            .arg(format!("{}:{}", commit.sha, &rel))
+            .output()
+            .map_err(|error| format!("git show failed: {error}"))?;
+        if !blob.status.success() {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(blob.stdout) else {
+            continue;
+        };
+        revisions.push(Revision {
+            sha: commit.sha,
+            subject: commit.subject,
+            committed_at_millis: when.timestamp_millis(),
+            text,
+        });
+    }
+    // Commit order is not time order: a rebase or a clock skew can leave a newer commit older in
+    // the graph. Closing a revision by its graph successor would then record a `valid_until`
+    // earlier than the row's own timestamp, which is impossible in the store's temporal model.
+    revisions.sort_by_key(|revision| revision.committed_at_millis);
+    Ok(revisions)
 }
 
 fn import_file(
@@ -802,6 +1005,7 @@ mod tests {
         let store = Store::open_in_memory("import").expect("store");
         let options = ImportOptions {
             root: root.clone(),
+            history: false,
             include_people: false,
             dry_run: false,
         };
@@ -853,6 +1057,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: true,
             },
@@ -864,6 +1069,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().join("nope"),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -981,6 +1187,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1014,6 +1221,7 @@ mod tests {
         let store = Store::open_in_memory("import").expect("store");
         let options = ImportOptions {
             root: dir.path().into(),
+            history: false,
             include_people: false,
             dry_run: false,
         };
@@ -1061,6 +1269,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1088,6 +1297,7 @@ mod tests {
         let store = Store::open_in_memory("import").expect("store");
         let options = ImportOptions {
             root: dir.path().into(),
+            history: false,
             include_people: false,
             dry_run: true,
         };
@@ -1131,6 +1341,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1144,6 +1355,434 @@ mod tests {
         );
         let id = sha256_hex16("notes/a.md\u{0}0\u{0}one");
         assert_eq!(store.get(&id).expect("get").expect("row").valid_until, None);
+    }
+
+    #[test]
+    fn history_imports_earlier_revisions_closed_by_their_successor() {
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path();
+        let repo = root.join("agents/a/repo");
+        write(
+            &repo,
+            "notes/a.md",
+            "---\ndescription: x\n---\nThe first wording.\n",
+        );
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "T"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "first"]);
+        write(
+            &repo,
+            "notes/a.md",
+            "---\ndescription: x\n---\nThe second wording.\n",
+        );
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "second"]);
+
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: root.into(),
+                history: true,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        assert!(
+            report.revisions_imported >= 2,
+            "both revisions are imported: {}",
+            report.revisions_imported
+        );
+        // The current text is recallable; the replaced wording is retained but closed.
+        let hits = store
+            .recall("second wording", 5, &RecallOptions::default())
+            .expect("recall");
+        assert!(
+            hits.iter().any(|h| h.content.contains("second wording")),
+            "the current revision is recallable"
+        );
+        let rows = store.export_json().expect("export");
+        let all = rows
+            .get("working_memory")
+            .and_then(Value::as_array)
+            .expect("working_memory");
+        let first = all
+            .iter()
+            .find(|r| {
+                r.get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|c| c.contains("first wording"))
+            })
+            .expect("the earlier revision is kept");
+        assert!(
+            first.get("valid_until").and_then(Value::as_str).is_some(),
+            "an earlier revision is closed by its successor: {first}"
+        );
+    }
+
+    #[test]
+    fn history_is_skipped_without_complaint_when_the_root_is_not_a_repo() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(dir.path(), "a.md", "plain note\n");
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                history: true,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        assert_eq!(report.blocks_imported, 1);
+        assert!(
+            report.warnings.is_empty(),
+            "a plain directory is not an error: {:?}",
+            report.warnings
+        );
+        assert_eq!(report.revisions_imported, 0);
+    }
+
+    #[test]
+    fn recalling_at_a_past_instant_returns_the_text_that_was_true_then() {
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path();
+        let repo = root.join("notes");
+        write(&repo, "a.md", "the original wording\n");
+        let run = |args: &[&str], date: &str| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_COMMITTER_DATE", date)
+                .env("GIT_AUTHOR_DATE", date)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q"], "2026-01-01T00:00:00Z");
+        run(
+            &["config", "user.email", "t@example.com"],
+            "2026-01-01T00:00:00Z",
+        );
+        run(&["config", "user.name", "T"], "2026-01-01T00:00:00Z");
+        run(&["add", "."], "2026-01-01T00:00:00Z");
+        run(&["commit", "-q", "-m", "first"], "2026-01-01T00:00:00Z");
+        write(&repo, "a.md", "the replacement wording\n");
+        run(&["add", "."], "2026-06-01T00:00:00Z");
+        run(&["commit", "-q", "-m", "second"], "2026-06-01T00:00:00Z");
+
+        let store = Store::open_in_memory("import").expect("store");
+        import(
+            &store,
+            &ImportOptions {
+                root: root.into(),
+                history: true,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+
+        // Asking as of March, before the replacement: the old wording is the answer.
+        let past = store
+            .recall(
+                "wording",
+                5,
+                &RecallOptions {
+                    valid_at: Some("2026-03-01T00:00:00Z".into()),
+                    query_time: Some("2026-03-01T00:00:00Z".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("recall");
+        assert!(
+            past.iter().any(|hit| hit.content.contains("original")),
+            "the past wording is recallable at a past instant: {past:?}"
+        );
+        assert!(
+            !past.iter().any(|hit| hit.content.contains("replacement")),
+            "a later wording is not recallable at an earlier instant: {past:?}"
+        );
+
+        // Asking as of today: only the current wording.
+        let now = store
+            .recall("wording", 5, &RecallOptions::default())
+            .expect("recall");
+        assert!(
+            now.iter().any(|hit| hit.content.contains("replacement")),
+            "the current wording is recallable now: {now:?}"
+        );
+        assert!(
+            !now.iter().any(|hit| hit.content.contains("original")),
+            "a superseded wording is not recallable now: {now:?}"
+        );
+
+        // The date-only form is what a person types, and `2026-06-01T00:30:00+09:00` is the same
+        // instant as `2026-05-31T15:30:00Z` -- before the June change. Comparing it as text would
+        // read the June date part and hand back the replacement instead of the original.
+        for given in ["2026-05-31", "2026-06-01T00:30:00+09:00"] {
+            let past = store
+                .recall(
+                    "wording",
+                    5,
+                    &RecallOptions {
+                        valid_at: Some(given.into()),
+                        ..Default::default()
+                    },
+                )
+                .expect("recall");
+            assert!(
+                past.iter().any(|hit| hit.content.contains("original")),
+                "{given} selects the wording from that instant: {past:?}"
+            );
+            assert!(
+                !past.iter().any(|hit| hit.content.contains("replacement")),
+                "{given} does not see a later wording: {past:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_at_that_does_not_parse_is_now_rather_than_a_silent_match() {
+        let store = Store::open_in_memory("s").expect("store");
+        store
+            .remember("the release is on tuesday", &RememberOptions::default())
+            .expect("remember");
+        let hits = store
+            .recall(
+                "release",
+                5,
+                &RecallOptions {
+                    valid_at: Some("last tuesday".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("recall");
+        assert_eq!(
+            hits.len(),
+            1,
+            "an unparseable bound falls back to now, so a live row is still visible"
+        );
+    }
+
+    #[test]
+    fn a_revision_expiry_ends_the_row_before_its_successor_does() {
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path();
+        let repo = root.join("notes");
+        write(
+            &repo,
+            "a.md",
+            "---\nexpires: 2026-02-01\n---\nThe short-lived wording.\n",
+        );
+        let run = |args: &[&str], date: &str| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_COMMITTER_DATE", date)
+                .env("GIT_AUTHOR_DATE", date)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q"], "2026-01-01T00:00:00Z");
+        run(
+            &["config", "user.email", "t@example.com"],
+            "2026-01-01T00:00:00Z",
+        );
+        run(&["config", "user.name", "T"], "2026-01-01T00:00:00Z");
+        run(&["add", "."], "2026-01-01T00:00:00Z");
+        run(&["commit", "-q", "-m", "first"], "2026-01-01T00:00:00Z");
+        write(
+            &repo,
+            "a.md",
+            "---\nexpires: 2026-02-01\n---\nThe replacement wording.\n",
+        );
+        run(&["add", "."], "2026-06-01T00:00:00Z");
+        run(&["commit", "-q", "-m", "second"], "2026-06-01T00:00:00Z");
+
+        let store = Store::open_in_memory("import").expect("store");
+        import(
+            &store,
+            &ImportOptions {
+                root: root.into(),
+                history: true,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        let exported = store.export_json().expect("export");
+        let rows = exported
+            .get("working_memory")
+            .and_then(Value::as_array)
+            .expect("rows");
+        let first = rows
+            .iter()
+            .find(|r| {
+                r.get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|c| c.contains("short-lived"))
+            })
+            .expect("the first revision is present");
+        let closed = first
+            .get("valid_until")
+            .and_then(Value::as_str)
+            .expect("the first revision is closed");
+        assert!(
+            closed.starts_with("2026-02-01"),
+            "the file's own expiry ends the row, not the later commit: {closed}"
+        );
+    }
+
+    #[test]
+    fn the_importer_and_time_format_module_agree_on_instant_rendering() {
+        for millis in [
+            0i64,
+            1_762_891_200_000,
+            1_799_999_999_123,
+            -1,
+            -86_400_000,
+            i64::MAX,
+            i64::MIN,
+        ] {
+            assert_eq!(
+                format_instant(millis),
+                crate::time_format::format_millis(millis),
+                "the two instant formatters disagree on {millis}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_importer_and_expiry_module_agree_on_every_spec_case() {
+        let cases = [
+            "2031-03-14",
+            "2031-03-14T00:00",
+            "2031-03-14T10:20:30Z",
+            "2031-03-14T10:20:30.123Z",
+            "2031-03-14T10:20:30.123456789Z",
+            "2031-03-14T10:20:30+09:00",
+            "2031-03-14T10:20:30-05:30",
+            "2031-04-31",
+            "2031-03-14T25:00:00Z",
+            "2031-03-14T10:20:30",
+            "2031-03-14 10:20:30Z",
+            "2031-03-14T10:20:60Z",
+            "not a date",
+            "",
+        ];
+        for case in cases {
+            assert_eq!(
+                parse_expires(case),
+                crate::expiry::parse_expiry_instant(case),
+                "the two expiry parsers disagree on {case:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unparseable_frontmatter_never_becomes_memory_content() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(
+            dir.path(),
+            "notes/a.md",
+            "---\ndescription: Host (maho-win) deployment: paths and pairing\n---\nThe real note.\n",
+        );
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                history: false,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        assert_eq!(
+            report.warnings.len(),
+            1,
+            "the unreadable frontmatter is reported"
+        );
+        let rows = store.recent(10).expect("rows");
+        assert_eq!(rows.len(), 1);
+        let content = &rows[0].content;
+        assert!(
+            !content.contains("---"),
+            "YAML delimiters must not be stored as memory content: {content}"
+        );
+        assert!(
+            !content.contains("description:"),
+            "an unparseable frontmatter must not be promoted to content: {content}"
+        );
+        assert!(
+            content.contains("The real note."),
+            "the body survives: {content}"
+        );
+    }
+
+    #[test]
+    fn stacked_frontmatter_blocks_are_all_stripped() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(
+            dir.path(),
+            "notes/a.md",
+            "---\ndescription: Tart VM live-web E2E: no guest internet\n---\n---\ndescription: Tart VM has no outbound internet (vmnet NAT broken)\n---\n\n# Heading\n\nThe real note.\n",
+        );
+        let store = Store::open_in_memory("import").expect("store");
+        import(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                history: false,
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        let rows = store.recent(10).expect("rows");
+        assert_eq!(rows.len(), 1);
+        let content = &rows[0].content;
+        assert!(
+            !content.contains("---"),
+            "a second frontmatter block leaked into content: {content}"
+        );
+        assert!(
+            !content.contains("description:"),
+            "a second frontmatter block leaked into content: {content}"
+        );
+        assert!(
+            content.contains("The real note."),
+            "the body survives: {content}"
+        );
     }
 
     #[test]
@@ -1188,6 +1827,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: root.clone(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1235,6 +1875,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: root.clone(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },
@@ -1274,6 +1915,7 @@ mod tests {
             &store,
             &ImportOptions {
                 root: dir.path().into(),
+                history: false,
                 include_people: false,
                 dry_run: false,
             },

@@ -250,11 +250,7 @@ impl SqliteDatabase {
                 .map_err(db_error)?;
             return Ok(Vec::new());
         }
-        let names: Vec<String> = prepared
-            .column_names()
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect();
+        let names: Vec<String> = prepared.column_names().map(str::to_owned).collect();
         let mut rows = prepared.query(params_from_iter(params)).map_err(db_error)?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().map_err(db_error)? {

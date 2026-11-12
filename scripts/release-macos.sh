@@ -19,8 +19,20 @@ target_dir="${CARGO_TARGET_DIR:-$repo/target}"
 case "$target_dir" in /*) ;; *) target_dir="$repo/$target_dir" ;; esac
 export CARGO_TARGET_DIR="$target_dir"
 name=mhc-macos-aarch64
-work="$(mktemp -d)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/mhc-rel-XXXXXX")"
 trap 'rm -rf "$work"' EXIT
+
+omowright_commit() {
+  local commit
+  commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)' 2>/dev/null | tr -d '\r\n ')
+  if ! printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+    echo "could not read browserRuntime.dependency.commit from assets/omo-latest/manifest.json (got '$commit')" >&2
+    return 1
+  fi
+  printf '%s' "$commit"
+}
+
+commit=$(omowright_commit)
 
 export MHC_BUILD_VERSION="$version"
 cargo build --release --locked \
@@ -29,7 +41,7 @@ rel="$target_dir/release"
 test "$("$rel/mhc" --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
 test -f "$rel/mhc-launcher"
 
-commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)')
+commit=$(omowright_commit)
 git init -q "$work/omowright"
 git -C "$work/omowright" fetch -q --depth 1 https://github.com/code-yeongyu/omowright.git "$commit"
 git -C "$work/omowright" checkout -q FETCH_HEAD
@@ -49,3 +61,18 @@ bun tools/package-native.mjs --verify-only "$stage"
 scripts/package-archive.sh "$work/dist" "$name"
 mv "$work/dist/$name.tar.gz" "$work/dist/$name.tar.gz.sha256" "$outdir/"
 echo "wrote $outdir/$name.tar.gz"
+
+if [ "${MHC_RELEASE_SKIP_MIT:-}" = 1 ]; then
+  exit 0
+fi
+
+mit_name=mhc-macos-aarch64-mit
+MHC_BUILD_VERSION="$version" cargo build --release --locked --no-default-features -p maho-cli --bins
+test "$("$target_dir/release/mhc" --version | tr -d '\r')" = "$version"
+mit_stage="$work/dist/$mit_name"
+bun tools/package-native.mjs --mit --binary "$target_dir/release/mhc" --launcher-binary "$target_dir/release/mhc-launcher" --output "$mit_stage"
+bun tools/package-native.mjs --verify-only "$mit_stage"
+node -e 'const m=require(process.argv[1]+"/manifest.json");if(m.profile!=="mit")throw new Error("staged manifest is not the mit profile")' "$mit_stage"
+scripts/package-archive.sh "$work/dist" "$mit_name"
+mv "$work/dist/$mit_name.tar.gz" "$work/dist/$mit_name.tar.gz.sha256" "$outdir/"
+echo "wrote $outdir/$mit_name.tar.gz"
