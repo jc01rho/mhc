@@ -1234,11 +1234,11 @@ async fn handle_session_command_with_sink(
         RpcCommandBody::ExportHtml{output_path,theme_name}=> {
             ("export_html", session.export_to_html(output_path.as_deref(), theme_name.as_deref()).map(|path|Some(serde_json::json!({"path":path}))))
         },
-        RpcCommandBody::Steer{message,images,enqueue_order}|RpcCommandBody::FollowUp{message,images,enqueue_order}=>{
+        RpcCommandBody::Steer{message,images,enqueue_order,client_message_id}|RpcCommandBody::FollowUp{message,images,enqueue_order,client_message_id}=>{
             let kind=if matches!(&command.body,RpcCommandBody::Steer{..}){"steer"}else{"follow_up"};
             let images=images.as_ref().map(|images|images.iter().cloned().map(serde_json::from_value).collect::<Result<Vec<maho_ai::types::ImageContent>,_>>()).transpose();
             let result=match images{Err(error)=>Err(error.to_string()),Ok(images)=>{
-                let options=QueuedInputOptions{enqueue_order:enqueue_order.map(|order|order as u64),source:Some(maho_ext_api::InputSource::Rpc),from_prompt:false,client_message_id:None};
+                let options=QueuedInputOptions{enqueue_order:enqueue_order.map(|order|order as u64),source:Some(maho_ext_api::InputSource::Rpc),from_prompt:false,client_message_id:client_message_id.clone()};
                 if kind=="steer"{session.steer(message,images,options).await}else{session.follow_up(message,images,options).await}
             }};
             (kind,result.map(|()|None))
@@ -4838,5 +4838,43 @@ mod tool_runtime_capability_tests {
             advertised,
             strings(&["multi_session", "a", "b", "custom:keep"])
         );
+    }
+}
+
+#[cfg(test)]
+mod client_message_id_wire_tests {
+    use super::*;
+
+    /// The hub sends a prompt as `session.send` with the request's id under the camelCase key `clientMessageId`
+    /// (omo-nyang `src/relay/runtime.ts`); the prompt has to decode it, or every lane event stays unattributed.
+    #[test]
+    fn a_prompt_command_decodes_the_camel_case_client_message_id() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "id": "r1", "sessionId": "route", "type": "prompt",
+            "message": "hi", "clientMessageId": "sl:C1:1.2"
+        }))
+        .expect("prompt command");
+        match command.body {
+            RpcCommandBody::Prompt {
+                client_message_id, ..
+            } => assert_eq!(client_message_id.as_deref(), Some("sl:C1:1.2")),
+            other => panic!("expected a prompt, got {other:?}"),
+        }
+    }
+
+    /// A steer carries the id too, so a message injected into a running turn is attributed like a prompt.
+    #[test]
+    fn a_steer_command_decodes_the_camel_case_client_message_id() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "id": "r2", "sessionId": "route", "type": "steer",
+            "message": "hi", "clientMessageId": "sl:C1:1.3"
+        }))
+        .expect("steer command");
+        match command.body {
+            RpcCommandBody::Steer {
+                client_message_id, ..
+            } => assert_eq!(client_message_id.as_deref(), Some("sl:C1:1.3")),
+            other => panic!("expected a steer, got {other:?}"),
+        }
     }
 }
