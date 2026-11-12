@@ -227,6 +227,7 @@ async fn preserves_message_array_and_prompt_entry_ids() {
                 maho_ai::types::UserMessage {
                     content: maho_ai::types::UserContent::Text(timestamp.to_string()),
                     timestamp,
+                    client_message_id: None,
                 },
             ))
         })
@@ -722,6 +723,7 @@ async fn accepts_standalone_compaction_with_durable_preparation() {
         maho_ai::types::UserMessage {
             content: maho_ai::types::UserContent::Text("history".into()),
             timestamp: 1,
+            client_message_id: None,
         },
     ));
     let tip = lane
@@ -1358,6 +1360,7 @@ async fn acceptance_commits_exact_write_families_and_event_context() {
                 maho_ai::types::UserMessage {
                     content: maho_ai::types::UserContent::Text(timestamp.to_string()),
                     timestamp,
+                    client_message_id: None,
                 },
             ))
         })

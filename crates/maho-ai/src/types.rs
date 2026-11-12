@@ -980,6 +980,15 @@ pub struct UserMessage {
     pub content: UserContent,
     /// Unix timestamp in milliseconds
     pub timestamp: i64,
+    /// senpi `ClientMessageIdentity.clientMessageId` of the prompt this message came from: the session echoes it on
+    /// the user `message_start` event so a host watching the lane can attribute the turn (progress lines, settle) to
+    /// the request that asked it. mhc dropped it (2026-11-12: progress and settle arrived unattributed).
+    #[serde(
+        rename = "clientMessageId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_message_id: Option<String>,
 }
 
 /// Instructions and ordered declaration deltas at one point in the transcript.

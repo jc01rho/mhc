@@ -324,6 +324,32 @@ async fn run_loop(
                 return;
             }
             {
+                // senpi announces a user message like any other: the host watching the lane attributes the turn to
+                // the request that asked it from this message_start's clientMessageId (mhc dropped it, 2026-11-12:
+                // progress lines and settle arrived unattributed, so a plan reached its execution model only on the
+                // recovery tick and a running lane showed nothing in the owner's thread).
+                for message in &pending_messages {
+                    if matches!(
+                        message.try_as_llm(),
+                        Some(maho_ai::types::Message::User(_))
+                    ) {
+                        send(
+                            &emit,
+                            AgentEvent::MessageStart {
+                                message: message.clone(),
+                                streaming: None,
+                            },
+                        )
+                        .await;
+                        send(
+                            &emit,
+                            AgentEvent::MessageEnd {
+                                message: message.clone(),
+                            },
+                        )
+                        .await;
+                    }
+                }
                 prepared_messages.append(&mut pending_messages);
                 for message in declare_tool_changes(
                     &current_context,
@@ -3051,6 +3077,7 @@ mod provider_context_tests {
         let prompt = Message::User(maho_ai::types::UserMessage {
             content: UserContent::Text("input".into()),
             timestamp: 0,
+            client_message_id: None,
         })
         .into();
         // When: a new prompt starts the loop.
@@ -3237,6 +3264,7 @@ mod audit_gap_tests {
         Message::User(maho_ai::types::UserMessage {
             content: maho_ai::types::UserContent::Text("input".into()),
             timestamp: 0,
+            client_message_id: None,
         })
         .into()
     }

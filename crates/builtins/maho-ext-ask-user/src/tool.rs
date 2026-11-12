@@ -131,6 +131,7 @@ fn publish(
                 StreamingBehavior::Steer
             }),
             expand_prompt_templates: false,
+            client_message_id: None,
         };
         // Release held wakes once, before delivery, so the answer is admitted as attended input.
         if matches!(

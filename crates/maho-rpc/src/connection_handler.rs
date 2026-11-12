@@ -1027,6 +1027,7 @@ async fn run_prompt_command(
     let RpcCommandBody::Prompt {
         message,
         images,
+        client_message_id,
         streaming_behavior,
         thinking_level,
         session_title_prompt,
@@ -1072,6 +1073,7 @@ async fn run_prompt_command(
                 images,
                 thinking_level,
                 session_title_prompt,
+                client_message_id: client_message_id.clone(),
                 expand_prompt_templates: *expand_prompt_templates,
                 streaming_behavior: streaming_behavior.map(|behavior| match behavior {
                     crate::rpc_types::StreamingBehavior::Steer => {
@@ -1236,7 +1238,7 @@ async fn handle_session_command_with_sink(
             let kind=if matches!(&command.body,RpcCommandBody::Steer{..}){"steer"}else{"follow_up"};
             let images=images.as_ref().map(|images|images.iter().cloned().map(serde_json::from_value).collect::<Result<Vec<maho_ai::types::ImageContent>,_>>()).transpose();
             let result=match images{Err(error)=>Err(error.to_string()),Ok(images)=>{
-                let options=QueuedInputOptions{enqueue_order:enqueue_order.map(|order|order as u64),source:Some(maho_ext_api::InputSource::Rpc),from_prompt:false};
+                let options=QueuedInputOptions{enqueue_order:enqueue_order.map(|order|order as u64),source:Some(maho_ext_api::InputSource::Rpc),from_prompt:false,client_message_id:None};
                 if kind=="steer"{session.steer(message,images,options).await}else{session.follow_up(message,images,options).await}
             }};
             (kind,result.map(|()|None))
@@ -1485,7 +1487,7 @@ async fn handle_session_command_with_sink(
             let result=match result{Ok(result)=>Ok(result),Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_assistant_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error.code.map(str::to_owned),error_data:None}})};
             ("edit_assistant_message",edit_response(session,result,"Edited assistant entry was not persisted"))
         },
-        RpcCommandBody::EditUserMessage{entry_id,text,expected_leaf_id,summarize,custom_instructions}=>{
+        RpcCommandBody::EditUserMessage{entry_id,text,expected_leaf_id,summarize,custom_instructions,..}=>{
             if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_user_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:default_error_data(session,"edit_user_message")}});}
             let result=session.edit_user_message_coded(entry_id,text,maho_core::agent_session::TreeNavigationOptions{expected_leaf_id:expected_leaf_id.clone(),summarize:*summarize,custom_instructions:custom_instructions.clone(),..Default::default()}).await;
             let result=match result{Ok(result)=>Ok(result),Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error.code.map(str::to_owned),error_data:default_error_data(session,"edit_user_message")}})};

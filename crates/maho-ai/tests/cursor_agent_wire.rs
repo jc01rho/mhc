@@ -255,6 +255,7 @@ fn hello_context() -> Context {
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("hello".to_owned()),
             timestamp: 0,
+            client_message_id: None,
         })],
         tools: None,
     }

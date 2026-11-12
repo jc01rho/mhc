@@ -168,6 +168,7 @@ impl LoopRuntime {
             maho_ext_api::SendUserMessageOptions {
                 expand_prompt_templates: true,
                 deliver_as: busy.then_some(tick.deliver_as),
+            client_message_id: None,
             },
         )?;
         self.persist(reference)

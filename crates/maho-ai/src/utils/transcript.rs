@@ -392,6 +392,7 @@ mod tests {
         let user = Message::User(UserMessage {
             content: UserContent::Text("hi".into()),
             timestamp: 1,
+            client_message_id: None,
         });
         let contexts = [
             (

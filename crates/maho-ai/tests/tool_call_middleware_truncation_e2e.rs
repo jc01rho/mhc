@@ -462,6 +462,7 @@ async fn stream_fixture(format: &str, input: &str, stop_reason: StopReason) -> A
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("Use the available tool.".into()),
                 timestamp: 0,
+                client_message_id: None,
             })],
             tools: Some(fixture_tools()),
             active_tool_names: None,

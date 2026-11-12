@@ -89,6 +89,7 @@ mod tests {
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("x".repeat(chars)),
                 timestamp: 0,
+                client_message_id: None,
             })],
             tools: None,
         }

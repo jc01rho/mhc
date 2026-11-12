@@ -1122,6 +1122,7 @@ pub fn build_summarization_context(prompt_text: &str, source_context: Option<&Co
             ..Default::default()
         })]),
         timestamp: chrono::Utc::now().timestamp_millis(),
+        client_message_id: None,
     });
     match source_context {
         Some(source_context) => {

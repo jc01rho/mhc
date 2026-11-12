@@ -20,6 +20,7 @@ fn context() -> Context {
         messages: vec![maho_ai::types::Message::User(maho_ai::types::UserMessage {
             content: UserContent::Text("Hello".into()),
             timestamp: 0,
+            client_message_id: None,
         })],
         tools: None,
     }

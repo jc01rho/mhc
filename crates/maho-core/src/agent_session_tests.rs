@@ -1755,6 +1755,7 @@ async fn session_context_entry_ids_stamp_projected_messages_only() {
     let mut messages = session.messages();
     messages.push(AgentMessage::Llm(maho_ai::types::Message::User(
         maho_ai::types::UserMessage {
+            client_message_id: None,
             content: maho_ai::types::UserContent::Text("live".into()),
             timestamp: 1,
         },
@@ -2576,7 +2577,7 @@ async fn before_prompt_messages_land_before_the_prompt_and_others_append() {
     // Layout built by `prompt`: held inputs, then the prompt, then consumed next-turn messages.
     let mut messages = vec![
         custom("held"),
-        make_user_message("prompt", None),
+        make_user_message("prompt", None, None),
         custom("consumed"),
     ];
     session
@@ -3057,7 +3058,7 @@ fn idle_release_tokenizes_spilled_runtime_strings_and_the_next_read_rehydrates_t
     let large = "x".repeat(40 * 1024);
     session
         .agent
-        .set_messages(vec![make_user_message(&large, None)]);
+        .set_messages(vec![make_user_message(&large, None, None)]);
     let store = session.with_session_manager(|manager| manager.resident_store().clone());
     store.externalize_string(&large);
     store.spill_resident();
@@ -3092,7 +3093,7 @@ fn idle_release_keeps_runtime_strings_when_nothing_was_spilled() {
     let large = "y".repeat(40 * 1024);
     session
         .agent
-        .set_messages(vec![make_user_message(&large, None)]);
+        .set_messages(vec![make_user_message(&large, None, None)]);
     session.release_idle_runtime_messages();
     assert_eq!(raw_first_user_text(&session), large);
 }
@@ -4530,8 +4531,8 @@ async fn compaction_preparation_details_are_scoped_to_the_hook() {
             first_kept_entry_id: "kept".into(),
             previous_summary: None,
         },
-        source_messages: Some(vec![make_user_message("prefix", None)]),
-        turn_prefix_source_messages: Some(vec![make_user_message("turn prefix", None)]),
+        source_messages: Some(vec![make_user_message("prefix", None, None)]),
+        turn_prefix_source_messages: Some(vec![make_user_message("turn prefix", None, None)]),
         is_split_turn: true,
         file_ops: maho_ext_api::CompactionFileOperations {
             read: vec!["file".into()],
@@ -5398,7 +5399,7 @@ async fn queued_user_start_updates_queue_before_message_event() {
     session
         .process_agent_event(
             maho_agent::types::AgentEvent::MessageStart {
-                message: make_user_message("queued", None),
+                message: make_user_message("queued", None, None),
                 streaming: None,
             },
             maho_ai::utils::abort::AbortController::new().signal(),
@@ -5929,6 +5930,7 @@ fn session_stats_aggregate_over_entries() {
 #[test]
 fn message_fingerprint_formats_correctly() {
     let msg = AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage {
+        client_message_id: None,
         content: maho_ai::types::UserContent::Text("hello".to_owned()),
         timestamp: 0,
     }));
@@ -6258,7 +6260,7 @@ async fn next_turn_asides_stay_out_of_history_until_admitted() {
     assert_eq!(session.state().pending_next_turn_messages.len(), 1);
     assert!(
         session
-            .enforce_final_provider_admission(&[make_user_message(&"x".repeat(600_000), None)])
+            .enforce_final_provider_admission(&[make_user_message(&"x".repeat(600_000), None, None)])
             .await
             .is_ok()
     );
@@ -9264,7 +9266,7 @@ async fn nontriggering_custom_messages_flush_at_turn_end() {
     session
         .process_agent_event(
             maho_agent::types::AgentEvent::TurnEnd {
-                message: make_user_message("turn", None),
+                message: make_user_message("turn", None, None),
                 tool_results: Vec::new(),
             },
             maho_ai::utils::abort::AbortController::new().signal(),
@@ -9284,8 +9286,8 @@ async fn nontriggering_custom_messages_flush_at_turn_end() {
 async fn replacement_is_retained_in_later_turn_events() {
     // Given an earlier message_end replacement and a later turn_end carrying the original.
     let session = test_session();
-    let original = make_user_message("original", None);
-    let replacement = make_user_message("replacement", None);
+    let original = make_user_message("original", None, None);
+    let replacement = make_user_message("replacement", None, None);
     session
         .state()
         .message_replacements
@@ -11872,7 +11874,7 @@ async fn late_queued_input_requires_final_admission_without_consuming_queue() {
             serde_json::json!({"reserveTokens":0,"reserveScalingEnabled":false}),
         )]))
     });
-    let additions = [make_user_message("small prompt", None)];
+    let additions = [make_user_message("small prompt", None, None)];
     session
         .enforce_final_provider_admission(&additions)
         .await
@@ -12316,7 +12318,7 @@ async fn compaction_preserves_only_its_matching_hook_diagnostic() {
                 .expect("diagnostic");
                 if replace_prefix {
                     let mut messages = captured.messages();
-                    messages[0] = make_user_message("revision-neutral replacement", None);
+                    messages[0] = make_user_message("revision-neutral replacement", None, None);
                     captured.agent.set_messages(messages);
                 }
                 let result = maho_ext_api::CompactionResult {
@@ -13807,6 +13809,7 @@ fn a_session_without_compact_updates_mints_no_recovery_carrier() {
     let session = test_session();
     *lock(&session.recovery_identity) = None;
     let message = AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage {
+        client_message_id: None,
         content: maho_ai::types::UserContent::Text("hi".into()),
         timestamp: 1,
     }));
@@ -15621,7 +15624,7 @@ async fn oversized_transcript_holds_repairable_switch_without_durable_change() {
     session.agent.set_model(test_model());
     session
         .agent
-        .set_messages(vec![make_user_message(&"x".repeat(200_000), None)]);
+        .set_messages(vec![make_user_message(&"x".repeat(200_000), None, None)]);
     let mut model = test_model();
     model.id = "smaller".to_owned();
     model.context_window = 64_000;
@@ -15650,6 +15653,7 @@ async fn equal_window_switch_accounts_for_smaller_usable_context() {
     let available = budget.context_window - budget.required_tokens;
     session.agent.set_messages(vec![make_user_message(
         &"x".repeat((available * 4 - 8_000) as usize),
+        None,
         None,
     )]);
     let mut model = test_model();
@@ -15914,7 +15918,7 @@ async fn new_session_clears_context_and_changes_identity() {
     let id = session.session_id();
     session
         .agent
-        .set_messages(vec![make_user_message("old", None)]);
+        .set_messages(vec![make_user_message("old", None, None)]);
     assert!(session.new_session(None).await.expect("new"));
     assert_ne!(session.session_id(), id);
     assert!(session.messages().is_empty());

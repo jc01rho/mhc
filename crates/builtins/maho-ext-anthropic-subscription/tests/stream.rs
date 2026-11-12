@@ -95,6 +95,7 @@ async fn turn_after(
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("hello".into()),
                 timestamp: 1,
+                client_message_id: None,
             })],
             ..Default::default()
         },
@@ -276,6 +277,7 @@ async fn managed_native_failure_rotates_only_before_visible_delta() {
                 messages: vec![Message::User(UserMessage {
                     content: UserContent::Text("hello".into()),
                     timestamp: 1,
+                    client_message_id: None,
                 })],
                 ..Default::default()
             },
@@ -388,6 +390,7 @@ async fn rotation_consent_gates_anthropic_subscription_stream() {
                     messages: vec![Message::User(UserMessage {
                         content: UserContent::Text("hello".into()),
                         timestamp: 1,
+                        client_message_id: None,
                     })],
                     ..Default::default()
                 },
@@ -572,10 +575,12 @@ async fn managed_turn(
                 Message::User(UserMessage {
                     content: UserContent::Text("earlier".into()),
                     timestamp: 1,
+                    client_message_id: None,
                 }),
                 Message::User(UserMessage {
                     content: UserContent::Text("hello".into()),
                     timestamp: 2,
+                    client_message_id: None,
                 }),
             ],
             ..Default::default()

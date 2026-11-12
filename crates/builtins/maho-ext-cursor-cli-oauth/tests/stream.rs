@@ -313,6 +313,7 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"chat","model":"te
             messages: vec![Message::User(UserMessage {
                 content: UserContent::Text("hello".into()),
                 timestamp: 1,
+                client_message_id: None,
             })],
             ..Default::default()
         },
@@ -419,6 +420,7 @@ signal.pause()
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("hello".into()),
             timestamp: 1,
+            client_message_id: None,
         })],
         ..Default::default()
     };

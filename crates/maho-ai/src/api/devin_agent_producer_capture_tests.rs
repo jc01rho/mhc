@@ -64,6 +64,7 @@ fn context() -> Context {
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("hi".into()),
             timestamp: 0,
+            client_message_id: None,
         })],
         tools: None,
     }

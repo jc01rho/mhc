@@ -55,10 +55,10 @@ impl AgentEffectSession {
 pub fn narrow(event: &AgentSessionEvent) -> Option<EffectSessionEvent> {
     Some(match event {
         AgentSessionEvent::Agent(AgentEvent::MessageStart {
-            message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::User(_)),
+            message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::User(user)),
             ..
         }) => EffectSessionEvent::UserMessageStart {
-            client_message_id: None,
+            client_message_id: user.client_message_id.clone(),
         },
         AgentSessionEvent::Agent(AgentEvent::AgentStart) => EffectSessionEvent::AgentStart,
         AgentSessionEvent::AgentEnd {
@@ -293,6 +293,40 @@ mod tests {
         maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(
             message,
         )))
+    }
+
+    fn user(client_message_id: Option<&str>) -> maho_ext_api::AgentMessage {
+        let message: maho_ai::types::UserMessage = serde_json::from_value(json!({
+            "role": "user", "content": "hi", "timestamp": 0,
+            "clientMessageId": client_message_id
+        }))
+        .expect("user message");
+        maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::User(message))
+    }
+
+    #[test]
+    fn a_user_message_start_carries_the_client_message_id() {
+        // The host attributes a turn to the request that asked it from this id: without it the lane's progress
+        // lines and settle arrive unattributed (2026-11-12: a plan reached its execution model only on the
+        // recovery tick, and a running lane showed nothing in the owner's thread).
+        assert_eq!(
+            narrow(&AgentSessionEvent::Agent(AgentEvent::MessageStart {
+                message: user(Some("sl:C1:1.2")),
+                streaming: None,
+            })),
+            Some(EffectSessionEvent::UserMessageStart {
+                client_message_id: Some("sl:C1:1.2".to_owned()),
+            })
+        );
+        assert_eq!(
+            narrow(&AgentSessionEvent::Agent(AgentEvent::MessageStart {
+                message: user(None),
+                streaming: None,
+            })),
+            Some(EffectSessionEvent::UserMessageStart {
+                client_message_id: None,
+            })
+        );
     }
 
     fn agent_end(last: maho_ext_api::AgentMessage, will_retry: bool) -> AgentSessionEvent {

@@ -77,6 +77,7 @@ fn user_entry(id: &str, content: &str) -> NewEntry {
             maho_ai::types::UserMessage {
                 content: maho_ai::types::UserContent::Text(content.to_owned()),
                 timestamp: 1,
+                client_message_id: None,
             },
         )),
     )

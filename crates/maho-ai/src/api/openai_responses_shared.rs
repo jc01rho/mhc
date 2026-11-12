@@ -2324,6 +2324,7 @@ mod tests {
             Message::User(crate::types::UserMessage {
                 content: UserContent::Text(text.into()),
                 timestamp: 0,
+                client_message_id: None,
             })
         };
         let marker: ContextProvenance =

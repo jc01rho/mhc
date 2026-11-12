@@ -143,6 +143,8 @@ pub enum RpcCommandBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         images: Option<Vec<Value>>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        client_message_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         streaming_behavior: Option<StreamingBehavior>,
         #[serde(skip_serializing_if = "Option::is_none")]
         thinking_level: Option<String>,

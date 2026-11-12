@@ -17,6 +17,7 @@ fn user_message(content: &str) -> Message {
     Message::User(UserMessage {
         content: UserContent::Text(content.into()),
         timestamp: 0,
+        client_message_id: None,
     })
 }
 

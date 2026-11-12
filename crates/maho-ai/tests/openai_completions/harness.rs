@@ -210,6 +210,7 @@ pub fn user_message(text: &str) -> Message {
     Message::User(maho_ai::types::UserMessage {
         content: UserContent::Text(text.to_owned()),
         timestamp: 0,
+        client_message_id: None,
     })
 }
 
@@ -217,6 +218,7 @@ pub fn user_blocks(blocks: Vec<ContentBlock>) -> Message {
     Message::User(maho_ai::types::UserMessage {
         content: UserContent::Blocks(blocks),
         timestamp: 0,
+        client_message_id: None,
     })
 }
 

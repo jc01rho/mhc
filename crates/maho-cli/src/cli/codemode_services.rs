@@ -104,6 +104,7 @@ pub async fn complete(
                         maho_ai::types::ContentBlock::text(prompt),
                     ]),
                     timestamp: maho_ai::utils::diagnostics::now_ms(),
+                    client_message_id: None,
                 })],
                 tools: None,
             },

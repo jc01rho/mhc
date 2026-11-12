@@ -509,6 +509,7 @@ fn given_a_live_turn_when_only_non_start_observations_arrive_then_no_charge_unti
                 maho_ext_api::Message::User(maho_ext_api::UserMessage {
                     content: maho_ext_api::UserContent::Text("hello".into()),
                     timestamp: 0,
+                    client_message_id: None,
                 }),
             )),
         },

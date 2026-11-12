@@ -334,6 +334,7 @@ mod tests {
         let user = to_stored(&PicoMessage::User(UserMessage {
             content: UserContent::Text("hi".to_owned()),
             timestamp: 2,
+            client_message_id: None,
         }))
         .expect("user message");
         let request = RequestOptions {
@@ -432,6 +433,7 @@ mod tests {
         let user = to_stored(&PicoMessage::User(UserMessage {
             content: UserContent::Text("hi".to_owned()),
             timestamp: 2,
+            client_message_id: None,
         }))
         .expect("user message");
         let request = RequestOptions {

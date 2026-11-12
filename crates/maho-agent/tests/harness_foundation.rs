@@ -50,6 +50,7 @@ fn user(text: &str) -> AgentMessage {
             ..TextContent::default()
         })]),
         timestamp: 1_700_000_000_000,
+        client_message_id: None,
     }))
 }
 

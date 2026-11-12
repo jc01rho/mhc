@@ -1623,6 +1623,7 @@ mod tests {
                 Message::User(crate::types::UserMessage {
                     content: UserContent::Text("go".into()),
                     timestamp: 0,
+                    client_message_id: None,
                 }),
                 Message::Assistant(std::sync::Arc::new(assistant.clone())),
                 result.clone(),

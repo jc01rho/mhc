@@ -306,6 +306,9 @@ pub struct QueuedInputOptions {
     pub source: Option<InputSource>,
     /// Internal: the input already went through `prompt()`, so a held session was already released for it.
     pub from_prompt: bool,
+    /// The client's `clientMessageId` for this input: carried onto the user message so its `message_start`
+    /// attributes the turn to the request that asked it.
+    pub client_message_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -3153,6 +3156,7 @@ impl SessionExtensionActions {
                         mode,
                         None,
                         Some(InputSource::Extension),
+                        options.client_message_id.clone(),
                     );
                 }
                 session.emit(AgentSessionEvent::ContinuationError {
@@ -4174,6 +4178,7 @@ fn with_user_text(message: &AgentMessage, text: &str) -> AgentMessage {
     maho_ai::types::Message::User(maho_ai::types::UserMessage {
         content: maho_ai::types::UserContent::Blocks(content),
         timestamp: user.timestamp,
+        client_message_id: user.client_message_id.clone(),
     })
     .into()
 }
@@ -7352,6 +7357,7 @@ impl AgentSession {
                 StreamingBehavior::FollowUp,
                 None,
                 options.source,
+                options.client_message_id.clone(),
             );
             return Ok(PromptDisposition::Handled);
         }
@@ -7522,7 +7528,7 @@ impl AgentSession {
             let mode = options
                 .streaming_behavior
                 .unwrap_or(StreamingBehavior::Steer);
-            self.queue_expanded_input(text, images, mode, None, options.source);
+            self.queue_expanded_input(text, images, mode, None, options.source, options.client_message_id.clone());
             heap_future(|| {
                 self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
                     input_id,
@@ -7678,7 +7684,7 @@ impl AgentSession {
             }
         };
         let prepared_images = images.clone();
-        let user_message = make_user_message(&text, images);
+        let user_message = make_user_message(&text, images, options.client_message_id.clone());
         self.remember_input_source(
             &user_message,
             Some(options.source.unwrap_or(InputSource::Interactive)),
@@ -7894,7 +7900,7 @@ impl AgentSession {
                 .steering_messages
                 .iter()
                 .chain(&state.follow_up_messages)
-                .map(|text| make_user_message(text, None))
+                .map(|text| make_user_message(text, None, queued_input_client_message_id(&state, text)))
                 .collect::<Vec<_>>()
         };
         if !additions.iter().any(|message| message.role() == "custom")
@@ -8078,7 +8084,7 @@ impl AgentSession {
             return Ok(());
         };
         let text = self.expand_input(&text, true)?;
-        self.queue_expanded_input(text, images, mode, options.enqueue_order, options.source);
+        self.queue_expanded_input(text, images, mode, options.enqueue_order, options.source, options.client_message_id.clone());
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id,
             disposition: maho_ext_api::InputDisposition::Queued,
@@ -8094,9 +8100,10 @@ impl AgentSession {
         mode: StreamingBehavior,
         enqueue_order: Option<u64>,
         source: Option<InputSource>,
+        client_message_id: Option<String>,
     ) {
-        let queued_id = self.record_queued_input(&text, mode, enqueue_order, None, None);
-        let message = make_user_message(&text, images);
+        let queued_id = self.record_queued_input(&text, mode, enqueue_order, client_message_id.clone(), None);
+        let message = make_user_message(&text, images, client_message_id);
         self.remember_input_source(&message, Some(source.unwrap_or(InputSource::Interactive)));
         self.state()
             .queued_messages
@@ -9632,8 +9639,12 @@ impl AgentSession {
                 .map(|input| input.text.clone())
                 .collect()
         };
+        let id_by_text: std::collections::HashMap<String, Option<String>> = {
+            let state = self.state();
+            state.queued_input_order.iter().map(|input| (input.text.clone(), input.client_message_id.clone())).collect()
+        };
         for text in newer_texts {
-            let msg = make_user_message(&text, None);
+            let msg = make_user_message(&text, None, id_by_text.get(&text).cloned().flatten());
             if !parked.contains(&msg) && self.agent.remove_queued_message(&msg) {
                 to_requeue.push(msg);
             }
@@ -11065,6 +11076,7 @@ impl AgentSession {
                     messages: vec![maho_ai::types::Message::User(maho_ai::types::UserMessage {
                         content: maho_ai::types::UserContent::Text("OK".to_owned()),
                         timestamp: session.fallback_now() as i64,
+                        client_message_id: None,
                     })],
                     tools: None,
                 };
@@ -13147,7 +13159,7 @@ impl AgentSession {
             utils::serialize_conversation(&crate::messages::convert_to_llm(&preparation.messages));
         let prompt = format!("<conversation>\n{transcript}\n</conversation>\n\n{instructions}");
         let auth = self.get_summarization_request_auth(&model).await?;
-        let AgentMessage::Llm(message) = make_user_message(&prompt, None) else {
+        let AgentMessage::Llm(message) = make_user_message(&prompt, None, None) else {
             return Err("Invalid branch summary prompt".to_owned());
         };
         let callbacks = self.summarization_retry_callbacks("branchSummary", None);
@@ -22242,7 +22254,10 @@ fn clamp_thinking_level(
         .unwrap_or(ModelThinkingLevel::Off)
 }
 
-fn make_user_message(text: &str, images: Option<Vec<ImageContent>>) -> AgentMessage {
+fn queued_input_client_message_id(state: &AgentSessionState, text: &str) -> Option<String> {
+    state.queued_input_order.iter().find(|input| input.text == text).and_then(|input| input.client_message_id.clone())
+}
+fn make_user_message(text: &str, images: Option<Vec<ImageContent>>, client_message_id: Option<String>) -> AgentMessage {
     let mut content = vec![maho_ai::types::ContentBlock::Text(
         maho_ai::types::TextContent {
             text: text.to_owned(),
@@ -22258,6 +22273,7 @@ fn make_user_message(text: &str, images: Option<Vec<ImageContent>>) -> AgentMess
     maho_ai::types::Message::User(maho_ai::types::UserMessage {
         content: maho_ai::types::UserContent::Blocks(content),
         timestamp: maho_ai::utils::diagnostics::now_ms(),
+        client_message_id,
     })
     .into()
 }

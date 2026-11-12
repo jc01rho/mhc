@@ -157,6 +157,7 @@ async fn capture_records() -> Vec<AssistantRecord> {
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("fixture".into()),
             timestamp: 1,
+            client_message_id: None,
         })],
         tools: None,
     };

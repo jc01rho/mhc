@@ -262,6 +262,7 @@ pub fn build_user_message(
     maho_ai::types::UserMessage {
         content: maho_ai::types::UserContent::Blocks(content),
         timestamp,
+        client_message_id: None,
     }
 }
 pub fn response_text(response: &AssistantMessage, aborted: bool) -> Result<String, String> {

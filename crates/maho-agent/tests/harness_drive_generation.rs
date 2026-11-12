@@ -208,6 +208,7 @@ async fn fixture_with_storage(
             maho_ai::types::UserMessage {
                 content: maho_ai::types::UserContent::Text("question".into()),
                 timestamp: 1,
+                client_message_id: None,
             },
         )),
     );
@@ -1371,6 +1372,7 @@ async fn before_run_injected_messages_are_committed_and_published() {
                         maho_ai::types::Message::User(maho_ai::types::UserMessage {
                             content: maho_ai::types::UserContent::Text("injected".into()),
                             timestamp: 2,
+                            client_message_id: None,
                         })
                         .into(),
                     ],

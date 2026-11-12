@@ -1750,6 +1750,7 @@ mod wire_tests {
                     maho_ai::types::UserMessage {
                         content: maho_ai::types::UserContent::Text("hi".into()),
                         timestamp: 1,
+                        client_message_id: None,
                     },
                 )),
             },

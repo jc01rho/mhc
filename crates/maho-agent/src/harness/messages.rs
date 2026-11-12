@@ -281,6 +281,7 @@ fn summary_to_llm(summary: &str, prefix: &str, suffix: &str, timestamp: i64) -> 
             "{prefix}{summary}{suffix}"
         ))]),
         timestamp,
+        client_message_id: None,
     })
 }
 
@@ -295,6 +296,7 @@ fn custom_message_to_llm(message: &CustomMessage) -> Message {
     Message::User(UserMessage {
         content: UserContent::Blocks(content),
         timestamp: message.timestamp,
+        client_message_id: None,
     })
 }
 
@@ -304,6 +306,7 @@ pub fn custom_agent_message_to_llm(message: &CustomAgentMessage) -> Message {
         CustomAgentMessage::BashExecution(bash) => Message::User(UserMessage {
             content: UserContent::Blocks(vec![ContentBlock::text(bash_execution_to_text(bash))]),
             timestamp: bash.timestamp,
+            client_message_id: None,
         }),
         CustomAgentMessage::Custom(custom) => custom_message_to_llm(custom),
         CustomAgentMessage::BranchSummary(branch) => branch.to_llm(),

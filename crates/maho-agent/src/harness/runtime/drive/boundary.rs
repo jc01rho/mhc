@@ -291,6 +291,7 @@ pub async fn finish_run_boundary(
                 let message = maho_ai::types::UserMessage {
                     content: maho_ai::types::UserContent::Text(text),
                     timestamp: super::retry::now_ms(),
+                    client_message_id: None,
                 };
                 let entry = NewEntry::message(
                     &id,

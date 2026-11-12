@@ -4268,6 +4268,7 @@ mod cache_checkpoint_tests {
                 .push(Message::User(crate::types::UserMessage {
                     content: UserContent::Text("Inspect the repository".into()),
                     timestamp: 1,
+                    client_message_id: None,
                 }));
             for id in ["toolu_a", "toolu_b", "toolu_c", "toolu_d"] {
                 let mut assistant = create_output(&model, &StreamOptions::default());

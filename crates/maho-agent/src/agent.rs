@@ -916,6 +916,7 @@ impl Agent {
                 vec![AgentMessage::Llm(Message::User(UserMessage {
                     content: UserContent::Blocks(content),
                     timestamp: now_ms(),
+                    client_message_id: None,
                 }))]
             }
         }

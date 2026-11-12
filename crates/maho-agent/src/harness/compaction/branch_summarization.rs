@@ -376,6 +376,7 @@ pub async fn generate_branch_summary_with_request(
     let summarization_messages = vec![Message::User(maho_ai::types::UserMessage {
         content: UserContent::Blocks(vec![ContentBlock::text(prompt_text)]),
         timestamp: now_ms(),
+        client_message_id: None,
     })];
     let mut completion_options = SimpleStreamOptions::default();
     completion_options.stream.max_tokens = Some(2048);

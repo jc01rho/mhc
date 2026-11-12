@@ -59,6 +59,7 @@ fn user_blocks(blocks: Vec<ContentBlock>) -> Message {
     Message::User(UserMessage {
         content: UserContent::Blocks(blocks),
         timestamp: 0,
+        client_message_id: None,
     })
 }
 

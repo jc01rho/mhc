@@ -546,6 +546,7 @@ mod tests {
         maho_ai::types::Message::User(maho_ai::types::UserMessage {
             content: maho_ai::types::UserContent::Text(text.into()),
             timestamp: 0,
+            client_message_id: None,
         })
     }
     fn assistant(text: &str) -> maho_ai::types::Message {

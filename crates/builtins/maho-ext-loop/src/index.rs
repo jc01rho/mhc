@@ -118,6 +118,7 @@ pub fn deliver_loop_tick(
         maho_ext_api::SendUserMessageOptions {
             expand_prompt_templates: true,
             deliver_as: busy.then_some(maho_ext_api::StreamingBehavior::Steer),
+            client_message_id: None,
         },
     )
 }
