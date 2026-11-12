@@ -9654,9 +9654,15 @@ impl AgentSession {
                 .map(|input| input.text.clone())
                 .collect()
         };
-        let state = self.state();
-        for text in newer_texts {
-            let msg = make_user_message(&text, None, queued_input_client_message_id(&state, &text));
+        let ids_by_text: Vec<Option<String>> = {
+            let state = self.state();
+            newer_texts
+                .iter()
+                .map(|text| queued_input_client_message_id(&state, text))
+                .collect()
+        };
+        for (text, client_message_id) in newer_texts.into_iter().zip(ids_by_text) {
+            let msg = make_user_message(&text, None, client_message_id);
             if !parked.contains(&msg) && self.agent.remove_queued_message(&msg) {
                 to_requeue.push(msg);
             }

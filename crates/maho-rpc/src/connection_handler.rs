@@ -4862,6 +4862,22 @@ mod client_message_id_wire_tests {
         }
     }
 
+    /// A follow_up carries the id on the same or-pattern as steer.
+    #[test]
+    fn a_follow_up_command_decodes_the_camel_case_client_message_id() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "id": "r3", "sessionId": "route", "type": "follow_up",
+            "message": "hi", "clientMessageId": "sl:C1:1.4"
+        }))
+        .expect("follow_up command");
+        match command.body {
+            RpcCommandBody::FollowUp {
+                client_message_id, ..
+            } => assert_eq!(client_message_id.as_deref(), Some("sl:C1:1.4")),
+            other => panic!("expected a follow_up, got {other:?}"),
+        }
+    }
+
     /// A steer carries the id too, so a message injected into a running turn is attributed like a prompt.
     #[test]
     fn a_steer_command_decodes_the_camel_case_client_message_id() {
