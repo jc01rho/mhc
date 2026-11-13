@@ -33,8 +33,8 @@ use crate::types::{CpaConfig, HealthSnapshot, HealthState};
 use crate::usage::fetch_usage;
 use maho_ext_api::{
     CustomMessage, EventKind, EventResult, Extension, ExtensionApi, ExtensionContext,
-    ExtensionEvent, ExtensionMode, ExtensionWidgetAction, ExtensionWidgetOptions,
-    NotificationType, SendMessageOptions, ToolContent, WidgetContent, WidgetPlacement,
+    ExtensionEvent, ExtensionMode, ExtensionWidgetAction, ExtensionWidgetOptions, NotificationType,
+    SendMessageOptions, ToolContent, WidgetContent, WidgetPlacement,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -43,8 +43,7 @@ use std::sync::{Arc, Mutex};
 pub const STATUS_KEY: &str = "omo-cpa";
 pub const COMMAND_NAME: &str = "cpa";
 pub const COMMAND_DESCRIPTION: &str = "CPA 상태·tier·fallback chain·계정 사용량 점검";
-pub const COMMAND_ARGUMENT_HINT: &str =
-    "[help|refresh|management [status|set|clear]|tier [promote|demote|reset] <model-id>|chains [apply]]";
+pub const COMMAND_ARGUMENT_HINT: &str = "[help|refresh|management [status|set|clear]|tier [promote|demote|reset] <model-id>|chains [apply]]";
 pub const USAGE_TIMEOUT_MS: u64 = 10_000;
 
 /// Paths the extension reads and writes. Injected so tests never touch the real home directory.
@@ -142,8 +141,12 @@ pub fn register_provider_safely(
 pub async fn refresh(env: &HandlerEnv, force: bool) {
     let stored = crate::provider::read_stored_primary_connection_default();
     let loaded = load_config(
-        stored.as_ref().map(|connection| connection.api_key.as_str()),
-        stored.as_ref().map(|connection| connection.base_url.as_str()),
+        stored
+            .as_ref()
+            .map(|connection| connection.api_key.as_str()),
+        stored
+            .as_ref()
+            .map(|connection| connection.base_url.as_str()),
         &env.options.management_key_path,
         &ConfigEnv::from_process(),
     );
@@ -226,11 +229,7 @@ pub fn set_status(state: &SharedState, context: &ExtensionContext) {
 }
 
 fn short_hostname() -> String {
-    hostname()
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .to_owned()
+    hostname().split('.').next().unwrap_or_default().to_owned()
 }
 
 fn hostname() -> String {
@@ -258,9 +257,7 @@ fn send_block(env: &HandlerEnv, content: &str, custom_type: &str) {
         display: true,
         details: None,
     };
-    let _ = env
-        .api
-        .send_message(message, SendMessageOptions::default());
+    let _ = env.api.send_message(message, SendMessageOptions::default());
 }
 
 /// One-line-per-pool summary of the live tier split.
@@ -304,18 +301,23 @@ pub fn render_tier_summary(tiered: &TieredProviderData) -> String {
     .join("\n\n")
 }
 
-pub async fn handle_tier_command(command: TierCommand, context: &ExtensionContext, env: &HandlerEnv) {
+pub async fn handle_tier_command(
+    command: TierCommand,
+    context: &ExtensionContext,
+    env: &HandlerEnv,
+) {
     match command {
         TierCommand::Error { message } => notify(context, &message, Level::Warning),
-        TierCommand::List => match load_tiered_provider_data(&env.runtime, &env.options, false).await
-        {
-            Ok(tiered) => send_block(env, &render_tier_summary(&tiered), "omo-cpa-tier"),
-            Err(error) => notify(
-                context,
-                &format!("CPA 모델 목록 불러오기 실패 · {}", redact(&error)),
-                Level::Warning,
-            ),
-        },
+        TierCommand::List => {
+            match load_tiered_provider_data(&env.runtime, &env.options, false).await {
+                Ok(tiered) => send_block(env, &render_tier_summary(&tiered), "omo-cpa-tier"),
+                Err(error) => notify(
+                    context,
+                    &format!("CPA 모델 목록 불러오기 실패 · {}", redact(&error)),
+                    Level::Warning,
+                ),
+            }
+        }
         TierCommand::Set { id, tier } => {
             apply_tier_change(context, env, &id, Some(tier)).await;
         }
@@ -387,7 +389,10 @@ async fn apply_tier_change(
     );
 }
 
-fn re_register(env: &HandlerEnv, overrides: &OverrideStore) -> Result<(), maho_ext_api::ExtensionFailure> {
+fn re_register(
+    env: &HandlerEnv,
+    overrides: &OverrideStore,
+) -> Result<(), maho_ext_api::ExtensionFailure> {
     let migration = crate::provider::read_migration_source();
     let registration = ProviderRegistrationData {
         catalog: Vec::new(),
@@ -673,7 +678,11 @@ pub async fn handle_cpa_command(args: &str, context: &ExtensionContext, env: &Ha
         words.first().map(String::as_str),
         Some("help" | "--help" | "-h")
     ) {
-        send_block(env, &help_text(&env.options.management_key_path), "omo-cpa-help");
+        send_block(
+            env,
+            &help_text(&env.options.management_key_path),
+            "omo-cpa-help",
+        );
         return;
     }
     if words.first().map(String::as_str) == Some("management") {

@@ -18,7 +18,8 @@ impl Tier {
 }
 
 /// The seven families the user designated as primary workhorses.
-pub const PRIMARY_FAMILIES: &[&str] = &["muse", "gpt", "claude", "gemini", "glm", "deepseek", "grok"];
+pub const PRIMARY_FAMILIES: &[&str] =
+    &["muse", "gpt", "claude", "gemini", "glm", "deepseek", "grok"];
 
 /// CPA's three wire formats. One catalog, three shapes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

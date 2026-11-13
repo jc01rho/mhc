@@ -43,7 +43,10 @@ impl CatalogCache {
 
     /// Age of the cached catalog in ms, or `None` when nothing is cached.
     pub fn cached_age(&self, now_ms: i64) -> Option<i64> {
-        let shared = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         shared
             .cached
             .as_ref()
@@ -52,7 +55,10 @@ impl CatalogCache {
 
     /// Drop the cached catalog. Used by an explicit refresh.
     pub fn clear(&self) {
-        let mut shared = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         shared.cached = None;
     }
 
@@ -72,7 +78,10 @@ impl CatalogCache {
     ) -> CatalogFetchResult {
         let key = cache_key(root, api_key);
         if !force {
-            let shared = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let shared = self
+                .shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some((cached_key, entry)) = &shared.cached
                 && *cached_key == key
                 && now_ms - entry.fetched_at < ttl_ms
@@ -84,7 +93,10 @@ impl CatalogCache {
         let _guard = self.inflight.lock().await;
         // Another caller may have completed the fetch while this one waited.
         if !force {
-            let shared = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let shared = self
+                .shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some((cached_key, entry)) = &shared.cached
                 && *cached_key == key
                 && now_ms - entry.fetched_at < ttl_ms
@@ -99,13 +111,20 @@ impl CatalogCache {
         };
 
         let previous = {
-            let shared = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let shared = self
+                .shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match &shared.cached {
                 Some((cached_key, entry)) if *cached_key == key => entry.result.models.clone(),
                 _ => Vec::new(),
             }
         };
-        let listed: BTreeSet<&str> = result.models.iter().map(|model| model.id.as_str()).collect();
+        let listed: BTreeSet<&str> = result
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect();
         let mut carried = Vec::new();
         for model in previous {
             if !listed.contains(model.id.as_str()) {
@@ -115,7 +134,10 @@ impl CatalogCache {
         result.retained_ids = carried.iter().map(|model| model.id.clone()).collect();
         result.models.extend(carried);
 
-        let mut shared = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         shared.cached = Some((
             key,
             CacheEntry {

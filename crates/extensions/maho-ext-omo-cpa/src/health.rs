@@ -54,10 +54,9 @@ impl HealthTracker {
             self.retry_at = parse_retry_after(headers, now);
             self.state = HealthState::RateLimited;
             self.last_detail = match self.retry_at {
-                Some(retry_at) => format!(
-                    "요청 제한 (HTTP 429) · {} 재시도",
-                    retry_clock(retry_at)
-                ),
+                Some(retry_at) => {
+                    format!("요청 제한 (HTTP 429) · {} 재시도", retry_clock(retry_at))
+                }
                 None => "요청 제한 (HTTP 429)".to_owned(),
             };
             return self.snapshot();
@@ -70,8 +69,10 @@ impl HealthTracker {
             } else {
                 HealthState::Degraded
             };
-            self.last_detail =
-                format!("서버 오류 (HTTP {status}) · 연속 {}회", self.consecutive_failures);
+            self.last_detail = format!(
+                "서버 오류 (HTTP {status}) · 연속 {}회",
+                self.consecutive_failures
+            );
             return self.snapshot();
         }
 
@@ -80,8 +81,7 @@ impl HealthTracker {
             if self.consecutive_failures == 0 {
                 self.state = HealthState::Ok;
             }
-            self.last_detail =
-                format!("요청 거부 (HTTP {status}) — 서버 상태와 무관할 수 있음");
+            self.last_detail = format!("요청 거부 (HTTP {status}) — 서버 상태와 무관할 수 있음");
             return self.snapshot();
         }
 
@@ -142,7 +142,12 @@ pub fn parse_retry_after(headers: &BTreeMap<String, String>, now: i64) -> Option
 /// HH:MM in local time, matching `new Date(retryAt).toTimeString().slice(0, 5)`.
 fn retry_clock(at: i64) -> String {
     chrono::DateTime::from_timestamp_millis(at)
-        .map(|instant| instant.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .map(|instant| {
+            instant
+                .with_timezone(&chrono::Local)
+                .format("%H:%M")
+                .to_string()
+        })
         .unwrap_or_else(|| "--:--".to_owned())
 }
 
@@ -160,8 +165,14 @@ mod tests {
     #[test]
     fn the_breaker_trips_only_after_the_threshold() {
         let mut tracker = HealthTracker::new(3);
-        assert_eq!(tracker.record(500, &BTreeMap::new(), 1).state, HealthState::Degraded);
-        assert_eq!(tracker.record(502, &BTreeMap::new(), 2).state, HealthState::Degraded);
+        assert_eq!(
+            tracker.record(500, &BTreeMap::new(), 1).state,
+            HealthState::Degraded
+        );
+        assert_eq!(
+            tracker.record(502, &BTreeMap::new(), 2).state,
+            HealthState::Degraded
+        );
         let down = tracker.record(503, &BTreeMap::new(), 3);
         assert_eq!(down.state, HealthState::Down);
         assert_eq!(down.consecutive_failures, 3);
@@ -190,7 +201,10 @@ mod tests {
     #[test]
     fn a_4xx_on_a_healthy_tracker_reports_ok() {
         let mut tracker = HealthTracker::new(3);
-        assert_eq!(tracker.record(400, &BTreeMap::new(), 1).state, HealthState::Ok);
+        assert_eq!(
+            tracker.record(400, &BTreeMap::new(), 1).state,
+            HealthState::Ok
+        );
     }
 
     #[test]
@@ -208,7 +222,10 @@ mod tests {
             parse_retry_after(&headers(&[("retry-after", "2.5")]), 0),
             Some(2500)
         );
-        assert_eq!(parse_retry_after(&headers(&[("Retry-After", "later")]), 0), None);
+        assert_eq!(
+            parse_retry_after(&headers(&[("Retry-After", "later")]), 0),
+            None
+        );
         assert_eq!(parse_retry_after(&BTreeMap::new(), 0), None);
         let date = parse_retry_after(
             &headers(&[("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT")]),

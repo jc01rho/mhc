@@ -20,12 +20,34 @@ pub struct ModelEntry {
     pub max_thinking: bool,
 }
 
-const fn model(id: &'static str, name: &'static str, context_window: u64, max_tokens: Option<u64>) -> ModelEntry {
-    ModelEntry { id, name, context_window, max_tokens, max_thinking: true }
+const fn model(
+    id: &'static str,
+    name: &'static str,
+    context_window: u64,
+    max_tokens: Option<u64>,
+) -> ModelEntry {
+    ModelEntry {
+        id,
+        name,
+        context_window,
+        max_tokens,
+        max_thinking: true,
+    }
 }
 
-const fn max_model(id: &'static str, name: &'static str, context_window: u64, max_tokens: u64) -> ModelEntry {
-    ModelEntry { id, name, context_window, max_tokens: Some(max_tokens), max_thinking: true }
+const fn max_model(
+    id: &'static str,
+    name: &'static str,
+    context_window: u64,
+    max_tokens: u64,
+) -> ModelEntry {
+    ModelEntry {
+        id,
+        name,
+        context_window,
+        max_tokens: Some(max_tokens),
+        max_thinking: true,
+    }
 }
 
 /// An id the runtime already infers max for (the opus-5 and sonnet-5 families), so it needs no map entry. Every other id
@@ -42,27 +64,112 @@ const fn inferred(entry: ModelEntry) -> ModelEntry {
 /// Every id a gateway-owned session can be set to (the Jev catalog plus the recovery chain). Sessions
 /// run with --no-model-fallback, so an id missing here is "Model not found", not a fallback.
 pub const MODELS: &[ModelEntry] = &[
-    max_model("ollama-deepseek-v4.1-flash", "DeepSeek V4.1 Flash (OmOMeow)", 256_000, 64_000),
-    inferred(model("claude-opus-5-5", "Opus 5.5 (OmOMeow)", 1_000_000, None)),
-    inferred(model("claude-sonnet-5-5", "Sonnet 5.5 (OmOMeow)", 1_000_000, None)),
-    model("gemini-4-carbon-high", "Gemini 4 Carbon High (OmOMeow)", 1_048_576, Some(250_000)),
-    model("claude-haiku-5-5", "Haiku 5.5 (OmOMeow)", 200_000, Some(64_000)),
+    max_model(
+        "ollama-deepseek-v4.1-flash",
+        "DeepSeek V4.1 Flash (OmOMeow)",
+        256_000,
+        64_000,
+    ),
+    inferred(model(
+        "claude-opus-5-5",
+        "Opus 5.5 (OmOMeow)",
+        1_000_000,
+        None,
+    )),
+    inferred(model(
+        "claude-sonnet-5-5",
+        "Sonnet 5.5 (OmOMeow)",
+        1_000_000,
+        None,
+    )),
+    model(
+        "gemini-4-carbon-high",
+        "Gemini 4 Carbon High (OmOMeow)",
+        1_048_576,
+        Some(250_000),
+    ),
+    model(
+        "claude-haiku-5-5",
+        "Haiku 5.5 (OmOMeow)",
+        200_000,
+        Some(64_000),
+    ),
     model("glm-5.3", "GLM 5.3 (OmOMeow)", 200_000, Some(64_000)),
-    model("glm-5.3-flash", "GLM 5.3 Flash (OmOMeow)", 200_000, Some(64_000)),
-    model("gemini-3.8-flash-high", "Gemini 3.8 Flash High (OmOMeow)", 1_000_000, None),
+    model(
+        "glm-5.3-flash",
+        "GLM 5.3 Flash (OmOMeow)",
+        200_000,
+        Some(64_000),
+    ),
+    model(
+        "gemini-3.8-flash-high",
+        "Gemini 3.8 Flash High (OmOMeow)",
+        1_000_000,
+        None,
+    ),
     model("oc-beam", "OC Beam (OmOMeow)", 872_000, Some(64_000)),
     model("beam-free", "Beam Free (OmOMeow)", 872_000, Some(64_000)),
-    model("crouton-alpha-free", "Crouton Alpha Free (OmOMeow)", 1_048_576, Some(64_000)),
-    max_model("oc-deepseek-v4.1-flash-free", "DeepSeek V4.1 Flash Free (OmOMeow)", 256_000, 64_000),
-    model("higher-coding", "Higher Coding (OmOMeow)", 1_000_000, Some(64_000)),
-    model("lower-coding", "Lower Coding (OmOMeow)", 200_000, Some(64_000)),
+    model(
+        "crouton-alpha-free",
+        "Crouton Alpha Free (OmOMeow)",
+        1_048_576,
+        Some(64_000),
+    ),
+    max_model(
+        "oc-deepseek-v4.1-flash-free",
+        "DeepSeek V4.1 Flash Free (OmOMeow)",
+        256_000,
+        64_000,
+    ),
+    model(
+        "higher-coding",
+        "Higher Coding (OmOMeow)",
+        1_000_000,
+        Some(64_000),
+    ),
+    model(
+        "lower-coding",
+        "Lower Coding (OmOMeow)",
+        200_000,
+        Some(64_000),
+    ),
     inferred(model("claude-opus-5", "Opus 5 (OmOMeow)", 1_000_000, None)),
-    model("gemini-3.1-pro", "Gemini 3.1 Pro (OmOMeow)", 200_000, Some(64_000)),
-    model("grok-4.7-high", "Grok 4.7 High (OmOMeow)", 200_000, Some(64_000)),
-    model("mistral-large-4", "Mistral Large 4 (OmOMeow)", 1_048_576, None),
-    model("muse-spark-1.3-high", "Muse Spark 1.3 (OmOMeow)", 1_000_000, Some(64_000)),
-    model("muse-wonder-1.0-high", "Muse Wonder (OmOMeow)", 200_000, Some(64_000)),
-    model("kimi-k3-high", "Kimi K3 High (OmOMeow)", 256_000, Some(64_000)),
+    model(
+        "gemini-3.1-pro",
+        "Gemini 3.1 Pro (OmOMeow)",
+        200_000,
+        Some(64_000),
+    ),
+    model(
+        "grok-4.7-high",
+        "Grok 4.7 High (OmOMeow)",
+        200_000,
+        Some(64_000),
+    ),
+    model(
+        "mistral-large-4",
+        "Mistral Large 4 (OmOMeow)",
+        1_048_576,
+        None,
+    ),
+    model(
+        "muse-spark-1.3-high",
+        "Muse Spark 1.3 (OmOMeow)",
+        1_000_000,
+        Some(64_000),
+    ),
+    model(
+        "muse-wonder-1.0-high",
+        "Muse Wonder (OmOMeow)",
+        200_000,
+        Some(64_000),
+    ),
+    model(
+        "kimi-k3-high",
+        "Kimi K3 High (OmOMeow)",
+        256_000,
+        Some(64_000),
+    ),
 ];
 
 /// The shared proxy endpoint: the hub passes it in `OMOMEOW_PROVIDER_BASE_URL` (workers have no
@@ -144,7 +251,9 @@ pub fn load_provider(
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 
 /// `~/.omo/agent/models.json` and `<dir of OMOCAT_CONFIG>/llm-api-key`, as the TS entry reads them.
@@ -153,7 +262,10 @@ pub fn default_paths() -> (PathBuf, PathBuf) {
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".config/omocat/config.json"));
     let directory = config.parent().map(Path::to_path_buf).unwrap_or_default();
-    (home().join(".omo/agent/models.json"), directory.join("llm-api-key"))
+    (
+        home().join(".omo/agent/models.json"),
+        directory.join("llm-api-key"),
+    )
 }
 
 pub fn register(api: &maho_ext_api::ExtensionApi) -> Result<(), ExtensionFailure> {
@@ -169,7 +281,8 @@ mod tests {
     use super::*;
 
     fn temp(name: &str, contents: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("omomeow-provider-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("omomeow-provider-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         std::fs::write(&path, contents).unwrap();
@@ -178,17 +291,36 @@ mod tests {
 
     #[test]
     fn base_url_comes_from_override_then_source_provider() {
-        let models = temp("models.json", r#"{"providers":{"cliproxyapi-last":{"baseUrl":"http://proxy/v1","apiKey":"k"}}}"#);
-        assert_eq!(proxy_base_url(&models, Some("http://hub/v1")).unwrap(), "http://hub/v1");
-        assert_eq!(proxy_base_url(&models, Some("")).unwrap(), "http://proxy/v1");
+        let models = temp(
+            "models.json",
+            r#"{"providers":{"cliproxyapi-last":{"baseUrl":"http://proxy/v1","apiKey":"k"}}}"#,
+        );
+        assert_eq!(
+            proxy_base_url(&models, Some("http://hub/v1")).unwrap(),
+            "http://hub/v1"
+        );
+        assert_eq!(
+            proxy_base_url(&models, Some("")).unwrap(),
+            "http://proxy/v1"
+        );
         assert_eq!(proxy_base_url(&models, None).unwrap(), "http://proxy/v1");
-        let other = temp("other.json", r#"{"providers":{"x":{"baseUrl":"u","apiKey":"k"}}}"#);
-        assert!(proxy_base_url(&other, None).unwrap_err().contains("Existing proxy provider"));
+        let other = temp(
+            "other.json",
+            r#"{"providers":{"x":{"baseUrl":"u","apiKey":"k"}}}"#,
+        );
+        assert!(
+            proxy_base_url(&other, None)
+                .unwrap_err()
+                .contains("Existing proxy provider")
+        );
     }
 
     #[test]
     fn provider_carries_every_model_with_its_limits() {
-        let models = temp("m2.json", r#"{"providers":{"cliproxyapi-last":{"baseUrl":"http://proxy/v1","apiKey":"k"}}}"#);
+        let models = temp(
+            "m2.json",
+            r#"{"providers":{"cliproxyapi-last":{"baseUrl":"http://proxy/v1","apiKey":"k"}}}"#,
+        );
         let key = temp("llm-api-key", "  secret-key\n");
         let config = load_provider(&models, &key, None).unwrap();
         assert_eq!(config.api_key.as_deref(), Some("secret-key"));
@@ -196,21 +328,42 @@ mod tests {
         assert_eq!(config.auth_header, Some(true));
         let list = config.models.unwrap();
         assert_eq!(list.len(), MODELS.len());
-        let flash = list.iter().find(|m| m.id == "ollama-deepseek-v4.1-flash").unwrap();
+        let flash = list
+            .iter()
+            .find(|m| m.id == "ollama-deepseek-v4.1-flash")
+            .unwrap();
         assert_eq!(flash.max_tokens, 64_000);
         assert_eq!(
-            flash.thinking_level_map.as_ref().unwrap().get(&ModelThinkingLevel::Max),
+            flash
+                .thinking_level_map
+                .as_ref()
+                .unwrap()
+                .get(&ModelThinkingLevel::Max),
             Some(&Some("max".to_owned()))
         );
-        let carbon = list.iter().find(|m| m.id == "gemini-4-carbon-high").unwrap();
+        let carbon = list
+            .iter()
+            .find(|m| m.id == "gemini-4-carbon-high")
+            .unwrap();
         assert_eq!(
-            carbon.thinking_level_map.as_ref().unwrap().get(&ModelThinkingLevel::Max),
+            carbon
+                .thinking_level_map
+                .as_ref()
+                .unwrap()
+                .get(&ModelThinkingLevel::Max),
             Some(&Some("max".to_owned()))
         );
         let opus = list.iter().find(|m| m.id == "claude-opus-5-5").unwrap();
         assert_eq!(opus.max_tokens, DEFAULT_MAX_TOKENS);
         assert!(opus.thinking_level_map.is_none());
-        assert_eq!(opus.compat.as_ref().unwrap().0.get("supportsForcedToolChoice"), Some(&Value::Bool(false)));
+        assert_eq!(
+            opus.compat
+                .as_ref()
+                .unwrap()
+                .0
+                .get("supportsForcedToolChoice"),
+            Some(&Value::Bool(false))
+        );
     }
 
     #[test]
@@ -228,8 +381,14 @@ mod tests {
 
     #[test]
     fn empty_key_is_refused() {
-        let models = temp("m3.json", r#"{"providers":{"cliproxyapi-last":{"baseUrl":"u","apiKey":"k"}}}"#);
+        let models = temp(
+            "m3.json",
+            r#"{"providers":{"cliproxyapi-last":{"baseUrl":"u","apiKey":"k"}}}"#,
+        );
         let key = temp("empty-key", "  \n");
-        assert_eq!(load_provider(&models, &key, None).err().as_deref(), Some("OmOcat API key is empty"));
+        assert_eq!(
+            load_provider(&models, &key, None).err().as_deref(),
+            Some("OmOcat API key is empty")
+        );
     }
 }

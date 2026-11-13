@@ -430,16 +430,15 @@ pub async fn reconcile_reflection_runs_with_signal(
         )
         .map_err(|error| error.to_string())?;
         throw_if_aborted(signal)?;
-        if let Some(result) =
-            reconcile_run_observing(
-                context,
-                &path,
-                ledger,
-                recovery,
-                signal,
-                !defer_on_scheduler_contention,
-            )
-            .await?
+        if let Some(result) = reconcile_run_observing(
+            context,
+            &path,
+            ledger,
+            recovery,
+            signal,
+            !defer_on_scheduler_contention,
+        )
+        .await?
         {
             results.push((result.run_id, result.outcome));
         }
@@ -958,7 +957,10 @@ mod tests {
             .await
             .unwrap();
             assert!(result.is_none());
-            assert!(recovery.calls.borrow().is_empty(), "no wait, signal or terminal claim");
+            assert!(
+                recovery.calls.borrow().is_empty(),
+                "no wait, signal or terminal claim"
+            );
         }
     }
     #[tokio::test]
@@ -979,9 +981,16 @@ mod tests {
             ),
             calls: Default::default(),
         };
-        reconcile_run_observing(&context, root.path(), ledger(root.path()), &recovery, None, false)
-            .await
-            .unwrap();
+        reconcile_run_observing(
+            &context,
+            root.path(),
+            ledger(root.path()),
+            &recovery,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
         // Past deadlineAt (105) nothing is skipped: the same wait and abandon as the waiting pass.
         assert_eq!(*recovery.calls.borrow(), ["outcome:105", "abandon"]);
     }

@@ -6260,7 +6260,11 @@ async fn next_turn_asides_stay_out_of_history_until_admitted() {
     assert_eq!(session.state().pending_next_turn_messages.len(), 1);
     assert!(
         session
-            .enforce_final_provider_admission(&[make_user_message(&"x".repeat(600_000), None, None)])
+            .enforce_final_provider_admission(&[make_user_message(
+                &"x".repeat(600_000),
+                None,
+                None
+            )])
             .await
             .is_ok()
     );
@@ -17526,21 +17530,19 @@ async fn local_bash_records_native_custom_context_and_history() {
     assert_eq!(entry["message"]["excludeFromContext"], true);
 }
 
-
 #[tokio::test]
 async fn a_queued_prompt_keeps_its_client_message_id() {
     // The hub attributes a lane's events from the clientMessageId echoed on the user message_start, so the id has to
     // survive queueing: the queue record keeps it and the message built from it carries it (2026-11-12).
     let session = test_session();
-    session
-        .queue_expanded_input(
-            "hello".to_string(),
-            None,
-            StreamingBehavior::FollowUp,
-            None,
-            Some(InputSource::Interactive),
-            Some("sl:C1:1.2".to_string()),
-        );
+    session.queue_expanded_input(
+        "hello".to_string(),
+        None,
+        StreamingBehavior::FollowUp,
+        None,
+        Some(InputSource::Interactive),
+        Some("sl:C1:1.2".to_string()),
+    );
     let queued = session.state().queued_messages.clone();
     assert_eq!(queued.len(), 1, "the prompt is queued");
     match queued[0].1.try_as_llm() {
@@ -17570,7 +17572,10 @@ fn a_queued_text_two_inputs_share_keeps_no_client_message_id() {
             Some(id.to_string()),
         );
     }
-    assert_eq!(queued_input_client_message_id(&session.state(), "same"), None);
+    assert_eq!(
+        queued_input_client_message_id(&session.state(), "same"),
+        None
+    );
     // One input alone still resolves, and an unknown text has no id.
     session.queue_expanded_input(
         "only".to_string(),
@@ -17584,5 +17589,8 @@ fn a_queued_text_two_inputs_share_keeps_no_client_message_id() {
         queued_input_client_message_id(&session.state(), "only").as_deref(),
         Some("sl:C1:1.4")
     );
-    assert_eq!(queued_input_client_message_id(&session.state(), "absent"), None);
+    assert_eq!(
+        queued_input_client_message_id(&session.state(), "absent"),
+        None
+    );
 }

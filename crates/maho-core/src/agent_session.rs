@@ -7548,7 +7548,14 @@ impl AgentSession {
             let mode = options
                 .streaming_behavior
                 .unwrap_or(StreamingBehavior::Steer);
-            self.queue_expanded_input(text, images, mode, None, options.source, options.client_message_id.clone());
+            self.queue_expanded_input(
+                text,
+                images,
+                mode,
+                None,
+                options.source,
+                options.client_message_id.clone(),
+            );
             heap_future(|| {
                 self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
                     input_id,
@@ -7926,7 +7933,9 @@ impl AgentSession {
                 .steering_messages
                 .iter()
                 .chain(&state.follow_up_messages)
-                .map(|text| make_user_message(text, None, queued_input_client_message_id(&state, text)))
+                .map(|text| {
+                    make_user_message(text, None, queued_input_client_message_id(&state, text))
+                })
                 .collect::<Vec<_>>()
         };
         if !additions.iter().any(|message| message.role() == "custom")
@@ -8110,7 +8119,14 @@ impl AgentSession {
             return Ok(());
         };
         let text = self.expand_input(&text, true)?;
-        self.queue_expanded_input(text, images, mode, options.enqueue_order, options.source, options.client_message_id.clone());
+        self.queue_expanded_input(
+            text,
+            images,
+            mode,
+            options.enqueue_order,
+            options.source,
+            options.client_message_id.clone(),
+        );
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id,
             disposition: maho_ext_api::InputDisposition::Queued,
@@ -8128,7 +8144,8 @@ impl AgentSession {
         source: Option<InputSource>,
         client_message_id: Option<String>,
     ) {
-        let queued_id = self.record_queued_input(&text, mode, enqueue_order, client_message_id.clone(), None);
+        let queued_id =
+            self.record_queued_input(&text, mode, enqueue_order, client_message_id.clone(), None);
         let message = make_user_message(&text, images, client_message_id);
         self.remember_input_source(&message, Some(source.unwrap_or(InputSource::Interactive)));
         self.state()
@@ -22380,7 +22397,11 @@ fn queued_input_client_message_id(state: &AgentSessionState, text: &str) -> Opti
     }
     first.client_message_id.clone()
 }
-fn make_user_message(text: &str, images: Option<Vec<ImageContent>>, client_message_id: Option<String>) -> AgentMessage {
+fn make_user_message(
+    text: &str,
+    images: Option<Vec<ImageContent>>,
+    client_message_id: Option<String>,
+) -> AgentMessage {
     let mut content = vec![maho_ai::types::ContentBlock::Text(
         maho_ai::types::TextContent {
             text: text.to_owned(),

@@ -204,9 +204,13 @@ pub fn merge_catalogs(
                 &mut issues,
                 CatalogListEndpoint::Anthropic,
             );
-            models[position].thinking = boolean_at(record, "thinking")
-                .or_else(|| boolean_at(record, "extended_thinking"));
-            clamp_output_limit(&mut models[position], &mut issues, CatalogListEndpoint::Anthropic);
+            models[position].thinking =
+                boolean_at(record, "thinking").or_else(|| boolean_at(record, "extended_thinking"));
+            clamp_output_limit(
+                &mut models[position],
+                &mut issues,
+                CatalogListEndpoint::Anthropic,
+            );
         }
     }
 
@@ -268,7 +272,11 @@ pub fn merge_catalogs(
                 models[position].input_modalities = Some(input);
                 models[position].input_modalities_source = Some(ModalitySource::Codex);
             }
-            clamp_output_limit(&mut models[position], &mut issues, CatalogListEndpoint::Codex);
+            clamp_output_limit(
+                &mut models[position],
+                &mut issues,
+                CatalogListEndpoint::Codex,
+            );
         }
     }
 
@@ -541,9 +549,10 @@ async fn fetch_list(
         request = request.header("anthropic-version", ANTHROPIC_VERSION);
     }
 
-    let response = request.send().await.map_err(|error| {
-        format!("{} model list failed ({error})", endpoint.as_str())
-    })?;
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("{} model list failed ({error})", endpoint.as_str()))?;
     if !response.status().is_success() {
         return Err(format!(
             "{} model list failed (HTTP {})",
@@ -551,15 +560,12 @@ async fn fetch_list(
             response.status().as_u16()
         ));
     }
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|error| {
-            format!(
-                "{} model list returned invalid JSON ({error})",
-                endpoint.as_str()
-            )
-        })?;
+    let body: Value = response.json().await.map_err(|error| {
+        format!(
+            "{} model list returned invalid JSON ({error})",
+            endpoint.as_str()
+        )
+    })?;
     let list_key = endpoint.list_key();
     if records_at(&body, list_key).is_empty() {
         return Err(format!(
@@ -646,10 +652,7 @@ mod tests {
         assert_eq!(merged.models[0].display_name.as_deref(), Some("Aion 2.0"));
         assert_eq!(merged.models[0].thinking, Some(true));
         assert_eq!(merged.issues.len(), 1);
-        assert_eq!(
-            merged.issues[0].kind,
-            CatalogIssueKind::DiscardedMetadata
-        );
+        assert_eq!(merged.issues[0].kind, CatalogIssueKind::DiscardedMetadata);
         assert_eq!(merged.issues[0].endpoint, CatalogListEndpoint::Anthropic);
     }
 
@@ -668,10 +671,7 @@ mod tests {
         );
         let gemini = &merged.models[0];
         assert_eq!(gemini.display_name.as_deref(), Some("Gemini 3.1 Pro"));
-        assert_eq!(
-            gemini.input_modalities_source,
-            Some(ModalitySource::Gemini)
-        );
+        assert_eq!(gemini.input_modalities_source, Some(ModalitySource::Gemini));
         assert_eq!(gemini.input_modalities.as_ref().map(Vec::len), Some(3));
         let grok = &merged.models[1];
         assert_eq!(grok.input_modalities_source, Some(ModalitySource::Codex));
@@ -727,7 +727,9 @@ mod tests {
     fn the_sane_output_ceiling_caps_a_generous_clamp() {
         let merged = merge_catalogs(
             &json!({"data": [{"id": "m"}]}),
-            Some(&json!({"data": [{"id": "m", "max_context_window": 1_000_000, "max_tokens": 1_000_000}]})),
+            Some(
+                &json!({"data": [{"id": "m", "max_context_window": 1_000_000, "max_tokens": 1_000_000}]}),
+            ),
             None,
             None,
         );
