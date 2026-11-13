@@ -859,7 +859,8 @@ mod tests {
                 release: std::sync::Mutex::new(Some(gate)),
                 waits: Default::default(),
             };
-            let now = || 0_i64;
+            // Past the ledger's deadlineAt (105): a live run still inside its deadline is skipped without waiting.
+            let now = || 200_i64;
             let launch = |_: &memory_core::reflection::ReservedRun| {};
             let controller = maho_ext_api::AbortSignal::default();
             let joiner = maho_ext_api::AbortSignal::default();
