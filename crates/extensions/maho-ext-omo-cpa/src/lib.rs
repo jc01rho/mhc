@@ -54,10 +54,6 @@ pub struct OmoCpa;
 
 impl Extension for OmoCpa {
     fn register(&self, api: &mut ExtensionApi) {
-        register_omo_cpa(
-            api,
-            OmoCpaOptions::default(),
-            ProviderRuntime::default(),
-        );
+        register_omo_cpa(api, OmoCpaOptions::default(), ProviderRuntime::default());
     }
 }

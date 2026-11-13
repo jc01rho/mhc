@@ -550,7 +550,11 @@ fn keep_known_window(
 
 /// Publishes a persisted catalog entry. An empty list is a failed or credential-less refresh, never
 /// evidence that the provider lost its models, so nothing is persisted then.
-async fn publish_models(context: &RefreshModelsContext, tier: Tier, models: &[ProviderModelConfig]) {
+async fn publish_models(
+    context: &RefreshModelsContext,
+    tier: Tier,
+    models: &[ProviderModelConfig],
+) {
     if models.is_empty() {
         let _ = context
             .publish(ModelsPublication {
@@ -568,7 +572,11 @@ async fn publish_models(context: &RefreshModelsContext, tier: Tier, models: &[Pr
         .await;
 }
 
-pub fn store_entry(tier: Tier, models: &[ProviderModelConfig], checked_at: i64) -> ModelsStoreEntry {
+pub fn store_entry(
+    tier: Tier,
+    models: &[ProviderModelConfig],
+    checked_at: i64,
+) -> ModelsStoreEntry {
     ModelsStoreEntry {
         models: models
             .iter()
@@ -895,7 +903,10 @@ pub fn to_provider_model(
     // Provenance counts describe what the LISTS declared, so the two synthesized last-resort models
     // are left out rather than inflating a source they did not come from.
     if !stable_last {
-        match (model.input_modalities.is_some(), model.input_modalities_source) {
+        match (
+            model.input_modalities.is_some(),
+            model.input_modalities_source,
+        ) {
             (true, Some(ModalitySource::Codex)) => stats.input_from_codex += 1,
             (true, _) => stats.input_from_gemini += 1,
             (false, _) => stats.input_from_default += 1,
@@ -965,7 +976,10 @@ fn thinking_level_map(id: &str, is_mistral: bool) -> Option<ThinkingLevelMap> {
         // Mistral only accepts reasoning_effort "high" or "none". Expose only "high" so omo never
         // sends an unsupported intermediate level.
         for key in ModelThinkingLevel::ALL {
-            map.insert(key, (key == ModelThinkingLevel::High).then(|| "high".to_owned()));
+            map.insert(
+                key,
+                (key == ModelThinkingLevel::High).then(|| "high".to_owned()),
+            );
         }
         return Some(map);
     }
@@ -1039,10 +1053,7 @@ pub fn parse_login_base_url(raw: &str) -> Result<String, ExtensionFailure> {
 }
 
 /// Build the stored credential for a validated key and root.
-pub fn login_credential(
-    base_url: &str,
-    key: &str,
-) -> Result<OAuthCredentials, ExtensionFailure> {
+pub fn login_credential(base_url: &str, key: &str) -> Result<OAuthCredentials, ExtensionFailure> {
     let key = key.trim();
     if key.is_empty() {
         return Err(ExtensionFailure::new("빈 키"));
@@ -1372,8 +1383,12 @@ mod tests {
             300_000
         );
         assert_eq!(
-            keep_known_window(sample_model("grok-4.7", DEFAULT_CONTEXT_WINDOW), &known_map, &BTreeSet::new())
-                .context_window,
+            keep_known_window(
+                sample_model("grok-4.7", DEFAULT_CONTEXT_WINDOW),
+                &known_map,
+                &BTreeSet::new()
+            )
+            .context_window,
             DEFAULT_CONTEXT_WINDOW
         );
     }
@@ -1486,7 +1501,12 @@ mod tests {
             Some("http://host:8317")
         );
         assert!(credential.expires > now_ms() as f64);
-        assert_eq!(login_credential("http://host:8317", "   ").err().map(|error| error.message), Some("빈 키".to_owned()));
+        assert_eq!(
+            login_credential("http://host:8317", "   ")
+                .err()
+                .map(|error| error.message),
+            Some("빈 키".to_owned())
+        );
     }
 
     #[test]

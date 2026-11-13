@@ -6,7 +6,7 @@
 //! Nothing here is hardcoded to a model list: every classifying function is a pure function of the
 //! catalog it is handed.
 
-use crate::tier_types::{CatalogModel, Tier, TierDecision, PRIMARY_FAMILIES};
+use crate::tier_types::{CatalogModel, PRIMARY_FAMILIES, Tier, TierDecision};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -195,9 +195,7 @@ pub fn is_chat_capable(model: &CatalogModel) -> bool {
 /// Why a model is unfit for chat, naming WHICH signal fired so the reason is actionable.
 fn non_chat_reason(model: &CatalogModel) -> String {
     if let Some(named) = non_chat_name_marker(model) {
-        return format!(
-            "non-text model family \"{named}\" in its name — unfit for a chat chain"
-        );
+        return format!("non-text model family \"{named}\" in its name — unfit for a chat chain");
     }
     let declared = match &model.output_modalities {
         Some(modalities) if !modalities.is_empty() => modalities
@@ -246,7 +244,9 @@ fn family_override(
             model.display_name.as_deref()
         })
     })?;
-    overrides.get(&format!("{FAMILY_OVERRIDE_PREFIX}{family}")).copied()
+    overrides
+        .get(&format!("{FAMILY_OVERRIDE_PREFIX}{family}"))
+        .copied()
 }
 
 fn decide(
@@ -296,7 +296,13 @@ fn classify_one(
     }
     let identity = identity(model, upstream_id);
     if !is_chat_capable(&identity) {
-        return decide(&model.id, Tier::Last, None, non_chat_reason(&identity), false);
+        return decide(
+            &model.id,
+            Tier::Last,
+            None,
+            non_chat_reason(&identity),
+            false,
+        );
     }
     if has_free_marker(&identity) {
         return decide(
@@ -378,9 +384,7 @@ pub fn build_tier_report(
     let present: BTreeSet<&str> = models.iter().map(|model| model.id.as_str()).collect();
     let inactive_overrides = overrides
         .iter()
-        .filter(|(id, _)| {
-            !id.starts_with(FAMILY_OVERRIDE_PREFIX) && !present.contains(id.as_str())
-        })
+        .filter(|(id, _)| !id.starts_with(FAMILY_OVERRIDE_PREFIX) && !present.contains(id.as_str()))
         .map(|(id, tier)| InactiveOverride {
             id: id.clone(),
             tier: *tier,
@@ -467,7 +471,9 @@ pub fn overrides_file() -> PathBuf {
 }
 
 pub fn cache_dir() -> PathBuf {
-    super::management_key::home_dir().join(".cache").join("omo-cpa")
+    super::management_key::home_dir()
+        .join(".cache")
+        .join("omo-cpa")
 }
 
 /// Project the store down to what the pure classifier consumes.
@@ -513,9 +519,7 @@ pub fn clear_override(store: &OverrideStore, id: &str) -> OverrideStore {
 /// entire `~/.omo` directory rather than a list of filenames.
 pub fn is_forbidden_override_path(path: &Path) -> bool {
     let omo_root = super::management_key::home_dir().join(".omo");
-    let canonical = |value: &Path| {
-        std::fs::canonicalize(value).unwrap_or_else(|_| absolute(value))
-    };
+    let canonical = |value: &Path| std::fs::canonicalize(value).unwrap_or_else(|_| absolute(value));
     let root = canonical(&omo_root);
     let target = canonical(path);
     target == root || target.starts_with(&root)
@@ -583,7 +587,10 @@ pub fn save_override_store(store: &OverrideStore, path: &Path) -> bool {
     let mut overrides = Map::new();
     for (id, entry) in &store.overrides {
         let mut record = Map::new();
-        record.insert("tier".to_owned(), Value::String(entry.tier.as_str().to_owned()));
+        record.insert(
+            "tier".to_owned(),
+            Value::String(entry.tier.as_str().to_owned()),
+        );
         record.insert("setAt".to_owned(), Value::from(entry.set_at));
         if let Some(note) = &entry.note {
             record.insert("note".to_owned(), Value::String(note.clone()));
@@ -666,14 +673,21 @@ mod tests {
     }
 
     fn classify_one_model(model: &CatalogModel) -> TierDecision {
-        classify(std::slice::from_ref(model), &OverrideMap::new(), &BTreeMap::new())
-            .remove(0)
+        classify(
+            std::slice::from_ref(model),
+            &OverrideMap::new(),
+            &BTreeMap::new(),
+        )
+        .remove(0)
     }
 
     #[test]
     fn family_matching_uses_the_last_namespace_separator() {
         assert!(matches_family_by_id("claude-opus-5", "claude"));
-        assert!(matches_family_by_id("global.anthropic.claude-opus-5", "claude"));
+        assert!(matches_family_by_id(
+            "global.anthropic.claude-opus-5",
+            "claude"
+        ));
         assert!(matches_family_by_id("claude", "claude"));
         assert!(!matches_family_by_id("not-claude-fable-5", "claude"));
         // The dot in "5.3" is the last separator, so the id-side match fails by design.
@@ -683,7 +697,10 @@ mod tests {
     #[test]
     fn family_from_id_prefers_the_first_declared_family() {
         assert_eq!(family_from_id("gpt-5.5").as_deref(), Some("gpt"));
-        assert_eq!(family_from_id("vendors/claude-opus-5").as_deref(), Some("claude"));
+        assert_eq!(
+            family_from_id("vendors/claude-opus-5").as_deref(),
+            Some("claude")
+        );
         assert_eq!(family_from_id("mygpt").as_deref(), None);
         assert_eq!(family_from_id("claudelike").as_deref(), None);
         assert_eq!(family_from_id("muse-spark-1.3").as_deref(), Some("muse"));
@@ -818,12 +835,21 @@ mod tests {
     fn the_override_store_round_trips_and_drops_bad_entries() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("tier-overrides.json");
-        let store = set_override(&OverrideStore::empty(), "claude-opus-5", Tier::Last, Some("note"), 7);
+        let store = set_override(
+            &OverrideStore::empty(),
+            "claude-opus-5",
+            Tier::Last,
+            Some("note"),
+            7,
+        );
         assert!(save_override_store(&store, &path));
         let loaded = load_override_store(&path);
         assert_eq!(loaded.overrides["claude-opus-5"].tier, Tier::Last);
         assert_eq!(loaded.overrides["claude-opus-5"].set_at, 7);
-        assert_eq!(loaded.overrides["claude-opus-5"].note.as_deref(), Some("note"));
+        assert_eq!(
+            loaded.overrides["claude-opus-5"].note.as_deref(),
+            Some("note")
+        );
 
         std::fs::write(
             &path,
@@ -841,7 +867,11 @@ mod tests {
         let path = dir.path().join("tier-overrides.json");
         std::fs::write(&path, "{not json").expect("write");
         assert!(load_override_store(&path).overrides.is_empty());
-        assert!(load_override_store(&dir.path().join("absent")).overrides.is_empty());
+        assert!(
+            load_override_store(&dir.path().join("absent"))
+                .overrides
+                .is_empty()
+        );
     }
 
     #[test]
@@ -855,7 +885,9 @@ mod tests {
     fn the_omo_tree_is_forbidden_for_overrides() {
         let omo = super::super::management_key::home_dir().join(".omo");
         assert!(is_forbidden_override_path(&omo));
-        assert!(is_forbidden_override_path(&omo.join("agent").join("x.json")));
+        assert!(is_forbidden_override_path(
+            &omo.join("agent").join("x.json")
+        ));
         assert!(!is_forbidden_override_path(
             &super::super::management_key::home_dir().join(".cache/omo-cpa/x.json")
         ));

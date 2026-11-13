@@ -19,8 +19,9 @@ pub async fn fetch_usage(
 ) -> UsageResult {
     let Some(management_key) = management_key else {
         return UsageResult::Unsupported {
-            reason: "Management 키 없음 · OMO_CPA_MANAGEMENT_KEY를 설정하면 계정별 사용량이 켜집니다"
-                .to_owned(),
+            reason:
+                "Management 키 없음 · OMO_CPA_MANAGEMENT_KEY를 설정하면 계정별 사용량이 켜집니다"
+                    .to_owned(),
         };
     };
 
@@ -94,7 +95,11 @@ pub fn parse_auth_files(body: &Value) -> Option<Vec<UsageAccount>> {
         let disabled = record.get("disabled") == Some(&Value::Bool(true))
             || record.get("unavailable") == Some(&Value::Bool(true))
             || status == "disabled";
-        let detail = if disabled { None } else { str_at(record, "status_message") };
+        let detail = if disabled {
+            None
+        } else {
+            str_at(record, "status_message")
+        };
         let windows = derive_windows(&signals, observed_at);
         let models = parse_model_quotas(record.get("model_quotas"));
         let status = if disabled {
@@ -135,7 +140,10 @@ pub fn parse_auth_files(body: &Value) -> Option<Vec<UsageAccount>> {
 
 /// Snapshot instant of one `{observed_at, signals}` container.
 fn observation_time(container: Option<&Value>) -> Option<i64> {
-    let raw = container?.as_object()?.get("observed_at").and_then(Value::as_str)?;
+    let raw = container?
+        .as_object()?
+        .get("observed_at")
+        .and_then(Value::as_str)?;
     parse_instant(raw)
 }
 
@@ -394,7 +402,9 @@ fn now_ms() -> i64 {
 /// A scope that should render as its own row: inside a provider namespace and governing no deeper
 /// scope.
 fn is_leaf_scope(scope: &str, groups: &BTreeMap<String, Group>) -> bool {
-    !groups.keys().any(|key| key.starts_with(&format!("{scope}-")))
+    !groups
+        .keys()
+        .any(|key| key.starts_with(&format!("{scope}-")))
 }
 
 /// The most specific flag naming this window decides it: a flag on the window itself, then a flag
@@ -474,7 +484,10 @@ fn match_limit_name(key: &str, limit_names: &BTreeMap<String, String>) -> Option
             continue;
         };
         let rest = rest.to_owned();
-        if best.as_ref().is_none_or(|(_, best_rest)| rest.len() < best_rest.len()) {
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_rest)| rest.len() < best_rest.len())
+        {
             best = Some((name.clone(), rest));
         }
     }
@@ -549,9 +562,7 @@ fn account_meta(signals: &BTreeMap<String, String>) -> Option<String> {
     if let Some(limit) = read("X-Codex-Active-Limit") {
         parts.push(format!("한도 {limit}"));
     }
-    if read("X-Codex-Credits-Has-Credits")
-        .is_some_and(|value| value.to_lowercase() == "true")
-    {
+    if read("X-Codex-Credits-Has-Credits").is_some_and(|value| value.to_lowercase() == "true") {
         parts.push(format!(
             "크레딧 {}",
             read("X-Codex-Credits-Balance").unwrap_or_else(|| "?".to_owned())
@@ -594,7 +605,10 @@ fn num(value: &str) -> Option<f64> {
     if trimmed.is_empty() {
         return None;
     }
-    trimmed.parse::<f64>().ok().filter(|value| value.is_finite())
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
 }
 
 #[cfg(test)]
@@ -739,10 +753,7 @@ mod tests {
         assert_eq!(account.provider, "codex");
         assert_eq!(account.label, "primary");
         assert_eq!(account.status, UsageAccountStatus::Ok);
-        assert_eq!(
-            account.meta.as_deref(),
-            Some("요금제 plus · 크레딧 12")
-        );
+        assert_eq!(account.meta.as_deref(), Some("요금제 plus · 크레딧 12"));
         assert_eq!(account.windows.len(), 1);
         assert_eq!(account.observed_at, Some(1_794_308_400_000));
     }

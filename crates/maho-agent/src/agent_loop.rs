@@ -2859,7 +2859,6 @@ async fn emit_tool_result_message(tool_result_message: &ToolResultMessage, emit:
 mod provider_context_tests {
     use super::*;
 
-
     #[test]
     fn typed_stream_failures_project_without_losing_classification() {
         let diagnostic = StreamError::diagnostic_from_status(Some(401)).expect("diagnostic");
@@ -3440,8 +3439,16 @@ mod audit_gap_tests {
                 .collect()
         };
         let expected = vec![Some("sl:C1:1.2".to_string())];
-        assert_eq!(ids_of(true), expected, "one user message_start, carrying the id");
-        assert_eq!(ids_of(false), expected, "one user message_end, carrying the id");
+        assert_eq!(
+            ids_of(true),
+            expected,
+            "one user message_start, carrying the id"
+        );
+        assert_eq!(
+            ids_of(false),
+            expected,
+            "one user message_end, carrying the id"
+        );
     }
 
     #[tokio::test(start_paused = true)]

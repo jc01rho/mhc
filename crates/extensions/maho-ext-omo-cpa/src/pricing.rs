@@ -48,7 +48,10 @@ const OFFICIAL_PROVIDERS: &[(&str, &[&str])] = &[
     ("openai", &["openai", "azure", "azure-cognitive-services"]),
     ("anthropic", &["anthropic", "google-vertex-anthropic"]),
     ("deepseek", &["deepseek", "siliconflow", "siliconflow-cn"]),
-    ("glm", &["zai", "zhipuai", "zai-coding-plan", "zhipuai-coding-plan"]),
+    (
+        "glm",
+        &["zai", "zhipuai", "zai-coding-plan", "zhipuai-coding-plan"],
+    ),
     ("qwen", &["alibaba", "aliyun-bailian", "alibaba-cn"]),
     ("google", &["google", "google-vertex"]),
     ("xai", &["xai"]),
@@ -61,7 +64,10 @@ const OFFICIAL_PROVIDERS: &[(&str, &[&str])] = &[
             "minimax-cn-coding-plan",
         ],
     ),
-    ("moonshot", &["moonshotai", "kimi-for-coding", "moonshotai-cn"]),
+    (
+        "moonshot",
+        &["moonshotai", "kimi-for-coding", "moonshotai-cn"],
+    ),
     ("mistral", &["mistral"]),
 ];
 
@@ -104,7 +110,9 @@ fn is_plan_zero(entry: &PricingEntry) -> bool {
         return false;
     }
     let provider = entry.provider.to_lowercase();
-    provider.contains("coding-plan") || provider.contains("token-plan") || provider == "kimi-for-coding"
+    provider.contains("coding-plan")
+        || provider.contains("token-plan")
+        || provider == "kimi-for-coding"
 }
 
 /// Cut a provider namespace: "kilo/xiaomi/mimo" -> "mimo". A ":free" suffix is part of the model id
@@ -150,9 +158,9 @@ fn looks_like_id(token: &str) -> bool {
         return false;
     };
     first.is_ascii_alphanumeric()
-        && token
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+        && token.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
         && token.contains(['.', '-'])
 }
 
@@ -178,9 +186,7 @@ fn family_of(model_id: &str, display_name: Option<&str>) -> String {
             return (*family).to_owned();
         }
     }
-    display_name
-        .map(family_from_name_token)
-        .unwrap_or_default()
+    display_name.map(family_from_name_token).unwrap_or_default()
 }
 
 fn candidate_keys(model_id: &str) -> Vec<String> {
@@ -265,7 +271,10 @@ pub fn build_pricing_index(catalog: &Value) -> PricingIndex {
             let entry = PricingEntry {
                 provider: provider_id.clone(),
                 model_id: model_id.clone(),
-                status: record.get("status").and_then(Value::as_str).map(str::to_owned),
+                status: record
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 cost,
             };
 
@@ -293,7 +302,11 @@ pub fn build_pricing_index(catalog: &Value) -> PricingIndex {
     index
 }
 
-fn choose(model_id: &str, display_name: Option<&str>, candidates: &[PricingEntry]) -> Option<ModelCost> {
+fn choose(
+    model_id: &str,
+    display_name: Option<&str>,
+    candidates: &[PricingEntry],
+) -> Option<ModelCost> {
     let mut unique: BTreeMap<String, &PricingEntry> = BTreeMap::new();
     for entry in candidates {
         unique.insert(format!("{}\u{0}{}", entry.provider, entry.model_id), entry);
@@ -332,7 +345,11 @@ fn choose(model_id: &str, display_name: Option<&str>, candidates: &[PricingEntry
 
 /// Resolve one model's price. Exact-id keys win over an exact display-name key; nothing here does
 /// fuzzy matching, so an unknown alias resolves to `None`.
-pub fn lookup_cost(index: &PricingIndex, model_id: &str, display_name: Option<&str>) -> Option<ModelCost> {
+pub fn lookup_cost(
+    index: &PricingIndex,
+    model_id: &str,
+    display_name: Option<&str>,
+) -> Option<ModelCost> {
     for key in candidate_keys(model_id) {
         if let Some(hits) = index.by_id.get(&key)
             && !hits.is_empty()
@@ -350,7 +367,10 @@ pub fn lookup_cost(index: &PricingIndex, model_id: &str, display_name: Option<&s
     None
 }
 
-pub fn resolve_catalog_costs(index: &PricingIndex, models: &[CatalogModel]) -> BTreeMap<String, ModelCost> {
+pub fn resolve_catalog_costs(
+    index: &PricingIndex,
+    models: &[CatalogModel],
+) -> BTreeMap<String, ModelCost> {
     let mut costs = BTreeMap::new();
     for model in models {
         if let Some(cost) = lookup_cost(index, &model.id, model.display_name.as_deref()) {
@@ -362,7 +382,11 @@ pub fn resolve_catalog_costs(index: &PricingIndex, models: &[CatalogModel]) -> B
 
 /// Pricing is best-effort: a fetch failure leaves every model at the zero cost it had before and
 /// never blocks registration.
-pub async fn fetch_pricing_index(client: &reqwest::Client, url: &str, timeout_ms: u64) -> Option<PricingIndex> {
+pub async fn fetch_pricing_index(
+    client: &reqwest::Client,
+    url: &str,
+    timeout_ms: u64,
+) -> Option<PricingIndex> {
     let response = client
         .get(url)
         .timeout(Duration::from_millis(timeout_ms))
@@ -392,7 +416,10 @@ pub fn pricing_ttl_from_env() -> i64 {
 
 /// `OMO_CPA_PRICING_FAILURE_TTL_MS`, falling back to the module default.
 pub fn pricing_failure_ttl_from_env() -> i64 {
-    env_ms("OMO_CPA_PRICING_FAILURE_TTL_MS", DEFAULT_PRICING_FAILURE_TTL_MS)
+    env_ms(
+        "OMO_CPA_PRICING_FAILURE_TTL_MS",
+        DEFAULT_PRICING_FAILURE_TTL_MS,
+    )
 }
 
 fn env_ms(name: &str, fallback: i64) -> i64 {
@@ -494,7 +521,8 @@ mod tests {
     #[test]
     fn a_family_from_an_id_shaped_display_name_still_resolves() {
         let index = build_pricing_index(&fixture());
-        let cost = lookup_cost(&index, "opaque", Some("glm-5.3")).expect("glm price via name token");
+        let cost =
+            lookup_cost(&index, "opaque", Some("glm-5.3")).expect("glm price via name token");
         assert_eq!(cost.input, 0.6);
     }
 }

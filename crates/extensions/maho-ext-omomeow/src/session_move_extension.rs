@@ -75,7 +75,10 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), ExtensionFailure> {
         return Err(failure("Unsupported move manifest version"));
     }
     valid_task(&manifest.task_id)?;
-    manifest.attachments.iter().try_for_each(|a| valid_name(&a.name))
+    manifest
+        .attachments
+        .iter()
+        .try_for_each(|a| valid_name(&a.name))
 }
 
 pub fn snapshot_path(session_file: &Path) -> PathBuf {
@@ -99,7 +102,8 @@ pub fn snapshot(session_file: Option<&Path>) -> Result<Option<Snapshot>, Extensi
     let Some(value) = optional_json(&snapshot_path(session_file))? else {
         return Ok(None);
     };
-    let restored: Snapshot = serde_json::from_value(value).map_err(|error| failure(error.to_string()))?;
+    let restored: Snapshot =
+        serde_json::from_value(value).map_err(|error| failure(error.to_string()))?;
     valid_task(&restored.task_id)?;
     Ok(Some(restored))
 }
@@ -113,7 +117,10 @@ fn parent_is_tasks(session_file: &Path) -> bool {
 
 /// The hub's OMOMEOW_HOME is its checkout, whereas a remote worker uses its state home. Imported
 /// sessions live in the engine's session tree, so launchers supply the explicit state root.
-fn state_directory(session_file: Option<&Path>, env: &Environment) -> Result<PathBuf, ExtensionFailure> {
+fn state_directory(
+    session_file: Option<&Path>,
+    env: &Environment,
+) -> Result<PathBuf, ExtensionFailure> {
     let from_session = session_file
         .filter(|file| parent_is_tasks(file))
         .and_then(|file| file.parent()?.parent().map(Path::to_path_buf));
@@ -122,7 +129,9 @@ fn state_directory(session_file: Option<&Path>, env: &Environment) -> Result<Pat
         .map(PathBuf::from)
         .or(from_session)
         .or_else(|| env.get("OMOMEOW_HOME").map(PathBuf::from))
-        .ok_or_else(|| failure("OMOMEOW_STATE_DIRECTORY is required for an imported task session"))?;
+        .ok_or_else(|| {
+            failure("OMOMEOW_STATE_DIRECTORY is required for an imported task session")
+        })?;
     Ok(std::path::absolute(&directory).unwrap_or(directory))
 }
 
@@ -160,11 +169,19 @@ fn write_atomic(path: &Path, bytes: &[u8], signal: &AbortSignal) -> Result<(), E
     result
 }
 
-fn copy_attachment(source: &Path, target: &Path, signal: &AbortSignal) -> Result<(), ExtensionFailure> {
+fn copy_attachment(
+    source: &Path,
+    target: &Path,
+    signal: &AbortSignal,
+) -> Result<(), ExtensionFailure> {
     check(signal)?;
-    let metadata = std::fs::symlink_metadata(source).map_err(|e| failure(format!("{}: {e}", source.display())))?;
+    let metadata = std::fs::symlink_metadata(source)
+        .map_err(|e| failure(format!("{}: {e}", source.display())))?;
     if !metadata.is_file() {
-        return Err(failure(format!("Attachment is not a regular file: {}", source.display())));
+        return Err(failure(format!(
+            "Attachment is not a regular file: {}",
+            source.display()
+        )));
     }
     let bytes = std::fs::read(source).map_err(|e| failure(format!("{}: {e}", source.display())))?;
     write_atomic(target, &bytes, signal)
@@ -195,13 +212,17 @@ pub fn export_session_move(
     }
     let lane_state = match env.get("OMOMEOW_LANE_STATE") {
         None => previous.as_ref().and_then(|p| p.lane_state.clone()),
-        Some(text) => match serde_json::from_str::<Value>(text).map_err(|e| failure(e.to_string()))? {
-            Value::Null => None,
-            Value::Object(object) => Some(object),
-            _ => return Err(failure("OMOMEOW_LANE_STATE must be an object or null")),
-        },
+        Some(text) => {
+            match serde_json::from_str::<Value>(text).map_err(|e| failure(e.to_string()))? {
+                Value::Null => None,
+                Value::Object(object) => Some(object),
+                _ => return Err(failure("OMOMEOW_LANE_STATE must be an object or null")),
+            }
+        }
     };
-    let directory = state_directory(session_file, env)?.join("attachments").join(&task_id);
+    let directory = state_directory(session_file, env)?
+        .join("attachments")
+        .join(&task_id);
     let staged = dir.join("omo-nyang");
     // Accumulate only files copied successfully; publishing the manifest is the last export write.
     let mut attachments = Vec::new();
@@ -209,7 +230,10 @@ pub fn export_session_move(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(failure(format!("{}: {error}", directory.display()))),
         Ok(metadata) if !metadata.is_dir() => {
-            return Err(failure(format!("Attachment directory is not a directory: {}", directory.display())));
+            return Err(failure(format!(
+                "Attachment directory is not a directory: {}",
+                directory.display()
+            )));
         }
         Ok(_) => {
             let mut names = std::fs::read_dir(&directory)
@@ -235,7 +259,12 @@ pub fn export_session_move(
             }
         }
     }
-    let manifest = Manifest { version: 1, task_id, lane_state, attachments };
+    let manifest = Manifest {
+        version: 1,
+        task_id,
+        lane_state,
+        attachments,
+    };
     let bytes = serde_json::to_vec(&manifest).map_err(|e| failure(e.to_string()))?;
     write_atomic(&staged.join("manifest.json"), &bytes, signal)
 }
@@ -253,9 +282,12 @@ pub fn import_session_move(
     };
     let manifest: Manifest = serde_json::from_value(value).map_err(|e| failure(e.to_string()))?;
     validate_manifest(&manifest)?;
-    let session_file =
-        session_file.ok_or_else(|| failure("A persistent session file is required to restore task state"))?;
-    if env.get("OMOMEOW_TASK_ID").is_some_and(|id| !id.is_empty() && *id != manifest.task_id) {
+    let session_file = session_file
+        .ok_or_else(|| failure("A persistent session file is required to restore task state"))?;
+    if env
+        .get("OMOMEOW_TASK_ID")
+        .is_some_and(|id| !id.is_empty() && *id != manifest.task_id)
+    {
         return Err(failure("Launch task id does not match moved task"));
     }
     let directory = state_directory(Some(session_file), env)?
@@ -271,7 +303,11 @@ pub fn import_session_move(
         })
         .collect::<Vec<_>>();
     for attachment in &attachments {
-        copy_attachment(&staged.join("attachments").join(&attachment.name), Path::new(&attachment.path), signal)?;
+        copy_attachment(
+            &staged.join("attachments").join(&attachment.name),
+            Path::new(&attachment.path),
+            signal,
+        )?;
     }
     // Repeating these replacements is intentional: a failed delivery can have restored only some
     // bytes. This sidecar is also the durable identity on an engine-selected session path.
@@ -287,7 +323,9 @@ pub fn import_session_move(
 
 pub fn moved_state_prompt(system_prompt: &str, restored: &Snapshot) -> String {
     let state = serde_json::to_string(restored).unwrap_or_default();
-    format!("{system_prompt}\n\nOmOMeow moved task state (attachment sourcePaths now resolve to path):\n{state}")
+    format!(
+        "{system_prompt}\n\nOmOMeow moved task state (attachment sourcePaths now resolve to path):\n{state}"
+    )
 }
 
 pub fn register_session_move_extension(api: &mut ExtensionApi, env: Arc<Environment>) {
@@ -350,7 +388,10 @@ impl ActiveSources {
         ) else {
             return;
         };
-        let mut active = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut active = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if count > 0.0 {
             if !active.iter().any(|s| s == source) {
                 active.push(source.to_owned());
@@ -368,10 +409,13 @@ impl ActiveSources {
 pub fn register_move_readiness(api: &mut ExtensionApi) -> Result<(), ExtensionFailure> {
     let active = Arc::new(ActiveSources::default());
     let observer = Arc::clone(&active);
-    let subscription = api
-        .events
-        .on("wake_source_state", Arc::new(move |value| observer.observe(value)));
-    let _release = api.runtime.track_subscription(Box::new(move || drop(subscription)));
+    let subscription = api.events.on(
+        "wake_source_state",
+        Arc::new(move |value| observer.observe(value)),
+    );
+    let _release = api
+        .runtime
+        .track_subscription(Box::new(move || drop(subscription)));
     api.rpc_handle(
         "omomeow.move-readiness",
         Arc::new(move |_| {
@@ -393,7 +437,10 @@ mod tests {
     }
 
     fn env(pairs: &[(&str, &str)]) -> Environment {
-        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
     }
 
     #[test]
@@ -407,9 +454,17 @@ mod tests {
         std::fs::write(&session, b"").unwrap();
         let move_dir = root.join("move");
         let signal = AbortSignal::default();
-        export_session_move(&move_dir, &signal, Some(&session), &env(&[("OMOMEOW_LANE_STATE", r#"{"lane":3}"#)])).unwrap();
-        let manifest: Manifest =
-            serde_json::from_slice(&std::fs::read(move_dir.join("omo-nyang/manifest.json")).unwrap()).unwrap();
+        export_session_move(
+            &move_dir,
+            &signal,
+            Some(&session),
+            &env(&[("OMOMEOW_LANE_STATE", r#"{"lane":3}"#)]),
+        )
+        .unwrap();
+        let manifest: Manifest = serde_json::from_slice(
+            &std::fs::read(move_dir.join("omo-nyang/manifest.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(manifest.task_id, "task-1");
         assert_eq!(manifest.lane_state.unwrap()["lane"], 3);
         assert_eq!(manifest.attachments[0].name, "a.txt");
@@ -419,10 +474,20 @@ mod tests {
         std::fs::create_dir_all(target_session.parent().unwrap()).unwrap();
         let target_env = env(&[("OMOMEOW_STATE_DIRECTORY", target_state.to_str().unwrap())]);
         import_session_move(&move_dir, &signal, Some(&target_session), &target_env).unwrap();
-        assert_eq!(std::fs::read(target_state.join("attachments/task-1/a.txt")).unwrap(), b"alpha");
+        assert_eq!(
+            std::fs::read(target_state.join("attachments/task-1/a.txt")).unwrap(),
+            b"alpha"
+        );
         let restored = snapshot(Some(&target_session)).unwrap().unwrap();
-        assert_eq!(restored.attachments[0].path, target_state.join("attachments/task-1/a.txt").to_string_lossy());
-        assert!(moved_state_prompt("BASE", &restored).starts_with("BASE\n\nOmOMeow moved task state"));
+        assert_eq!(
+            restored.attachments[0].path,
+            target_state
+                .join("attachments/task-1/a.txt")
+                .to_string_lossy()
+        );
+        assert!(
+            moved_state_prompt("BASE", &restored).starts_with("BASE\n\nOmOMeow moved task state")
+        );
     }
 
     #[test]
@@ -436,22 +501,41 @@ mod tests {
         .unwrap();
         let signal = AbortSignal::default();
         let session = root.join("s.jsonl");
-        let error = import_session_move(&root.join("move"), &signal, Some(&session), &env(&[("OMOMEOW_TASK_ID", "t2"), ("OMOMEOW_STATE_DIRECTORY", "/x")]))
-            .unwrap_err();
+        let error = import_session_move(
+            &root.join("move"),
+            &signal,
+            Some(&session),
+            &env(&[("OMOMEOW_TASK_ID", "t2"), ("OMOMEOW_STATE_DIRECTORY", "/x")]),
+        )
+        .unwrap_err();
         assert!(error.message.contains("does not match moved task"));
         std::fs::write(
             root.join("move/omo-nyang/manifest.json"),
             r#"{"version":1,"taskId":"t1","laneState":null,"attachments":[{"name":"../x","sourcePaths":[]}]}"#,
         )
         .unwrap();
-        assert!(import_session_move(&root.join("move"), &signal, Some(&session), &env(&[("OMOMEOW_STATE_DIRECTORY", "/x")])).is_err());
+        assert!(
+            import_session_move(
+                &root.join("move"),
+                &signal,
+                Some(&session),
+                &env(&[("OMOMEOW_STATE_DIRECTORY", "/x")])
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn export_without_identity_writes_nothing() {
         let root = scratch("noid");
         let signal = AbortSignal::default();
-        export_session_move(&root.join("move"), &signal, Some(&root.join("other/s.jsonl")), &env(&[])).unwrap();
+        export_session_move(
+            &root.join("move"),
+            &signal,
+            Some(&root.join("other/s.jsonl")),
+            &env(&[]),
+        )
+        .unwrap();
         assert!(!root.join("move/omo-nyang/manifest.json").exists());
     }
 

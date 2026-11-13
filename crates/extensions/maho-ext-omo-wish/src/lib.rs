@@ -12,7 +12,12 @@ use maho_ultrawork::{Engine, InputRequest, has_visible_keyword};
 use std::sync::Arc;
 
 /// The directive for `prompt` in `session`, arming the session; `None` when nothing applies.
-pub fn wish_directive(engine: &Engine, session: &str, prompt: &str, preview: bool) -> Option<CustomMessage> {
+pub fn wish_directive(
+    engine: &Engine,
+    session: &str,
+    prompt: &str,
+    preview: bool,
+) -> Option<CustomMessage> {
     if preview || session.is_empty() || !has_visible_keyword(prompt) {
         return None;
     }
@@ -20,7 +25,12 @@ pub fn wish_directive(engine: &Engine, session: &str, prompt: &str, preview: boo
         return None;
     }
     engine.on_input(
-        InputRequest { session, text: prompt, source: InputSource::Rpc, streaming: false },
+        InputRequest {
+            session,
+            text: prompt,
+            source: InputSource::Rpc,
+            streaming: false,
+        },
         false,
     );
     engine.on_turn_start(session, false)
@@ -40,16 +50,23 @@ impl Extension for OmoWish {
                         return Ok(EventResult::None);
                     };
                     let session = ctx.session_manager.session_id().to_owned();
-                    Ok(match wish_directive(&engine, &session, &start.prompt, start.preview) {
-                        Some(message) => EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
-                            message: Some(message),
-                            ..Default::default()
-                        }),
-                        None => EventResult::None,
-                    })
+                    Ok(
+                        match wish_directive(&engine, &session, &start.prompt, start.preview) {
+                            Some(message) => {
+                                EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                                    message: Some(message),
+                                    ..Default::default()
+                                })
+                            }
+                            None => EventResult::None,
+                        },
+                    )
                 })
             }),
-            ExtensionHandlerOptions { preview_safe: true, mutates_messages: None },
+            ExtensionHandlerOptions {
+                preview_safe: true,
+                mutates_messages: None,
+            },
         );
     }
 }

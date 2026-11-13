@@ -66,7 +66,8 @@ pub fn save_management_key(key: &str, path: &Path) -> std::io::Result<()> {
         .map_err(cleanup(&temporary));
     drop(file);
     written?;
-    if let Err(error) = apply_owner_only(&temporary).and_then(|()| std::fs::rename(&temporary, path))
+    if let Err(error) =
+        apply_owner_only(&temporary).and_then(|()| std::fs::rename(&temporary, path))
     {
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
@@ -168,7 +169,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("key");
         save_management_key("secret", &path).expect("save");
-        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode();
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
 }

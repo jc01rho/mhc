@@ -2,7 +2,10 @@
 //!
 //! Korean copy is pinned literally: the owner-facing text is the contract.
 
-use crate::types::{CpaConfig, HealthSnapshot, HealthState, UsageAccount, UsageAccountStatus, UsageResult, UsageWindow};
+use crate::types::{
+    CpaConfig, HealthSnapshot, HealthState, UsageAccount, UsageAccountStatus, UsageResult,
+    UsageWindow,
+};
 
 /// East-Asian-aware display width, so Korean text never breaks column alignment.
 pub fn display_width(text: &str) -> usize {
@@ -134,10 +137,10 @@ pub fn render_report_at(input: &ReportInput<'_>, now: i64) -> String {
                     account_state_label(account.status)
                 );
                 let tail: Vec<String> = [
-                    account
-                        .detail
-                        .clone()
-                        .or_else(|| (account.status == UsageAccountStatus::Off).then(|| "서버에서 사용 중지".to_owned())),
+                    account.detail.clone().or_else(|| {
+                        (account.status == UsageAccountStatus::Off)
+                            .then(|| "서버에서 사용 중지".to_owned())
+                    }),
                     account.meta.clone(),
                 ]
                 .into_iter()
@@ -401,7 +404,9 @@ mod tests {
                 tiers: None,
                 tier_reason: Some("점검 실패: boom"),
                 health: &health,
-                usage: &UsageResult::Supported { accounts: Vec::new() },
+                usage: &UsageResult::Supported {
+                    accounts: Vec::new(),
+                },
             },
             0,
         );
@@ -409,7 +414,12 @@ mod tests {
         assert!(report.contains("  계정 없음"));
     }
 
-    fn window(label: &str, remaining: Option<f64>, resets_at: Option<i64>, note: Option<&str>) -> UsageWindow {
+    fn window(
+        label: &str,
+        remaining: Option<f64>,
+        resets_at: Option<i64>,
+        note: Option<&str>,
+    ) -> UsageWindow {
         UsageWindow {
             label: label.into(),
             remaining_percent: remaining,
@@ -418,7 +428,12 @@ mod tests {
         }
     }
 
-    fn account(label: &str, status: UsageAccountStatus, windows: Vec<UsageWindow>, models: Vec<UsageModelQuota>) -> UsageAccount {
+    fn account(
+        label: &str,
+        status: UsageAccountStatus,
+        windows: Vec<UsageWindow>,
+        models: Vec<UsageModelQuota>,
+    ) -> UsageAccount {
         UsageAccount {
             provider: "codex".into(),
             label: label.into(),
@@ -434,7 +449,12 @@ mod tests {
     #[test]
     fn accounts_order_by_watermarks_then_name_and_render_aligned_windows() {
         let accounts = vec![
-            account("b-disabled", UsageAccountStatus::Off, Vec::new(), Vec::new()),
+            account(
+                "b-disabled",
+                UsageAccountStatus::Off,
+                Vec::new(),
+                Vec::new(),
+            ),
             account(
                 "a-live",
                 UsageAccountStatus::Ok,
@@ -535,10 +555,7 @@ mod tests {
         let now = 0;
         assert_eq!(format_ago(30 * 60 * 1000, now, "전"), "30분 전");
         assert_eq!(format_ago(63 * 60 * 1000, now, "전"), "1시간 3분 전");
-        assert_eq!(
-            format_ago(26 * 60 * 60 * 1000, now, "전"),
-            "1일 2시간 전"
-        );
+        assert_eq!(format_ago(26 * 60 * 60 * 1000, now, "전"), "1일 2시간 전");
         // Future instants use their magnitude and the caller's suffix.
         assert_eq!(format_ago(5 * 60 * 1000, now, "후"), "5분 후");
     }
