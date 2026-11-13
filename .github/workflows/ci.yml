@@ -121,6 +121,14 @@ jobs:
       - name: package-native self-test (incl. the --mit staging)
         run: bun tools/package-native.mjs --self-test
 
+  sync-script:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: sync-upstream conflict handling
+        run: bash scripts/sync-upstream.test.sh
+
   # One job building every test binary filled the runner disk (`No space left on device`), so
   # each shard builds and runs only its own crates; scripts/ci-shard.py covers every member once.
   test:
