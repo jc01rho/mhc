@@ -1,11 +1,12 @@
 name: sync-upstream
-# Merges Indosaram/mhc main into this repo's main every 6 hours. A conflict fails the run (the failure mail is the alert).
+# Merges Indosaram/mhc main into this repo's main every hour. A conflict fails the run (the failure mail is the alert).
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
 permissions:
   contents: write
+  actions: write
 concurrency:
   group: sync-upstream
 jobs:
@@ -17,6 +18,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Merge upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           git config user.name "mhc-sync"
           git config user.email "mhc-sync@users.noreply.github.com"
