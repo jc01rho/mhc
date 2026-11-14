@@ -89,6 +89,18 @@ pub const MODELS: &[ModelEntry] = &[
         Some(250_000),
     ),
     model(
+        "gemini-4-argon-high",
+        "Gemini 4 Argon High (OmOMeow)",
+        1_048_576,
+        Some(250_000),
+    ),
+    model(
+        "gemini-4-hydrogen-xhigh",
+        "Gemini 4 Hydrogen XHigh (OmOMeow)",
+        1_048_576,
+        Some(250_000),
+    ),
+    model(
         "claude-haiku-5-5",
         "Haiku 5.5 (OmOMeow)",
         200_000,
@@ -353,6 +365,19 @@ mod tests {
                 .get(&ModelThinkingLevel::Max),
             Some(&Some("max".to_owned()))
         );
+        for id in ["gemini-4-argon-high", "gemini-4-hydrogen-xhigh"] {
+            let gemini = list.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(gemini.context_window, 1_048_576);
+            assert_eq!(gemini.max_tokens, 250_000);
+            assert_eq!(
+                gemini
+                    .thinking_level_map
+                    .as_ref()
+                    .unwrap()
+                    .get(&ModelThinkingLevel::Max),
+                Some(&Some("max".to_owned()))
+            );
+        }
         let opus = list.iter().find(|m| m.id == "claude-opus-5-5").unwrap();
         assert_eq!(opus.max_tokens, DEFAULT_MAX_TOKENS);
         assert!(opus.thinking_level_map.is_none());
