@@ -33,6 +33,14 @@ use crate::recall_drain::PendingNudgesPort;
 /// The session every case binds.
 const SESSION: &str = "s1";
 
+/// The resident sidecar, which these cases always expect to exist: recall is enabled by default, so a
+/// `None` here is a defect in the case's own setup, not a condition to branch on.
+fn resident(wiring: &MemoryRecallWiring, context: &MemoryIdentityContext) -> Arc<KibitzerSidecar> {
+    wiring
+        .sidecar_for(SESSION, context)
+        .expect("recall is enabled by default, so the sidecar must be built")
+}
+
 fn tool_call_offer_harness() -> (
     Arc<MemoryRecallWiring>,
     MemoryIdentityContext,
@@ -71,7 +79,7 @@ fn tool_call_offer_harness() -> (
 #[test]
 fn matching_tool_call_offers_without_a_prompt_candidate() {
     let (wiring, context, spawn, _root) = tool_call_offer_harness();
-    let _sidecar = wiring.sidecar_for(SESSION, &context);
+    let _sidecar = resident(&wiring, &context);
     Arc::clone(&wiring).on_before_agent_start(
         SESSION,
         "unrelated chatter with no corpus token",
@@ -100,7 +108,7 @@ fn matching_tool_call_offers_without_a_prompt_candidate() {
 #[test]
 fn matching_tool_call_after_shutdown_does_not_schedule_an_offer() {
     let (wiring, context, spawn, _root) = tool_call_offer_harness();
-    let _sidecar = wiring.sidecar_for(SESSION, &context);
+    let _sidecar = resident(&wiring, &context);
     wiring.on_session_shutdown(SESSION);
     assert_eq!(spawn.queued(), 1);
     wiring.on_tool_call(
@@ -120,6 +128,9 @@ fn matching_tool_call_after_shutdown_does_not_schedule_an_offer() {
 #[test]
 fn tool_hooks_reuse_the_turn_recall_settings_and_a_config_edit_applies_next_turn() {
     let (mut wiring, context, spawn, _root) = tool_call_offer_harness();
+    // The sidecar is built BEFORE the counting resolver is installed, so the counts below measure the
+    // tool hooks and the collection alone.
+    let _sidecar = resident(&wiring, &context);
     let disabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let resolves = Arc::new(AtomicUsize::new(0));
     {
@@ -145,7 +156,6 @@ fn tool_hooks_reuse_the_turn_recall_settings_and_a_config_edit_applies_next_turn
             },
         )
     };
-    let _sidecar = wiring.sidecar_for(SESSION, &context);
     // A tool hook with no turn-cached value resolves fresh.
     call(&wiring);
     assert_eq!((resolves.load(Ordering::SeqCst), spawn.queued()), (1, 1));
@@ -159,7 +169,9 @@ fn tool_hooks_reuse_the_turn_recall_settings_and_a_config_edit_applies_next_turn
     // the thread that paints and reads input. It hands the collection to the blocking seam and
     // returns; the resolve happens only when that task actually runs.
     assert_eq!(resolves.load(Ordering::SeqCst), 1);
-    assert_eq!(spawn.blocking_queued(), 1);
+    // Two blocking tasks are pending: the sidecar's owner acquire plus its first sweep, and the
+    // recall collection this case is about. The count is asserted after draining the sidecar's own
+    // pair, so the collection is what remains.
     spawn.drain_blocking();
     spawn.drain();
     assert_eq!(resolves.load(Ordering::SeqCst), 2);
@@ -522,7 +534,7 @@ fn sidecar_removed(harness: &Harness) -> bool {
 fn given_a_resident_sidecar_when_shutdown_is_requested_then_a_late_offer_is_buffered_disposed_without_spawning()
  {
     let harness = harness(true, false);
-    let sidecar = harness.wiring.sidecar_for(SESSION, &harness.context);
+    let sidecar = resident(&harness.wiring, &harness.context);
     assert_eq!(
         harness.spawner.calls.load(Ordering::SeqCst),
         0,
@@ -566,7 +578,7 @@ fn given_a_resident_sidecar_when_shutdown_is_requested_then_a_late_offer_is_buff
 #[test]
 fn given_the_context_is_no_longer_resolvable_when_shutdown_fires_then_the_cleanup_still_runs() {
     let harness = harness(false, false);
-    let sidecar = harness.wiring.sidecar_for(SESSION, &harness.context);
+    let sidecar = resident(&harness.wiring, &harness.context);
 
     harness.wiring.on_session_shutdown(SESSION);
     harness.spawn.drain();
@@ -582,7 +594,7 @@ fn given_the_context_is_no_longer_resolvable_when_shutdown_fires_then_the_cleanu
 fn given_a_held_nudge_when_shutdown_runs_then_delivery_is_retracted_only_after_the_sidecar_is_disposed()
  {
     let harness = harness(true, true);
-    let sidecar = harness.wiring.sidecar_for(SESSION, &harness.context);
+    let sidecar = resident(&harness.wiring, &harness.context);
     let coordinator = Arc::clone(harness.coordinator.as_ref().unwrap());
     *coordinator
         .sidecar
@@ -639,7 +651,7 @@ fn given_a_held_nudge_when_shutdown_runs_then_delivery_is_retracted_only_after_t
 #[test]
 fn given_a_shut_down_session_when_a_tool_hook_fires_then_no_sidecar_is_resurrected() {
     let harness = harness(true, false);
-    let sidecar = harness.wiring.sidecar_for(SESSION, &harness.context);
+    let sidecar = resident(&harness.wiring, &harness.context);
     let _ = sidecar.on_prompt("task", 0);
     let captured_before = sidecar.event_size();
     assert!(captured_before > 0, "the live sidecar captured the prompt");
@@ -857,7 +869,7 @@ fn given_a_branch_snapshot_when_the_prompt_hook_runs_then_the_assistant_event_pr
         entries.len(),
         &entries,
     );
-    let sidecar = wiring.sidecar_for(SESSION, &context);
+    let sidecar = resident(&wiring, &context);
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
     let events = &prompt[prompt.find("<events").expect("an events block")..];
@@ -881,7 +893,7 @@ fn given_a_branch_snapshot_when_the_prompt_hook_runs_then_the_assistant_event_pr
 fn given_a_tool_call_and_result_when_the_tool_hooks_run_then_the_real_args_and_content_reach_the_seed_prompt()
  {
     let (wiring, context, child, _root) = capture_harness(None);
-    let sidecar = wiring.sidecar_for(SESSION, &context);
+    let sidecar = resident(&wiring, &context);
     wiring.on_tool_call(
         SESSION,
         "call-1",
@@ -947,7 +959,7 @@ fn given_a_small_tool_args_cap_when_the_tool_hook_runs_then_the_wiring_forwards_
         prompt: 4000,
     };
     let (wiring, context, child, _root) = capture_harness(Some(caps));
-    let sidecar = wiring.sidecar_for(SESSION, &context);
+    let sidecar = resident(&wiring, &context);
     wiring.on_tool_call(
         SESSION,
         "call-1",
@@ -969,4 +981,240 @@ fn given_a_small_tool_args_cap_when_the_tool_hook_runs_then_the_wiring_forwards_
         prompt.contains("[+"),
         "the truncation marker proves the cap reached the stream: {prompt}"
     );
+}
+
+/// The recall gate and the ownership side effects, driven through the real hook surface.
+mod sidecar_ownership {
+    use super::*;
+
+    fn disabled_harness() -> (
+        Arc<MemoryRecallWiring>,
+        MemoryIdentityContext,
+        Arc<ManualSpawn>,
+        tempfile::TempDir,
+    ) {
+        let (mut wiring, context, _child, root) = capture_harness(None);
+        Arc::get_mut(&mut wiring)
+            .expect("fixture wiring is unshared")
+            .options
+            .resolve_settings =
+            Arc::new(|| Ok(serde_json::json!({ "recall": { "enabled": false } })));
+        let spawn = {
+            let options = &mut Arc::get_mut(&mut wiring)
+                .expect("fixture wiring is unshared")
+                .options;
+            let spawn = Arc::new(ManualSpawn::default());
+            options.spawn = spawn.spawner();
+            options.offload_blocking = spawn.blocking();
+            spawn
+        };
+        (wiring, context, spawn, root)
+    }
+
+    #[test]
+    fn a_disabled_recall_never_creates_or_owns_a_sidecar() {
+        let (wiring, context, spawn, _root) = disabled_harness();
+
+        let sidecar = wiring.sidecar_for(SESSION, &context);
+
+        assert!(
+            sidecar.is_none(),
+            "the getter returns undefined before anything is built, as upstream does"
+        );
+        assert!(!wiring.sidecar_owner.owns(SESSION));
+        assert_eq!(
+            spawn.blocking_queued(),
+            0,
+            "no owner acquire and no sweep are scheduled for a disabled identity"
+        );
+        assert!(
+            !context
+                .identity_paths
+                .locks
+                .join("recall-sidecar.MQ.lock")
+                .exists(),
+            "no owner lock file is written"
+        );
+    }
+
+    #[test]
+    fn enabling_recall_after_disabled_owns_and_sweeps_the_backlog() {
+        let (mut wiring, context, spawn, _root) = disabled_harness();
+        let expired = crate::sidecar_sweep::sidecar_dir(&context.identity_paths.recall, "old");
+        std::fs::create_dir_all(&expired).unwrap();
+        assert!(wiring.sidecar_for(SESSION, &context).is_none());
+        assert_eq!(spawn.blocking_queued(), 0);
+
+        Arc::get_mut(&mut wiring)
+            .expect("fixture wiring is unshared")
+            .options
+            .resolve_settings =
+            Arc::new(|| Ok(serde_json::json!({ "recall": { "enabled": true } })));
+        let sidecar = wiring.sidecar_for(SESSION, &context);
+
+        assert!(sidecar.is_some(), "enabling recall builds the sidecar");
+        assert!(wiring.sidecar_owner.owns(SESSION));
+        assert_eq!(
+            spawn.blocking_queued(),
+            2,
+            "the owner acquire and the first sweep are queued on the blocking seam"
+        );
+    }
+
+    #[test]
+    fn the_owner_acquire_and_the_sweep_are_offloaded_not_spawned() {
+        let (wiring, context, spawn, _root) = tool_call_offer_harness();
+        let _sidecar = resident(&wiring, &context);
+
+        assert_eq!(
+            spawn.queued(),
+            0,
+            "neither the acquire nor the sweep may run on the async seam, which keeps polling on \
+             the thread that paints and reads input"
+        );
+        assert_eq!(spawn.blocking_queued(), 2);
+    }
+
+    #[test]
+    fn shutdown_releases_ownership_and_sweeps_after_the_sidecar_is_disposed() {
+        let (wiring, context, spawn, _root) = tool_call_offer_harness();
+        let sidecar = resident(&wiring, &context);
+        assert!(wiring.sidecar_owner.owns(SESSION));
+
+        wiring.on_session_shutdown(SESSION);
+
+        assert!(
+            !wiring.sidecar_owner.owns(SESSION),
+            "ownership ends synchronously with the shutdown call"
+        );
+        assert_eq!(
+            spawn.queued(),
+            1,
+            "the async half is the sidecar disposal, as before"
+        );
+        spawn.drain_blocking();
+        spawn.drain();
+        assert_eq!(
+            sidecar.state(),
+            KibitzerSidecarState::Disposed,
+            "the sidecar itself is still shut down by the caller"
+        );
+    }
+}
+
+/// The REAL `append_wake_line` against a tempdir plus the reporter the wiring installs, so the record
+/// chain is exercised end to end: a line lands in `sidecars/<encoded>/wakes.ndjson`.
+mod wake_log_wiring {
+    use super::*;
+    use crate::kibitzer_sidecar_outcome::{KibitzerWakeOutcome, KibitzerWakeStatus};
+    use crate::sidecar_wake_log::{AppendEntry, WakeReporter};
+    use std::path::Path;
+
+    fn record_outcome(session_id: &str, status: KibitzerWakeStatus) -> KibitzerWakeOutcome {
+        KibitzerWakeOutcome {
+            session_id: session_id.to_string(),
+            wake: 7,
+            generation: 2,
+            status,
+            cause: None,
+            reason: None,
+            configuration: None,
+            model: None,
+            nudges: Vec::new(),
+            candidate_count: 1,
+            steered: 0,
+            tool_calls: 0,
+            duration_ms: 12,
+            slot_wait_ms: 3,
+            cursors: None,
+            context_tokens: None,
+            usage: None,
+            diagnostic: false,
+        }
+    }
+
+    fn report(root: &tempfile::TempDir, session_id: &str, reporter: &WakeReporter) {
+        let recall = root.path().join("runtime/recall");
+        let append = |recall: &Path, session: &str, line: &str| {
+            append_wake_line(recall, session, line).expect("the tempdir is writable");
+        };
+        let warn = |_: &str| {};
+        let now = || 1_700_000_000_000i64;
+        let entries: AppendEntry = Arc::new(|_: &str, _: Value| {});
+        reporter.report(
+            &record_outcome(session_id, KibitzerWakeStatus::Completed),
+            &crate::sidecar_wake_log::WakeLogDeps {
+                recall: &recall,
+                append: &append,
+                warn: &warn,
+                now_ms: &now,
+            },
+            &entries,
+            Some("recall"),
+        );
+    }
+
+    fn lines(root: &tempfile::TempDir, session_id: &str) -> Vec<String> {
+        let recall = root.path().join("runtime/recall");
+        let path = crate::sidecar_wake_log::wakes_file(&recall, session_id);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => text.lines().map(str::to_string).collect(),
+            Err(error) => panic!("{} unreadable: {error}", path.display()),
+        }
+    }
+
+    #[test]
+    fn a_reported_wake_appends_one_line_to_the_session_log() {
+        let root = tempfile::tempdir().unwrap();
+        let reporter = WakeReporter::new();
+        report(&root, SESSION, &reporter);
+
+        let lines = lines(&root, SESSION);
+        assert_eq!(lines.len(), 1);
+        let record: Value = serde_json::from_str(&lines[0]).expect("one JSON line");
+        assert_eq!(record["sessionId"], SESSION);
+        assert_eq!(record["wake"], 7);
+        assert_eq!(record["status"], "completed");
+    }
+
+    #[test]
+    fn repeated_wakes_append_rather_than_overwrite() {
+        let root = tempfile::tempdir().unwrap();
+        let reporter = WakeReporter::new();
+        report(&root, SESSION, &reporter);
+        report(&root, SESSION, &reporter);
+        report(&root, SESSION, &reporter);
+
+        assert_eq!(
+            lines(&root, SESSION).len(),
+            3,
+            "the log is append-only across wakes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_wake_log_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let reporter = WakeReporter::new();
+        report(&root, SESSION, &reporter);
+
+        let recall = root.path().join("runtime/recall");
+        let path = crate::sidecar_wake_log::wakes_file(&recall, SESSION);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "upstream writes the record with mode 0o600");
+    }
+
+    #[test]
+    fn two_sessions_write_independent_logs() {
+        let root = tempfile::tempdir().unwrap();
+        let reporter = WakeReporter::new();
+        report(&root, "s1", &reporter);
+        report(&root, "s2", &reporter);
+
+        assert_eq!(lines(&root, "s1").len(), 1);
+        assert_eq!(lines(&root, "s2").len(), 1);
+    }
 }
