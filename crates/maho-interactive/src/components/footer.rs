@@ -109,6 +109,28 @@ const STATUS_ORDER: &[(&str, Option<u8>)] = &[
     ("ext:nested-agents:status", Some(10)),
 ];
 const UNKNOWN_STATUS_FOLD_PRIORITY: u8 = 30;
+/// Status rows beyond the first are used by animated statuses, so a spinner is never hidden by
+/// the fold marker. Three rows is the ceiling; anything still overflowing folds as before.
+const MAX_STATUS_ROWS: usize = 3;
+/// Whether the status renders a spinner. The task group is the only merged activity status:
+/// `interactive_ui_host` folds `omo-task`/`omo-dag` JSON into one `omo-task` text, so `omo-dag`
+/// only survives here as its unmerged `dag tracking N runs` label, which does not animate.
+fn status_is_vital(key: &str, text: &str) -> bool {
+    match key {
+        "monitors" => monitor_watching(text),
+        "omo-task" => text.contains(" running"),
+        _ => false,
+    }
+}
+fn foldable_of(entries: &[(FooterGroup, Option<u8>, bool)]) -> Vec<FoldableStatus> {
+    entries
+        .iter()
+        .map(|(group, priority, _)| FoldableStatus {
+            text: group.plain(),
+            fold_priority: *priority,
+        })
+        .collect()
+}
 fn background_tasks(
     statuses: &BTreeMap<String, String>,
 ) -> Option<maho_ext_api::BackgroundTaskStatus> {
@@ -548,16 +570,17 @@ impl FooterComponent {
         let truncated = flatten_groups(&right, gap).truncated(width);
         pad_line("", 0, &truncated.render(theme), truncated.width(), width)
     }
-    fn render_status(&self, width: usize, theme: &Theme) -> Option<String> {
+    fn render_status(&self, width: usize, theme: &Theme) -> Vec<String> {
         let statuses = &self.snapshot.extension_statuses;
         let tasks = background_task_text(statuses, self.now_ms);
-        let mut entries: Vec<(FooterGroup, Option<u8>)> = Vec::new();
+        let mut entries: Vec<(FooterGroup, Option<u8>, bool)> = Vec::new();
         let mut push = |key: &str, value: &str, priority: Option<u8>| {
             let text = sanitize_status(value);
             if !text.is_empty() {
                 // Failures ask for attention, so they never fold (plan: "failed counts").
                 let priority = priority.filter(|_| !text.contains(" failed"));
-                entries.push((status_group(key, &text), priority));
+                let vital = status_is_vital(key, &text);
+                entries.push((status_group(key, &text), priority, vital));
             }
         };
         for (key, priority) in STATUS_ORDER {
@@ -602,16 +625,12 @@ impl FooterComponent {
             .map(|v| sanitize_status(v))
             .filter(|v| !v.is_empty());
         if entries.is_empty() && memory.is_none() {
-            return None;
+            return Vec::new();
         }
         let gap = gap_for(width);
-        let foldable: Vec<FoldableStatus> = entries
-            .iter()
-            .map(|(group, priority)| FoldableStatus {
-                text: group.plain(),
-                fold_priority: *priority,
-            })
-            .collect();
+        // Animated statuses lead, each on the first row: the spinner has to stay visible when the
+        // terminal is narrow, so activity is never what the fold removes.
+        let (vital, rest): (Vec<_>, Vec<_>) = entries.iter().cloned().partition(|e| e.2);
         let memory_variants: Vec<FooterGroup> = memory
             .as_deref()
             .map(|m| vec![memory_group(m, false), memory_group(m, true)])
@@ -621,23 +640,40 @@ impl FooterComponent {
             .iter()
             .find(|m| {
                 let budget = width.saturating_sub(m.width() + gap);
-                status_fold_width(&foldable, &plan_status_fold(&foldable, budget, gap), gap)
-                    <= budget
+                status_fold_width(
+                    &foldable_of(&rest),
+                    &plan_status_fold(&foldable_of(&rest), budget, gap),
+                    gap,
+                ) <= budget
             })
             .or(memory_variants.last())
             .cloned();
         let right_width = right.as_ref().map_or(0, FooterGroup::width);
         if right_width >= width {
             let truncated = right.unwrap_or_default().truncated(width);
-            return Some(render_group(&truncated, theme));
+            return vec![render_group(&truncated, theme)];
         }
         let budget = if right.is_some() {
             width.saturating_sub(right_width + gap)
         } else {
             width
         };
+        let foldable = foldable_of(&rest);
         let fold = plan_status_fold(&foldable, budget, gap);
-        let mut left: Vec<FooterGroup> = fold.kept.iter().map(|&i| entries[i].0.clone()).collect();
+        // Fill the first row with as many vital statuses as fit, then the kept static ones; the
+        // rest of the vital statuses move to their own rows so no spinner is ever folded away.
+        let mut left: Vec<FooterGroup> = Vec::new();
+        let mut overflow: Vec<FooterGroup> = Vec::new();
+        for (group, _, _) in &vital {
+            let mut candidate = left.clone();
+            candidate.push(group.clone());
+            if groups_width(&candidate, gap) <= budget {
+                left = candidate;
+            } else {
+                overflow.push(group.clone());
+            }
+        }
+        left.extend(fold.kept.iter().map(|&i| rest[i].0.clone()));
         if fold.folded > 0 {
             left.push(FooterGroup::run(
                 format!("+{}", fold.folded),
@@ -655,7 +691,7 @@ impl FooterComponent {
             .map(|g| render_group(g, theme))
             .collect::<Vec<_>>()
             .join(&" ".repeat(gap));
-        Some(match right {
+        let first = match right {
             Some(right) => pad_line(
                 &left_colored,
                 left_width,
@@ -664,7 +700,36 @@ impl FooterComponent {
                 width,
             ),
             None => left_colored,
-        })
+        };
+        let mut rows = vec![first];
+        let mut row: Vec<FooterGroup> = Vec::new();
+        for group in overflow {
+            let mut candidate = row.clone();
+            candidate.push(group.clone());
+            if row.is_empty() || groups_width(&candidate, gap) <= width {
+                row = candidate;
+            } else {
+                rows.push(
+                    row.iter()
+                        .map(|g| render_group(g, theme))
+                        .collect::<Vec<_>>()
+                        .join(&" ".repeat(gap)),
+                );
+                row = vec![group];
+            }
+            if rows.len() >= MAX_STATUS_ROWS {
+                break;
+            }
+        }
+        if !row.is_empty() && rows.len() < MAX_STATUS_ROWS {
+            rows.push(
+                row.iter()
+                    .map(|g| render_group(g, theme))
+                    .collect::<Vec<_>>()
+                    .join(&" ".repeat(gap)),
+            );
+        }
+        rows
     }
     pub fn render(&self, width: usize, theme: &Theme) -> Result<Vec<String>, std::io::Error> {
         let mut lines = vec![self.render_top(width, theme)];
@@ -926,6 +991,78 @@ mod tests {
             for line in first.iter().chain(&second) {
                 assert!(visible_width(line) <= width);
             }
+        }
+    }
+
+    /// A narrow terminal used to fold the animated statuses away, so the spinner vanished exactly
+    /// when work was running. Activity now takes its own rows: both spinners survive, and the
+    /// static labels are what the fold removes.
+    #[test]
+    fn a_narrow_footer_keeps_every_spinner_and_folds_static_labels() {
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Truecolor).unwrap();
+        let footer = FooterComponent::new(FooterSnapshot {
+            extension_statuses: BTreeMap::from([
+                (
+                    "omo-task".into(),
+                    serde_json::to_string(&maho_ext_api::BackgroundTaskStatus {
+                        running: 2,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                ),
+                ("monitors".into(), "◉ 1 monitor watching · deploy".into()),
+                (
+                    "todo-waiting".into(),
+                    "waiting: terminal-monitors, active-goal".into(),
+                ),
+                ("lsp".into(), "lsp ready".into()),
+            ]),
+            ..Default::default()
+        });
+        // Narrow enough that the full status line cannot fit on one row.
+        let width = 44;
+        let lines = footer.render(width, &theme).unwrap();
+        let all = lines.join("\n");
+        assert!(
+            all.contains("task"),
+            "the running tasks stay visible: {all:?}"
+        );
+        assert!(
+            all.contains("monitor"),
+            "the watching monitor stays visible: {all:?}"
+        );
+        assert!(
+            !all.contains("waiting: terminal-monitors, active-goal"),
+            "the static label gives up its text before any spinner does: {all:?}"
+        );
+        assert!(
+            lines.len() > 2,
+            "the second spinner gets its own row: {all:?}"
+        );
+        for line in &lines {
+            assert!(visible_width(line) <= width, "{line:?}");
+        }
+        // `interactive_ui_host` hands the footer an already-rendered task text rather than the raw
+        // counts, so the same rule has to hold for that shape too.
+        let merged = FooterComponent::new(FooterSnapshot {
+            extension_statuses: BTreeMap::from([
+                ("omo-task".into(), "⠋ 2 tasks running · 4/9 done".to_owned()),
+                ("monitors".into(), "◉ 1 monitor watching · deploy".into()),
+                (
+                    "todo-waiting".into(),
+                    "waiting: terminal-monitors, active-goal".into(),
+                ),
+            ]),
+            ..Default::default()
+        });
+        let merged_lines = merged.render(width, &theme).unwrap();
+        let merged_all = merged_lines.join("\n");
+        assert!(
+            merged_all.contains("tasks running") && merged_all.contains("monitor watching"),
+            "the merged production text keeps both spinners: {merged_all:?}"
+        );
+        for line in &merged_lines {
+            assert!(visible_width(line) <= width, "{line:?}");
         }
     }
 }
