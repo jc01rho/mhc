@@ -79,6 +79,7 @@ fn media_bytes_sum_only_image_payloads() {
     let user_image = AgentMessage::Llm(Message::User(UserMessage {
         content: UserContent::Blocks(vec![image("abcd")]),
         timestamp: 0,
+        client_message_id: None,
     }));
     let tool_result = AgentMessage::Llm(Message::ToolResult(
         serde_json::from_value(json!({
