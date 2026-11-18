@@ -56,6 +56,9 @@ ignore = [
 
     # RUSTSEC-2026-0369 (zip =2.4.2 pinned): advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs).
     { id = "RUSTSEC-2026-0369", reason = "advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs)" },
+
+    # RUSTSEC-2026-0543 (chrono =0.4.45 pinned): unmaintained notice only, no vulnerability; chrono is a direct dependency of many workspace crates, migration to jiff/time is tracked separately.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained notice only, no vulnerability; chrono is a direct dependency of many workspace crates, migration to jiff/time is tracked separately" },
 ]
 
 [licenses]
