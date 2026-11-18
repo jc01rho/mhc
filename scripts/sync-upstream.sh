@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Merge upstream (origin = Indosaram/mhc) main into our main (fork = jc01rho/mhc) and push.
+# After a merge, start ci.yml on main (a GITHUB_TOKEN push does not trigger it).
 # Then tag our main with the newest upstream release tag as <tag>-omomeow1 (once) and start release.yml for it.
 # Fork-owned CI surface (FORK_OWNED) is never taken from upstream: our workflows, our
 # GitHub-Actions verify/install scripts and the agent docs that describe them stay ours,
@@ -60,6 +61,9 @@ merge_upstream() {
   git commit -q -m "chore(sync): merge upstream main"
   git push -q fork HEAD:main
   echo "synced to $(git rev-parse --short HEAD)"
+  # A push made with GITHUB_TOKEN does not start ci.yml, so dispatch it explicitly.
+  gh workflow run ci.yml --ref main
+  echo "started ci on main"
   cd "$repo"
   git fetch -q fork main
 }
