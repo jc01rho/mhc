@@ -11,6 +11,12 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_TERMINAL_PROMPT=0
 
+# Stub gh: record each call instead of reaching GitHub.
+mkdir -p "$root/bin"
+printf '#!/usr/bin/env bash\necho "$*" >>"%s/gh.log"\n' "$root" >"$root/bin/gh"
+chmod +x "$root/bin/gh"
+export PATH="$root/bin:$PATH"
+
 fail() {
   echo "FAIL: $*" >&2
   exit 1
@@ -130,10 +136,13 @@ test_workflow_conflict_only() {
   grep -q 'fn added' crates/lib.rs || fail "the upstream source change was not merged in"
   [ "$(git log -1 --format=%s)" = "chore(sync): merge upstream main" ] || fail "unexpected merge commit: $(git log -1 --format=%s)"
   git merge-base --is-ancestor "origin/main" HEAD || fail "upstream main is not an ancestor of the sync commit"
+  grep -qx 'workflow run ci.yml --ref main' "$root/gh.log" || fail "ci.yml was not dispatched after the sync push"
 
+  rm -f "$root/gh.log"
   checkout_clone
   bash "$sync_script" "$root/work" >"$root/out2.log" 2>&1 || { cat "$root/out2.log" >&2; fail "re-run failed"; }
   grep -q 'main up to date' "$root/out2.log" || fail "re-run did not report up to date"
+  [ ! -e "$root/gh.log" ] || fail "ci.yml was dispatched with nothing merged"
 
   echo "PASS workflow conflict resolves on its own"
 }
@@ -152,6 +161,7 @@ test_source_conflict_stops() {
   git push -q -f upstream HEAD:main
 
   checkout_clone
+  rm -f "$root/gh.log"
   set +e
   bash "$sync_script" "$root/work" >"$root/out3.log" 2>&1
   status=$?
@@ -163,6 +173,7 @@ test_source_conflict_stops() {
   git clone -q "$root/fork.git" "$root/check3"
   cd "$root/check3"
   [ "$(git log -1 --format=%s)" = "our source" ] || fail "fork main moved on a conflicting merge"
+  [ ! -e "$root/gh.log" ] || fail "ci.yml was dispatched for a merge that stopped"
 
   echo "PASS non-workflow conflict stops without pushing"
 }
