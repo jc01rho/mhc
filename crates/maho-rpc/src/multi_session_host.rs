@@ -1590,6 +1590,35 @@ impl HostCore {
             self.respond_record(connection, "", answer);
             return Ok(());
         }
+        // senpi `moveSession(agentDir, hostedPaths, command)`: the host-level, session-less move transaction. It
+        // is advertised (`move_session` capability) and implemented in `session_move_commands`, and is not an
+        // `RpcCommand` variant, so it is answered here before the typed parse that would call it unknown.
+        if value["type"] == "move_session" {
+            let hosted = self
+                .list_rows(true)
+                .await
+                .iter()
+                .filter_map(|row| row["sessionPath"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            let agent_dir = std::path::absolute(&self.options.agent_dir)
+                .unwrap_or_else(|_| self.options.agent_dir.clone());
+            // The move steps hold guards that are not `Sync` across awaits, so the transaction cannot be a
+            // `Send` future on the host's task; it runs to completion on a blocking thread instead.
+            let runtime = tokio::runtime::Handle::current();
+            let agent_dir = agent_dir.to_string_lossy().into_owned();
+            let command = value.clone();
+            let answer = tokio::task::spawn_blocking(move || {
+                runtime.block_on(crate::session_move_commands::move_session(
+                    &agent_dir, &hosted, &command,
+                ))
+            })
+            .await
+            .unwrap_or_else(|error| {
+                serde_json::json!({"id":value["id"],"type":"response","command":"move_session","success":false,"error":"move_failed","errorCode":"move_failed","errorData":{"detail":error.to_string()}})
+            });
+            self.respond_record(connection, "", answer);
+            return Ok(());
+        }
         if let Some(error) = crate::rpc_input_validation::rpc_command_shape_error(&value) {
             self.error(
                 connection,
@@ -4694,6 +4723,9 @@ mod handoff_tests {
         assert!(!first.contains(crate::protocol_identity::host_instance_id()));
     }
     fn idle_core() -> std::sync::Arc<HostCore> {
+        idle_core_in(std::path::PathBuf::from("/tmp"))
+    }
+    fn idle_core_in(agent_dir: std::path::PathBuf) -> std::sync::Arc<HostCore> {
         let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
             |_profile: crate::session_registry::RpcSessionLaunchProfile| -> std::pin::Pin<
                 Box<
@@ -4713,7 +4745,7 @@ mod handoff_tests {
         ));
         std::sync::Arc::new(HostCore::new(
             HostCoreOptions {
-                agent_dir: std::path::PathBuf::from("/tmp"),
+                agent_dir,
                 cwd: "/tmp".to_owned(),
                 create_runtime,
                 capabilities: vec![
@@ -4723,6 +4755,40 @@ mod handoff_tests {
             },
             writer,
         ))
+    }
+    /// The host advertises `move_session`, so the command reaches `session_move_commands` instead of the typed
+    /// parse that answered `Unknown command: move_session`.
+    #[tokio::test]
+    async fn move_session_is_answered_by_the_move_transaction() {
+        use tokio::io::AsyncBufReadExt;
+        let agent_dir = tempfile::tempdir().unwrap();
+        let core = idle_core_in(agent_dir.path().to_owned());
+        let (write, read) = tokio::io::duplex(1 << 16);
+        core.register_connection(
+            "c",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,
+                crate::socket_event_fanout::DEFAULT_STALL_MS,
+                std::sync::Arc::clone(&core.blocked),
+                |_| {},
+            ),
+        );
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        let mut ask = async |command: serde_json::Value| -> serde_json::Value {
+            core.handle(Some("c"), &command.to_string()).await.unwrap();
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap()
+        };
+        let prepared =
+            ask(serde_json::json!({"type":"move_session","id":"a","op":"prepare","moveId":"m1"}))
+                .await;
+        assert_eq!(prepared["id"], "a");
+        assert_eq!(prepared["command"], "move_session");
+        assert_eq!(prepared["success"], true);
+        assert_eq!(prepared["data"]["state"], "ready");
+        let refused = ask(serde_json::json!({"type":"move_session","id":"b","op":"export","moveId":"bad id","sessionPath":"/s","target":"t"})).await;
+        assert_eq!(refused["success"], false);
+        assert_eq!(refused["errorCode"], "invalid_move_request");
     }
     #[tokio::test]
     async fn handoff_is_advertised_only_after_its_handler_is_installed() {
