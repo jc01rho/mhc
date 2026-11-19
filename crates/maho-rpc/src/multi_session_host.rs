@@ -4771,7 +4771,9 @@ mod handoff_tests {
             core.handle(Some("c"), &command.to_string()).await.unwrap();
             serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap()
         };
-        let prepared = ask(serde_json::json!({"type":"move_session","id":"a","op":"prepare","moveId":"m1"})).await;
+        let prepared =
+            ask(serde_json::json!({"type":"move_session","id":"a","op":"prepare","moveId":"m1"}))
+                .await;
         assert_eq!(prepared["id"], "a");
         assert_eq!(prepared["command"], "move_session");
         assert_eq!(prepared["success"], true);
