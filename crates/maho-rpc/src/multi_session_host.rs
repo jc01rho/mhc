@@ -1602,12 +1602,20 @@ impl HostCore {
                 .collect::<Vec<_>>();
             let agent_dir = std::path::absolute(&self.options.agent_dir)
                 .unwrap_or_else(|_| self.options.agent_dir.clone());
-            let answer = crate::session_move_commands::move_session(
-                &agent_dir.to_string_lossy(),
-                &hosted,
-                &value,
-            )
-            .await;
+            // The move steps hold guards that are not `Sync` across awaits, so the transaction cannot be a
+            // `Send` future on the host's task; it runs to completion on a blocking thread instead.
+            let runtime = tokio::runtime::Handle::current();
+            let agent_dir = agent_dir.to_string_lossy().into_owned();
+            let command = value.clone();
+            let answer = tokio::task::spawn_blocking(move || {
+                runtime.block_on(crate::session_move_commands::move_session(
+                    &agent_dir, &hosted, &command,
+                ))
+            })
+            .await
+            .unwrap_or_else(|error| {
+                serde_json::json!({"id":value["id"],"type":"response","command":"move_session","success":false,"error":"move_failed","errorCode":"move_failed","errorData":{"detail":error.to_string()}})
+            });
             self.respond_record(connection, "", answer);
             return Ok(());
         }
