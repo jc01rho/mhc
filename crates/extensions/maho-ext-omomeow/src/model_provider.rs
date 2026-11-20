@@ -3,7 +3,9 @@
 
 use maho_ai::types::{InputModality, ModelCost, ModelThinkingLevel, ThinkingLevelMap};
 use maho_ext_api::{ExtensionFailure, ProviderConfig, ProviderModelConfig};
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const PROVIDER_NAME: &str = "omomeow-opus";
@@ -101,6 +103,12 @@ pub const MODELS: &[ModelEntry] = &[
         Some(250_000),
     ),
     model(
+        "gemini-4-neon-xhigh",
+        "Gemini 4 Neon XHigh (OmOMeow)",
+        1_048_576,
+        Some(250_000),
+    ),
+    model(
         "claude-haiku-5-5",
         "Haiku 5.5 (OmOMeow)",
         200_000,
@@ -118,14 +126,6 @@ pub const MODELS: &[ModelEntry] = &[
         "Gemini 3.8 Flash High (OmOMeow)",
         1_000_000,
         None,
-    ),
-    model("oc-beam", "OC Beam (OmOMeow)", 872_000, Some(64_000)),
-    model("beam-free", "Beam Free (OmOMeow)", 872_000, Some(64_000)),
-    model(
-        "crouton-alpha-free",
-        "Crouton Alpha Free (OmOMeow)",
-        1_048_576,
-        Some(64_000),
     ),
     max_model(
         "oc-deepseek-v4.1-flash-free",
@@ -205,14 +205,95 @@ pub fn proxy_base_url(models_path: &Path, override_url: Option<&str>) -> Result<
         .ok_or_else(|| format!("{SOURCE_PROVIDER}.baseUrl must be a string"))
 }
 
-fn model_config(entry: &ModelEntry) -> ProviderModelConfig {
+/// One registered model, from either the list beside the entry file or the compiled one.
+pub struct ModelSpec {
+    pub id: String,
+    pub name: String,
+    pub context_window: u64,
+    pub max_tokens: Option<u64>,
+    pub thinking_level_map: Option<ThinkingLevelMap>,
+}
+
+impl From<&ModelEntry> for ModelSpec {
+    fn from(entry: &ModelEntry) -> Self {
+        let thinking_level_map = entry.max_thinking.then(|| {
+            let mut map = ThinkingLevelMap::new();
+            map.insert(ModelThinkingLevel::Max, Some("max".to_owned()));
+            map
+        });
+        ModelSpec {
+            id: entry.id.to_owned(),
+            name: entry.name.to_owned(),
+            context_window: entry.context_window,
+            max_tokens: entry.max_tokens,
+            thinking_level_map,
+        }
+    }
+}
+
+/// The list the compiled binary carries; only the fallback when no manifest sits beside the entry file.
+pub fn compiled_models() -> Vec<ModelSpec> {
+    MODELS.iter().map(ModelSpec::from).collect()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestEntry {
+    id: String,
+    name: String,
+    context_window: u64,
+    max_tokens: Option<u64>,
+    thinking_level_map: Option<BTreeMap<ModelThinkingLevel, Option<String>>>,
+}
+
+/// The file name omo-nyang writes beside `model-provider.ts` (`bun src/model-provider.ts`): the same list the TS
+/// entry registers, so a model added there needs no new engine build. Before this the engine registered only the list
+/// compiled into it, and a button for a newer model failed with "Model not found" (2026-11-20, gemini-4-neon-xhigh).
+pub const MANIFEST_FILE: &str = "omomeow-models.json";
+
+pub fn parse_manifest(text: &str) -> Result<Vec<ModelSpec>, String> {
+    let entries: Vec<ManifestEntry> =
+        serde_json::from_str(text).map_err(|error| format!("{MANIFEST_FILE}: {error}"))?;
+    if entries.is_empty() || entries.iter().any(|entry| entry.id.is_empty()) {
+        return Err(format!(
+            "{MANIFEST_FILE}: needs at least one model, each with an id"
+        ));
+    }
+    Ok(entries
+        .into_iter()
+        .map(|entry| ModelSpec {
+            id: entry.id,
+            name: entry.name,
+            context_window: entry.context_window,
+            max_tokens: entry.max_tokens,
+            thinking_level_map: entry.thinking_level_map,
+        })
+        .collect())
+}
+
+/// The manifest beside the entry file when there is one and it parses, else the compiled list. A missing file is the
+/// normal state of a machine that has not been redeployed; an unreadable or invalid one is reported and also falls
+/// back, because refusing to start every session would be worse than the older list.
+pub fn models_for(manifest: Option<&Path>) -> Vec<ModelSpec> {
+    let Some(path) = manifest.filter(|path| path.is_file()) else {
+        return compiled_models();
+    };
+    match std::fs::read_to_string(path)
+        .map_err(|error| format!("{}: {error}", path.display()))
+        .and_then(|text| parse_manifest(&text))
+    {
+        Ok(models) => models,
+        Err(error) => {
+            eprintln!("omomeow models: {error}; using the compiled list");
+            compiled_models()
+        }
+    }
+}
+
+fn model_config(entry: &ModelSpec) -> ProviderModelConfig {
     let mut compat = serde_json::Map::new();
     compat.insert("supportsForcedToolChoice".into(), Value::Bool(false));
-    let thinking_level_map = entry.max_thinking.then(|| {
-        let mut map = ThinkingLevelMap::new();
-        map.insert(ModelThinkingLevel::Max, Some("max".to_owned()));
-        map
-    });
+    let thinking_level_map = entry.thinking_level_map.clone();
     ProviderModelConfig {
         model_type: None,
         output: None,
@@ -221,8 +302,8 @@ fn model_config(entry: &ModelEntry) -> ProviderModelConfig {
         prompt_cache: None,
         supports_assistant_prefill: None,
         default_thinking_level: None,
-        id: entry.id.to_owned(),
-        name: entry.name.to_owned(),
+        id: entry.id.clone(),
+        name: entry.name.clone(),
         upstream_model_id: None,
         api: None,
         base_url: None,
@@ -244,6 +325,15 @@ pub fn load_provider(
     key_path: &Path,
     base_url_override: Option<&str>,
 ) -> Result<ProviderConfig, String> {
+    load_provider_with(models_path, key_path, base_url_override, compiled_models())
+}
+
+pub fn load_provider_with(
+    models_path: &Path,
+    key_path: &Path,
+    base_url_override: Option<&str>,
+    models: Vec<ModelSpec>,
+) -> Result<ProviderConfig, String> {
     let base_url = proxy_base_url(models_path, base_url_override)?;
     let api_key = std::fs::read_to_string(key_path)
         .map_err(|error| format!("{}: {error}", key_path.display()))?
@@ -257,7 +347,7 @@ pub fn load_provider(
         api_key: Some(api_key),
         api: Some("openai-responses".into()),
         auth_header: Some(true),
-        models: Some(MODELS.iter().map(model_config).collect()),
+        models: Some(models.iter().map(model_config).collect()),
         ..ProviderConfig::default()
     })
 }
@@ -283,7 +373,10 @@ pub fn default_paths() -> (PathBuf, PathBuf) {
 pub fn register(api: &maho_ext_api::ExtensionApi) -> Result<(), ExtensionFailure> {
     let (models_path, key_path) = default_paths();
     let override_url = std::env::var("OMOMEOW_PROVIDER_BASE_URL").ok();
-    let config = load_provider(&models_path, &key_path, override_url.as_deref())
+    let manifest = crate::fleet_tool::script_directory(&api.registered.source_info.path)
+        .map(|directory| directory.join(MANIFEST_FILE));
+    let models = models_for(manifest.as_deref());
+    let config = load_provider_with(&models_path, &key_path, override_url.as_deref(), models)
         .map_err(ExtensionFailure::new)?;
     api.register_provider(PROVIDER_NAME, config)
 }
@@ -415,5 +508,79 @@ mod tests {
             load_provider(&models, &key, None).err().as_deref(),
             Some("OmOcat API key is empty")
         );
+    }
+
+    #[test]
+    fn compiled_list_carries_neon_and_none_of_the_retired_beam_ids() {
+        let ids: Vec<String> = compiled_models().into_iter().map(|spec| spec.id).collect();
+        assert!(ids.iter().any(|id| id == "gemini-4-neon-xhigh"));
+        for retired in ["oc-beam", "beam-free", "crouton-alpha-free"] {
+            assert!(!ids.iter().any(|id| id == retired), "{retired}");
+        }
+    }
+
+    #[test]
+    fn manifest_entries_keep_limits_and_level_vetoes() {
+        let models = parse_manifest(
+            r#"[
+              {"id":"future-model","name":"Future (OmOMeow)","contextWindow":123456,"maxTokens":7000,"thinkingLevelMap":{"max":"max"}},
+              {"id":"free","name":"Free (OmOMeow)","contextWindow":256000,"thinkingLevelMap":{"off":null,"low":null,"max":"max"}},
+              {"id":"inferred","name":"Inferred (OmOMeow)","contextWindow":1000000}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].max_tokens, Some(7_000));
+        assert_eq!(
+            models[0]
+                .thinking_level_map
+                .as_ref()
+                .unwrap()
+                .get(&ModelThinkingLevel::Max),
+            Some(&Some("max".to_owned()))
+        );
+        let free = models[1].thinking_level_map.as_ref().unwrap();
+        assert_eq!(free.get(&ModelThinkingLevel::Off), Some(&None));
+        assert_eq!(free.get(&ModelThinkingLevel::Low), Some(&None));
+        assert!(models[2].thinking_level_map.is_none());
+        assert!(parse_manifest("[]").is_err());
+        assert!(parse_manifest("not json").is_err());
+    }
+
+    #[test]
+    fn a_manifest_beside_the_entry_decides_the_registered_models() {
+        let manifest = temp(
+            MANIFEST_FILE,
+            r#"[{"id":"future-model","name":"Future (OmOMeow)","contextWindow":123456}]"#,
+        );
+        let models = models_for(Some(&manifest));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "future-model");
+        let provider = load_provider_with(
+            &temp(
+                "m4.json",
+                r#"{"providers":{"cliproxyapi-last":{"baseUrl":"http://proxy/v1","apiKey":"k"}}}"#,
+            ),
+            &temp("manifest-key", "secret"),
+            None,
+            models,
+        )
+        .unwrap();
+        let registered = provider.models.unwrap();
+        assert_eq!(registered.len(), 1);
+        assert_eq!(registered[0].id, "future-model");
+        assert_eq!(registered[0].max_tokens, DEFAULT_MAX_TOKENS);
+    }
+
+    #[test]
+    fn without_a_usable_manifest_the_compiled_list_is_registered() {
+        let compiled = compiled_models().len();
+        assert_eq!(models_for(None).len(), compiled);
+        let missing = std::env::temp_dir()
+            .join("omomeow-no-such-manifest")
+            .join(MANIFEST_FILE);
+        assert_eq!(models_for(Some(&missing)).len(), compiled);
+        let broken = temp("broken-models.json", "{not json");
+        assert_eq!(models_for(Some(&broken)).len(), compiled);
     }
 }
