@@ -272,7 +272,18 @@ impl HostAssembly {
             .map_err(|e| error(format!("store_index_unavailable: {e}")))
         })
     }
+    /// Reattach keeps today's fallback behaviour; a fresh start decides by the policy gate
+    /// (`open_with_policy`).
     pub fn open(
+        &self,
+        spec: &senpi_task::runners::types::RpcRunnerSpec,
+        context: session_context::ChildSessionContext,
+        socket: String,
+        path: String,
+    ) -> OpenedHostResult {
+        self.open_with_policy(spec, context, socket, path, false)
+    }
+    pub fn open_with_policy(
         &self,
         spec: &senpi_task::runners::types::RpcRunnerSpec,
         context: session_context::ChildSessionContext,
@@ -533,7 +544,7 @@ fn build_host_runner(
                 .to_string_lossy()
                 .into_owned()
             });
-            open_assembly.open(spec, context, socket, path, designated_chain_only)
+            open_assembly.open_with_policy(spec, context, socket, path, designated_chain_only)
         }),
     };
     ProductionHostRunner {
