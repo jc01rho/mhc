@@ -352,12 +352,6 @@ fn orphan_lines(identity: &str, report: &IdentityOrphanSweepReport, dry_run: boo
     lines
 }
 
-fn is_empty_lock_sweep_line(line: &str) -> bool {
-    line.strip_prefix("INFO ")
-        .and_then(|rest| rest.split_once(' '))
-        .is_some_and(|(identity, tail)| !identity.is_empty() && tail == "locks reclaimed 0, kept 0")
-}
-
 /// `mhc doctor --fix`: one host-wide sweep over every identity that has a `runtime/` (repo or not),
 /// resuming at the persisted cursor. Each step is one closure in `steps`; the reaper and the
 /// dead-owner lock sweep come first, then the git-backed orphan worktree sweep, which skips an
@@ -426,10 +420,7 @@ pub fn reflection_lock_fix(options: &ReflectionLockFixOptions<'_>) -> Reflection
                 failed: false,
             };
         }
-        Ok(HostSweepResult::Swept { lines, .. }) => lines
-            .into_iter()
-            .filter(|line| !is_empty_lock_sweep_line(line))
-            .collect(),
+        Ok(HostSweepResult::Swept { lines, .. }) => lines,
     };
     if lines.is_empty() {
         lines.push(

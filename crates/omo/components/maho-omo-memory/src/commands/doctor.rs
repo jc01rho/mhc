@@ -110,7 +110,14 @@ fn reflection_lock_fix_lines(identity: &MemoryCommandIdentity, dry_run: bool) ->
                 (!dry_run).then(|| reclaim_dead_owner_locks(&identity.identity_paths.locks));
             let lines = format_stale_lock_fix_lines(&identity.identity, &report, locks.as_ref());
             if lines.is_empty() {
-                vec!["no stale reflection lock to release".to_owned()]
+                vec![
+                    if dry_run {
+                        "nothing to fix"
+                    } else {
+                        "no stale reflection lock to release"
+                    }
+                    .to_owned(),
+                ]
             } else {
                 lines
             }
