@@ -27,7 +27,7 @@ pub const SESSION_ONLY_THINKING_SCOPE: &str = "turn";
 /// How a control method fails: its typed refusal, answered by the tool as data, or the leg's transport failure.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlError {
-    Refused(ThreadToolFailure),
+    Refused(Box<ThreadToolFailure>),
     Transport(String),
 }
 
@@ -35,7 +35,7 @@ impl ControlError {
     /// The typed refusal, when this is one.
     pub fn refusal(&self) -> Option<&ThreadToolFailure> {
         match self {
-            Self::Refused(failure) => Some(failure),
+            Self::Refused(failure) => Some(failure.as_ref()),
             Self::Transport(_) => None,
         }
     }
@@ -50,7 +50,12 @@ pub fn refuse(
     next_action: impl Into<String>,
     details: Option<Value>,
 ) -> ControlError {
-    ControlError::Refused(thread_tool_failure(code, message, next_action, details))
+    ControlError::Refused(Box::new(thread_tool_failure(
+        code,
+        message,
+        next_action,
+        details,
+    )))
 }
 
 /// How a close ended: the session ended, no live session held it any more, or another client still holds it.

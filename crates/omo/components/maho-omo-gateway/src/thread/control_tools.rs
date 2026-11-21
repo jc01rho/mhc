@@ -65,7 +65,7 @@ pub fn transport_failure(message: &str) -> Value {
 pub fn finish(result: ControlResult<Value>) -> Value {
     match result {
         Ok(value) => value,
-        Err(ControlError::Refused(failure)) => error_json(failure),
+        Err(ControlError::Refused(failure)) => error_json(*failure),
         Err(ControlError::Transport(message)) => transport_failure(&message),
     }
 }

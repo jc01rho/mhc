@@ -113,7 +113,7 @@ pub async fn locate_control(call: &ThreadCall, address: &str, all_scope: bool) -
     let target = if address.trim() == "self" {
         match resolve_self(&entries, &call.caller_id) {
             Ok(entry) => entry.thread_id.clone(),
-            Err(failure) => return LocatedControl::Error(failure),
+            Err(failure) => return LocatedControl::Error(*failure),
         }
     } else {
         address.to_owned()
@@ -126,7 +126,7 @@ pub async fn locate_control(call: &ThreadCall, address: &str, all_scope: bool) -
     };
     let entry = match resolve_target(&entries, &target, &options) {
         Ok((entry, _)) => entry,
-        Err(failure) => return located_elsewhere(call, address, all_scope, failure).await,
+        Err(failure) => return located_elsewhere(call, address, all_scope, *failure).await,
     };
     let book_entry = call
         .book

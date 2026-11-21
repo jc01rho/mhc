@@ -193,7 +193,7 @@ fn read_degraded(
         cursor,
     ) {
         Ok(slice) => slice,
-        Err(failure) => return error_json(failure),
+        Err(failure) => return error_json(*failure),
     };
     // A session file interleaves messages with bookkeeping (the header, model and thinking changes, names): only
     // message entries are transcript, rendered with the live path's roles.
@@ -241,7 +241,7 @@ pub async fn read_thread(
     let messages = control.get_messages().await?;
     let slice = match read_transcript(ReadSource::Live(&messages), max_bytes, cursor) {
         Ok(slice) => slice,
-        Err(failure) => return Ok(error_json(failure)),
+        Err(failure) => return Ok(error_json(*failure)),
     };
     let (thread_id, device) = control_identity(control.as_ref());
     Ok(ok_json(&ThreadReadOk {

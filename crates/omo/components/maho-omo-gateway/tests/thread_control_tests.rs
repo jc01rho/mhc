@@ -232,7 +232,7 @@ fn thread_list_names_each_session_by_thread_with_its_state_and_no_endpoint_inter
         "session_path",
     ] {
         assert!(
-            !found.iter().any(|key| key == internal),
+            !found.iter().any(|key| key.as_str() == internal),
             "{internal} leaked: {listed}"
         );
     }

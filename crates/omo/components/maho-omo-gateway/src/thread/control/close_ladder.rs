@@ -143,7 +143,7 @@ where
     {
         Ok(RecordAnswer::Ok(data)) => strings(data.get("capabilities"))
             .iter()
-            .any(|capability| capability == UNLOAD_REFUSE_DELIVERIES),
+            .any(|capability| capability.as_str() == UNLOAD_REFUSE_DELIVERIES),
         _ => false,
     }
 }
@@ -366,10 +366,13 @@ mod tests {
 
     fn refused_code(answer: ControlResult<CloseAnswer>) -> (String, Value) {
         match answer {
-            Err(ControlError::Refused(failure)) => (
-                failure.code.as_str().to_owned(),
-                failure.details.unwrap_or(Value::Null),
-            ),
+            Err(ControlError::Refused(failure)) => {
+                let failure = *failure;
+                (
+                    failure.code.as_str().to_owned(),
+                    failure.details.unwrap_or(Value::Null),
+                )
+            }
             other => panic!("expected a refusal, got {other:?}"),
         }
     }

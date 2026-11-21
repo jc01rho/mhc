@@ -45,19 +45,21 @@ pub struct DeviceCandidate {
 /// Why a device that does not list a thread could not be asked whether it holds it (#14280): this device has no
 /// account connection, its service carries no wake (so it makes no probe), or it makes no single probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum NotAskedReason {
-    RemoteUnavailable,
-    WakeUnavailable,
-    LookupUnavailable,
+    #[serde(rename = "remote_unavailable")]
+    Remote,
+    #[serde(rename = "wake_unavailable")]
+    Wake,
+    #[serde(rename = "lookup_unavailable")]
+    Lookup,
 }
 
 impl NotAskedReason {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::RemoteUnavailable => "remote_unavailable",
-            Self::WakeUnavailable => "wake_unavailable",
-            Self::LookupUnavailable => "lookup_unavailable",
+            Self::Remote => "remote_unavailable",
+            Self::Wake => "wake_unavailable",
+            Self::Lookup => "lookup_unavailable",
         }
     }
 }
@@ -165,15 +167,12 @@ pub struct AddressRefusal {
 
 const CANDIDATE_LIMIT: usize = 10;
 
-fn device_candidates<'a>(rows: impl IntoIterator<Item = &'a DeviceRow>) -> Vec<DeviceCandidate> {
-    rows.into_iter()
-        .take(CANDIDATE_LIMIT)
-        .map(|row| DeviceCandidate {
-            device: row.id.clone(),
-            name: row.name.clone(),
-            online: row.online,
-        })
-        .collect()
+fn device_candidate(row: &DeviceRow) -> DeviceCandidate {
+    DeviceCandidate {
+        device: row.id.clone(),
+        name: row.name.clone(),
+        online: row.online,
+    }
 }
 
 /// A device as every message names it: `name (id)`, or the id alone when its name is empty or the id itself.
@@ -185,10 +184,7 @@ pub fn device_label(id: &str, name: &str) -> String {
     }
 }
 
-pub fn no_device<'a>(
-    typed: &str,
-    devices: impl IntoIterator<Item = &'a DeviceRow>,
-) -> AddressRefusal {
+pub fn no_device(typed: &str, devices: &[DeviceRow]) -> AddressRefusal {
     AddressRefusal {
         code: RefusalCode::NotFound,
         reason: "no_device",
@@ -196,16 +192,16 @@ pub fn no_device<'a>(
         details: RefusalDetails::Device {
             kind: "device",
             device: typed.to_owned(),
-            candidates: device_candidates(devices),
+            candidates: devices
+                .iter()
+                .take(CANDIDATE_LIMIT)
+                .map(device_candidate)
+                .collect(),
         },
     }
 }
 
-pub fn devices_share<'a>(
-    by: ShareBy,
-    typed: &str,
-    matches: impl IntoIterator<Item = &'a DeviceRow>,
-) -> AddressRefusal {
+pub fn devices_share(by: ShareBy, typed: &str, matches: &[&DeviceRow]) -> AddressRefusal {
     AddressRefusal {
         code: RefusalCode::AmbiguousTarget,
         reason: by.as_str(),
@@ -213,16 +209,16 @@ pub fn devices_share<'a>(
         details: RefusalDetails::Device {
             kind: "device",
             device: typed.to_owned(),
-            candidates: device_candidates(matches),
+            candidates: matches
+                .iter()
+                .take(CANDIDATE_LIMIT)
+                .map(|row| device_candidate(row))
+                .collect(),
         },
     }
 }
 
-pub fn device_offline<'a>(
-    typed: &str,
-    device: &DeviceRow,
-    matched: impl IntoIterator<Item = &'a DeviceRow>,
-) -> AddressRefusal {
+pub fn device_offline(typed: &str, device: &DeviceRow, matched: &[&DeviceRow]) -> AddressRefusal {
     AddressRefusal {
         code: RefusalCode::DeviceOffline,
         reason: "device_offline",
@@ -231,7 +227,11 @@ pub fn device_offline<'a>(
             device: device.id.clone(),
             device_name: device.name.clone(),
             last_seen: device.last_seen_ms,
-            candidates: device_candidates(matched),
+            candidates: matched
+                .iter()
+                .take(CANDIDATE_LIMIT)
+                .map(|row| device_candidate(row))
+                .collect(),
         },
     }
 }

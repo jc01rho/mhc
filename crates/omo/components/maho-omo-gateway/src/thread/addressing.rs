@@ -117,9 +117,9 @@ fn address_error(
     message: impl Into<String>,
     next_action: &str,
     matches: Option<&[&ThreadAddressEntry]>,
-) -> ThreadToolFailure {
+) -> Box<ThreadToolFailure> {
     let details = matches.map(|matches| json!({ "candidates": candidates(matches) }));
-    thread_tool_failure(code, message, next_action, details)
+    Box::new(thread_tool_failure(code, message, next_action, details))
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -215,7 +215,7 @@ fn scoped_id_hit(
     options: &ResolveOptions<'_>,
     judge: &mut WorkspaceJudge,
     resolution: TargetResolution,
-) -> Result<(ThreadAddressEntry, TargetResolution), ThreadToolFailure> {
+) -> Result<(ThreadAddressEntry, TargetResolution), Box<ThreadToolFailure>> {
     if options.all_scope {
         return Ok((entry.clone(), resolution));
     }
@@ -239,7 +239,7 @@ fn scoped_id_hit(
     ))
 }
 
-fn not_found(target: &str, scope: &str, visible: &[&ThreadAddressEntry]) -> ThreadToolFailure {
+fn not_found(target: &str, scope: &str, visible: &[&ThreadAddressEntry]) -> Box<ThreadToolFailure> {
     let base = format!("No visible thread matches \"{target}\" in {scope}.");
     if maho_thread_address_core::is_thread_id(target) {
         return address_error(
@@ -290,7 +290,7 @@ pub fn resolve_target(
     entries: &[ThreadAddressEntry],
     target: &str,
     options: &ResolveOptions<'_>,
-) -> Result<(ThreadAddressEntry, TargetResolution), ThreadToolFailure> {
+) -> Result<(ThreadAddressEntry, TargetResolution), Box<ThreadToolFailure>> {
     if has_unfoldable_control(target) {
         return Err(address_error(
             "invalid_arguments",
@@ -314,7 +314,7 @@ pub fn resolve_target(
     }
     let session_hits: Vec<&ThreadAddressEntry> = entries
         .iter()
-        .filter(|entry| entry.session_ids.iter().any(|id| id == target))
+        .filter(|entry| entry.session_ids.iter().any(|id| id.as_str() == target))
         .collect();
     if let [hit] = session_hits.as_slice() {
         return scoped_id_hit(hit, options, &mut judge, TargetResolution::Id).map_err(|error| {
@@ -447,14 +447,14 @@ pub fn resolve_target(
 pub fn resolve_self<'a>(
     entries: &'a [ThreadAddressEntry],
     caller_id: &str,
-) -> Result<&'a ThreadAddressEntry, ThreadToolFailure> {
+) -> Result<&'a ThreadAddressEntry, Box<ThreadToolFailure>> {
     entries
         .iter()
         .find(|entry| entry.thread_id == caller_id)
         .or_else(|| {
             entries
                 .iter()
-                .find(|entry| entry.session_ids.iter().any(|id| id == caller_id))
+                .find(|entry| entry.session_ids.iter().any(|id| id.as_str() == caller_id))
         })
         .filter(|_| !caller_id.is_empty())
         .ok_or_else(|| {
@@ -491,7 +491,9 @@ mod tests {
         }
     }
 
-    fn code(result: Result<(ThreadAddressEntry, TargetResolution), ThreadToolFailure>) -> String {
+    fn code(
+        result: Result<(ThreadAddressEntry, TargetResolution), Box<ThreadToolFailure>>,
+    ) -> String {
         match result {
             Ok((entry, _)) => entry.thread_id,
             Err(error) => error.code.as_str().to_owned(),
@@ -551,6 +553,7 @@ mod tests {
         assert_eq!(
             ambiguous
                 .details
+                .as_ref()
                 .map(|details| details["candidates"].as_array().map_or(0, Vec::len)),
             Some(2)
         );

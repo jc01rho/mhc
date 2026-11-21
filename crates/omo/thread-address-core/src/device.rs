@@ -53,7 +53,7 @@ fn found(
     row: &DeviceRow,
 ) -> DeviceResolution {
     if options.online && !row.online {
-        return DeviceResolution::Refusal(device_offline(text, row, std::iter::once(row)));
+        return DeviceResolution::Refusal(device_offline(text, row, &[row]));
     }
     let listing = match &roster.listing_of {
         Some(listing_of) => listing_of(row.id.as_str()),
@@ -117,18 +117,14 @@ pub fn resolve_device(
         && online.is_empty()
         && let Some(offline) = named.first()
     {
-        return DeviceResolution::Refusal(device_offline(text, offline, named.iter().copied()));
+        return DeviceResolution::Refusal(device_offline(text, offline, &named));
     }
     let winners = if online.is_empty() { &named } else { &online };
     if winners.len() == 1 {
         return found(roster, text, options, winners[0]);
     }
     if winners.len() > 1 {
-        return DeviceResolution::Refusal(devices_share(
-            ShareBy::DevicesShareName,
-            text,
-            winners.iter().copied(),
-        ));
+        return DeviceResolution::Refusal(devices_share(ShareBy::DevicesShareName, text, winners));
     }
     let prefix: Vec<&DeviceRow> = if wanted.chars().count() >= DEVICE_PREFIX_MIN {
         roster
@@ -146,7 +142,7 @@ pub fn resolve_device(
         return DeviceResolution::Refusal(devices_share(
             ShareBy::DevicesSharePrefix,
             text,
-            prefix.iter().copied(),
+            &prefix,
         ));
     }
     DeviceResolution::Refusal(no_device(text, &roster.devices))

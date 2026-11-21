@@ -183,8 +183,8 @@ fn decode_cursor(raw: &str) -> Option<Cursor> {
     }
 }
 
-fn fail(code: &str, message: impl Into<String>, next_action: &str) -> ThreadToolFailure {
-    thread_tool_failure(code, message, next_action, None)
+fn fail(code: &str, message: impl Into<String>, next_action: &str) -> Box<ThreadToolFailure> {
+    Box::new(thread_tool_failure(code, message, next_action, None))
 }
 
 /// The JSONL file's object lines; a line that is not a JSON object is skipped, never fatal.
@@ -208,7 +208,7 @@ pub fn read_transcript(
     source: ReadSource<'_>,
     max_bytes: Option<u64>,
     cursor: Option<&str>,
-) -> Result<TranscriptSlice, ThreadToolFailure> {
+) -> Result<TranscriptSlice, Box<ThreadToolFailure>> {
     let max_bytes = match max_bytes {
         None => THREAD_READ_DEFAULT_BYTES,
         Some(0) => {
