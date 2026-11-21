@@ -23,6 +23,62 @@ pub fn resolved_omo_config(
     .config
 }
 
+/// `registerModelRoutingRpc` inputs (omo #14025): the register-time cwd, a merged-config read per
+/// answer, the session registry and the planner's own agent table.
+pub fn model_routing_rpc_deps(
+    cwd: PathBuf,
+    env: BTreeMap<String, String>,
+    registry: Arc<dyn senpi_task::host::SenpiModelRegistry>,
+    engine: &maho_omo_task::engine::TaskEngine,
+) -> maho_omo_task::model_routing_rpc::ModelRoutingRpcDeps {
+    const UNREADABLE_CONFIG_KINDS: [&str; 3] = ["read", "parse", "validation"];
+    let agents: Vec<(String, senpi_task::agents::AgentDefinition)> = engine
+        .agents
+        .iter()
+        .map(|(name, agent)| (name.clone(), agent.clone()))
+        .collect();
+    maho_omo_task::model_routing_rpc::ModelRoutingRpcDeps {
+        cwd: Arc::new(move || cwd.clone()),
+        load_config: Arc::new(move |project_dir: &std::path::Path| {
+            let loaded = maho_omo_config_resolution::load_senpi_omo_config(
+                omo_config_core::LoadOmoConfigOptions {
+                    cwd: Some(project_dir.to_string_lossy().into_owned()),
+                    env: Some(env.clone()),
+                    ..Default::default()
+                },
+            );
+            let unreadable = loaded
+                .diagnostics
+                .iter()
+                .filter_map(|diagnostic| match diagnostic {
+                    maho_omo_config_resolution::SenpiConfigDiagnostic::Config(diagnostic)
+                        if UNREADABLE_CONFIG_KINDS.contains(&diagnostic.kind) =>
+                    {
+                        Some(diagnostic.message.clone())
+                    }
+                    maho_omo_config_resolution::SenpiConfigDiagnostic::Model(diagnostic)
+                        if UNREADABLE_CONFIG_KINDS.contains(&diagnostic.kind) =>
+                    {
+                        Some(diagnostic.message.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            maho_omo_task::model_routing_rpc::ModelRoutingConfig {
+                config: loaded.config,
+                unreadable,
+            }
+        }),
+        registry: Arc::new(move || Some(registry.clone())),
+        planner: Arc::new(
+            move || maho_omo_task::model_routing_rows::ModelRoutingPlannerInputs {
+                agents: agents.clone(),
+                parent_service_tier: None,
+            },
+        ),
+    }
+}
+
 impl senpi_task::manager::parent_registry_context::ChildModelRegistry for NativeChildModelRegistry {
     fn find(
         &self,

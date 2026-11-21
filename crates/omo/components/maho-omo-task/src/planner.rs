@@ -40,7 +40,7 @@ fn explicit_model_metadata(model: &str) -> Option<ResolvedModelRecord> {
 }
 
 /// `omoConfig.exclude_models`: the patterns every resolution path honors.
-fn exclude_models(config: &Value) -> Vec<String> {
+pub(crate) fn exclude_models(config: &Value) -> Vec<String> {
     config
         .get("exclude_models")
         .and_then(Value::as_array)

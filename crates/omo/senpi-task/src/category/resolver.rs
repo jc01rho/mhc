@@ -31,12 +31,21 @@ pub struct ResolveCategoryOptions {
     pub distribute_models: Option<Arc<ModelDistributor>>,
 }
 
+/// Who chose the selected model: the user's omo.json (`model`/`models`/`fallback_models`) or omo's
+/// builtin default/chain (`ModelSelectionSource`, omo #14025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSelectionSource {
+    User,
+    Builtin,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CategoryModelSelection {
     pub selected_model: String,
     pub variant: Option<String>,
     pub matched_fallback: bool,
     pub fallback_entry: Option<DelegateFallbackEntry>,
+    pub source: ModelSelectionSource,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -522,6 +531,7 @@ pub fn resolve_category(
         None => flatten_fallback_models(config.get("fallback_models")),
     };
     let available_set: BTreeSet<String> = available_models.iter().cloned().collect();
+    let has_user_model = user_model.is_some();
     let resolution = resolve_model_for_delegate_task(
         &DelegateModelResolutionInput {
             user_model,
@@ -545,11 +555,20 @@ pub fn resolve_category(
         )));
     };
 
+    // A user model always answers from the user branch (as itself or a promoted user fallback); with
+    // none, a fallback match without a chain rung is a user fallback_models entry.
+    let source =
+        if has_user_model || (resolution.matched_fallback && resolution.fallback_entry.is_none()) {
+            ModelSelectionSource::User
+        } else {
+            ModelSelectionSource::Builtin
+        };
     let selection = CategoryModelSelection {
         selected_model: resolution.model,
         variant: resolution.variant,
         matched_fallback: resolution.matched_fallback,
         fallback_entry: resolution.fallback_entry,
+        source,
     };
     let parsed_model = parse_model(&selection.selected_model);
     let found_model = parsed_model.as_ref().and_then(|parsed| {

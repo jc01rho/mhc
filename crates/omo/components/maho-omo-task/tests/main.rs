@@ -67,6 +67,8 @@ pub mod member_liveness;
 pub mod message_renderers;
 #[path = "model_error_text.rs"]
 pub mod model_error_text;
+#[path = "model_routing_rpc.rs"]
+pub mod model_routing_rpc;
 #[path = "parent_notifier.rs"]
 pub mod parent_notifier;
 #[path = "pause_resume_runtime.rs"]
