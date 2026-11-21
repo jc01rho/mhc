@@ -49,20 +49,10 @@ pub fn recover_pending_reflection(
             should_reconcile: None,
         },
     );
-    let recovered_run_id = if recovery.notice.is_none() {
-        match &recovery.verdict {
-            crate::reflection_stale_active_sync::ActiveHolderVerdict::Dead { run_id } => {
-                Some(run_id.clone())
-            }
-            _ => None,
-        }
-    } else {
-        None
-    };
     crate::commands::types::ReflectionRequestReceipt {
         disposition: crate::commands::types::ReflectionDisposition::Pending,
         run_id,
-        recovered_run_id,
+        recovered_run_id: recovery.recovered_run_id,
         stuck: recovery.notice,
     }
 }

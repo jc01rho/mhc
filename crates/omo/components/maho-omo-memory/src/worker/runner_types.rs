@@ -26,6 +26,12 @@ pub trait ReflectionReservationPort {
         let _ = options;
         self.complete(run_id, outcome)
     }
+    /// Promotes a lone `pending.json` that a CLI release left behind (omo #12517, DESIGN.r2 4.1b)
+    /// under this process. Ports without a store have nothing to promote.
+    fn promote_pending(&self, wait_timeout_ms: Option<u64>) -> Result<Option<ReservedRun>, String> {
+        let _ = wait_timeout_ms;
+        Ok(None)
+    }
 }
 
 pub struct ReflectionRunResult {

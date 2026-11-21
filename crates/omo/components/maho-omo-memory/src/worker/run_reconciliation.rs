@@ -393,6 +393,7 @@ pub async fn reconcile_reflection_runs_with_signal(
                     .file_type()
                     .map_err(|error| error.to_string())?
                     .is_dir()
+                    && !entry.file_name().to_string_lossy().starts_with('.')
                 {
                     paths.push(entry.path());
                 }
@@ -402,6 +403,7 @@ pub async fn reconcile_reflection_runs_with_signal(
         Err(error) => return Err(error.to_string()),
     }
     paths.sort();
+    let mut reserved: Option<memory_core::reflection::ReservationState> = None;
     for path in paths {
         throw_if_aborted(signal)?;
         super::run_temporaries::sweep_stranded_run_temporaries(
@@ -422,14 +424,39 @@ pub async fn reconcile_reflection_runs_with_signal(
             );
             continue;
         }
-        if !path.join("ledger.json").exists() {
-            continue;
-        }
-        let ledger = parse_reservation_run_ledger(
-            read_run_json(&path.join("ledger.json")).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        let ledger = if path.join("ledger.json").exists() {
+            read_ledger_or_none(&path)
+        } else {
+            None
+        };
         throw_if_aborted(signal)?;
+        let Some(ledger) = ledger else {
+            // No ledger, or one that cannot be read: the active run is prelaunch's, any other run
+            // that is provably dead gets its terminal sentinel here so it stops counting as live
+            // (omo #11920, #11976).
+            if reserved.is_none() {
+                reserved = Some(
+                    context
+                        .reservation
+                        .read_state_with_wait(defer_on_scheduler_contention.then_some(0))
+                        .map_err(|error| error.to_string())?,
+                );
+            }
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let held = reserved.as_ref().is_some_and(|state| {
+                [state.active.as_ref(), state.pending.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .any(|run| run.run_id == name)
+            });
+            if !held && let Some(result) = settle_stranded_run(context, recovery, &path, &name)? {
+                results.push(result);
+            }
+            continue;
+        };
         if let Some(result) = reconcile_run_observing(
             context,
             &path,
@@ -458,6 +485,146 @@ pub async fn reconcile_reflection_runs_with_signal(
     )?;
     Ok(results)
 }
+fn read_ledger_or_none(run_dir: &Path) -> Option<ReservationRunLedger> {
+    parse_reservation_run_ledger(read_run_json(&run_dir.join("ledger.json")).ok()?).ok()
+}
+
+/// Runs `task` with the reaper's probe wired to this pass's recovery port and clock.
+fn with_recovery_probe<R>(
+    context: &RunFinalizationContext<'_>,
+    recovery: &dyn ReflectionRecoveryPort,
+    task: impl FnOnce(&memory_core::reflection::StaleLockProbe<'_>) -> R,
+) -> R {
+    let host = || recovery.hostname();
+    let liveness = |pid: u32| recovery.pid_liveness(pid);
+    let start = |pid: u32| recovery.process_start(pid);
+    let clock = || (context.now_ms)() as f64;
+    let probe = memory_core::reflection::StaleLockProbe {
+        base: memory_core::reflection::stale_holder_proof::ReflectionLockProbe {
+            read_text: None,
+            hostname: Some(&host),
+            pid_liveness: Some(&liveness),
+            process_start: Some(&start),
+        },
+        now: Some(&clock),
+        list_directory: None,
+        modified_at: None,
+    };
+    task(&probe)
+}
+
+/// A run dir outside the reservation that never got a usable ledger: once provably dead it gets its
+/// terminal sentinel (`memory_core::reflection::quarantine_stranded_run`, the writer the CLI reaper
+/// shares). A run with a valid ledger never reaches here: `reconcile_run` settles it with
+/// worktree-tip recovery.
+fn settle_stranded_run(
+    context: &RunFinalizationContext<'_>,
+    recovery: &dyn ReflectionRecoveryPort,
+    run_dir: &Path,
+    run_id: &str,
+) -> Result<Option<(String, String)>, String> {
+    use memory_core::reflection::{
+        QuarantineStrandedRunOptions, StrandedRunAction, StrandedRunDecision, decide_stranded_run,
+        quarantine_stranded_run,
+    };
+    let decision = with_recovery_probe(context, recovery, |probe| {
+        decide_stranded_run(run_dir, probe)
+    });
+    let StrandedRunDecision::Reap { action, .. } = decision else {
+        return Ok(None);
+    };
+    if action == StrandedRunAction::ProcessesDead {
+        return Ok(None);
+    }
+    let clock = || (context.now_ms)() as f64;
+    let append = |runtime_dir: &Path,
+                  input: &memory_core::receipts::MemoryReceiptInput|
+     -> Result<(), String> {
+        crate::receipts_port::emit_memory_receipt(
+            runtime_dir,
+            input,
+            context.receipts,
+            context
+                .warn
+                .map(|warn| warn as &dyn Fn(&str, &std::collections::BTreeMap<String, String>)),
+        );
+        Ok(())
+    };
+    let settled = quarantine_stranded_run(&QuarantineStrandedRunOptions {
+        runtime_dir: &context.identity.paths.runtime,
+        run_dir,
+        run_id,
+        action,
+        now: Some(&clock),
+        append_receipt: Some(&append),
+    })?;
+    Ok(settled.then(|| (run_id.to_owned(), "failed".to_owned())))
+}
+
+/// Runs `task` under the run's finalize lock without waiting; `None` means another process holds it.
+fn with_run_finalize_lock<T>(
+    locks_dir: &Path,
+    run_id: &str,
+    task: impl FnOnce() -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    use memory_core::locks::{
+        AcquireLockError, AcquireLockOptions, CreateLockRecordOptions, WithLockError,
+        create_lock_record, run_finalization_lock_path, with_lock,
+    };
+    let path = run_finalization_lock_path(locks_dir, run_id).map_err(|error| error.to_string())?;
+    let record = create_lock_record(
+        "reflection-finalize",
+        CreateLockRecordOptions {
+            run_id: Some(run_id.to_owned()),
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let no_wait = AcquireLockOptions {
+        wait_timeout_ms: Some(0),
+        ..Default::default()
+    };
+    match with_lock(&path, &record, &no_wait, task) {
+        Ok(value) => Ok(Some(value)),
+        Err(WithLockError::Acquire(AcquireLockError::Contention(_))) => Ok(None),
+        Err(WithLockError::Acquire(error)) => Err(error.to_string()),
+        Err(WithLockError::User(message)) => Err(message),
+    }
+}
+
+/// An earlier settle wrote this generation's sentinel and stopped before releasing (omo #12517,
+/// DESIGN.r3 c.14): only the release is missing. It runs under the run's finalize lock, re-checked
+/// there, so a settler still holding the lock finishes first.
+fn release_settled_under_dead_launcher(
+    context: &RunFinalizationContext<'_>,
+    recovery: &dyn ReflectionRecoveryPort,
+    active: &memory_core::reflection::ReservedRun,
+) -> Result<Option<(String, String)>, String> {
+    use memory_core::reflection::{
+        CompleteOptions, ReflectionOutcome, is_settled_under_dead_launcher,
+    };
+    let reflection_dir = &context.identity.paths.reflection;
+    let settled = |probe: &memory_core::reflection::StaleLockProbe<'_>| {
+        is_settled_under_dead_launcher(reflection_dir, probe)
+    };
+    if !with_recovery_probe(context, recovery, settled) {
+        return Ok(None);
+    }
+    let released = with_run_finalize_lock(&context.identity.paths.locks, &active.run_id, || {
+        if !with_recovery_probe(context, recovery, settled) {
+            return Ok(false);
+        }
+        context.reservation.complete_with_options(
+            &active.run_id,
+            ReflectionOutcome::Failed,
+            CompleteOptions {
+                promote_pending: false,
+            },
+        )?;
+        Ok(true)
+    })?;
+    Ok((released == Some(true)).then(|| (active.run_id.clone(), "failed".to_owned())))
+}
+
 pub fn reconcile_prelaunch(
     context: &RunFinalizationContext<'_>,
     recovery: &dyn ReflectionRecoveryPort,
@@ -474,8 +641,18 @@ pub fn reconcile_prelaunch_with_signal(
     let active = context.reservation.read_state()?.active;
     throw_if_aborted(signal)?;
     let Some(active) = active else {
+        // A lone pending.json is what a release without promotion leaves (omo #12517, DESIGN.r2
+        // 4.1b): this session promotes it, under its own pid.
+        let promoted = context.reservation.promote_pending(None)?;
+        throw_if_aborted(signal)?;
+        if let (Some(promoted), Some(launch)) = (promoted, context.launch) {
+            launch(&promoted);
+        }
         return Ok(None);
     };
+    if let Some(released) = release_settled_under_dead_launcher(context, recovery, &active)? {
+        return Ok(Some(released));
+    }
     let (Some(reserved), Some(pid), Some(host)) = (
         &active.reserved_at,
         active.launcher_pid,
@@ -1132,5 +1309,294 @@ mod tests {
             .is_none()
         );
         assert_eq!(*recovery.calls.borrow(), ["fail:false"]);
+    }
+
+    fn identity_in(root: &Path) -> memory_core::identity::resolve::MemoryIdentity {
+        memory_core::identity::resolve::MemoryIdentity {
+            id: "agent".into(),
+            safe_slug: "agent".into(),
+            paths: memory_core::identity::layout::build_identity_paths(root, "agent"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_ledger_cannot_be_read_is_quarantined_instead_of_failing_the_pass() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = identity_in(root.path());
+        let run_dir = identity.paths.reflection.join("runs").join("run-bad");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(run_dir.join("ledger.json"), "{ torn").unwrap();
+        let receipts = crate::receipts_port::DefaultReceiptsPort;
+        let warn = |_: &str, _: &std::collections::BTreeMap<String, String>| {};
+        let context = RunFinalizationContext {
+            identity: &identity,
+            reservation: &Reservation,
+            launch: None,
+            now_ms: &|| 0,
+            receipts: Some(&receipts),
+            warn: Some(&warn),
+        };
+        let recovery = Recovery {
+            verdicts: Default::default(),
+            calls: Default::default(),
+        };
+
+        let results = reconcile_reflection_runs_with_options(&context, &recovery, None, false)
+            .await
+            .unwrap();
+
+        assert_eq!(results, vec![("run-bad".to_owned(), "failed".to_owned())]);
+        let quarantined: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(run_dir.join("quarantined.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(quarantined["reason"], "ledger_unreadable");
+        assert!(recovery.calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_reserved_run_and_tombstones_are_never_settled_as_stranded() {
+        struct HoldsRun(memory_core::reflection::ReservedRun);
+        impl super::super::runner_types::ReflectionReservationPort for HoldsRun {
+            fn read_state(&self) -> Result<memory_core::reflection::ReservationState, String> {
+                Ok(memory_core::reflection::ReservationState {
+                    active: Some(self.0.clone()),
+                    pending: None,
+                })
+            }
+            fn complete(
+                &self,
+                _: &str,
+                _: memory_core::reflection::ReflectionOutcome,
+            ) -> Result<memory_core::reflection::CompletionResult, String> {
+                panic!("no reservation completion")
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let identity = identity_in(root.path());
+        let runs = identity.paths.reflection.join("runs");
+        for name in ["run-held", ".prune-old"] {
+            std::fs::create_dir_all(runs.join(name)).unwrap();
+            std::fs::write(runs.join(name).join("ledger.json"), "{ torn").unwrap();
+        }
+        let held: memory_core::reflection::ReservedRun =
+            serde_json::from_value(serde_json::json!({
+                "runId": "run-held",
+                "request": {"trigger": "manual", "conversationIds": [], "snapshots": []},
+            }))
+            .unwrap();
+        let reservation = HoldsRun(held);
+        let context = RunFinalizationContext {
+            identity: &identity,
+            reservation: &reservation,
+            launch: None,
+            now_ms: &|| 0,
+            receipts: None,
+            warn: None,
+        };
+        let recovery = Recovery {
+            verdicts: Default::default(),
+            calls: Default::default(),
+        };
+
+        let results = reconcile_reflection_runs_with_options(&context, &recovery, None, false)
+            .await
+            .unwrap();
+
+        assert!(results.is_empty());
+        assert!(!runs.join("run-held").join("quarantined.json").exists());
+        assert!(!runs.join(".prune-old").join("quarantined.json").exists());
+    }
+
+    struct PromotingReservation {
+        promoted: memory_core::reflection::ReservedRun,
+    }
+    impl super::super::runner_types::ReflectionReservationPort for PromotingReservation {
+        fn read_state(&self) -> Result<memory_core::reflection::ReservationState, String> {
+            Ok(Default::default())
+        }
+        fn complete(
+            &self,
+            _: &str,
+            _: memory_core::reflection::ReflectionOutcome,
+        ) -> Result<memory_core::reflection::CompletionResult, String> {
+            panic!("no reservation completion")
+        }
+        fn promote_pending(
+            &self,
+            _: Option<u64>,
+        ) -> Result<Option<memory_core::reflection::ReservedRun>, String> {
+            Ok(Some(self.promoted.clone()))
+        }
+    }
+
+    fn reserved_run(run_id: &str, launcher_pid: u32) -> memory_core::reflection::ReservedRun {
+        serde_json::from_value(serde_json::json!({
+            "runId": run_id,
+            "request": {"trigger": "manual", "conversationIds": [], "snapshots": []},
+            "reservedAt": "2020-01-01T00:00:00.000Z",
+            "launcherPid": launcher_pid,
+            "launcherHostname": "host",
+            "launcherProcessStart": null,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_lone_pending_run_left_by_a_release_is_promoted_and_launched_at_the_start_of_a_pass() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = identity_in(root.path());
+        let reservation = PromotingReservation {
+            promoted: reserved_run("run-pending", 1),
+        };
+        let launched = std::cell::RefCell::new(Vec::new());
+        let launch = |run: &memory_core::reflection::ReservedRun| {
+            launched.borrow_mut().push(run.run_id.clone());
+        };
+        let context = RunFinalizationContext {
+            identity: &identity,
+            reservation: &reservation,
+            launch: Some(&launch),
+            now_ms: &|| 0,
+            receipts: None,
+            warn: None,
+        };
+        let recovery = Recovery {
+            verdicts: Default::default(),
+            calls: Default::default(),
+        };
+
+        let result = reconcile_prelaunch(&context, &recovery).unwrap();
+
+        assert_eq!(result, None);
+        assert_eq!(launched.into_inner(), vec!["run-pending".to_owned()]);
+    }
+
+    struct ActiveReservation {
+        run: memory_core::reflection::ReservedRun,
+        completed: std::cell::RefCell<Vec<(String, bool)>>,
+    }
+    impl super::super::runner_types::ReflectionReservationPort for ActiveReservation {
+        fn read_state(&self) -> Result<memory_core::reflection::ReservationState, String> {
+            Ok(memory_core::reflection::ReservationState {
+                active: Some(self.run.clone()),
+                pending: None,
+            })
+        }
+        fn complete(
+            &self,
+            _: &str,
+            _: memory_core::reflection::ReflectionOutcome,
+        ) -> Result<memory_core::reflection::CompletionResult, String> {
+            panic!("a settled release must never promote the pending run")
+        }
+        fn complete_with_options(
+            &self,
+            run_id: &str,
+            outcome: memory_core::reflection::ReflectionOutcome,
+            options: memory_core::reflection::CompleteOptions,
+        ) -> Result<memory_core::reflection::CompletionResult, String> {
+            self.completed
+                .borrow_mut()
+                .push((run_id.to_owned(), options.promote_pending));
+            Ok(memory_core::reflection::CompletionResult {
+                outcome,
+                launch: None,
+            })
+        }
+    }
+
+    struct GoneLauncher;
+    impl ReflectionRecoveryPort for GoneLauncher {
+        fn hostname(&self) -> String {
+            "host".into()
+        }
+        fn pid_liveness(&self, _: u32) -> memory_core::locks::ProcessLiveness {
+            memory_core::locks::ProcessLiveness::Dead
+        }
+        fn process_start(&self, _: u32) -> Option<String> {
+            None
+        }
+        fn classify(&self, _: Option<u64>, _: Option<Option<&str>>) -> RunProcessVerdict {
+            unreachable!("a settled release classifies no recorded process")
+        }
+        fn wait_outcome<'a>(
+            &'a self,
+            _: &'a Path,
+            _: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
+        ) -> ReconcileFuture<'a> {
+            unreachable!("a settled release waits for nothing")
+        }
+        fn wait_until<'a>(
+            &'a self,
+            _: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
+        ) -> ReconcileFuture<'a> {
+            unreachable!("a settled release waits for nothing")
+        }
+        fn signal_group(&self, _: u64, _: &str) -> Result<(), String> {
+            unreachable!("a settled release signals nothing")
+        }
+        fn fail(
+            &self,
+            _: &Path,
+            _: &ReservationRunLedger,
+            _: bool,
+            _: bool,
+        ) -> Result<Option<ReservationRunResult>, String> {
+            unreachable!("a settled release fails no run")
+        }
+        fn abandon(
+            &self,
+            _: &Path,
+            _: &ReservationRunLedger,
+        ) -> Result<Option<ReservationRunResult>, String> {
+            unreachable!("a settled release abandons no run")
+        }
+    }
+
+    #[test]
+    fn a_reservation_whose_run_already_has_its_sentinel_is_released_without_promotion() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = identity_in(root.path());
+        let run = reserved_run("run-settled", 2_000_000_000);
+        let reflection = &identity.paths.reflection;
+        let run_dir = reflection.join("runs").join("run-settled");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            reflection.join("active.lock"),
+            serde_json::to_string(&run).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            run_dir.join("abandoned.json"),
+            serde_json::json!({"runId": "run-settled", "generation": "2020-01-01T00:00:00.000Z"})
+                .to_string(),
+        )
+        .unwrap();
+        let reservation = ActiveReservation {
+            run,
+            completed: Default::default(),
+        };
+        let context = RunFinalizationContext {
+            identity: &identity,
+            reservation: &reservation,
+            launch: None,
+            now_ms: &|| 0,
+            receipts: None,
+            warn: None,
+        };
+
+        let result = reconcile_prelaunch(&context, &GoneLauncher).unwrap();
+
+        assert_eq!(
+            result,
+            Some(("run-settled".to_owned(), "failed".to_owned()))
+        );
+        assert_eq!(
+            reservation.completed.into_inner(),
+            vec![("run-settled".to_owned(), false)]
+        );
     }
 }

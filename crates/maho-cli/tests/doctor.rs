@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use maho_cli::cli::doctor::doctor_lines;
+use maho_cli::cli::doctor::{ReflectionLockFixOptions, doctor_lines, reflection_lock_fix};
+use memory_core::locks::ProcessLiveness;
+use memory_core::reflection::StaleLockProbe;
+use memory_core::reflection::stale_holder_proof::ReflectionLockProbe;
 
 #[test]
 fn native_package_manifest_distinguishes_intact_tampered_and_missing_siblings() {
@@ -160,4 +163,229 @@ fn category_report_is_warning_when_no_models_are_available() {
             .any(|line| line.starts_with("WARN task categories:"))
     );
     assert!(!root.path().join(".omo").join("agent").exists());
+}
+
+const FIX_NOW: f64 = 1_793_858_400_000.0;
+const FIX_HOST: &str = "doctor-fix-host";
+
+fn fix_host() -> String {
+    FIX_HOST.to_string()
+}
+
+fn fix_now() -> f64 {
+    FIX_NOW
+}
+
+fn every_pid_is_gone(_: u32) -> ProcessLiveness {
+    ProcessLiveness::Dead
+}
+
+fn no_start_identity(_: u32) -> Option<String> {
+    None
+}
+
+static FIX_HOST_FN: fn() -> String = fix_host;
+static FIX_NOW_FN: fn() -> f64 = fix_now;
+static EVERY_PID_IS_GONE: fn(u32) -> ProcessLiveness = every_pid_is_gone;
+static NO_START_IDENTITY: fn(u32) -> Option<String> = no_start_identity;
+
+fn fix_probe() -> StaleLockProbe<'static> {
+    StaleLockProbe {
+        base: ReflectionLockProbe {
+            read_text: None,
+            hostname: Some(&FIX_HOST_FN),
+            pid_liveness: Some(&EVERY_PID_IS_GONE),
+            process_start: Some(&NO_START_IDENTITY),
+        },
+        now: Some(&FIX_NOW_FN),
+        list_directory: None,
+        modified_at: None,
+    }
+}
+
+fn write_launch_interrupted(memory_root: &std::path::Path, identity: &str) -> std::path::PathBuf {
+    let runtime = memory_root.join("agents").join(identity).join("runtime");
+    let reflection = runtime.join("reflection");
+    std::fs::create_dir_all(&reflection).expect("reflection dir");
+    let reserved_at =
+        memory_core::support::time::format_rfc3339_millis((FIX_NOW - 10.0 * 60_000.0) as i64);
+    std::fs::write(
+        reflection.join("active.lock"),
+        serde_json::json!({
+            "runId": "reflection-run-64",
+            "request": {"trigger": "manual", "conversationIds": [], "snapshots": []},
+            "reservedAt": reserved_at,
+            "launcherPid": 11096,
+            "launcherHostname": FIX_HOST,
+            "launcherProcessStart": null,
+        })
+        .to_string(),
+    )
+    .expect("active.lock");
+    runtime
+}
+
+fn files_under(root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut BTreeMap<String, Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let name = path
+                .strip_prefix(root)
+                .expect("under root")
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                out.insert(name, Vec::new());
+                walk(root, &path, out);
+            } else {
+                out.insert(name, std::fs::read(&path).expect("file"));
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(root, root, &mut out);
+    out
+}
+
+#[test]
+fn doctor_fix_releases_the_lock_of_a_launcher_that_died_before_its_run_started() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let runtime = write_launch_interrupted(root.path(), "agent-a");
+
+    let result = reflection_lock_fix(&ReflectionLockFixOptions {
+        memory_root: root.path(),
+        dry_run: false,
+        probe: fix_probe(),
+    });
+
+    assert!(!result.failed);
+    assert!(
+        result.lines.contains(
+            &"FIXED agent-a active.lock run reflection-run-64 (launch-interrupted)".to_string()
+        ),
+        "{:?}",
+        result.lines
+    );
+    assert!(!runtime.join("reflection").join("active.lock").exists());
+    assert!(
+        runtime
+            .join("reflection/runs/reflection-run-64/abandoned.json")
+            .exists()
+    );
+}
+
+#[test]
+fn doctor_fix_dry_run_prints_the_decision_and_changes_nothing() {
+    let root = tempfile::tempdir().expect("tempdir");
+    write_launch_interrupted(root.path(), "agent-a");
+    let before = files_under(root.path());
+
+    let result = reflection_lock_fix(&ReflectionLockFixOptions {
+        memory_root: root.path(),
+        dry_run: true,
+        probe: fix_probe(),
+    });
+
+    assert!(
+        result.lines.contains(
+            &"WOULD FIX agent-a active.lock run reflection-run-64 (launch-interrupted)".to_string()
+        ),
+        "{:?}",
+        result.lines
+    );
+    assert_eq!(files_under(root.path()), before);
+}
+
+#[test]
+fn doctor_fix_with_nothing_to_fix_says_so() {
+    let root = tempfile::tempdir().expect("tempdir");
+
+    let applied = reflection_lock_fix(&ReflectionLockFixOptions {
+        memory_root: root.path(),
+        dry_run: false,
+        probe: fix_probe(),
+    });
+    let previewed = reflection_lock_fix(&ReflectionLockFixOptions {
+        memory_root: root.path(),
+        dry_run: true,
+        probe: fix_probe(),
+    });
+
+    assert_eq!(
+        applied.lines,
+        vec!["PASS no stale reflection locks".to_string()]
+    );
+    assert_eq!(previewed.lines, vec!["INFO nothing to fix".to_string()]);
+    assert!(!applied.failed && !previewed.failed);
+}
+
+#[test]
+fn doctor_fix_reclaims_a_runtime_lock_whose_owner_is_gone_and_counts_it() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let runtime = root.path().join("agents/agent-a/runtime");
+    let locks = runtime.join("locks");
+    std::fs::create_dir_all(&locks).expect("locks dir");
+    let record = serde_json::json!({
+        "pid": 2_000_000_000u32,
+        "process_start": "gone",
+        "hostname": memory_core::support::host::hostname(),
+        "nonce": "n",
+        "created_at": "2026-11-05T06:00:00.000Z",
+        "purpose": "recall-sidecar",
+    });
+    std::fs::write(locks.join("recall-sidecar.x.lock"), format!("{record}\n")).expect("lock");
+
+    let result = reflection_lock_fix(&ReflectionLockFixOptions {
+        memory_root: root.path(),
+        dry_run: false,
+        probe: fix_probe(),
+    });
+
+    assert!(
+        result
+            .lines
+            .contains(&"INFO agent-a locks reclaimed 1, kept 0".to_string()),
+        "{:?}",
+        result.lines
+    );
+    assert!(!locks.join("recall-sidecar.x.lock").exists());
+}
+
+#[test]
+fn doctor_fix_keeps_a_lock_owned_by_another_host_and_still_fixes_its_sibling() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let other = write_launch_interrupted(root.path(), "agent-other");
+    std::fs::write(
+        other.join("reflection/active.lock"),
+        serde_json::json!({
+            "runId": "reflection-run-64",
+            "request": {"trigger": "manual", "conversationIds": [], "snapshots": []},
+            "reservedAt": "2026-11-05T05:50:00.000Z",
+            "launcherPid": 11096,
+            "launcherHostname": "some-other-host",
+            "launcherProcessStart": null,
+        })
+        .to_string(),
+    )
+    .expect("other host lock");
+    let sibling = write_launch_interrupted(root.path(), "agent-sibling");
+
+    let result = reflection_lock_fix(&ReflectionLockFixOptions {
+        memory_root: root.path(),
+        dry_run: false,
+        probe: fix_probe(),
+    });
+
+    assert!(other.join("reflection/active.lock").exists());
+    assert!(!sibling.join("reflection/active.lock").exists());
+    assert!(
+        result.lines.iter().any(|line| line.starts_with(
+            "KEPT agent-other active.lock run reflection-run-64 (it is owned by host some-other-host"
+        )),
+        "{:?}",
+        result.lines
+    );
+    assert!(result.lines.contains(
+        &"FIXED agent-sibling active.lock run reflection-run-64 (launch-interrupted)".to_string()
+    ));
 }
