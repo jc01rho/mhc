@@ -7,7 +7,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock, PoisonError},
+    sync::{
+        Arc, Mutex, OnceLock, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use maho_ext_api::{
@@ -46,6 +49,8 @@ pub type ScanOutcomeSlot = Option<Option<Arc<OnboardingScanOutcome>>>;
 pub struct HeldScan {
     pub finished_at: Mutex<Option<i64>>,
     pub outcome: watch::Receiver<ScanOutcomeSlot>,
+    /// Set by the one apply a scan allows; the scan stays retained for understanding until it expires.
+    pub applied: AtomicBool,
 }
 
 impl HeldScan {
@@ -387,6 +392,7 @@ impl OnboardingScanComponent {
                     let held = Arc::new(HeldScan {
                         finished_at: Mutex::new(None),
                         outcome: receiver,
+                        applied: AtomicBool::new(false),
                     });
                     shared.insert(&scan_id, Arc::clone(&held), now());
                     // The client learns the id from this response, so no event may precede it: the scan runs
@@ -493,19 +499,26 @@ async fn apply_response(
         )));
     }
     let requested: Vec<OnboardingApplyStage> = parsed.into_iter().flatten().collect();
-    // One apply per scan: its plans describe the files as they were when the scan read them. Taking it out
-    // of the store here, synchronously, means two applies racing on one scan never both run.
-    let Some(held) = shared.remove(scan_id) else {
+    // One apply per scan: its plans describe the files as they were when the scan read them. The scan
+    // itself stays retained, so the desktop's understanding step can still read its digests after About you
+    // applies (omo #12508); it leaves the store when it expires or is evicted. The scan is marked applied
+    // here, atomically and before any await, so two applies racing on one scan never both run.
+    let Some(held) = shared
+        .get(scan_id)
+        .filter(|held| !held.applied.swap(true, Ordering::SeqCst))
+    else {
         return respond(OnboardingApplyResponse::unavailable(
             "No scan with this id; it finished long ago or was already applied.",
         ));
     };
     let Some(outcome) = held.settled().await else {
+        shared.remove_if_same(scan_id, &held);
         return respond(OnboardingApplyResponse::unavailable(
             "The scan failed before it planned anything.",
         ));
     };
     if held.finished_at().is_none() || scan_expired(&held, now_ms) {
+        shared.remove_if_same(scan_id, &held);
         return respond(OnboardingApplyResponse::stale(
             "The scan expired; retained scans live ten minutes. Run omo.onboarding.scan again.",
             Vec::new(),
@@ -625,6 +638,7 @@ mod tests {
         let old = Arc::new(HeldScan {
             finished_at: Mutex::new(Some(0)),
             outcome: receiver,
+            applied: AtomicBool::new(false),
         });
         let outcome = OnboardingScanOutcome {
             plans: None,
@@ -655,6 +669,7 @@ mod tests {
             let held = Arc::new(HeldScan {
                 finished_at: Mutex::new(Some(1)),
                 outcome: receiver,
+                applied: AtomicBool::new(false),
             });
             store.insert(&format!("scan-{index}"), held, 1);
         }
@@ -663,5 +678,98 @@ mod tests {
             store.get("scan-0").is_none()
                 && store.get(&format!("scan-{}", RETAINED_SCANS + 2)).is_some()
         );
+    }
+
+    fn finished_scan(applied: bool) -> Arc<HeldScan> {
+        let (sender, receiver) = watch::channel::<ScanOutcomeSlot>(None);
+        drop(sender);
+        Arc::new(HeldScan {
+            finished_at: Mutex::new(Some(1)),
+            outcome: receiver,
+            applied: AtomicBool::new(applied),
+        })
+    }
+
+    #[test]
+    fn applied_scans_count_toward_the_cap_and_the_oldest_scan_leaves_first() {
+        let store = OnboardingScanStore::default();
+        for index in 0..RETAINED_SCANS {
+            store.insert(&format!("scan-{index}"), finished_scan(index < 2), 1);
+        }
+        for index in RETAINED_SCANS..RETAINED_SCANS + 3 {
+            store.insert(&format!("scan-{index}"), finished_scan(false), 1);
+            let evicted = index - RETAINED_SCANS + 1;
+            assert_eq!(store.len(), RETAINED_SCANS);
+            assert!((0..evicted).all(|old| store.get(&format!("scan-{old}")).is_none()));
+            assert!(store.get(&format!("scan-{evicted}")).is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_applied_scan_stays_retained_and_a_second_apply_is_refused() {
+        let store = create_onboarding_scan_store();
+        let api = api_with(deps(Arc::clone(&store)));
+        let reply = call(&api, ONBOARDING_SCAN_RPC_METHOD, json!({})).await;
+        let scan_id = reply["scanId"].as_str().expect("scanId").to_owned();
+        let held = store.get(&scan_id).expect("retained");
+        assert!(held.settled().await.is_some());
+
+        let first = call(
+            &api,
+            ONBOARDING_APPLY_RPC_METHOD,
+            json!({"scanId":scan_id,"stages":[]}),
+        )
+        .await;
+        assert_eq!(first["applied"], json!([]));
+        assert!(held.applied.load(Ordering::SeqCst));
+        assert!(
+            store.get(&scan_id).is_some(),
+            "understanding still reads the applied scan's digests"
+        );
+
+        let second = call(
+            &api,
+            ONBOARDING_APPLY_RPC_METHOD,
+            json!({"scanId":scan_id,"stages":[]}),
+        )
+        .await;
+        assert_eq!(second["kind"], "unavailable");
+        assert!(store.get(&scan_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn two_applies_racing_on_one_scan_never_both_run() {
+        let store = create_onboarding_scan_store();
+        let (sender, receiver) = watch::channel::<ScanOutcomeSlot>(None);
+        let outcome = OnboardingScanOutcome {
+            plans: None,
+            results: vec![],
+            digests: vec![],
+            project_roots: Default::default(),
+        };
+        sender
+            .send(Some(Some(Arc::new(outcome))))
+            .expect("receiver alive");
+        store.insert(
+            "race",
+            Arc::new(HeldScan {
+                finished_at: Mutex::new(Some(1)),
+                outcome: receiver,
+                applied: AtomicBool::new(false),
+            }),
+            1,
+        );
+        let request = json!({"scanId":"race","stages":[]});
+
+        let (first, second) = tokio::join!(
+            apply_response(&store, 1, &request, &|| None),
+            apply_response(&store, 1, &request, &|| None)
+        );
+
+        let refused = [&first, &second]
+            .iter()
+            .filter(|reply| reply["kind"] == "unavailable")
+            .count();
+        assert_eq!(refused, 1);
     }
 }
