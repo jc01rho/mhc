@@ -12,6 +12,7 @@ pub mod links;
 pub mod open;
 pub mod parse;
 pub mod receiver;
+pub mod recovery_kind;
 pub mod rejection;
 pub mod rules;
 pub mod signatures;
