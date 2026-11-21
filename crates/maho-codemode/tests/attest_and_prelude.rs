@@ -83,12 +83,12 @@ mod attestation {
             .stdout(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .unwrap()
+            .expect("spawn cat")
     }
 
     async fn end(mut child: tokio::process::Child) {
         drop(child.stdin.take());
-        child.wait().await.unwrap();
+        child.wait().await.expect("child exit");
     }
 
     #[tokio::test]
