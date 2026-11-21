@@ -253,13 +253,13 @@ impl fmt::Display for PhraseKeyPairs {
 
 impl PhraseKeyPairs {
     pub fn seal_private(&self) -> &[u8] {
-        &self.0.seal_private
+        self.0.seal_private.as_slice()
     }
     pub fn seal_public(&self) -> &[u8] {
         &self.0.seal_public
     }
     pub fn sign_seed(&self) -> &[u8] {
-        &self.0.sign_seed
+        self.0.sign_seed.as_slice()
     }
     pub fn sign_public(&self) -> &[u8] {
         &self.0.sign_public
