@@ -59,7 +59,8 @@ fn class(cause_class: StartCauseClass) -> StartCause {
 /// `MODEL_SELECTOR_SHAPE`: a designated model is named exactly as its selector; anything else is dropped.
 pub fn is_model_selector(selector: &str) -> bool {
     static SHAPE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"^[A-Za-z0-9][\w.-]{0,63}/[\w.:/@+-]{1,160}$")
+        // ASCII classes only: a Unicode \w class under a bounded repetition exceeds the regex size limit.
+        regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}/[A-Za-z0-9_.:/@+-]{1,160}$")
             .expect("model selector shape")
     });
     SHAPE.is_match(selector)
