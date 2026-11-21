@@ -550,7 +550,7 @@ fn fallback_chain_lengths_match_transcription() {
         vec![
             ("explore", 6),
             ("librarian", 6),
-            ("plan-consultant", 4),
+            ("plan-consultant", 3),
             ("plan-reviewer", 8)
         ]
     );
