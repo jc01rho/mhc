@@ -246,3 +246,7 @@ pub fn count_runtime_past_retention_other_stores(
         legacy,
     })
 }
+
+#[cfg(test)]
+#[path = "past_retention_tests.rs"]
+mod tests;

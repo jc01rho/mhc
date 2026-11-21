@@ -221,3 +221,62 @@ fn a_pass_that_removed_nothing_writes_no_log() {
 
     assert!(!runtime.join(RETENTION_LOG_FILE).exists());
 }
+
+// The two log cases that run a full retention pass, on the shared retention fixtures.
+mod pass_driven {
+    use serde_json::json;
+
+    use super::log_lines;
+    use crate::identity::layout::MemoryIdentityPaths;
+    use crate::retention::log::RETENTION_LOG_FILE;
+    use crate::retention::pass::{RuntimeRetentionOptions, run_runtime_retention};
+    use crate::retention::policy::{DEFAULT_RUNTIME_RETENTION, RetentionContext};
+    use crate::retention::test_support::{
+        NOW, RunShape, days_ago, identity, iso, now, reflection_run, runs_dir,
+    };
+
+    fn run_retention(paths: &MemoryIdentityPaths) {
+        run_runtime_retention(&RuntimeRetentionOptions::new(RetentionContext::new(
+            paths,
+            DEFAULT_RUNTIME_RETENTION,
+            &now,
+        )))
+        .unwrap();
+    }
+
+    fn run_finished(days: f64) -> RunShape {
+        RunShape {
+            finished_at: Some(days_ago(days)),
+            ..RunShape::default()
+        }
+    }
+
+    #[test]
+    fn a_folded_run_past_the_window_is_named_by_one_log_line_with_the_pass_time_and_the_total() {
+        let fixture = identity();
+        let paths = &fixture.paths;
+        reflection_run(paths, "reflection-run-1", run_finished(8.0));
+        reflection_run(paths, "reflection-run-9", run_finished(1.0));
+
+        run_retention(paths);
+
+        assert!(!runs_dir(paths).join("reflection-run-1").exists());
+        let lines = log_lines(&paths.runtime);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["v"], json!(1));
+        assert_eq!(lines[0]["at"], json!(iso(NOW)));
+        assert_eq!(lines[0]["total"], json!(1));
+        assert_eq!(lines[0]["removed"]["runs"], json!(["reflection-run-1"]));
+    }
+
+    #[test]
+    fn a_pass_with_nothing_past_the_window_writes_no_log_file() {
+        let fixture = identity();
+        let paths = &fixture.paths;
+        reflection_run(paths, "reflection-run-9", run_finished(1.0));
+
+        run_retention(paths);
+
+        assert!(!paths.runtime.join(RETENTION_LOG_FILE).exists());
+    }
+}
