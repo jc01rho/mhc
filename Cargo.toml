@@ -22,6 +22,7 @@ members = [
     "crates/maho-rpc",
     "crates/maho-tool-child",
     "crates/maho-server",
+    "crates/maho-sync-server",
     "crates/maho-codemode",
     "crates/maho-cli",
     "crates/maho-process-env",
