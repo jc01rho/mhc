@@ -6174,7 +6174,7 @@ fn observe_hooks(runner: &mut ExtensionRunner) -> Arc<Mutex<Vec<ToolHookLifecycl
     let events = Arc::new(Mutex::new(Vec::new()));
     let capture = Arc::clone(&events);
     runner.set_tool_hook_lifecycle_observer(Some(Arc::new(move |event| {
-        capture.lock().unwrap().push(event.clone())
+        capture.lock().expect("hook events").push(event.clone())
     })));
     events
 }
@@ -6182,7 +6182,7 @@ fn hook_end(
     events: &Mutex<Vec<ToolHookLifecycleEvent>>,
     path: &str,
 ) -> (ToolHookStatus, Option<String>) {
-    let events = events.lock().unwrap();
+    let events = events.lock().expect("hook events");
     let end = events
         .iter()
         .find(|event| {
@@ -6237,7 +6237,9 @@ async fn a_tool_result_handler_that_never_settles_is_abandoned_at_its_deadline()
     assert_eq!(runner.errors[0].extension_path, "<hung>");
     assert_eq!(runner.errors[0].event, "tool_result");
     assert!(
-        runner.errors[0].error.starts_with("handler timed out after "),
+        runner.errors[0]
+            .error
+            .starts_with("handler timed out after "),
         "{}",
         runner.errors[0].error
     );
