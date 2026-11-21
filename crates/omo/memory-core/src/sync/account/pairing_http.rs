@@ -39,6 +39,12 @@ fn parse_pending(value: Value) -> Option<PendingApproval> {
     }
     Some(parsed)
 }
+/// What the service said to turning one device's sync off (omo #14093).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceSyncOff {
+    Off,
+    Refused { code: String },
+}
 pub struct PairingHttp {
     pub http: AccountHttp,
 }
@@ -138,6 +144,65 @@ impl PairingHttp {
         self.send("PUT", "/v1/account/sync", Some(json!({"enabled":enabled})))
             .await?;
         Ok(())
+    }
+    /// Turns one device's sync off behind the service's typed confirmation: the confirmation answers
+    /// the refusal the switch would meet, or a single-use token bound to this action and device.
+    /// A 4xx answer is a refusal; anything else (5xx, network, malformed reply) is an error.
+    pub async fn disable_device_sync(&self, id: &str) -> EngineResult<DeviceSyncOff> {
+        let refused = |error: &EngineError| match error {
+            EngineError::Account(e) if (400..500).contains(&e.status) => Some(e.code.clone()),
+            _ => None,
+        };
+        let malformed = || {
+            EngineError::Account(AccountHttpError {
+                code: "malformed_reply".into(),
+                status: 200,
+            })
+        };
+        let confirmation = match self
+            .send(
+                "POST",
+                "/v1/confirm",
+                Some(json!({"action":"sync.disable_device","target":id})),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                return match refused(&error) {
+                    Some(code) => Ok(DeviceSyncOff::Refused { code }),
+                    None => Err(error),
+                };
+            }
+        };
+        let Some(ready) = confirmation["ready"].as_bool() else {
+            return Err(malformed());
+        };
+        if !ready {
+            let code = confirmation["code"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();
+            return Ok(DeviceSyncOff::Refused { code });
+        }
+        let token = confirmation["token"]
+            .as_str()
+            .filter(|token| !token.is_empty())
+            .ok_or_else(malformed)?;
+        match self
+            .send(
+                "PUT",
+                &format!("/v1/devices/{}/sync", encoded(id)),
+                Some(json!({"enabled":false,"confirmToken":token})),
+            )
+            .await
+        {
+            Ok(_) => Ok(DeviceSyncOff::Off),
+            Err(error) => match refused(&error) {
+                Some(code) => Ok(DeviceSyncOff::Refused { code }),
+                None => Err(error),
+            },
+        }
     }
     pub async fn set_device_sync(&self, id: &str, enabled: bool) -> EngineResult<()> {
         self.send(

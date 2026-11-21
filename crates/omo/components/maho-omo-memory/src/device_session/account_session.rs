@@ -418,6 +418,14 @@ pub fn open_account_session(
     options: AccountSessionOptions,
 ) -> LocalFuture<Result<SyncSession, AccountSessionIdle>> {
     Box::pin(async move {
+        if memory_core::sync::account::device_switch::is_device_sync_off(
+            &options.pin_dir,
+            &options.account_id,
+        )
+        .map_err(|error| error.to_string())?
+        {
+            return Ok(Err(AccountSessionIdle::SyncOff));
+        }
         let pin = load_trust_anchor(&options.pin_dir, &options.account_id)
             .map_err(|error| error.to_string())?;
         let anchor = match pin {
