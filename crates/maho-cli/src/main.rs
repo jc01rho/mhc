@@ -667,6 +667,16 @@ fn run() -> Result<(), String> {
         }
     }
     maho_core::timings::time("parseArgs", maho_core::timings::TimingLabel::Main);
+    if let (Some(address), Some(session), false) = (&parsed.attach, &parsed.session, parsed.help) {
+        // senpi main.ts `parsed.attach`: a refusal or connection failure is the user's next step, one line.
+        return maho_cli::cli::attach_run::run_attach(
+            address,
+            session,
+            parsed.tui_mode.as_deref(),
+            parsed.use_theme.as_deref(),
+        )
+        .map_err(|error| format!("Error: {error}"));
+    }
     if let Some(input) = parsed.export.as_deref() {
         // senpi main.ts `parsed.export`: export the session file before any session startup.
         // `exportFromFile` resolves the default (terminal-detected) theme's colors.
