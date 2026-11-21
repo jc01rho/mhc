@@ -297,14 +297,15 @@ fn restamped(current: &str, next: &str) -> String {
 }
 
 fn blob(run: &Run<'_>, revision: &str, path: &str) -> Result<String, String> {
-    run.must(&["cat-file", "blob", &format!("{revision}:{path}")])
+    let spec = format!("{revision}:{path}");
+    run.must(&["cat-file", "blob", spec.as_str()])
 }
 
 /// A note's text, or `None` when it is not valid UTF-8: decoding it would rewrite bytes outside
 /// its links.
 fn note_text(run: &Run<'_>, revision: &str, path: &str) -> Result<Option<String>, String> {
     let spec = format!("{revision}:{path}");
-    let result = run.call_bytes(&["cat-file", "blob", &spec])?;
+    let result = run.call_bytes(&["cat-file", "blob", spec.as_str()])?;
     if result.code != 0 {
         let stderr = result.stderr.trim();
         return Err(if stderr.is_empty() {
