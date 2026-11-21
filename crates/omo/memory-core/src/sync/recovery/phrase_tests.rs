@@ -71,20 +71,34 @@ fn every_official_vector_encodes_and_derives_exactly() {
 }
 
 #[test]
-fn typed_input_is_normalised_before_parsing() {
+fn every_fixture_input_parses_or_refuses_as_pinned() {
     let fixture = fixture();
     for input in fixture["inputs"].as_array().expect("inputs") {
-        let parsed =
-            parse_recovery_phrase(&TypedPhrase::new(input["input"].as_str().unwrap_or("")))
-                .unwrap_or_else(|error| {
-                    panic!("{}: {error}", input["name"].as_str().unwrap_or(""))
-                });
-        assert_eq!(
-            &parsed.entropy[..],
-            hex_bytes(input["entropy_hex"].as_str().unwrap_or("")).as_slice(),
-            "{}",
-            input["name"].as_str().unwrap_or("")
-        );
+        let name = input["name"].as_str().unwrap_or("");
+        let result =
+            parse_recovery_phrase(&TypedPhrase::new(input["input"].as_str().unwrap_or("")));
+        match input["error"].as_str() {
+            None => {
+                let parsed = result.unwrap_or_else(|error| panic!("{name}: {error}"));
+                assert_eq!(
+                    &parsed.entropy[..],
+                    hex_bytes(input["entropy_hex"].as_str().unwrap_or("")).as_slice(),
+                    "{name}"
+                );
+            }
+            Some(expected) => {
+                let refusal = result.err().unwrap_or_else(|| panic!("{name}: parsed"));
+                let code = match refusal {
+                    PhraseParseFailure::WrongWordCount => "wrong-word-count",
+                    PhraseParseFailure::UnknownWord { position } => {
+                        assert_eq!(Some(position as u64), input["position"].as_u64(), "{name}");
+                        "unknown-word"
+                    }
+                    PhraseParseFailure::ChecksumMismatch => "checksum-mismatch",
+                };
+                assert_eq!(code, expected, "{name}");
+            }
+        }
     }
 }
 
@@ -119,7 +133,8 @@ fn refusals_name_the_problem_and_never_echo_a_word() {
     let refusal = parse_recovery_phrase(&TypedPhrase::new(unknown)).expect_err("unknown");
     assert_eq!(refusal, PhraseParseFailure::UnknownWord { position: 1 });
     assert!(!refusal.to_string().contains("notaword"));
-    let mut swapped: Vec<&str> = words.split(' ').collect();
+    let real = "cable bamboo matrix book bundle brave ski forward daughter general fence cereal brisk hunt hunt rich brush letter dust grief oyster spawn vast sense";
+    let mut swapped: Vec<&str> = real.split(' ').collect();
     swapped.swap(0, 1);
     let refusal =
         parse_recovery_phrase(&TypedPhrase::new(swapped.join(" "))).expect_err("checksum");
@@ -186,7 +201,7 @@ fn a_confirmation_checks_only_the_drawn_positions() {
         &TypedPhrase::new(drawn[..2].join(" "))
     ));
     let mut wrong = drawn.clone();
-    wrong[1] = "abandon";
+    wrong[1] = "zoo";
     assert!(!confirmation_matches(
         &phrase,
         &positions,
