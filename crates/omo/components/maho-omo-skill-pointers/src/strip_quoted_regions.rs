@@ -81,12 +81,17 @@ const PROHIBITED_ITEM: &str =
     r"(?:mass[-\s]?)?(?:ultrawork|ulw)(?:[-_](?:loop|plan|research|execute|mass))?(?![A-Za-z0-9_])";
 
 static PROHIBITED_KEYWORD: LazyLock<FancyRegex> = LazyLock::new(|| {
-    prompt_regex(
-        &format!(
-            "(?i)(?<![A-Za-z0-9_])(?:avoid(?:ing)?|skip(?:ping)?|without|no|never|do\\s+not|don['\u{2019}]t|dont)\\s+(?:(?:using|use\\s+of|the)\\s+)?{PROHIBITED_ITEM}(?:(?:\\s*,\\s*{PROHIBITED_ITEM})*\\s*,?\\s*(?:or|and|nor|/)\\s*{PROHIBITED_ITEM})?"
-        ),
-        "prohibited keyword",
-    )
+    let pattern = [
+        "(?i)(?<![A-Za-z0-9_])(?:avoid(?:ing)?|skip(?:ping)?|without|no|never|do\\s+not|don['\u{2019}]t|dont)\\s+(?:(?:using|use\\s+of|the)\\s+)?",
+        PROHIBITED_ITEM,
+        "(?:(?:\\s*,\\s*",
+        PROHIBITED_ITEM,
+        ")*\\s*,?\\s*(?:or|and|nor|/)\\s*",
+        PROHIBITED_ITEM,
+        ")?",
+    ]
+    .concat();
+    prompt_regex(&pattern, "prohibited keyword")
 });
 
 pub const NOT_AFTER_IDENTIFIER: &str = r"(?<![A-Za-z0-9][-_.]|[/\\])";

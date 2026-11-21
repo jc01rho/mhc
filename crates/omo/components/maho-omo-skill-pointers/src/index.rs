@@ -3,9 +3,8 @@ use maho_ext_api::*;
 use regex::Regex;
 use std::sync::{Arc, LazyLock};
 
-pub use crate::pointer_text::{
-    SkillCompanion, SkillPointerTarget, companion_condition, companion_pointer,
-    ignore_when_only_discussed, skill_pointer,
+use crate::pointer_text::{
+    SkillCompanion, SkillPointerTarget, companion_condition, companion_pointer, skill_pointer,
 };
 use crate::strip_quoted_regions::{
     NOT_AFTER_IDENTIFIER, NOT_BEFORE_PATH, NOT_INTO_IDENTIFIER, prompt_regex, strip_quoted_regions,
