@@ -4,6 +4,15 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use memory_core::reflection::{
+    REFLECTION_RUN_ID_PREFIX, RunIdHighWaterPaths, read_reflection_run_id_mark,
+    record_reflection_run_id_mark, scan_reflection_run_high_water,
+};
+
+/// Mints reflection run ids one past the highest id still ON DISK. The durable
+/// `reflection/run-id.json` mark is a fifth input and is raised on every mint, so runtime retention
+/// can prune old traces without lowering the high water. The reservation store calls this factory
+/// inside the `reflection-scheduler` lock, which is what makes the mark write race-free.
 pub fn create_reflection_run_id_factory(
     reflection: PathBuf,
     sessions: PathBuf,
@@ -11,50 +20,24 @@ pub fn create_reflection_run_id_factory(
 ) -> Arc<dyn Fn() -> String + Send + Sync> {
     let high_water = Arc::new(AtomicU64::new(0));
     Arc::new(move || {
-        let named = [
-            reflection.join("completions"),
-            reflection.join("runs"),
-            sessions.clone(),
-            worktrees.clone(),
-        ]
-        .into_iter()
-        .filter_map(|dir| std::fs::read_dir(dir).ok())
-        .flatten()
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| run_number(&entry.file_name().to_string_lossy()))
-        .max()
-        .unwrap_or(0);
-        let reserved = ["active.lock", "pending.json"]
-            .into_iter()
-            .filter_map(|name| std::fs::read(reflection.join(name)).ok())
-            .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .filter_map(|value| {
-                value
-                    .get("runId")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(run_number)
-            })
-            .max()
-            .unwrap_or(0);
-        let next = named
-            .max(reserved)
+        let scanned = scan_reflection_run_high_water(RunIdHighWaterPaths {
+            reflection: &reflection,
+            reflection_sessions: &sessions,
+            worktrees: &worktrees,
+        });
+        let mark = read_reflection_run_id_mark(&reflection).unwrap_or(0);
+        let next = scanned
+            .max(mark)
             .max(high_water.load(Ordering::Relaxed))
             .saturating_add(1);
         let _ = high_water.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.max(next))
         });
-        format!("reflection-run-{next}")
+        if let Err(error) = record_reflection_run_id_mark(&reflection, next) {
+            eprintln!("memory reflection run id mark not recorded: {error}");
+        }
+        format!("{REFLECTION_RUN_ID_PREFIX}{next}")
     })
-}
-
-fn run_number(name: &str) -> Option<u64> {
-    let name = name.rsplit('/').next().unwrap_or(name);
-    let name = name.strip_suffix(".json").unwrap_or(name);
-    let digits = name.rsplit_once("reflection-run-").map(|(_, tail)| tail)?;
-    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
-    }
-    digits.parse().ok()
 }
 
 #[cfg(test)]
@@ -80,5 +63,26 @@ mod tests {
         let mint = create_reflection_run_id_factory(reflection, sessions, worktrees);
         assert_eq!(mint(), "reflection-run-10");
         assert_eq!(mint(), "reflection-run-11");
+    }
+
+    #[test]
+    fn the_durable_mark_keeps_ids_rising_after_every_trace_is_pruned() {
+        let root = tempfile::tempdir().unwrap();
+        let reflection = root.path().join("reflection");
+        let sessions = root.path().join("sessions");
+        let worktrees = root.path().join("worktrees");
+        std::fs::create_dir_all(reflection.join("completions")).unwrap();
+        std::fs::write(reflection.join("completions/reflection-run-4.json"), "{}").unwrap();
+        let mint = create_reflection_run_id_factory(
+            reflection.clone(),
+            sessions.clone(),
+            worktrees.clone(),
+        );
+        assert_eq!(mint(), "reflection-run-5");
+
+        std::fs::remove_file(reflection.join("completions/reflection-run-4.json")).unwrap();
+        let after_prune = create_reflection_run_id_factory(reflection, sessions, worktrees);
+
+        assert_eq!(after_prune(), "reflection-run-6");
     }
 }
