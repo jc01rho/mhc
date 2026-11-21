@@ -594,7 +594,6 @@ fn fallback_chain_table_is_pinned() {
         (
             "plan-consultant",
             vec![
-                entry(&claude, "claude-fable-5-1", Some("max")),
                 entry(&claude, "claude-opus-5-5", Some("max")),
                 entry(
                     &["opencode-go", "kimi-for-coding", "moonshotai"],
