@@ -9,6 +9,7 @@ use super::doctor_checks::{
     CheckLevel, DoctorCheck, check_abandoned_runs, check_disk, check_frontmatter, check_locks,
     check_reflection_health, check_repository, check_soul_seed, check_tokens, check_worktrees,
 };
+use super::facts_failure_cause::facts_parked_cause_summary;
 use super::facts_status::{
     ReadFactsOverviewInput, facts_remediation_hint, format_facts_advisory, read_facts_overview,
 };
@@ -45,10 +46,14 @@ fn check_facts(deps: &MemoryCommandDeps, identity: &MemoryCommandIdentity) -> Op
     });
     let advisory = format_facts_advisory(&overview)?;
     let hint = facts_remediation_hint(&overview);
+    let causes = facts_parked_cause_summary(&overview.records, overview.facts_dir.as_deref());
     let detail = format!(
-        "{}{}",
+        "{}{}{}",
         advisory.strip_prefix("facts: ").unwrap_or(&advisory),
-        hint.map(|hint| format!("; {hint}")).unwrap_or_default()
+        hint.map(|hint| format!("; {hint}")).unwrap_or_default(),
+        causes
+            .map(|causes| format!(" ({causes})"))
+            .unwrap_or_default()
     );
     Some(DoctorCheck {
         name: "facts".to_owned(),
