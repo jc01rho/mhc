@@ -530,6 +530,7 @@ impl RpcSessionRegistry {
         self.entries.iter().filter(|(_,entry)|entry.close.state!=RpcSessionState::Quarantined&&(include_workers||entry.identity.kind!=maho_ext_api::SessionKind::Worker)).map(|(handle,entry)|{
             let status=match entry.close.state{RpcSessionState::Opening=>"opening",RpcSessionState::Open=>"open",RpcSessionState::Closing=>"closing",RpcSessionState::Quarantined=>"quarantined",RpcSessionState::Closed=>"closed"};
             let mut row=serde_json::json!({"sessionId":handle,"cwd":entry.runtime.as_ref().map_or_else(||entry.profile.runtime.cwd.clone(),|runtime|runtime.session().cwd()),"status":status,"attachments":entry.close.attachments,"kind":if entry.identity.kind==maho_ext_api::SessionKind::Worker{"worker"}else{"interactive"},"tool_child":entry.runtime.as_ref().and_then(|runtime|serde_json::to_value(runtime.session().tool_child_row()).ok()).unwrap_or_else(||serde_json::json!({"state":"none"}))});
+            row["retain_on_disconnect"]=entry.close.retain_on_disconnect.into();
             if let Some(id)=&entry.durable_session_id{row["durableSessionId"]=id.clone().into();}
             if let Some(path)=&entry.session_path{row["sessionPath"]=path.clone().into();}
             if let Some(name)=entry.runtime.as_ref().and_then(|runtime|runtime.session().session_name()){row["name"]=name.into();}
