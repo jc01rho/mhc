@@ -1340,8 +1340,8 @@ async fn handle_session_command_with_sink(
             if let Some(refusal)=session.continue_from_leaf_refusal(){return Some(coded_error(command,"continue_from_leaf",refusal.to_string(),refusal.code.as_str()));}
             ("continue_from_leaf",session.continue_from_leaf().await.map(|()|None))
         },
-        RpcCommandBody::Interrupt{turn_id,..}=>{
-            let outcome=crate::session_control_actions_data::interrupt_running_turn(session,turn_id.as_ref(),||session.abort()).await;
+        RpcCommandBody::Interrupt{turn_id,background,..}=>{
+            let outcome=crate::session_control_actions_data::interrupt_running_turn(session,turn_id.as_ref(),background.as_deref(),||session.abort()).await;
             ("interrupt",serde_json::to_value(outcome).map(Some).map_err(|error|error.to_string()))
         },
         // senpi: without `options.retryFallbackCommand` (this binding has no such launch option, and it does not

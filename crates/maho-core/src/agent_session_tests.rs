@@ -17810,3 +17810,85 @@ fn a_queued_text_two_inputs_share_keeps_no_client_message_id() {
         None
     );
 }
+
+fn background_job(id: &str, stopped: &Arc<Mutex<Vec<String>>>) -> maho_ext_api::RunBackgroundJob {
+    let (id, stopped) = (id.to_owned(), Arc::clone(stopped));
+    maho_ext_api::RunBackgroundJob {
+        kind: maho_ext_api::RunBackgroundJobKind::Bash,
+        id: id.clone(),
+        description: Some(format!("{id} job")),
+        stop: Arc::new(
+            move |turn_id: String| -> maho_ext_api::ExtensionFuture<'static, ()> {
+                let (id, stopped) = (id.clone(), Arc::clone(&stopped));
+                Box::pin(async move {
+                    lock(&stopped).push(format!("{id}@{turn_id}"));
+                    Ok::<(), maho_ext_api::ExtensionFailure>(())
+                })
+            },
+        ),
+    }
+}
+
+/// senpi #6675 `registerRunBackgroundJob` / `stopRunBackgroundJobs`: a job is recorded under the running turn only,
+/// `interrupt { background: "stop" }` stops that turn's jobs in start order, and a released job is not stopped.
+#[tokio::test]
+async fn background_jobs_register_under_the_running_turn_and_stop_by_turn() {
+    let session = test_session();
+    let stopped = Arc::new(Mutex::new(Vec::new()));
+    let turn_id = session.external_admission().turn_epoch().to_string();
+
+    let idle = session.register_run_background_job(background_job("idle", &stopped));
+    idle();
+    assert_eq!(
+        session.stop_run_background_jobs(&turn_id).await,
+        maho_ext_api::RunBackgroundStopOutcome::default()
+    );
+
+    session.agent_run_active.store(true, Ordering::SeqCst);
+    let _first = session.register_run_background_job(background_job("first", &stopped));
+    let ended = session.register_run_background_job(background_job("ended", &stopped));
+    let _second = session.register_run_background_job(background_job("second", &stopped));
+    ended();
+    let outcome = session.stop_run_background_jobs(&turn_id).await;
+
+    assert_eq!(
+        outcome
+            .stopped
+            .iter()
+            .map(|job| job.id.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert!(outcome.failed.is_empty());
+    assert_eq!(
+        *lock(&stopped),
+        [format!("first@{turn_id}"), format!("second@{turn_id}")]
+    );
+    assert_eq!(
+        session.stop_run_background_jobs(&turn_id).await,
+        maho_ext_api::RunBackgroundStopOutcome::default()
+    );
+}
+
+#[tokio::test]
+async fn the_extension_context_actions_register_background_jobs_through_the_session() {
+    let session = test_session();
+    session.agent_run_active.store(true, Ordering::SeqCst);
+    let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+    let stopped = Arc::new(Mutex::new(Vec::new()));
+
+    let release = maho_ext_api::ExtensionContextActions::register_run_background_job(
+        &actions,
+        background_job("via-context", &stopped),
+    );
+    let turn_id = session.external_admission().turn_epoch().to_string();
+    let outcome = session.stop_run_background_jobs(&turn_id).await;
+
+    assert_eq!(outcome.stopped.len(), 1);
+    assert_eq!(outcome.stopped[0].id, "via-context");
+    assert_eq!(
+        outcome.stopped[0].description.as_deref(),
+        Some("via-context job")
+    );
+    release();
+}

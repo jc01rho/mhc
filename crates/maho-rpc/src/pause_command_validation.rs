@@ -18,6 +18,9 @@ pub fn validate_pause_command(value: &Value) -> Option<&'static str> {
     {
         return Some("intent must be \"stop\" or \"abort\".");
     }
+    if kind == "interrupt" && value.get("background").is_some() && value["background"] != "stop" {
+        return Some("background must be \"stop\".");
+    }
     if kind == "resume_session" {
         if value.get("expectedSeq").is_some() && !seq(&value["expectedSeq"]) {
             return Some("expectedSeq must be a non-negative integer.");
@@ -79,6 +82,18 @@ pub fn validate_pause_command(value: &Value) -> Option<&'static str> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn interrupt_background_must_be_stop() {
+        assert!(validate_pause_command(&json!({"type":"interrupt"})).is_none());
+        assert!(validate_pause_command(&json!({"type":"interrupt","background":"stop"})).is_none());
+        for background in [json!("keep"), json!(true), json!(null), json!("")] {
+            assert_eq!(
+                validate_pause_command(&json!({"type":"interrupt","background":background})),
+                Some("background must be \"stop\".")
+            );
+        }
+        assert!(validate_pause_command(&json!({"type":"abort","background":"keep"})).is_none());
+    }
     #[test]
     fn validates_run_and_input_sequences() {
         assert!(validate_pause_command(&json!({"type":"pause_for_run","parentSessionId":"p","parentPauseSeq":0,"runRef":{"kind":"task","id":"t"}})).is_none());

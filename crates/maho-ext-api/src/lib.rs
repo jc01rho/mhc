@@ -8,6 +8,8 @@ pub mod mcp_wire;
 pub mod offload;
 pub mod private_dir;
 pub mod process_env;
+pub mod run_background_jobs;
+pub use run_background_jobs::*;
 pub mod settle_observer;
 pub use settle_observer::*;
 pub mod types;

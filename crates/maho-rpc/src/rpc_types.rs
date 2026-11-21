@@ -363,12 +363,15 @@ pub enum RpcCommandBody {
     MemoryReport,
     /// senpi `{ type: "continue_from_leaf" }`: continue from the last answer with no new prompt.
     ContinueFromLeaf,
-    /// senpi `{ type: "interrupt"; turnId?; intent? }`: stop the running turn, scoped to `turnId` when given.
+    /// senpi `{ type: "interrupt"; turnId?; intent?; background? }`: stop the running turn, scoped to `turnId` when
+    /// given; `background: "stop"` also stops the background jobs that turn started.
     Interrupt {
         #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         intent: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        background: Option<String>,
     },
     RequestSelfSettle,
     GetModelThinkingLevel {

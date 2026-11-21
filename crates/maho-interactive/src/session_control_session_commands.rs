@@ -68,6 +68,7 @@ pub async fn run_session_control_command(
             let outcome = maho_rpc::session_control_actions_data::interrupt_running_turn(
                 session,
                 command.get("turnId"),
+                command.get("background").and_then(Value::as_str),
                 || controls.interrupt_turn(),
             )
             .await;

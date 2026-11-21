@@ -167,14 +167,16 @@ pub fn send_completion_notice(
                             details: None,
                         },
                         SendMessageOptions {
-                            trigger_turn: true,
-                            deliver_as: Some(
-                                if delivery == crate::notify::NotificationDelivery::Steer {
-                                    DeliverAs::Steer
-                                } else {
+                            trigger_turn: delivery != crate::notify::NotificationDelivery::NextTurn,
+                            deliver_as: Some(match delivery {
+                                crate::notify::NotificationDelivery::Steer => DeliverAs::Steer,
+                                crate::notify::NotificationDelivery::FollowUp => {
                                     DeliverAs::FollowUp
-                                },
-                            ),
+                                }
+                                crate::notify::NotificationDelivery::NextTurn => {
+                                    DeliverAs::NextTurn
+                                }
+                            }),
                         },
                     )
                     .map_err(|error| {
@@ -405,6 +407,12 @@ pub fn bundle_sinks(state: &TerminalExtensionState) -> TerminalEventSinks {
                     }
                 });
             }
+            state
+                .notifier
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .run_jobs
+                .finish(id);
             send_completion_notice(id, view, &state.sender, &state.delivery, &state.notifier);
         }),
     }
@@ -452,6 +460,7 @@ pub fn build_tool_context(state: &TerminalExtensionState) -> TerminalToolContext
     context.session_cwd = state.session_cwd.clone();
     let sinks = bundle_sinks(state);
     let (backgrounds, on_state) = (state.backgrounds.clone(), sinks.on_background_state.clone());
+    let (run_ctx, run_notifier) = (state.ctx.clone(), state.notifier.clone());
     context.on_background_start = Some(Arc::new(
         move |id: &str, description: &str, started_at_ms: f64| {
             let snapshot = {
@@ -469,6 +478,13 @@ pub fn build_tool_context(state: &TerminalExtensionState) -> TerminalToolContext
                 backgrounds.values().cloned().collect::<Vec<_>>()
             };
             on_state(snapshot.as_slice());
+            crate::run_jobs::record_run_job(
+                &run_ctx,
+                &run_notifier,
+                id,
+                description,
+                crate::run_jobs::child_stop(id),
+            );
         },
     ));
     let backgrounds = state.backgrounds.clone();

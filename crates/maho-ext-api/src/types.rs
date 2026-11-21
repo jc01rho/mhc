@@ -1781,6 +1781,14 @@ pub trait ExtensionContextActions: Send + Sync {
     fn release_run_fence(&self, _run_ref: JsonValue) -> Result<(), ExtensionFailure> {
         Err(ExtensionFailure::new("Run fence release is unavailable"))
     }
+    /// senpi `registerRunBackgroundJob`: records a background job under the running turn (nothing outside a turn)
+    /// and returns the release that drops it once the job ended on its own. A host with no turns records nothing.
+    fn register_run_background_job(
+        &self,
+        _job: crate::run_background_jobs::RunBackgroundJob,
+    ) -> crate::run_background_jobs::RunBackgroundJobRelease {
+        Box::new(|| {})
+    }
     /// Runs a registered child module; `None` when no session backs this context.
     fn offload(
         &self,
