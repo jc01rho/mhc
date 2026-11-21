@@ -337,7 +337,7 @@ mod tests {
             }),
             Some(200),
         )
-        .unwrap();
+        .expect("attach client connects");
         (client, received, disconnected)
     }
 

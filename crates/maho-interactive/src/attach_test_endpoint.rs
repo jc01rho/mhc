@@ -46,14 +46,15 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub fn start(options: EndpointOptions) -> Self {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().expect("temp dir");
         let path = directory
             .path()
             .join("t-0123456789abcdef.sock")
             .to_string_lossy()
             .into_owned();
-        let secret = create_socket_secret(Path::new(&format!("{path}.secret"))).unwrap();
-        let listener = UnixListener::bind(&path).unwrap();
+        let secret =
+            create_socket_secret(Path::new(&format!("{path}.secret"))).expect("socket secret");
+        let listener = UnixListener::bind(&path).expect("bind test endpoint");
         let peer: Arc<Mutex<Option<UnixStream>>> = Arc::default();
         let commands: Commands = Arc::default();
         let serving = (peer.clone(), commands.clone());

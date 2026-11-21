@@ -748,7 +748,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn new_view() -> AttachedTui {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().expect("temp dir");
         let agent_dir = directory.path().to_string_lossy().into_owned();
         let keys = Arc::new(
             maho_core::keybindings::KeybindingsManager::create(Some(&agent_dir))
@@ -756,7 +756,7 @@ mod tests {
                 .clone(),
         );
         AttachedTui::new(
-            &Theme::builtin("dark", ColorMode::Truecolor).unwrap(),
+            &Theme::builtin("dark", ColorMode::Truecolor).expect("builtin dark theme"),
             keys,
             Rc::new(AttachEditorHost::new(30)),
             Some(200),
@@ -766,7 +766,8 @@ mod tests {
     fn attached(options: EndpointOptions) -> (Endpoint, AttachedTui) {
         let endpoint = Endpoint::start(options);
         let mut view = new_view();
-        view.connect(&endpoint.path, "durable", 80, None).unwrap();
+        view.connect(&endpoint.path, "durable", 80, None)
+            .expect("attach connects");
         (endpoint, view)
     }
 
@@ -780,7 +781,10 @@ mod tests {
                 "timed out; status {:?}",
                 view.status()
             );
-            let item = view.incoming.recv_timeout(remaining).unwrap();
+            let item = view
+                .incoming
+                .recv_timeout(remaining)
+                .expect("attach event before the deadline");
             view.handle_incoming(item);
             view.poll();
         }
