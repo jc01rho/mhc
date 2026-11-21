@@ -1,7 +1,7 @@
 //! Read-only rendering of the facts failure ledger for `/facts`, `/doctor`, and the advisory line.
 //! Port of `components/memory/commands/facts-status.ts` at pin 77f3067f1.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use memory_core::facts::{
     failures_schema::{FactsFailureRecord, FactsFailureState},
@@ -9,6 +9,8 @@ use memory_core::facts::{
     schema::facts_queue_paths,
 };
 use memory_core::identity::layout::MemoryIdentityPaths;
+
+use super::facts_failure_cause::{dominant_fix_first_cause, parked_run_path};
 
 const MAX_LISTED_CONVERSATIONS: usize = 5;
 const MINUTE_MS: i64 = 60_000;
@@ -18,6 +20,8 @@ pub struct FactsOverview {
     pub pending: usize,
     pub records: Vec<FactsFailureRecord>,
     pub now_ms: i64,
+    /// The identity's facts dir; parked rows resolve their run log path under it (omo #11909).
+    pub facts_dir: Option<PathBuf>,
     pub corrupt: Option<String>,
 }
 
@@ -105,20 +109,28 @@ pub fn format_facts_advisory(state: &FactsOverview) -> Option<String> {
     ))
 }
 
-/// Advisory remediation: parked state names the one manual remedy, `/facts retry`.
+/// Advisory remediation as a plain-words to-do with the one action to take (omo #11909): a
+/// transient cause makes `/facts retry` itself the action; a cause only the user can fix names that
+/// fix (the setting, when the fix is a setting).
 pub fn facts_remediation_hint(state: &FactsOverview) -> Option<String> {
     if let Some(corrupt) = &state.corrupt {
         return Some(format!(
             "facts failure ledger is unreadable ({corrupt}); repair or delete failures.json to resume launches"
         ));
     }
-    let parked_count = parked(state).len();
-    if parked_count > 0 {
-        return Some(format!(
-            "{parked_count} parked facts batch{} need{} a manual unpark; run /facts retry after fixing the cause",
-            if parked_count == 1 { "" } else { "es" },
-            if parked_count == 1 { "s" } else { "" }
-        ));
+    if !parked(state).is_empty() {
+        return Some(match dominant_fix_first_cause(&state.records) {
+            None => "Some facts weren't saved yet. Run /facts retry.".to_owned(),
+            Some(fix) => match fix.setting {
+                Some(setting) => {
+                    format!("Some facts weren't saved yet. Set {setting}, then run /facts retry.")
+                }
+                None => format!(
+                    "Some facts weren't saved yet ({}). Run /facts retry once that is fixed.",
+                    fix.label.unwrap_or_default()
+                ),
+            },
+        });
     }
     let backoff_count = backoff(state).len();
     if backoff_count == 0 {
@@ -174,8 +186,15 @@ pub fn format_facts_status(identity: &str, state: &FactsOverview) -> String {
         let detail = failure_detail(record.last_detail.as_deref())
             .map(|detail| format!(" - {detail}"))
             .unwrap_or_default();
+        let run_path = if record.state == FactsFailureState::Parked {
+            parked_run_path(std::slice::from_ref(*record), state.facts_dir.as_deref())
+                .map(|run_dir| format!(" (last run: {})", run_dir.display()))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         lines.push(format!(
-            "- {}: {} after {} ({}){detail}",
+            "- {}: {} after {} ({}){detail}{run_path}",
             record.conversation_id,
             record.state.as_str(),
             record.streak,
@@ -227,6 +246,7 @@ pub fn read_facts_overview(input: ReadFactsOverviewInput<'_>) -> FactsOverview {
             pending,
             records: failures.entries,
             now_ms,
+            facts_dir: Some(input.identity_paths.facts.clone()),
             corrupt: None,
         },
         Err(error) => {
@@ -238,6 +258,7 @@ pub fn read_facts_overview(input: ReadFactsOverviewInput<'_>) -> FactsOverview {
                 pending,
                 records: Vec::new(),
                 now_ms,
+                facts_dir: Some(input.identity_paths.facts.clone()),
                 corrupt: Some(corrupt),
             }
         }
@@ -290,6 +311,7 @@ mod tests {
             pending: 0,
             records,
             now_ms: NOW_MS,
+            facts_dir: None,
             corrupt: None,
         }
     }
@@ -394,13 +416,58 @@ mod tests {
     }
 
     #[test]
-    fn given_parked_records_when_asking_for_the_hint_then_it_names_the_retry_command_and_count() {
+    fn given_parked_records_with_a_transient_cause_when_asking_for_the_hint_then_the_to_do_is_retry_itself()
+     {
         let state = overview(vec![parked_record("msg-b"), parked_record("msg-z")]);
         assert_eq!(
             facts_remediation_hint(&state).as_deref(),
+            Some("Some facts weren't saved yet. Run /facts retry.")
+        );
+    }
+
+    #[test]
+    fn given_a_parked_record_whose_fix_is_a_setting_when_asking_for_the_hint_then_it_names_the_setting()
+     {
+        let mut record = parked_record("msg-b");
+        record.last_reason = FactsFailureReason::QuickCategoryUnavailable;
+        assert_eq!(
+            facts_remediation_hint(&overview(vec![record])).as_deref(),
+            Some("Some facts weren't saved yet. Set memory.facts.model, then run /facts retry.")
+        );
+    }
+
+    #[test]
+    fn given_a_parked_record_whose_fix_has_no_setting_when_asking_for_the_hint_then_it_names_the_cause()
+     {
+        let mut record = parked_record("msg-b");
+        record.last_reason = FactsFailureReason::SecretLikeContent;
+        assert_eq!(
+            facts_remediation_hint(&overview(vec![record])).as_deref(),
             Some(
-                "2 parked facts batches need a manual unpark; run /facts retry after fixing the cause"
+                "Some facts weren't saved yet (secret-like content in the batch). Run /facts retry once that is fixed."
             )
+        );
+    }
+
+    #[test]
+    fn given_a_parked_record_with_a_surviving_run_ledger_when_rendering_status_then_its_row_names_the_run_dir()
+     {
+        let root = tempfile::tempdir().unwrap();
+        let run_dir = root.path().join("runs").join("facts-abc-1");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("ledger.json"),
+            r#"{"batchId":"run-5","runId":"facts-abc-1"}"#,
+        )
+        .unwrap();
+        let mut state = overview(vec![parked_record("msg-b")]);
+        state.facts_dir = Some(root.path().to_path_buf());
+
+        let text = format_facts_status("agent-x", &state);
+
+        assert!(
+            text.contains(&format!("(last run: {})", run_dir.display())),
+            "{text}"
         );
     }
 
