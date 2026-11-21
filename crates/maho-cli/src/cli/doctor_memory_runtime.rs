@@ -9,11 +9,10 @@ use std::path::Path;
 use memory_core::identity::layout::{build_identity_paths, resolve_memory_root};
 use memory_core::retention::{
     DEFAULT_RUNTIME_MAX_BYTES, DEFAULT_RUNTIME_RETENTION, ForeignMemoryRuntimeSettings,
-    MeasuredRuntimeSize, RuntimeCapExcess, RuntimeRetentionPolicy, RuntimeSizeLevel,
-    describe_runtime_cap_excess, format_runtime_bytes, measure_runtime_cap_evictable_bytes,
-    measure_runtime_size_within_budget, measure_unreflected_journal_bytes,
-    read_last_retention_log_entry, resolve_foreign_identity_discard_unreflected,
-    runtime_size_standing,
+    MeasuredRuntimeSize, RuntimeCapExcess, RuntimeSizeLevel, describe_runtime_cap_excess,
+    format_runtime_bytes, measure_runtime_cap_evictable_bytes, measure_runtime_size_within_budget,
+    measure_unreflected_journal_bytes, read_last_retention_log_entry,
+    resolve_foreign_identity_discard_unreflected, runtime_size_standing,
 };
 
 const LISTED_IDENTITIES: usize = 10;
