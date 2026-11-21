@@ -131,6 +131,8 @@ fn signalling_notifier() -> (Notifier, Inbox, NoticeSignal) {
 
 /// Fires when the manager records a task as cancelled. The observer hook runs after the manager has
 /// saved the status, so a woken test reads the committed value rather than racing the write.
+/// `notify_one` stores a permit when nobody is waiting yet: the cancellation can land before the
+/// test reaches `wait`, and `notify_waiters` would drop that wake.
 #[derive(Clone, Default)]
 struct CancelledSignal(Arc<tokio::sync::Notify>);
 
@@ -144,7 +146,7 @@ impl CancelledSignal {
 impl TaskObserver for CancelledSignal {
     fn finished_in(&self, record: &TaskRecord, _state: &StateDir) {
         if record.status == TaskStatus::Cancelled {
-            self.0.notify_waiters();
+            self.0.notify_one();
         }
     }
 }
