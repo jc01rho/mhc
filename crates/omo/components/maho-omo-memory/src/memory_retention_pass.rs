@@ -9,7 +9,7 @@ use memory_core::reflection::{HostSweepOptions, HostSweepResult, sweep_host_iden
 use memory_core::retention::{
     DEFAULT_RUNTIME_MAX_BYTES, DEFAULT_RUNTIME_RETENTION, ForeignMemoryRuntimeSettings,
     LegacyRecallRunsOutcome, RETENTION_STAMP_CONFIG_KEY, RetentionContext,
-    RetentionHostSweepStepOptions, RuntimeRetentionOptions, RuntimeRetentionPolicy,
+    RetentionHostSweepStepOptions, RuntimeRetentionOptions, RuntimeRetentionPolicy, WarnFn,
     create_retention_host_sweep_step, run_runtime_retention, summarize_runtime_retention,
 };
 
@@ -90,7 +90,7 @@ pub fn run_maintenance_retention(input: &MaintenanceRetentionInput<'_>) -> Resul
     context.is_live_session = input.is_live_session;
     let identity = input.identity.to_string();
     let warn = input.warn;
-    let fields: &dyn Fn(&str, &[(&str, String)]) = &|message, values| {
+    let fields: WarnFn<'_> = &|message, values| {
         if let Some(warn) = warn {
             let detail = values
                 .iter()

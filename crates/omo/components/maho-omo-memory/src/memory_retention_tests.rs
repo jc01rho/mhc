@@ -36,8 +36,6 @@ fn fixture(records: &[FactsFailureRecord]) -> (tempfile::TempDir, RetentionPaths
     fs::create_dir_all(&parked).unwrap();
     let locks = dir.path().join("locks");
     fs::create_dir_all(&locks).unwrap();
-    fs::create_dir_all(&reflection).unwrap();
-    fs::create_dir_all(&transcripts).unwrap();
     let rendered = render_failures_file(records, "2026-01-01T00:00:00.000Z");
     fs::write(queue.join("failures.json"), rendered).unwrap();
     for entry in records {
