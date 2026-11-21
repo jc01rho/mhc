@@ -801,6 +801,35 @@ fn resolve_write_log_path() -> String {
     env
 }
 
+/// Matches one complete BEL-terminated OSC52 clipboard frame (`\x1b]52;c;<base64>\x07`) so
+/// clipboard writes pass directly through the external stdout guard without triggering observers
+/// or getting swallowed (senpi#5680).
+pub fn is_osc52_clipboard_frame(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("\x1b]52;c;") else {
+        return false;
+    };
+    let Some(payload) = rest.strip_suffix('\x07') else {
+        return false;
+    };
+    let bytes = payload.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return false;
+    }
+    if bytes.is_empty() {
+        return true;
+    }
+    let body_end = if bytes.ends_with(b"==") {
+        bytes.len() - 2
+    } else if bytes.ends_with(b"=") {
+        bytes.len() - 1
+    } else {
+        bytes.len()
+    };
+    bytes[..body_end]
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+}
+
 impl Default for ProcessTerminal {
     fn default() -> Self {
         Self::new(ProcessTerminalOptions::default())
@@ -951,6 +980,10 @@ impl ProcessTerminal {
         let observers = Arc::clone(&self.external_write_observers);
         let forwarding = Arc::clone(&self.forwarding_external_write);
         let guard: StreamWrite = Arc::new(move |text: &str| {
+            if is_osc52_clipboard_frame(text) {
+                raw(text);
+                return;
+            }
             let Some(handler) = handler
                 .as_ref()
                 .filter(|_| !forwarding.load(Ordering::SeqCst))
