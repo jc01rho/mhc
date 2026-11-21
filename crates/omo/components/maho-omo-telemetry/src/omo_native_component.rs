@@ -19,7 +19,6 @@ use crate::{
     product_identity::{OMO_NATIVE_PROPERTY_ALLOWLISTS, get_omo_native_state_dir},
     session_role_resolver::{
         is_telemetry_host_warmup, read_session_traceparent, resolve_telemetry_session_role,
-        session_role_name,
     },
     session_summary_legacy_rollups::remove_legacy_rollups_once,
     session_summary_optout_start::{StartOptOutPurgeInput, start_opt_out_purge},
@@ -127,21 +126,6 @@ fn session_hasher(
     let consent = Arc::clone(consent);
     let state_dir = state_dir.to_path_buf();
     Arc::new(move |raw_id: &str| consent.hash_session(raw_id, &state_dir))
-}
-
-struct TurnSpanContext {
-    role: String,
-    traceparent: Option<String>,
-}
-
-fn turn_span_context(
-    profile: &maho_ext_api::ExtensionSessionProfile,
-    env: &telemetry_core::TelemetryEnv,
-) -> TurnSpanContext {
-    TurnSpanContext {
-        role: session_role_name(Some(profile), env).to_string(),
-        traceparent: read_session_traceparent(Some(profile), env),
-    }
 }
 
 fn context_model_of(
@@ -266,8 +250,8 @@ impl Extension for OmoNativeTelemetryComponent {
         }));
 
         // Every event this session emits goes through here, so one emitted while a turn is open carries that
-        // turn's span ids.
-        let span_context = turn_span_context(&api.profile, &env);
+        // turn's span ids. The span carries the same closed root/child/unknown role as the events: the
+        // collector pin refuses any other value.
         let turn_spans = create_omo_native_turn_spans(OmoNativeTurnSpansOptions {
             traces: {
                 let state = Arc::clone(&state);
@@ -281,8 +265,8 @@ impl Extension for OmoNativeTelemetryComponent {
                 let consent = Arc::clone(&consent);
                 Arc::new(move || consent.is_consented(true))
             },
-            session_role: span_context.role,
-            inherited_traceparent: span_context.traceparent,
+            session_role,
+            inherited_traceparent: read_session_traceparent(Some(&api.profile), &env),
         });
         let session_capture: SummaryCapture = {
             let state = Arc::clone(&state);
