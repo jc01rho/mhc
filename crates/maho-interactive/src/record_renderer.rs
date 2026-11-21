@@ -180,12 +180,14 @@ impl RecordRenderer {
                 set_part(content, index, json!({"type": "thinking", "thinking": ""}));
             }
             Some("text_delta") => {
-                if !append_to_part(content, index, "text", "text", delta) {
+                let appended = append_to_part(content, index, "text", "text", delta);
+                if !appended {
                     set_part(content, index, json!({"type": "text", "text": delta}));
                 }
             }
             Some("thinking_delta") => {
-                if !append_to_part(content, index, "thinking", "thinking", delta) {
+                let appended = append_to_part(content, index, "thinking", "thinking", delta);
+                if !appended {
                     set_part(
                         content,
                         index,
