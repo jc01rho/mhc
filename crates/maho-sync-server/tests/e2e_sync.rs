@@ -263,12 +263,12 @@ async fn a_pending_rotation_freezes_batches_until_a_keyring_record_lands()
                     link: "l".into(),
                     record_sig: "s".into(),
                 })
-                .await
-                .expect_err("a frozen account refuses batch appends");
-            match refused {
-                EngineError::Http(error) => assert_eq!(error.code, "stale_base"),
-                other => panic!("expected a stale_base refusal, got {other}"),
-            }
+                .await?;
+            assert_eq!(
+                refused,
+                AppendResult::StaleBase { head: 0 },
+                "a frozen account answers stale_base, so the client asks its freeze settler"
+            );
             Ok::<(), Box<dyn std::error::Error>>(())
         })
         .await?;
