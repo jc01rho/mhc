@@ -91,6 +91,7 @@ pub fn resolve_preset(
         PromptPresetName::Gpt55 => crate::gpt_5_5::build_gpt55_prompt(options),
         PromptPresetName::Gpt56 => crate::gpt_5_6::build_gpt56_prompt(options),
         PromptPresetName::Gpt6Astra => crate::gpt_6_astra::build_gpt6_astra_prompt(options),
+        PromptPresetName::Gpt62 => crate::gpt_6_2::build_gpt62_prompt(options),
     };
     let mut parts = captured.into_inner();
     for part in &mut parts {

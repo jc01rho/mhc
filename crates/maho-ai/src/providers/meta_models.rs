@@ -27,7 +27,7 @@ mod tests {
 
     #[test]
     fn flattens_the_shard_by_model_type() {
-        assert_eq!(meta_models().len(), 6);
+        assert_eq!(meta_models().len(), 7);
         assert!(meta_models().iter().all(|model| model.provider == "meta"));
         assert!(meta_image_models().is_empty());
         assert_eq!(meta_classifier_models().len(), 0);

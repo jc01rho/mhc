@@ -108,6 +108,7 @@ fn all_explicit_presets_dispatch_to_nonempty_prompts() {
         Gpt55,
         Gpt56,
         Gpt6Astra,
+        Gpt62,
     ] {
         let resolved = resolve_preset(
             ModelMetadata {

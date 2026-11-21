@@ -64,7 +64,7 @@ use crate::utils::json_parse::{
     parse_json_with_repair, parse_streaming_json, should_reparse_streaming_json,
 };
 use crate::utils::pi_user_agent::get_pi_user_agent;
-use crate::utils::prompt_cache_ttl::{get_anthropic_compat, is_anthropic_api_base_url};
+use crate::utils::prompt_cache_ttl::{allows_anthropic_long_cache_retention, get_anthropic_compat};
 use crate::utils::provider_env::get_provider_env_value;
 use crate::utils::provider_retry::{
     ProviderErrorStatus, ProviderRequestError, ProviderRetryError, ProviderRetryOptions,
@@ -270,10 +270,7 @@ fn get_cache_control(
     if retention == CacheRetention::None {
         return (retention, None);
     }
-    let ttl = if retention == CacheRetention::Long
-        && is_anthropic_api_base_url(&model.base_url)
-        && get_anthropic_compat(model).supports_long_cache_retention
-    {
+    let ttl = if retention == CacheRetention::Long && allows_anthropic_long_cache_retention(model) {
         Some("1h")
     } else {
         None

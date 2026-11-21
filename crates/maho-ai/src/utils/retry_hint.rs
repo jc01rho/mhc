@@ -44,6 +44,15 @@ static PROSE_RESET_IN_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static DATA_PREFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^data:\s*").unwrap_or_else(|e| panic!("{e}")));
+/// "resets 12am (Asia/Seoul)", "resets Oct 2, 9am", "try again at 12:00 AM".
+static CLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    ci(
+        r"\b(?:resets?|try again)\s+(?:at\s+|on\s+)?(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s?m\b\.?(?:\s*\(([A-Za-z_]+(?:/[A-Za-z0-9_+-]+)*)\))?",
+    )
+});
+const MONTHS: [&str; 12] = [
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+];
 
 #[derive(Debug, Clone, Default)]
 pub struct RetryHintInput<'a> {
@@ -170,8 +179,89 @@ fn from_body_prose(body_text: &str, now_ms: i64) -> Option<u64> {
     if let Some(m) = PROSE_RESET_IN_RE.captures(body_text) {
         return Some(convert_unit(m[1].parse().unwrap_or(0.0), &m[2]));
     }
-    let m = PROSE_RESET_RE.captures(body_text)?;
-    date_parse_ms(&m[1]).map(|parsed| clamp_absolute(parsed, now_ms))
+    if let Some(parsed) = PROSE_RESET_RE
+        .captures(body_text)
+        .and_then(|m| date_parse_ms(&m[1]))
+    {
+        return Some(clamp_absolute(parsed, now_ms));
+    }
+    // resets <wall clock> [(<IANA zone>)], the shape Claude Code writes (senpi#1771)
+    clock_reset_ms(body_text, now_ms)
+}
+
+fn zoned_at(
+    zone: &jiff::tz::TimeZone,
+    date: jiff::civil::Date,
+    hour: i8,
+    minute: i8,
+) -> Option<i64> {
+    let wall = date.at(hour, minute, 0, 0);
+    zone.to_zoned(wall)
+        .ok()
+        .map(|zoned| zoned.timestamp().as_millisecond())
+}
+
+/// `clockResetMs`: a reset written as a wall clock ("resets 12am (Asia/Seoul)", "resets Oct 2, 9am",
+/// "try again at 12:00 AM"), as milliseconds from `now_ms` to the next such moment.
+///
+/// Zone rule (senpi#5097): a time with no zone reads in the host's local zone, for every caller, as the
+/// user's own clock. A reset in another zone is read correctly only when the text names it ("(UTC)",
+/// "(Asia/Seoul)"). Deviation: an impossible calendar day ("resets Feb 31, 9am") is rejected instead of
+/// rolled over as `Date.UTC` does.
+pub fn clock_reset_ms(text: &str, now_ms: i64) -> Option<u64> {
+    let captures = CLOCK_RE.captures(text)?;
+    let hour12: i8 = captures.get(3)?.as_str().parse().ok()?;
+    let minute: i8 = captures
+        .get(4)
+        .map_or(Some(0), |minute| minute.as_str().parse().ok())?;
+    if !(1..=12).contains(&hour12) || minute > 59 {
+        return None;
+    }
+    let pm = captures
+        .get(5)
+        .is_some_and(|meridiem| meridiem.as_str().eq_ignore_ascii_case("p"));
+    let hour = hour12 % 12 + if pm { 12 } else { 0 };
+    let zone = match captures.get(6) {
+        Some(name) => jiff::tz::TimeZone::get(name.as_str()).ok()?,
+        None => jiff::tz::TimeZone::system(),
+    };
+    let today = jiff::Timestamp::from_millisecond(now_ms)
+        .ok()?
+        .to_zoned(zone.clone());
+    let target = if let Some(month_name) = captures.get(1) {
+        let month = MONTHS
+            .iter()
+            .position(|month| *month == month_name.as_str().to_lowercase())?;
+        let day: i8 = captures.get(2)?.as_str().parse().ok()?;
+        if !(1..=31).contains(&day) {
+            return None;
+        }
+        let month = i8::try_from(month + 1).ok()?;
+        let this_year = zoned_at(
+            &zone,
+            jiff::civil::Date::new(today.year(), month, day).ok()?,
+            hour,
+            minute,
+        )?;
+        if this_year > now_ms {
+            this_year
+        } else {
+            zoned_at(
+                &zone,
+                jiff::civil::Date::new(today.year().checked_add(1)?, month, day).ok()?,
+                hour,
+                minute,
+            )?
+        }
+    } else {
+        let this_day = zoned_at(&zone, today.date(), hour, minute)?;
+        if this_day > now_ms {
+            this_day
+        } else {
+            zoned_at(&zone, today.date().tomorrow().ok()?, hour, minute)?
+        }
+    };
+    Some(clamp_absolute(target, now_ms))
 }
 
 fn clamp_absolute(target_ms: i64, base_ms: i64) -> u64 {
@@ -943,5 +1033,63 @@ mod tests {
     fn marker_round_trip_append_then_parse() {
         let msg = append_retry_after_ms_marker("some error", 45000);
         assert_eq!(parse_retry_after_ms_marker(&msg), Some(45_000));
+    }
+
+    /// NOW is 2023-11-14T22:13:20Z; every case names its zone so the host's local zone never matters.
+    #[test]
+    fn clock_reset_reads_a_wall_clock_in_the_zone_the_text_names() {
+        let cases: &[(&str, Option<u64>)] = &[
+            ("resets 12am (UTC)", Some(6_400_000)),
+            ("resets 12am (Asia/Seoul)", Some(60_400_000)),
+            ("try again at 9:30 PM (UTC)", Some(83_800_000)),
+            ("try again at 11:30 pm (UTC)", Some(4_600_000)),
+            ("resets Nov 20, 9am (UTC)", Some(470_800_000)),
+            ("resets Nov 14 at 9am (UTC)", Some(31_574_800_000)),
+            ("resets Oct 2, 9am (UTC)", Some(27_859_600_000)),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(clock_reset_ms(text, NOW), *expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn clock_reset_rejects_what_is_not_a_well_formed_wall_clock() {
+        for text in [
+            "resets 13am (UTC)",
+            "resets 0am (UTC)",
+            "resets 9:75am (UTC)",
+            "resets 12am (Not/AZone)",
+            "resets Feb 31, 9am (UTC)",
+            "resets soon",
+        ] {
+            assert_eq!(clock_reset_ms(text, NOW), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_rate_limited_response_falls_back_to_the_wall_clock_prose() {
+        let empty = HeaderMap::new();
+        assert_eq!(
+            hint(
+                Some(429),
+                &empty,
+                "You've hit your limit. Your limit resets 12am (Asia/Seoul)"
+            ),
+            Some(60_400_000)
+        );
+        assert_eq!(
+            hint(Some(500), &empty, "limit resets 12am (UTC)"),
+            None,
+            "a non-429 without a rate-limit body is not eligible"
+        );
+        assert_eq!(
+            hint(
+                Some(429),
+                &empty,
+                "resets in 2 seconds, or resets 12am (UTC)"
+            ),
+            Some(2_000),
+            "the relative hint keeps precedence over the wall clock"
+        );
     }
 }
