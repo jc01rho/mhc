@@ -1,5 +1,7 @@
 // Shared by tests/path_escape.rs and tests/files.rs; each test crate uses only part of it.
 #![allow(dead_code)]
+// clippy.toml's allow-unwrap-in-tests covers only #[test] fns; these fixture helpers unwrap the same way.
+#![allow(clippy::unwrap_used)]
 
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};

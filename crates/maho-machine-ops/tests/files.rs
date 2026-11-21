@@ -1,6 +1,7 @@
 //! Port of senpi `test/conformance/files.ts` and `test/glob-trailing-separator.test.ts`: result shapes and
 //! error codes of read, write, edit, glob, grep, stat and list, the gate hooks, and the mutation queue.
 //! The read limit is 64 bytes here instead of 10 MiB (`common::READ_LIMIT`), so the oversize cases stay small.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 

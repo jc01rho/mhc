@@ -2,6 +2,7 @@
 //! comments say which line of the crate each case guards (`gate::check_path` containment,
 //! `filesystem::canonicalize_by_opening` symlink following, `local_files::split_glob_base` and the glob
 //! branch of `LocalFileOps::glob`, `real_path::spawn_path_in`).
+#![allow(clippy::unwrap_used)]
 
 mod common;
 
