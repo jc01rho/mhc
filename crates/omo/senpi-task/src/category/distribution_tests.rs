@@ -124,29 +124,36 @@ fn round_robin_skips_unavailable_starts_and_never_retries_a_duplicate() {
 
 #[test]
 fn round_robin_canonical_chain_leaves_out_the_builtin_rungs() {
-    let rung = category_fallback_chain("quick")
-        .and_then(|chain| chain.first())
-        .expect("quick has a builtin chain");
-    let provider = rung.providers.first().expect("rung provider");
-    let rung_model = format!("{provider}/{}", rung.model);
+    // Builtin rungs only extend a chain whose selected model sits in the builtin chain, so the
+    // configured list starts with quick's head rung and the next rung is what may leak in.
+    let chain = category_fallback_chain("quick").expect("quick has a builtin chain");
+    let rung_ref = |index: usize| {
+        let rung = &chain[index];
+        let provider = rung.providers.first().expect("rung provider");
+        (provider.clone(), rung.model.clone())
+    };
+    let (head_provider, head_model) = rung_ref(0);
+    let (next_provider, next_model) = rung_ref(1);
+    let head = format!("{head_provider}/{head_model}");
+    let next = format!("{next_provider}/{next_model}");
     let models = registry(vec![
         model("test-provider", "a"),
-        model("test-provider", "b"),
-        model(provider, &rung.model),
+        model(&head_provider, &head_model),
+        model(&next_provider, &next_model),
     ]);
     let quick = |policy: &str| {
         json!({ "categories": { "quick": {
-            "models": ["test-provider/a", "test-provider/b"],
+            "models": [head.clone(), "test-provider/a"],
             "models_distribution": policy,
         } } })
     };
     let distributor = Arc::new(ModelDistributor::new());
     let sequential = spawn("quick", &quick("sequential"), &models, &distributor);
     assert!(
-        displays(sequential.fallback_models).contains(&rung_model),
+        displays(sequential.fallback_models).contains(&next),
         "a sequential chain keeps the builtin rungs after the configured models"
     );
     let rotating = spawn("quick", &quick("round_robin"), &models, &distributor);
-    assert_eq!(rotating.model_id, "a");
-    assert_eq!(displays(rotating.fallback_models), ["test-provider/b"]);
+    assert_eq!(rotating.model_id, head_model);
+    assert_eq!(displays(rotating.fallback_models), ["test-provider/a"]);
 }
