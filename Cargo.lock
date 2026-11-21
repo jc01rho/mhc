@@ -5206,6 +5206,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-machine-ops"
+version = "0.0.0"
+dependencies = [
+ "regex",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "maho-mcp-builtins"
 version = "0.0.0"
 dependencies = [
@@ -6130,6 +6141,7 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-socket-secret",
  "maho-test-support",
  "maho-tool-child",
  "maho-tools",
@@ -6489,6 +6501,15 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "maho-socket-secret"
+version = "0.0.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "libc",
  "tempfile",
 ]
 

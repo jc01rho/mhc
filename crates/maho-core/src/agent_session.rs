@@ -928,6 +928,20 @@ fn message_ticket(message: &AgentMessage) -> Option<String> {
     }
 }
 
+/// The delivery id of a queued cross-session delivery carrier (senpi `deliveryIdOf`); `None` for any other message.
+fn queued_delivery_id(message: &AgentMessage) -> Option<String> {
+    let AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom)) = message
+    else {
+        return None;
+    };
+    let carrier = json!({
+        "role": "custom",
+        "customType": custom.custom_type,
+        "details": custom.details,
+    });
+    crate::external_admission::delivery_id_of(&carrier).map(str::to_owned)
+}
+
 /// Changes whenever a message's content grows or its usage is filled in, without walking other messages.
 pub fn message_fingerprint(message: Option<&AgentMessage>) -> String {
     let Some(message) = message else {
@@ -21327,6 +21341,70 @@ impl AgentSession {
             follow_up,
             ordered,
         }
+    }
+
+    /// senpi `takeQueuedDeliveries`: takes every queued cross-session delivery out of the queues unwritten and settles
+    /// it as `clear_queue` does (its custody released, a send waiting on it failed, its admission dropped), leaving
+    /// user input queued. An interrupt does this once the aborted work settled, so a delivery the aborted run left
+    /// queued never pins the session; its sender redelivers it (oh-my-openagent#14169).
+    pub fn take_queued_deliveries(&self) {
+        let removed: Vec<AgentMessage> = self
+            .agent
+            .peek_queued_messages(true)
+            .into_iter()
+            .filter(|queued| queued_delivery_id(queued).is_some())
+            .collect();
+        for message in &removed {
+            self.agent.remove_queued_message(message);
+        }
+        let tickets: Vec<String> = removed.iter().filter_map(message_ticket).collect();
+        self.release_queued_deliveries(&tickets, "cleared");
+        // A removed carrier is never written: every send waiting on it settles now as cleared (senpi#4106), unless
+        // its message is already in the transcript, where its own append settles it.
+        for message in removed {
+            let AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom)) =
+                message
+            else {
+                continue;
+            };
+            if !self.custom_message_is_appended(&custom) {
+                self.settle_queued_custom_receipt(
+                    &custom,
+                    Err(crate::itemized_send::QueuedDeliveryCleared {
+                        item_ids: Vec::new(),
+                    }
+                    .to_string()),
+                );
+            }
+        }
+        self.external_admission.drop_queued();
+        self.emit_queue_update();
+    }
+
+    /// Whether the transcript already holds `custom` (the rule `clear_queue` applies before it fails a receipt).
+    fn custom_message_is_appended(
+        &self,
+        custom: &maho_agent::harness::messages::CustomMessage,
+    ) -> bool {
+        serde_json::to_value(&custom.content)
+            .ok()
+            .is_some_and(|content_val| {
+                self.with_session_manager(|manager| {
+                    manager.entries().iter().rev().any(|e| {
+                        let details_match = match (&custom.details, e.get("details")) {
+                            (Some(expected), Some(actual)) => expected == actual,
+                            (None, None) | (None, Some(Value::Null)) => true,
+                            _ => false,
+                        };
+                        e.get("type").and_then(Value::as_str) == Some("custom_message")
+                            && e.get("customType").and_then(Value::as_str)
+                                == Some(custom.custom_type.as_str())
+                            && e.get("content") == Some(&content_val)
+                            && e.get("display").and_then(Value::as_bool) == Some(custom.display)
+                            && details_match
+                    })
+                })
+            })
     }
 
     pub fn pending_message_count(&self) -> usize {

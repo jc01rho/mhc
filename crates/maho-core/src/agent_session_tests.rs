@@ -5022,6 +5022,83 @@ fn reserving_queued_input_order_is_monotonic() {
     assert_eq!(session.reserve_queued_input_order(), 2);
 }
 
+/// The carrier an external admission queues for `delivery_id`, built the way `delivery_message` shapes it.
+fn queued_delivery_carrier(delivery_id: &str) -> maho_agent::harness::messages::CustomMessage {
+    let message = crate::external_admission::delivery_message(
+        &serde_json::json!({"delivery_id": delivery_id, "text": "probe", "deliverAs": "followUp"}),
+    );
+    maho_agent::harness::messages::CustomMessage {
+        role: "custom".into(),
+        custom_type: crate::extensions::session_control_types::SESSION_CONTROL_DELIVERY_TYPE.into(),
+        content: maho_agent::harness::messages::CustomMessageContent::Text("probe".into()),
+        display: true,
+        details: Some(message["details"].clone()),
+        timestamp: 0,
+    }
+}
+
+// senpi#6971 `takeQueuedDeliveries`: an interrupt hands back the deliveries an aborted run left queued without touching
+// the user's queued input. Guards the filter on the delivery id (a user's input must stay) and the `drop_queued` call
+// (a stale admission would refuse every later unload `work_pending`).
+#[tokio::test]
+async fn take_queued_deliveries_removes_only_delivery_carriers_and_drops_their_admission() {
+    let session = test_session();
+    let carrier = queued_delivery_carrier("d1");
+    let carrier_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
+        carrier.clone(),
+    ));
+    let admitted = session
+        .external_admission()
+        .admit(
+            &serde_json::json!({"delivery_id": "d1", "text": "probe", "deliverAs": "followUp"}),
+            &serde_json::json!({}),
+            true,
+            |_, _| Ok(()),
+        )
+        .expect("admit");
+    assert_eq!(admitted["kind"], "queued");
+    session.agent.follow_up(carrier_message.clone());
+    let receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+    session.track_queued_custom_receipt(carrier.clone(), receipt.clone());
+    let note = maho_agent::harness::messages::CustomMessage {
+        role: "custom".into(),
+        custom_type: "note".into(),
+        content: maho_agent::harness::messages::CustomMessageContent::Text(
+            "a person's input".into(),
+        ),
+        display: true,
+        details: None,
+        timestamp: 0,
+    };
+    let note_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(note));
+    session.agent.follow_up(note_message.clone());
+    assert_eq!(
+        session.external_admission().list()["pending"],
+        serde_json::json!(["d1"])
+    );
+
+    session.take_queued_deliveries();
+
+    assert!(!session.agent.contains_queued_message(&carrier_message));
+    assert!(session.agent.contains_queued_message(&note_message));
+    assert_eq!(
+        session.external_admission().list()["pending"],
+        serde_json::json!([])
+    );
+    assert!(matches!(receipt.outcome(), Some(Err(_))));
+}
+
+#[test]
+fn take_queued_deliveries_with_nothing_queued_changes_nothing() {
+    let session = test_session();
+    session.take_queued_deliveries();
+    assert_eq!(session.pending_message_count(), 0);
+    assert_eq!(
+        session.external_admission().list()["pending"],
+        serde_json::json!([])
+    );
+}
+
 #[test]
 fn clear_queue_returns_messages_in_recovery_order() {
     let session = test_session();

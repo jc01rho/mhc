@@ -5,6 +5,8 @@
 mod acceptance_wiring;
 #[path = "auth_commands.rs"]
 mod auth_commands;
+#[path = "chain_count_limit.rs"]
+mod chain_count_limit;
 #[path = "close_admission.rs"]
 mod close_admission;
 #[path = "close_response_reservations.rs"]

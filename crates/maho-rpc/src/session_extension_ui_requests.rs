@@ -356,6 +356,42 @@ mod tests {
         assert!(!requests.resolve(json!({"id":"id"})));
     }
 
+    // senpi#5420 (the first RPC answer wins): the first answer settles a dialog once; a competing answer and a later
+    // cancel settle nothing. The request set is one `&mut` value behind the connection's lock, so an answer cannot
+    // overlap another's admission in this port; this pins the outcome upstream's race tests assert.
+    #[tokio::test]
+    async fn the_first_answer_settles_a_dialog_once_and_a_competing_answer_or_cancel_settles_nothing()
+     {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let mut requests = SessionExtensionUiRequests::with_changed(Box::new(move |change| {
+            sink.lock()
+                .unwrap()
+                .push(change.map(|change| change.record()));
+        }));
+        let (sender, receiver) = oneshot::channel();
+        requests.set_with_frame("ask".into(), sender, json!({"id":"ask","method":"input"}));
+        let winner = json!({"type":"extension_ui_response","id":"ask","value":"winner"});
+        assert!(requests.resolve(winner.clone()));
+        assert!(
+            !requests
+                .resolve(json!({"type":"extension_ui_response","id":"ask","value":"competing"}))
+        );
+        assert!(
+            !requests.resolve(json!({"type":"extension_ui_response","id":"ask","cancelled":true}))
+        );
+        requests.cancel_all();
+        assert_eq!(receiver.await.unwrap().unwrap(), winner);
+        let settled = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .filter(|record| record["type"] == "ui_request_settled")
+            .count();
+        assert_eq!(settled, 1);
+    }
+
     #[test]
     fn snapshot_lists_pending_frames_in_insertion_order() {
         let mut requests = SessionExtensionUiRequests::default();

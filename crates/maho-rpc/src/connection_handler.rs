@@ -431,6 +431,13 @@ async fn handle_input_line_with_login_state(
         })
         .map(Some);
     }
+    // senpi#5923 (decision K8): a thread call from another session carries its chain's hop count, admitted against
+    // the user's `threads.chainCountLimit` before anything of the input is recorded or held.
+    if let Some(refusal) = crate::chain_admission::refuse_input_chain(&value, || {
+        session.with_settings_manager(|manager| manager.get_thread_chain_count_limit())
+    }) {
+        return crate::jsonl::serialize_json_line(&refusal).map(Some);
+    }
     // PERF-DIVERGENCE(senpi): upstream passes the parsed JSON object straight on; we deserialize from `&Value` instead of deep-cloning the whole command (MBs with inline images). Same command and same serde error text.
     let command: RpcCommand = match <RpcCommand as serde::Deserialize>::deserialize(&value) {
         Ok(command) => command,

@@ -1,0 +1,19 @@
+[package]
+name = "maho-socket-secret"
+description = "The socket secret file's mechanics (senpi rpc/socket-transport.ts, sisyphuslabs/omo-desktop-app#4199): regular-file-only reads, no-replace first publication through a private staging file, repair by rename, and the per-secret lock path."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT"
+
+[dependencies]
+getrandom = "=0.3.4"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

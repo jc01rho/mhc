@@ -71,6 +71,14 @@ pub trait ReleasableSession: Send + Sync {
     fn on_agent_start(&self, on_start: Arc<dyn Fn() + Send + Sync>) -> SubscriptionGuard;
     async fn abort(&self);
     async fn wait_for_idle(&self);
+    /// `isIdle`: no active agent run, retry or queued continuation. An implementor that cannot say reports idle.
+    fn is_idle(&self) -> bool {
+        true
+    }
+    /// `takeQueuedDeliveries()`: takes every queued cross-session delivery out of the queues unwritten and settles it
+    /// as `clear_queue` does (its custody released, a send waiting on it failed, its admission dropped), leaving the
+    /// user's queued input in place. An interrupt does this once the aborted work settled (senpi#6971).
+    fn take_queued_deliveries(&self) {}
     /// `whenQueueClearRecorded()`.
     async fn when_queue_clear_recorded(&self);
     fn session_id(&self) -> String;
@@ -117,18 +125,20 @@ pub fn take_queued_input(session: &dyn ReleasableSession) -> ReleaseDropped {
     }
 }
 
+/// Aborts the work, waits (bounded) for it to settle, then hands back the deliveries it left unwritten: their ids, for
+/// the caller to report. Nothing is handed back while the session is still busy.
 pub async fn abort_and_settle(
     port: &dyn ReleaseSettlePort,
     session_id: &str,
     session: &Arc<dyn ReleasableSession>,
-) {
+) -> Vec<String> {
     abort_and_settle_within(
         port,
         session_id,
         session,
         Duration::from_millis(RELEASE_SETTLE_MS),
     )
-    .await;
+    .await
 }
 
 pub async fn abort_and_settle_within(
@@ -136,7 +146,7 @@ pub async fn abort_and_settle_within(
     session_id: &str,
     session: &Arc<dyn ReleasableSession>,
     deadline: Duration,
-) {
+) -> Vec<String> {
     session.abort_bash();
     // A prompt still in preflight, or an admitted delivery, may start its run after the abort below.
     let stop_starts = session.on_agent_start({
@@ -157,6 +167,26 @@ pub async fn abort_and_settle_within(
     // `Promise.race([allSettled, expired])`: an expired wait is not an error, the caller re-checks.
     let _ = tokio::time::timeout(deadline, futures::future::join_all(work)).await;
     drop(stop_starts);
+    if session.is_idle() {
+        hand_back_unwritten_deliveries(session.as_ref())
+    } else {
+        Vec::new()
+    }
+}
+
+/// A delivery admitted while a run was busy waits in the runtime's follow-up queue, and one whose start the abort cut
+/// short is queued again under its engine ticket. When the run is aborted either stays there for a person's next turn
+/// and its admission stays pending, which refused every interrupting unload forever (oh-my-openagent#14169). Settled
+/// after an interrupt, every such delivery leaves the queue, its custody and the ledger unwritten, so its sender
+/// redelivers it to the next owner, as `take_queued_input` does for a release. Returns the ids that left the ledger.
+fn hand_back_unwritten_deliveries(session: &dyn ReleasableSession) -> Vec<String> {
+    let admitted_before = session.admission_pending();
+    session.take_queued_deliveries();
+    let still_admitted: HashSet<String> = session.admission_pending().into_iter().collect();
+    admitted_before
+        .into_iter()
+        .filter(|delivery_id| !still_admitted.contains(delivery_id))
+        .collect()
 }
 
 #[cfg(test)]
@@ -174,6 +204,7 @@ mod tests {
         pub bash_aborts: AtomicUsize,
         pub idle_waits: AtomicUsize,
         pub hang_idle: AtomicBool,
+        pub busy: AtomicBool,
         pub start_listener: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     }
 
@@ -223,6 +254,13 @@ mod tests {
         }
         fn abort_bash(&self) {
             self.0.bash_aborts.fetch_add(1, Ordering::SeqCst);
+        }
+        fn is_idle(&self) -> bool {
+            !self.0.busy.load(Ordering::SeqCst)
+        }
+        fn take_queued_deliveries(&self) {
+            // Queued deliveries leave the admission ledger with the queue; `kept` was already consumed.
+            self.0.pending.lock().unwrap().retain(|id| id == "kept");
         }
         fn on_agent_start(&self, on_start: Arc<dyn Fn() + Send + Sync>) -> SubscriptionGuard {
             *self.0.start_listener.lock().unwrap() = Some(on_start);
@@ -347,7 +385,39 @@ mod tests {
             }
             let _ = finish.send(());
         };
-        let (_, ()) = tokio::join!(trigger, &mut settling);
+        let (_, handed_back) = tokio::join!(trigger, &mut settling);
+        assert!(handed_back.is_empty());
         assert!(fake.aborts.load(Ordering::SeqCst) >= 2);
+    }
+
+    // senpi#6971 "hands back a delivery queued behind the run": guards the `take_queued_deliveries` call of
+    // `hand_back_unwritten_deliveries`; without it the ids stay admitted and are never reported.
+    #[tokio::test]
+    async fn an_interrupt_hands_back_the_deliveries_the_aborted_run_left_queued() {
+        let fake = Arc::new(FakeSession::default());
+        *fake.pending.lock().unwrap() = vec!["d1".into(), "kept".into(), "d2".into()];
+        let session: Arc<dyn ReleasableSession> = Arc::new(FakeHandle(Arc::clone(&fake)));
+        let handed_back = abort_and_settle(&port(), "s", &session).await;
+        assert_eq!(handed_back, vec!["d1", "d2"]);
+        assert_eq!(*fake.pending.lock().unwrap(), vec!["kept"]);
+    }
+
+    // A session that is still busy once the settle budget ends hands nothing back: its run may still read them.
+    #[tokio::test]
+    async fn a_session_that_is_still_busy_hands_back_nothing() {
+        let fake = Arc::new(FakeSession::default());
+        fake.busy.store(true, Ordering::SeqCst);
+        *fake.pending.lock().unwrap() = vec!["d1".into()];
+        let session: Arc<dyn ReleasableSession> = Arc::new(FakeHandle(Arc::clone(&fake)));
+        let handed_back = abort_and_settle(&port(), "s", &session).await;
+        assert!(handed_back.is_empty());
+        assert_eq!(*fake.pending.lock().unwrap(), vec!["d1"]);
+    }
+
+    #[tokio::test]
+    async fn nothing_queued_hands_back_nothing() {
+        let fake = Arc::new(FakeSession::default());
+        let session: Arc<dyn ReleasableSession> = Arc::new(FakeHandle(Arc::clone(&fake)));
+        assert!(abort_and_settle(&port(), "s", &session).await.is_empty());
     }
 }

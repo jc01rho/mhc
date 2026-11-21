@@ -741,6 +741,13 @@ async fn a_client_message_id_retry_replays_its_receipt_and_new_content_conflicts
     )
     .await;
     assert_eq!(unserved["errorCode"], "unsupported_field");
+    // senpi#5923: a hop count cannot travel through the text-only admission, so the terminal refuses it by name.
+    let chain = control_request(
+        &fixture.socket,
+        json!({"type": "follow_up", "message": "x", "chainCount": 2}),
+    )
+    .await;
+    assert_eq!(chain["errorCode"], "unsupported_field");
     fixture.endpoint.dispose().await;
 }
 
