@@ -71,7 +71,8 @@ impl ControlGrants {
         if matches!(result, Err(DesktopError::Rpc(_))) {
             let mut state = self.state();
             if state.possibly_live == grant {
-                (state.possibly_live, state.automatic) = before;
+                state.possibly_live = before.0;
+                state.automatic = before.1;
             }
         }
         result

@@ -111,11 +111,8 @@ impl FullAccessConsent {
             }
             match rpc.request(method, params.clone(), options.clone()).await {
                 Ok(value) => return Ok(value),
-                Err(error) => {
-                    if !full_access || retried || !is_control_required(&error) {
-                        return Err(error);
-                    }
-                }
+                Err(error) if full_access && !retried && is_control_required(&error) => {}
+                Err(error) => return Err(error),
             }
             retried = true;
             self.grant(rpc, &options).await?;
