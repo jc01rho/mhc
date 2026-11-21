@@ -380,7 +380,7 @@ fn the_cancel_driver_only_settles_once_the_task_moved_to_another_run() {
         end_host_session_child(&fixture.context, &record),
         HostSessionEnd::NotEnded("close_refused")
     );
-    fixture
+    let _ = fixture
         .temp
         .store
         .mutate(&record.task_id, |fresh| {
