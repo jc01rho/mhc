@@ -43,9 +43,13 @@ fn disk_check_warns_and_names_the_retention_horizons_once_the_tree_crosses_the_w
     let check = check_disk_with_limits(&identity, 16, 4096);
 
     assert_eq!(check.level, CheckLevel::Warn);
-    assert!(check.detail.contains("transcripts expire after 30d"));
+    assert!(
+        check
+            .detail
+            .contains("reflection runs and reflected transcripts are removed after 7d")
+    );
+    assert!(check.detail.contains("completions after 30d"));
     assert!(check.detail.contains("parked facts after 14d"));
-    assert!(check.detail.contains("reflection runs after 7d"));
 }
 
 #[test]

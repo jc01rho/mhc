@@ -78,12 +78,16 @@ pub struct AppendResult {
     pub skipped: usize,
 }
 
+/// Warning sink: a message plus its named fields.
+pub type JournalWarn = Box<dyn Fn(&str, &[(&str, String)]) + Send + Sync>;
+
 /// Configuration options for constructing a [`TranscriptJournal`].
 pub struct TranscriptJournalOptions {
     pub journal_dir: PathBuf,
     pub now: Option<Box<dyn Fn() -> String + Send + Sync>>,
     pub lock: Option<Arc<dyn JournalLock>>,
     pub snapshot_max_bytes: Option<u64>,
+    pub warn: Option<JournalWarn>,
 }
 
 impl TranscriptJournalOptions {
@@ -94,6 +98,7 @@ impl TranscriptJournalOptions {
             now: None,
             lock: None,
             snapshot_max_bytes: None,
+            warn: None,
         }
     }
 }
@@ -107,6 +112,7 @@ pub struct TranscriptJournal {
     now: Box<dyn Fn() -> String + Send + Sync>,
     lock: Arc<dyn JournalLock>,
     snapshot_max_bytes: Option<u64>,
+    warn: Option<JournalWarn>,
 }
 
 impl TranscriptJournal {
@@ -127,6 +133,7 @@ impl TranscriptJournal {
             now,
             lock,
             snapshot_max_bytes: options.snapshot_max_bytes,
+            warn: options.warn,
         }
     }
 
@@ -267,6 +274,7 @@ impl TranscriptJournal {
 
     fn append_unlocked(&self, entries: &[TranscriptEntry]) -> Result<AppendResult, JournalError> {
         let raw = self.read_raw_unlocked()?;
+        let mut existing_rows = 0;
         let mut existing_completed = 0;
         let mut source_ids: HashSet<std::borrow::Cow<'_, str>> = HashSet::new();
         for line in raw.lines() {
@@ -275,6 +283,7 @@ impl TranscriptJournal {
                 continue;
             }
             let row = parse_row_probe(trimmed)?;
+            existing_rows += 1;
             if row.is_completed_step() {
                 existing_completed += 1;
             }
@@ -308,9 +317,53 @@ impl TranscriptJournal {
             .iter()
             .filter(|entry| count_completed_steps(std::slice::from_ref(*entry)) == 1)
             .count();
-        let current_state = self.read_state_unlocked()?;
+        let mut current_state = self.read_state_unlocked()?;
+        if existing_rows == 0 && appended > 0 && current_state.transcript_pruned_at.is_some() {
+            let rebuilt: Vec<TranscriptEntry> = fresh.iter().copied().cloned().collect();
+            current_state = self.reanchor_after_prune(current_state, &rebuilt);
+        }
         self.write_state_unlocked(&current_state, existing_completed + fresh_completed)?;
         Ok(AppendResult { appended, skipped })
+    }
+
+    /// A transcript removed by retention is rebuilt from the harness projection, which may be
+    /// shorter than the original: senpi's `getBranch()` after a compaction holds only the messages
+    /// from the compaction's first kept entry on. The reflected count is recomputed against the
+    /// rebuilt rows. When the anchor is no longer projected it lay before the kept window, so every
+    /// rebuilt row is after it and unreflected: the cursor restarts at the first row instead of
+    /// clamping a stale count.
+    fn reanchor_after_prune(
+        &self,
+        mut state: ReflectionTranscriptState,
+        entries: &[TranscriptEntry],
+    ) -> ReflectionTranscriptState {
+        state.transcript_pruned_at = None;
+        state.reflected_through_byte_offset = None;
+        let Some(anchor) = state.reflected_through_message_id.clone() else {
+            return state;
+        };
+        let anchor_index = entries
+            .iter()
+            .rposition(|entry| entry.source_message_id() == anchor);
+        if let Some(index) = anchor_index {
+            state.reflected_completed_steps = count_completed_steps(&entries[..=index]);
+            state.reflected_through_byte_offset = Some(
+                crate::journal::cursor::reflected_through_byte_offset(entries, &anchor),
+            );
+            return state;
+        }
+        if let Some(warn) = &self.warn {
+            warn(
+                "journal anchor lost after prune",
+                &[
+                    ("journalDir", self.journal_dir.display().to_string()),
+                    ("reflectedThroughMessageId", anchor),
+                ],
+            );
+        }
+        state.reflected_through_message_id = None;
+        state.reflected_completed_steps = 0;
+        state
     }
 
     /// Reconcile structured transcript messages by projecting and appending new rows.

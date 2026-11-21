@@ -17,12 +17,13 @@ use crate::locks::lock_record::{CreateLockRecordOptions, create_lock_record};
 use crate::locks::process_identity::get_process_start_identity;
 use crate::support::host::hostname;
 use crate::support::random::random_uuid;
-use crate::support::time::now_iso;
+use crate::support::time::{format_rfc3339_millis, now_iso};
 
 use super::machine::{
     CapturedConversation, CompleteOptions, EvaluationAction, JournalSnapshot, MachineState,
     ReflectionEvent, ReflectionOutcome, ReflectionRequest, ReflectionTrigger, ReservationState,
-    ReservedRun, TriggerConfig, complete_transition, evaluate_transitions, reserve_transition,
+    ReservedRun, TriggerConfig, complete_transition, evaluate_transitions, promote_transition,
+    reserve_transition,
 };
 
 /// Resolves the transcript journal for a session id.
@@ -324,6 +325,53 @@ impl ReflectionReservationStore {
         })
     }
 
+    /// Promotes a lone `pending.json` (no `active.lock`) under THIS process as launcher. Only a
+    /// release without promotion leaves that state (omo #12517, DESIGN.r2 4.1b); session reconcile
+    /// calls this first. `wait_timeout_ms` of zero reports contention without blocking.
+    pub fn promote_pending(
+        &self,
+        wait_timeout_ms: Option<u64>,
+    ) -> Result<Option<ReservedRun>, ReservationError> {
+        self.locked_with_wait(None, wait_timeout_ms, None, || {
+            let current = self.read_state_unlocked()?;
+            let Some(pending) = &current.pending else {
+                return Ok(None);
+            };
+            if current.active.is_some() {
+                return Ok(None);
+            }
+            let mut snapshots = BTreeMap::new();
+            for id in &pending.request.conversation_ids {
+                let journal = (self.get_journal)(id)?;
+                let state = journal
+                    .get_state()
+                    .map_err(|e| ReservationError::Journal(e.to_string()))?;
+                snapshots.insert(
+                    id.clone(),
+                    JournalSnapshot {
+                        conversation_id: id.clone(),
+                        state,
+                        snapshot: None,
+                    },
+                );
+            }
+            let (state, launch) = promote_transition(current, &snapshots, &self.config);
+            let promoted = launch.map(|mut run| {
+                self.stamp_launch_owner(&mut run);
+                run
+            });
+            let next_state = match &promoted {
+                Some(run) => ReservationState {
+                    active: Some(run.clone()),
+                    pending: None,
+                },
+                None => state,
+            };
+            self.write_state_unlocked(&next_state)?;
+            Ok(promoted)
+        })
+    }
+
     /// Reads the current reservation state from disk under lock.
     pub fn read_state(&self) -> Result<ReservationState, ReservationError> {
         self.read_state_with_wait(None)
@@ -440,7 +488,7 @@ fn write_dream_state(runtime: &Path, now_iso: &str, run_id: &str) -> Result<(), 
         .map_err(ReservationError::Io)
 }
 
-fn read_run(path: &Path) -> Result<Option<ReservedRun>, ReservationError> {
+pub(crate) fn read_run(path: &Path) -> Result<Option<ReservedRun>, ReservationError> {
     let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -455,7 +503,7 @@ fn read_run(path: &Path) -> Result<Option<ReservedRun>, ReservationError> {
     Ok(Some(parsed))
 }
 
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -486,6 +534,73 @@ fn write_optional_run(path: &Path, run: Option<&ReservedRun>) -> std::io::Result
             Ok(())
         }
     }
+}
+
+/// Moves a torn `active.lock` aside as `active.lock.torn-<time>`, bytes unchanged, never deleting it
+/// (omo #11976 case E). The caller holds the scheduler lock and has proven no run is live. Returns the
+/// new name, or `None` when the lock is gone or no longer the bytes the caller decided on.
+pub fn move_torn_reservation_aside(
+    reflection_dir: &Path,
+    expected: &str,
+    at_millis: i64,
+) -> std::io::Result<Option<String>> {
+    let active_path = reflection_dir.join("active.lock");
+    let current = match std::fs::read_to_string(&active_path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if current != expected {
+        return Ok(None);
+    }
+    let stamp = format_rfc3339_millis(at_millis).replace([':', '.'], "-");
+    let name = format!("active.lock.torn-{stamp}");
+    std::fs::rename(&active_path, reflection_dir.join(&name))?;
+    Ok(Some(name))
+}
+
+/// Whether `value` has the shape of a persisted reservation (`isReservedRun`).
+pub fn is_reserved_run(value: &serde_json::Value) -> bool {
+    let Some(run) = value.as_object() else {
+        return false;
+    };
+    let named = run
+        .get("runId")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|run_id| !run_id.is_empty());
+    named && run.get("request").is_some_and(is_reflection_request)
+}
+
+fn is_reflection_request(value: &serde_json::Value) -> bool {
+    let Some(request) = value.as_object() else {
+        return false;
+    };
+    let trigger = request.get("trigger").and_then(serde_json::Value::as_str);
+    let origin = request.get("origin");
+    let trigger_ok = matches!(
+        trigger,
+        Some("manual" | "compaction" | "step-count" | "dream")
+    );
+    let origin_ok = if trigger == Some("dream") {
+        matches!(
+            origin.and_then(serde_json::Value::as_str),
+            Some("manual" | "idle" | "shutdown" | "pressure")
+        )
+    } else {
+        origin.is_none()
+    };
+    let conversations_ok = request
+        .get("conversationIds")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|ids| ids.iter().all(serde_json::Value::is_string));
+    let snapshots_ok = request
+        .get("snapshots")
+        .is_some_and(serde_json::Value::is_array);
+    let target_ok = match request.get("targetDoc") {
+        None => true,
+        Some(target) => trigger == Some("dream") && target.is_string(),
+    };
+    trigger_ok && origin_ok && conversations_ok && snapshots_ok && target_ok
 }
 
 fn default_launcher_identity() -> ReflectionLauncherIdentity {

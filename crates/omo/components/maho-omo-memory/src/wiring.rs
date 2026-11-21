@@ -408,6 +408,7 @@ impl MemoryWiring {
                         );
                         // Built lazily: a memory-write-denied bind never starts the recovery work.
                         let reconcile_identity = identity.clone();
+                        let reaper_warn = warn.clone();
                         wiring
                             .after_bind(
                                 &mut api,
@@ -419,7 +420,20 @@ impl MemoryWiring {
                                 },
                                 Some(&mut ui),
                                 Some(&mut live),
-                                move || reconcile(reconcile_identity),
+                                move || {
+                                    // The reaper moves a torn active.lock aside first: reconciliation cannot read past it.
+                                    if let Err(error) =
+                                        crate::reflection_stale_active_sync::reap_before_session_reconcile(
+                                            &reconcile_identity.identity_paths.runtime,
+                                            None,
+                                        )
+                                    {
+                                        reaper_warn(&format!(
+                                            "stale reflection lock reaper failed: {error}"
+                                        ));
+                                    }
+                                    reconcile(reconcile_identity)
+                                },
                                 facts?,
                                 |session, error| {
                                     warn(&format!("journal reconcile failed: {session}: {error}"))

@@ -731,6 +731,14 @@ fn full_memory_defaults() -> Value {
             "query_expansion": false,
         },
         "project_scope": { "nudge": true, "recall": true },
+        "runtime": {
+            "retention_days": 7,
+            "abandoned_journal_days": 14,
+            "completions_days": 30,
+            "pass_budget_ms": 60000,
+            "discard_unreflected_journals": false,
+            "max_bytes": 2147483648i64,
+        },
         "compile_warn_tokens": 30000,
         "agents": {},
     })
@@ -785,6 +793,14 @@ fn memory_settings_preserve_a_fully_specified_block() {
             "query_expansion": false,
         },
         "project_scope": { "nudge": false, "recall": false },
+        "runtime": {
+            "retention_days": 10,
+            "abandoned_journal_days": 21,
+            "completions_days": 45,
+            "pass_budget_ms": 30000,
+            "discard_unreflected_journals": true,
+            "max_bytes": 1073741824,
+        },
         "compile_warn_tokens": 50000,
         "agents": {
             "backend-lead": { "enabled": true, "reflection": { "trigger": { "step_count": 10 }, "category": "quick" } }
@@ -2596,5 +2612,161 @@ fn memory_projection_with_only_one_limit_set_keeps_the_other_default() {
     assert_eq!(
         value["projection"],
         json!({ "max_entries_per_directory": 5, "max_bytes": 40960 })
+    );
+}
+
+// memory.test.ts "memory.runtime retention settings (A24)"
+
+#[test]
+fn memory_runtime_defaults_to_the_documented_retention_windows() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(
+        value["runtime"],
+        json!({
+            "retention_days": 7,
+            "abandoned_journal_days": 14,
+            "completions_days": 30,
+            "pass_budget_ms": 60000,
+            "discard_unreflected_journals": false,
+            "max_bytes": 2_147_483_648i64,
+        })
+    );
+    let switched = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({ "runtime": { "discard_unreflected_journals": true } }),
+    );
+    assert_eq!(
+        switched["runtime"]["discard_unreflected_journals"],
+        json!(true)
+    );
+}
+
+#[test]
+fn memory_runtime_keeps_explicit_windows_on_the_block_the_layer_and_the_agent() {
+    let value = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({
+            "runtime": { "retention_days": 3, "abandoned_journal_days": 5, "pass_budget_ms": 5000 },
+            "agents": { "agent-a": { "runtime": { "retention_days": 30, "pass_budget_ms": 1000 } } },
+        }),
+    );
+    assert_eq!(
+        value["runtime"],
+        json!({
+            "retention_days": 3,
+            "abandoned_journal_days": 5,
+            "completions_days": 30,
+            "pass_budget_ms": 5000,
+            "discard_unreflected_journals": false,
+            "max_bytes": 2_147_483_648i64,
+        })
+    );
+    assert_eq!(
+        value["agents"]["agent-a"]["runtime"],
+        json!({ "retention_days": 30, "pass_budget_ms": 1000 })
+    );
+    let agent_only = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({ "agents": { "b": { "runtime": { "discard_unreflected_journals": true } } } }),
+    );
+    assert_eq!(
+        agent_only["agents"]["b"]["runtime"],
+        json!({ "discard_unreflected_journals": true })
+    );
+    let layer = parsed(
+        &omo_config_core::omo_memory_settings_layer_schema(),
+        json!({ "runtime": { "completions_days": 60 } }),
+    );
+    assert_eq!(layer["runtime"], json!({ "completions_days": 60 }));
+}
+
+#[test]
+fn memory_runtime_rejects_an_unknown_key_and_a_non_integer_window() {
+    let full = omo_config_core::omo_memory_settings_schema();
+    let layer = omo_config_core::omo_memory_settings_layer_schema();
+    for value in [
+        json!({ "runtime": { "keep_forever": true } }),
+        json!({ "runtime": { "retention_days": 1.5 } }),
+        json!({ "runtime": { "abandoned_journal_days": 0 } }),
+        json!({ "runtime": { "discard_unreflected_journals": "yes" } }),
+        json!({ "runtime": { "pass_budget_ms": 0 } }),
+        json!({ "runtime": { "pass_budget_ms": 2.5 } }),
+        json!({ "agents": { "a": { "runtime": { "retention_days": -1 } } } }),
+    ] {
+        assert!(
+            safe_parse(&full, &value).is_err(),
+            "expected the full schema to reject {value}"
+        );
+    }
+    assert!(safe_parse(&layer, &json!({ "runtime": { "completions_days": "30" } })).is_err());
+}
+
+// memory.test.ts "memory.runtime.max_bytes (B06)"
+
+#[test]
+fn memory_runtime_max_bytes_defaults_to_two_gibibytes_and_keeps_an_unbounded_zero() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(value["runtime"]["max_bytes"], json!(2_147_483_648i64));
+    let unbounded = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({ "runtime": { "max_bytes": 0 }, "agents": { "agent-a": { "runtime": { "max_bytes": 1024 } } } }),
+    );
+    assert_eq!(unbounded["runtime"]["max_bytes"], json!(0));
+    assert_eq!(
+        unbounded["agents"]["agent-a"]["runtime"],
+        json!({ "max_bytes": 1024 })
+    );
+    let layer = parsed(
+        &omo_config_core::omo_memory_settings_layer_schema(),
+        json!({ "runtime": { "max_bytes": 0 } }),
+    );
+    assert_eq!(layer["runtime"], json!({ "max_bytes": 0 }));
+}
+
+#[test]
+fn memory_runtime_rejects_a_negative_or_fractional_cap() {
+    let full = omo_config_core::omo_memory_settings_schema();
+    let layer = omo_config_core::omo_memory_settings_layer_schema();
+    for value in [
+        json!({ "runtime": { "max_bytes": -1 } }),
+        json!({ "runtime": { "max_bytes": 1.5 } }),
+    ] {
+        assert!(
+            safe_parse(&full, &value).is_err(),
+            "expected the full schema to reject {value}"
+        );
+    }
+    assert!(
+        safe_parse(
+            &layer,
+            &json!({ "agents": { "a": { "runtime": { "max_bytes": "2GiB" } } } })
+        )
+        .is_err()
+    );
+}
+
+// memory.test.ts "memory.runtime.discard_unreflected_journals (LEAD D1)"
+
+#[test]
+fn memory_runtime_keeps_unreflected_discard_off_by_default_and_lets_an_agent_switch_it_on() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(
+        value["runtime"]["discard_unreflected_journals"],
+        json!(false)
+    );
+    let mixed = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({
+            "runtime": { "discard_unreflected_journals": false },
+            "agents": { "a": { "runtime": { "discard_unreflected_journals": true } } },
+        }),
+    );
+    assert_eq!(
+        mixed["runtime"]["discard_unreflected_journals"],
+        json!(false)
+    );
+    assert_eq!(
+        mixed["agents"]["a"]["runtime"],
+        json!({ "discard_unreflected_journals": true })
     );
 }

@@ -1,5 +1,6 @@
 //! Planning stage for facts mutations and recovery envelopes.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::path_state::{
     GitIndexIdentity, GitPathState, GitWorktreeFileIdentity, GitWorktreeIdentity,
 };
-use crate::git::{GitError, GitMemoryRepo};
+use crate::git::{GitError, GitLogOptions, GitMemoryRepo};
 use crate::memfs::{FrontmatterError, MemoryFrontmatter, parse_memory_file, render_memory_file};
 
 use crate::agreements::{
@@ -17,8 +18,8 @@ use crate::agreements::{
 use super::agreements_target::render_agreements_target;
 use super::extraction::{FactsBatch, FactsExtractionRecord};
 use super::person_routing::{
-    AliasTieCallback, FactsPeopleRouting, facts_routing_paths, plan_facts_routing,
-    render_person_targets,
+    AliasTieCallback, FactsPeopleRouting, FactsRoutingPlan, facts_routing_paths,
+    plan_facts_routing, render_person_targets,
 };
 
 /// Post-mutation target identity for index and worktree.
@@ -177,14 +178,22 @@ pub fn render_facts_note(
             (parsed.frontmatter, parsed.body)
         }
         Err(_) => {
-            let slice_start = relative_path.len().saturating_sub(10);
-            let slice_end = relative_path.len().saturating_sub(3);
-            let date_slice = relative_path
-                .get(slice_start..slice_end)
-                .unwrap_or_default();
+            // The month ledger's own month, not whatever the path ends with (omo #12645).
+            let month = records
+                .first()
+                .map(|record| record.date().chars().take(7).collect::<String>())
+                .filter(|month| !month.is_empty())
+                .unwrap_or_else(|| {
+                    let slice_start = relative_path.len().saturating_sub(10);
+                    let slice_end = relative_path.len().saturating_sub(3);
+                    relative_path
+                        .get(slice_start..slice_end)
+                        .unwrap_or_default()
+                        .to_owned()
+                });
             (
                 MemoryFrontmatter {
-                    description: format!("Explicit facts for {date_slice}"),
+                    description: format!("Explicit facts for {month}"),
                     read_only: None,
                     kind: None,
                     aliases: None,
@@ -227,6 +236,46 @@ pub fn render_facts_note(
     ))
 }
 
+/// A month ledger path that once held facts and is gone now (dream archived it, or it was deleted)
+/// is never written again (omo #12642): links that pointed at it must not come back to life with
+/// unrelated content. The month's facts go to the first `<month>-<n>.md` successor that is live or
+/// has never existed, so one month has exactly one live ledger.
+fn with_live_ledgers(repo: &GitMemoryRepo, plan: FactsRoutingPlan) -> FactsRoutingPlan {
+    let mut notes: BTreeMap<String, Vec<FactsExtractionRecord>> = BTreeMap::new();
+    for (path, records) in plan.notes {
+        let live = live_ledger_path(repo, &path);
+        notes.entry(live).or_default().extend(records);
+    }
+    FactsRoutingPlan {
+        notes,
+        observations: plan.observations,
+    }
+}
+
+fn live_ledger_path(repo: &GitMemoryRepo, path: &str) -> String {
+    let stem = path.strip_suffix(".md").unwrap_or(path);
+    let mut generation = 1usize;
+    loop {
+        let candidate = if generation == 1 {
+            path.to_owned()
+        } else {
+            format!("{stem}-{generation}.md")
+        };
+        if repo.dir.join(&candidate).exists() {
+            return candidate;
+        }
+        let history = repo.log(Some(&GitLogOptions {
+            paths: Some(vec![candidate.clone()]),
+            limit: Some(1),
+            ..GitLogOptions::default()
+        }));
+        if history.is_ok_and(|commits| commits.is_empty()) {
+            return candidate;
+        }
+        generation += 1;
+    }
+}
+
 /// Plan repository changes and produce an apply recovery envelope.
 pub fn plan_facts_mutation(
     repo: &GitMemoryRepo,
@@ -241,7 +290,10 @@ pub fn plan_facts_mutation(
         .map_err(MutationPlanError::Git)?
         .ok_or(MutationPlanError::NoHead)?;
 
-    let routing = plan_facts_routing(&repo.dir, &batch.records, people, on_alias_tie);
+    let routing = with_live_ledgers(
+        repo,
+        plan_facts_routing(&repo.dir, &batch.records, people, on_alias_tie),
+    );
     let agreement_records = batch.agreements.as_deref().unwrap_or_default();
     let ledger = if agreement_records.is_empty() {
         None
