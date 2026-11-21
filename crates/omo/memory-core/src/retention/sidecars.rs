@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::policy::{RetentionKeepReason, WarnFn, lstat_or_none, mtime_ms};
+use super::policy::{BeforeClaimRename, RetentionKeepReason, WarnFn, lstat_or_none, mtime_ms};
 use super::reflection_runs::ClaimOutcome;
 use crate::fs::remove_tree;
 use crate::fs::resilient::{read_dir_names, rename};
@@ -58,7 +58,7 @@ pub struct PruneKibitzerSidecarsOptions<'a> {
     /// Encoded directory names of this process's live sessions: skipped before any lock is touched.
     pub owned: Option<&'a BTreeSet<String>>,
     pub warn: Option<WarnFn<'a>>,
-    pub before_claim_rename: Option<&'a dyn Fn(&Path, &Path) -> io::Result<()>>,
+    pub before_claim_rename: Option<BeforeClaimRename<'a>>,
     pub before_tombstone_delete: Option<&'a dyn Fn(&Path)>,
     /// Resume and budget hooks of the retention pass; absent for the session-shutdown sweep.
     pub skip: Option<&'a dyn Fn(&str) -> bool>,

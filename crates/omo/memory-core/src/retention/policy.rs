@@ -161,6 +161,9 @@ impl From<JournalError> for RetentionError {
 /// Warnings carry a message and its fields, as the TypeScript `warn(message, fields)` does.
 pub type WarnFn<'a> = &'a dyn Fn(&str, &[(&str, String)]);
 
+/// Observed before a claim rename; an error refuses that claim.
+pub type BeforeClaimRename<'a> = &'a dyn Fn(&Path, &Path) -> io::Result<()>;
+
 /// What every store walk of one identity shares. The pass sets `budget`; the doctors and the cap
 /// build one without it.
 #[derive(Clone, Copy)]
@@ -175,7 +178,7 @@ pub struct RetentionContext<'a> {
     pub cancel: Option<&'a dyn Fn() -> bool>,
     pub warn: Option<WarnFn<'a>>,
     /// Observed before every claim rename; an error refuses that claim (platform refusals in tests).
-    pub before_claim_rename: Option<&'a dyn Fn(&Path, &Path) -> io::Result<()>>,
+    pub before_claim_rename: Option<BeforeClaimRename<'a>>,
     /// Set by the pass: bounds the walk and records the resume point.
     pub budget: Option<&'a PassBudget<'a>>,
     /// Observed between a journal's lock-free selection and its claim under `state.lock`.
