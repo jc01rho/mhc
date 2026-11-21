@@ -517,13 +517,16 @@ fn admit_prompt(context: &RpcCommandContext, command: &ControlCommand) -> Value 
 }
 
 /// Input fields a host honours that admission cannot: refused by name instead of silently dropped.
-const UNSERVED_INPUT_FIELDS: [&str; 6] = [
+const UNSERVED_INPUT_FIELDS: [&str; 7] = [
     "images",
     "thinkingLevel",
     "expandPromptTemplates",
     "unknownCommandAsText",
     "sessionTitlePrompt",
     "enqueueOrder",
+    // A thread call's hop count cannot travel through text-only admission, so its chain would restart here and
+    // bypass the user's `threads.chainCountLimit` (senpi#5923, decision K8).
+    "chainCount",
 ];
 
 fn same_path(requested: &str, own: Option<&str>) -> bool {

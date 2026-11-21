@@ -4,6 +4,7 @@ pub mod abort_grace;
 pub mod accepted_transcript;
 pub mod agent_effect_session;
 pub mod automatic_input_gate;
+pub mod chain_admission;
 pub mod child_reaper;
 pub mod child_reaper_syscalls;
 pub mod client_admission_record;

@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod agent_loop;
 pub mod assistant_terminal_state;
+pub mod chain_count;
 pub mod empty_assistant_recovery;
 pub mod harness;
 pub mod heap_future;
