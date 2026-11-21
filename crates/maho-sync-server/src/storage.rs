@@ -65,6 +65,9 @@ pub struct Store {
     connection: std::sync::Arc<std::sync::Mutex<Connection>>,
 }
 
+/// The account's newest row: sequence, link, keyring link and epoch.
+type HeadRow = (u64, String, Option<String>, u64);
+
 fn uint(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
 }
@@ -180,10 +183,7 @@ impl Store {
         run(&mut connection)
     }
 
-    fn head(
-        connection: &Connection,
-        account: &str,
-    ) -> Result<Option<(u64, String, Option<String>, u64)>, StoreError> {
+    fn head(connection: &Connection, account: &str) -> Result<Option<HeadRow>, StoreError> {
         let row = connection
             .query_row(
                 "SELECT seq, link, keyring_link, epoch FROM entries WHERE account = ?1 ORDER BY seq DESC LIMIT 1",
@@ -359,13 +359,12 @@ impl Store {
                     "digest": row["digest"],
                     "keyring_link": row["keyring_link"],
                 });
-                let entries = row["wraps"]
+                row["wraps"]
                     .as_array()
                     .cloned()
                     .unwrap_or_default()
                     .into_iter()
-                    .map(move |entry| json!({ "record": record, "entry": entry }));
-                entries
+                    .map(move |entry| json!({ "record": record, "entry": entry }))
             })
             .collect())
     }
