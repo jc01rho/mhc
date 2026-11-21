@@ -51,6 +51,7 @@ fn options(dir: &std::path::Path) -> OpenDeviceSyncOptions {
             transport: never.clone(),
             verifier: never.clone(),
             sealer: never,
+            freeze: None,
         },
         machine_id: Some("fixed".into()),
         log: None,
