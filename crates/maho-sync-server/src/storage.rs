@@ -65,6 +65,10 @@ pub struct Store {
     connection: std::sync::Arc<std::sync::Mutex<Connection>>,
 }
 
+fn uint(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
 fn sql_int(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -186,10 +190,10 @@ impl Store {
                 params![account],
                 |row| {
                     Ok((
-                        row.get::<_, u64>(0)?,
+                        uint(row.get::<_, i64>(0)?),
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
-                        row.get::<_, u64>(3)?,
+                        uint(row.get::<_, i64>(3)?),
                     ))
                 },
             )
@@ -247,7 +251,7 @@ impl Store {
                 .query_row(
                     "SELECT MIN(seq) FROM entries WHERE account = ?1",
                     params![account],
-                    |row| row.get::<_, Option<u64>>(0),
+                    |row| Ok(row.get::<_, Option<i64>>(0)?.map(uint)),
                 )
                 .optional()?
                 .flatten()
@@ -292,13 +296,13 @@ impl Store {
     fn row_json(row: &rusqlite::Row<'_>, full: bool) -> rusqlite::Result<Value> {
         let kind: String = row.get(1)?;
         let mut value = json!({
-            "seq": row.get::<_, u64>(0)?,
+            "seq": uint(row.get::<_, i64>(0)?),
             "kind": kind,
             "author": { "kind": row.get::<_, String>(2)?, "id": row.get::<_, String>(3)? },
             "digest": b64url_of_hex(&row.get::<_, String>(4)?),
             "link": row.get::<_, String>(5)?,
             "keyring_link": row.get::<_, Option<String>>(6)?,
-            "epoch": row.get::<_, u64>(7)?,
+            "epoch": uint(row.get::<_, i64>(7)?),
             "record_sig": row.get::<_, String>(8)?,
         });
         let object_id = row.get::<_, Option<String>>(9)?;
@@ -441,7 +445,7 @@ impl Store {
                     .query_row(
                         "SELECT seq FROM entries WHERE account = ?1 AND batch_id = ?2",
                         params![account, key],
-                        |row| row.get::<_, u64>(0),
+                        |row| Ok(uint(row.get::<_, i64>(0)?)),
                     )
                     .optional()?
             {
