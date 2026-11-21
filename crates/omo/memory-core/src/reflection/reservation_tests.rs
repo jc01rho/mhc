@@ -617,3 +617,102 @@ fn given_automatic_pending_work_below_its_threshold_when_dequeued_then_it_is_dro
         0
     );
 }
+
+fn drop_active_lock(temp: &TempDir) {
+    let reflection =
+        build_identity_paths(&temp.path().join("mem-root"), "test-identity").reflection;
+    std::fs::remove_file(reflection.join("active.lock")).expect("remove active.lock");
+}
+
+fn queue_pending_behind_active(store: &ReflectionReservationStore, active: ReflectionTrigger) {
+    store
+        .try_reserve(make_request(active, "convo-1"), None)
+        .expect("active");
+    store
+        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-2"), None)
+        .expect("pending");
+}
+
+#[test]
+fn given_a_lone_pending_run_when_promoted_then_it_becomes_active_under_this_launcher() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = setup_store(&temp);
+    queue_pending_behind_active(&store, ReflectionTrigger::Manual);
+    let pending_id = store
+        .read_state()
+        .expect("state")
+        .pending
+        .expect("pending")
+        .run_id;
+    drop_active_lock(&temp);
+
+    let promoted = store.promote_pending(None).expect("promote").expect("run");
+
+    assert_eq!(promoted.run_id, pending_id);
+    assert_eq!(promoted.launcher_pid, Some(1234));
+    let state = store.read_state().expect("state");
+    assert_eq!(state.active.expect("active").run_id, pending_id);
+    assert!(state.pending.is_none());
+}
+
+#[test]
+fn given_a_lone_pending_step_count_run_that_no_longer_triggers_when_promoted_then_it_is_dropped() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = setup_store(&temp);
+    store
+        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-1"), None)
+        .expect("active");
+    store
+        .try_reserve(make_request(ReflectionTrigger::StepCount, "convo-2"), None)
+        .expect("pending");
+    drop_active_lock(&temp);
+
+    let promoted = store.promote_pending(None).expect("promote");
+
+    assert!(promoted.is_none());
+    let state = store.read_state().expect("state");
+    assert!(state.active.is_none());
+    assert!(state.pending.is_none());
+}
+
+#[test]
+fn given_an_active_run_when_pending_is_promoted_then_nothing_changes() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = setup_store(&temp);
+    queue_pending_behind_active(&store, ReflectionTrigger::Manual);
+    let before = store.read_state().expect("state");
+
+    let promoted = store.promote_pending(None).expect("promote");
+
+    assert!(promoted.is_none());
+    assert_eq!(store.read_state().expect("state"), before);
+}
+
+#[test]
+fn given_a_lone_pending_run_when_a_new_request_is_reserved_then_the_old_pending_stays_queued() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = setup_store(&temp);
+    queue_pending_behind_active(&store, ReflectionTrigger::Manual);
+    let pending_id = store
+        .read_state()
+        .expect("state")
+        .pending
+        .expect("pending")
+        .run_id;
+    drop_active_lock(&temp);
+
+    let reserved = store
+        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-3"), None)
+        .expect("reserve");
+
+    assert_eq!(reserved.status, "active");
+    assert_eq!(
+        store
+            .read_state()
+            .expect("state")
+            .pending
+            .expect("pending")
+            .run_id,
+        pending_id
+    );
+}
