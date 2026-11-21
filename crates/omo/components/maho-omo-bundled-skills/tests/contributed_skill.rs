@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use maho_ext_api::{ResourcesDiscoverEvent, SessionReason, SlashCommandInfo, SourceInfo};
 use maho_omo_bundled_skills::{
     ContributedSkill, HostCommandInfo, ResolveContributedSkillOptions, host_command_info,
-    read_discover_cwd, resolve_contributed_skill,
+    read_discover_cwd, resolve_bundled_skill_provenance, resolve_contributed_skill,
 };
 
 fn skill_command(name: &str, owner_path: Option<&Path>) -> HostCommandInfo {
@@ -136,6 +136,73 @@ fn given_no_skill_command_for_the_name_when_resolved_then_the_skill_is_contribut
         resolve("x-search", &path, &home, &env, Some(commands.as_slice())),
         ContributedSkill::Contributed { path }
     );
+}
+
+fn shadowed(commands: Option<&[HostCommandInfo]>, builtin: &Path) -> bool {
+    resolve_bundled_skill_provenance(commands, "onboarding", builtin).shadowed
+}
+
+#[test]
+fn given_no_matching_listing_entry_when_provenance_is_read_then_the_built_in_is_not_shadowed() {
+    let builtin = Path::new("/skills/onboarding/SKILL.md");
+    assert!(!shadowed(None, builtin));
+    let unrelated = [skill_command(
+        "x-search",
+        Some(Path::new("/elsewhere/x-search/SKILL.md")),
+    )];
+    assert!(!shadowed(Some(unrelated.as_slice()), builtin));
+}
+
+#[test]
+fn given_the_listing_resolves_the_built_in_copy_when_provenance_is_read_then_it_is_not_shadowed() {
+    let root = tempfile::tempdir().expect("temp");
+    let builtin = root.path().join("skills/onboarding/SKILL.md");
+    std::fs::create_dir_all(builtin.parent().expect("parent")).expect("skill dir");
+    std::fs::write(&builtin, "---\nname: onboarding\n---\n").expect("skill file");
+    let commands = [skill_command("onboarding", Some(&builtin))];
+
+    assert!(!shadowed(Some(commands.as_slice()), &builtin));
+}
+
+#[cfg(unix)]
+#[test]
+fn given_the_listing_names_the_built_in_through_a_symlink_when_provenance_is_read_then_it_is_not_shadowed()
+ {
+    let root = tempfile::tempdir().expect("temp");
+    let real = root.path().join("real");
+    let builtin = real.join("onboarding/SKILL.md");
+    std::fs::create_dir_all(builtin.parent().expect("parent")).expect("skill dir");
+    std::fs::write(&builtin, "---\nname: onboarding\n---\n").expect("skill file");
+    let alias = root.path().join("alias");
+    std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+    let commands = [skill_command(
+        "onboarding",
+        Some(&alias.join("onboarding/SKILL.md")),
+    )];
+
+    assert!(!shadowed(Some(commands.as_slice()), &builtin));
+}
+
+#[test]
+fn given_a_same_name_skill_is_loaded_from_elsewhere_when_provenance_is_read_then_the_built_in_is_shadowed()
+ {
+    let builtin = Path::new("/skills/onboarding/SKILL.md");
+    let commands = [skill_command(
+        "onboarding",
+        Some(Path::new("/home/me/.omo/skills/onboarding/SKILL.md")),
+    )];
+
+    assert!(shadowed(Some(commands.as_slice()), builtin));
+}
+
+#[test]
+fn given_the_listing_entry_has_no_path_when_provenance_is_read_then_the_name_form_stays() {
+    let commands = [skill_command("onboarding", None)];
+
+    assert!(!shadowed(
+        Some(commands.as_slice()),
+        Path::new("/skills/onboarding/SKILL.md")
+    ));
 }
 
 #[test]

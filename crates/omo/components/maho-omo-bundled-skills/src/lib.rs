@@ -9,8 +9,9 @@ pub mod index;
 pub mod override_dir;
 
 pub use contributed_skill::{
-    ContributedSkill, HARNESS, HostCommandInfo, HostCommands, ResolveContributedSkillOptions,
-    host_command_info, host_commands_from_runtime, read_disabled_skills, read_discover_cwd,
+    BundledSkillProvenance, ContributedSkill, HARNESS, HostCommandInfo, HostCommands,
+    ResolveContributedSkillOptions, host_command_info, host_commands_from_runtime,
+    read_disabled_skills, read_discover_cwd, resolve_bundled_skill_provenance,
     resolve_contributed_skill,
 };
 pub use index::{

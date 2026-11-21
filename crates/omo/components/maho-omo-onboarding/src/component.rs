@@ -464,7 +464,8 @@ fn register_onboarding(
                 ctx.ui
                     .set_widget("omo-onboarding", None, ExtensionWidgetOptions::default());
                 let content = with_inventory(format!(
-                    "Follow {skills_root}/onboarding/SKILL.md. Greet first."
+                    "{} Greet first.",
+                    session_tour_pointer(&runtime, &skills_root, &ctx.cwd)
                 ))
                 .await;
                 let message = CustomMessage {
@@ -525,8 +526,9 @@ fn register_onboarding(
             if ctx.session_manager.get_branch().iter().any(|entry| entry.kind=="custom_message" && entry.data.get("customType").and_then(JsonValue::as_str)==Some("omo-onboarding:context")) {
                 return Ok(EventResult::None);
             }
-            let base=if forced {format!("Follow {skills_root}/onboarding/SKILL.md. Tour using their message.")}
-                else {format!("Answer fully; greet in their language; offer a one-line tour. On request/acceptance: Follow {skills_root}/onboarding/SKILL.md.")};
+            let tour=session_tour_pointer(&runtime,&skills_root,&ctx.cwd);
+            let base=if forced {format!("{tour} Tour using their message.")}
+                else {format!("Answer fully; greet in their language; offer a one-line tour. On request/acceptance: {tour}")};
             let content=if event.preview {inventory_text(base).await} else {with_inventory(base).await};
             Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,message:Some(CustomMessage {custom_type:"omo-onboarding:context".into(),content:vec![ToolContent::text(content)],display:false,details:None}),system_prompt:None}))
         })
@@ -600,10 +602,100 @@ fn tour_skills_root(env: &std::collections::BTreeMap<String, String>, packaged: 
     )
 }
 
+/// The tour's pointer to the built-in `onboarding` skill, read when the tour is sent (omo #12150, #12544).
+fn session_tour_pointer(runtime: &ExtensionRuntime, skills_root: &str, cwd: &Path) -> String {
+    let commands = maho_omo_bundled_skills::host_commands_from_runtime(runtime.clone())()
+        .ok()
+        .flatten();
+    tour_pointer(
+        commands.as_deref(),
+        skills_root,
+        cwd,
+        &std::env::vars().collect(),
+    )
+}
+
+/// The tour names the skill, never its install path, so the context is identical for identical builds
+/// whatever the install location; the skills listing resolves the built-in `onboarding` skill by name.
+/// A user or project skill named `onboarding` loads before extension skill paths, so the listing then
+/// resolves the name to that file and the built-in drops out: the built-in file's absolute path is the
+/// escape hatch for that shadow. `disabled_skills` hiding `onboarding` leaves no listing entry for the name
+/// to resolve, so that case names the path too; the tour itself is gated separately by
+/// `omo-senpi-onboarding-disabled` and still runs.
+fn tour_pointer(
+    commands: Option<&[maho_omo_bundled_skills::HostCommandInfo]>,
+    skills_root: &str,
+    cwd: &Path,
+    env: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let builtin_skill = Path::new(skills_root).join("onboarding").join("SKILL.md");
+    let shadowed = maho_omo_bundled_skills::resolve_bundled_skill_provenance(
+        commands,
+        "onboarding",
+        &builtin_skill,
+    )
+    .shadowed;
+    let disabled = maho_omo_bundled_skills::read_disabled_skills(cwd, env).contains("onboarding");
+    if shadowed || disabled {
+        format!("Follow {}.", builtin_skill.display())
+    } else {
+        "Follow the built-in `onboarding` skill.".to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    fn onboarding_command(owner: Option<&Path>) -> maho_omo_bundled_skills::HostCommandInfo {
+        maho_omo_bundled_skills::HostCommandInfo {
+            name: "skill:onboarding".into(),
+            description: None,
+            source: "skill".into(),
+            source_info_path: owner.map(|path| path.to_string_lossy().into_owned()),
+        }
+    }
+
+    #[test]
+    fn the_tour_names_the_built_in_skill_until_a_shadow_or_the_denylist_needs_its_path() {
+        let home = tempfile::tempdir().expect("home");
+        let path = home.path().to_string_lossy().into_owned();
+        let env = std::collections::BTreeMap::from([
+            ("HOME".to_owned(), path.clone()),
+            ("USERPROFILE".to_owned(), path),
+        ]);
+        let builtin = Path::new("/packaged").join("onboarding").join("SKILL.md");
+        let by_name = "Follow the built-in `onboarding` skill.";
+        let by_path = format!("Follow {}.", builtin.display());
+
+        assert_eq!(tour_pointer(None, "/packaged", home.path(), &env), by_name);
+        let own = [onboarding_command(Some(&builtin))];
+        assert_eq!(
+            tour_pointer(Some(&own), "/packaged", home.path(), &env),
+            by_name
+        );
+        let nameless = [onboarding_command(None)];
+        assert_eq!(
+            tour_pointer(Some(&nameless), "/packaged", home.path(), &env),
+            by_name
+        );
+        let shadow = [onboarding_command(Some(Path::new(
+            "/home/me/.omo/skills/onboarding/SKILL.md",
+        )))];
+        assert_eq!(
+            tour_pointer(Some(&shadow), "/packaged", home.path(), &env),
+            by_path
+        );
+
+        std::fs::create_dir_all(home.path().join(".omo")).expect("config dir");
+        std::fs::write(
+            home.path().join(".omo/omo.jsonc"),
+            "{\"disabled_skills\":[\"onboarding\"]}",
+        )
+        .expect("config");
+        assert_eq!(tour_pointer(None, "/packaged", home.path(), &env), by_path);
+    }
 
     #[test]
     fn the_tour_names_a_valid_override_and_keeps_the_packaged_root_otherwise() {
