@@ -5,9 +5,11 @@ pub mod completion_repair;
 pub mod completion_secret_scan;
 pub mod completion_validation;
 pub mod description_preflight;
+pub mod host_sweep;
 pub mod machine;
 pub mod orphan_sweep;
 pub mod reservation;
+pub mod run_id_high_water;
 pub mod stale_holder;
 pub mod worktree;
 pub mod worktree_integration;
@@ -29,6 +31,10 @@ pub use completion_validation::{
 pub use description_preflight::{
     DescriptionPreflightWarn, TrimmedDescription, preflight_reflection_descriptions,
 };
+pub use host_sweep::{
+    HOST_SWEEP_LOCK_FILE, HOST_SWEEP_STATE_FILE, HostSweepIdentity, HostSweepOptions,
+    HostSweepResult, HostSweepState, HostSweepStep, read_host_sweep_state, sweep_host_identities,
+};
 pub use machine::{
     CapturedConversation, CompleteOptions, CompleteTransition, DreamOrigin, EvaluationAction,
     EvaluationResult, JournalSnapshot, MachineState, ReflectionEvent, ReflectionOutcome,
@@ -43,6 +49,10 @@ pub use orphan_sweep::{
 pub use reservation::{
     CompletionResult, ReflectionLauncherIdentity, ReflectionReservationStore,
     ReflectionReservationStoreOptions, ReservationError, ReservationResult,
+};
+pub use run_id_high_water::{
+    REFLECTION_RUN_ID_PREFIX, RunIdHighWaterPaths, read_reflection_run_id_mark,
+    record_reflection_run_id_mark, reflection_run_number, scan_reflection_run_high_water,
 };
 pub use stale_holder::{
     LockReadError, ReflectionLockProbe, ReflectionLockVerdict, SystemReflectionLockProbe,
