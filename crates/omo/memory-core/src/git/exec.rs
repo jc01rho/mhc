@@ -554,6 +554,17 @@ fn spawn_and_capture(
                 Some(status) => break status,
                 None => {
                     if Instant::now() >= deadline {
+                        super::timeout_diagnostics::record_git_timeout(
+                            environment_value(
+                                options,
+                                super::timeout_diagnostics::GIT_TIMEOUT_DIAGNOSTICS_ENV,
+                            )
+                            .as_deref(),
+                            Some(child.id()),
+                            argv,
+                            &options.cwd,
+                            timeout_ms,
+                        );
                         #[cfg(unix)]
                         {
                             // SAFETY: child.id() is the live child owned by this function.
