@@ -59,15 +59,19 @@ pub fn process_snapshot(pid: u32) -> String {
     captured.unwrap_or_else(|error| format!("process snapshot failed: {error}"))
 }
 
+#[cfg(unix)]
 fn create_private(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn create_private(path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
 }
 
 fn run_snapshot(pid: u32, file: File) -> io::Result<()> {
