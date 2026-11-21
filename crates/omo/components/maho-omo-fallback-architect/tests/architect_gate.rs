@@ -33,7 +33,7 @@ fn live_registry_gate_and_explicit_disable() -> Result<(), Box<dyn std::error::E
         ("USERPROFILE".into(), home.to_string_lossy().into_owned()),
     ]);
     let model: Model = serde_json::from_value(
-        serde_json::json!({"id":"claude-fable-5","name":"Fable","api":"anthropic-messages","provider":"anthropic","baseUrl":"http://localhost","reasoning":true,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100}),
+        serde_json::json!({"id":"claude-opus-5-5","name":"Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"http://localhost","reasoning":true,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100}),
     )?;
     let registry = Registry(vec![model]);
     assert!(has_active_architect_category_with_env(
@@ -92,11 +92,11 @@ fn isolated_config_gate_matrix() -> Result<(), Box<dyn std::error::Error>> {
     ));
     for (config, expected) in [
         (
-            r#"{"categories":{"architect":{"model":"anthropic/claude-fable-5"}}}"#,
+            r#"{"categories":{"architect":{"model":"anthropic/claude-opus-5-5"}}}"#,
             true,
         ),
         (
-            r#"{"categories":{"architect":{"model":"anthropic/claude-fable-5","disable":true}}}"#,
+            r#"{"categories":{"architect":{"model":"anthropic/claude-opus-5-5","disable":true}}}"#,
             false,
         ),
         (r#"{"categories":{"quick":{"model":"some/model"}}}"#, false),
