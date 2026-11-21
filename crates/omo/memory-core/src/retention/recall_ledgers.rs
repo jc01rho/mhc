@@ -51,3 +51,7 @@ pub fn prune_recall_ledgers(
     }
     Ok(tally.result())
 }
+
+#[cfg(test)]
+#[path = "recall_ledgers_tests.rs"]
+mod tests;

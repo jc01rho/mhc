@@ -926,3 +926,6 @@ fn sidecar_candidates(
         })
         .collect())
 }
+#[cfg(test)]
+#[path = "cap_tests.rs"]
+mod tests;

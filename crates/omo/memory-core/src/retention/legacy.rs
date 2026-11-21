@@ -108,3 +108,7 @@ pub fn prune_legacy_reflection_sessions(
     }
     Ok(tally.result())
 }
+
+#[cfg(test)]
+#[path = "legacy_tests.rs"]
+mod tests;

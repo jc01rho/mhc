@@ -150,3 +150,7 @@ pub fn read_completion(path: &Path, run_id: &str) -> Option<Completion> {
         consumed,
     })
 }
+
+#[cfg(test)]
+#[path = "completions_tests.rs"]
+mod tests;

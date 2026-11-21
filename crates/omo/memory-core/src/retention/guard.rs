@@ -140,3 +140,7 @@ impl<'a> LazyRetentionGuard<'a> {
         matches!(self.resolved.borrow().as_ref(), Some(None))
     }
 }
+
+#[cfg(test)]
+#[path = "guard_tests.rs"]
+mod tests;

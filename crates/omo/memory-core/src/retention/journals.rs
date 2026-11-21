@@ -428,3 +428,7 @@ pub fn classify_journal_entry(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "journals_tests.rs"]
+mod tests;
