@@ -27,6 +27,9 @@ pub mod sidecars;
 pub mod size;
 pub mod stamp;
 
+#[cfg(test)]
+mod test_support;
+
 pub use budget::{PassBudget, RetentionCursor, RetentionStore};
 pub use cap::{
     RuntimeCapCursor, RuntimeCapEvictableOptions, RuntimeCapEviction, RuntimeCapExcess,
