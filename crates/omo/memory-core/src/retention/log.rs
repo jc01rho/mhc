@@ -159,3 +159,7 @@ fn last_entry(tail: &str) -> Option<RetentionLogEntry> {
     }
     None
 }
+
+#[cfg(test)]
+#[path = "log_tests.rs"]
+mod tests;
