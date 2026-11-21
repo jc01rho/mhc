@@ -27,8 +27,8 @@
 //! Unset sessions start on Daily · Normal or the first resolving default lane.
 //! Every builtin is a lane; the retired `recommended` id starts the same default.
 //!
-//! Each Obsessive lane carries a one-line caution a picker renders in bold, and Obsessive · Normal
-//! heads with GPT-6 Astra on every GPT provider before falling back to the two-lane Sol rungs.
+//! Each Obsessive lane carries a one-line caution a picker renders in bold, and both Obsessive lanes
+//! head with GPT-6.2 Astra, keeping GPT-6 Astra (and, on Normal, the GPT-6.x Sol tiers) right behind.
 
 use indexmap::IndexMap;
 
@@ -111,10 +111,12 @@ const GPT_PROVIDERS: &[&str] = &[
     "github-copilot",
     "opencode",
 ];
-// GPT-6.1 Sol and its Fast tier are served only on the two OpenAI lanes (not Copilot or OpenCode Zen),
-// so their rungs list just those; Obsessive · Normal heads with GPT-6 Astra on every GPT provider and
-// falls back through those two-lane rungs to GPT-5.6 Sol, which keeps the profile on every GPT provider.
-const GPT_6_1_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];
+// Copilot does not serve GPT-6.2, so the GPT-6.2 Astra rung lists the other GPT providers and GPT-6 Astra
+// stays right behind it on all four (also covering a registry without 6.2). GPT-6.x Sol and its Fast tier
+// are served only on the two OpenAI lanes here, and Obsessive · Normal ends on GPT-5.6 Sol, which keeps
+// the profile on every GPT provider.
+const GPT_6_2_ASTRA_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "opencode"];
+const GPT_SOL_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];
 
 /// The one-line warning both Obsessive lanes carry: they are for one hard task, not everyday work.
 const OBSESSIVE_CAUTION: &str = "NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.";
@@ -136,36 +138,41 @@ const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
         variant: Some("max"),
     },
 ];
-use model_core::{FABLE_55_LAUNCH_ID, FABLE_55_RELEASED};
-const DAILY_HEAVY_LAUNCH_MODELS: &[BuiltinRung] = &[
-    BuiltinRung {
-        providers: CLAUDE_PROVIDERS,
-        model: FABLE_55_LAUNCH_ID,
-        variant: Some("xhigh"),
-    },
-    BuiltinRung {
-        providers: CLAUDE_PROVIDERS,
-        model: "claude-fable-5-1",
-        variant: Some("xhigh"),
-    },
-];
-const DAILY_HEAVY_MODELS: &[BuiltinRung] = match DAILY_HEAVY_LAUNCH_MODELS.split_first() {
-    Some((_, released)) if !FABLE_55_RELEASED => released,
-    _ => DAILY_HEAVY_LAUNCH_MODELS,
-};
+// Daily · Heavy carries no Claude Fable rung (owner policy): it runs Claude Opus 5.5 at the xhigh
+// effort the Fable rung used.
+const DAILY_HEAVY_MODELS: &[BuiltinRung] = &[BuiltinRung {
+    providers: CLAUDE_PROVIDERS,
+    model: "claude-opus-5-5",
+    variant: Some("xhigh"),
+}];
 const GEEKY_NORMAL_MODELS: &[BuiltinRung] = &[
+    BuiltinRung {
+        providers: GPT_6_2_ASTRA_PROVIDERS,
+        model: "gpt-6.2-astra",
+        variant: Some("medium"),
+    },
     BuiltinRung {
         providers: GPT_PROVIDERS,
         model: "gpt-6-astra",
         variant: Some("medium"),
     },
     BuiltinRung {
-        providers: GPT_6_1_PROVIDERS,
+        providers: GPT_SOL_PROVIDERS,
+        model: "gpt-6.2-sol-fast",
+        variant: Some("medium"),
+    },
+    BuiltinRung {
+        providers: GPT_SOL_PROVIDERS,
+        model: "gpt-6.2-sol",
+        variant: Some("medium"),
+    },
+    BuiltinRung {
+        providers: GPT_SOL_PROVIDERS,
         model: "gpt-6.1-sol-fast",
         variant: Some("medium"),
     },
     BuiltinRung {
-        providers: GPT_6_1_PROVIDERS,
+        providers: GPT_SOL_PROVIDERS,
         model: "gpt-6.1-sol",
         variant: Some("medium"),
     },
@@ -175,11 +182,18 @@ const GEEKY_NORMAL_MODELS: &[BuiltinRung] = &[
         variant: Some("medium"),
     },
 ];
-const GEEKY_HEAVY_MODELS: &[BuiltinRung] = &[BuiltinRung {
-    providers: GPT_PROVIDERS,
-    model: "gpt-6-astra",
-    variant: Some("high"),
-}];
+const GEEKY_HEAVY_MODELS: &[BuiltinRung] = &[
+    BuiltinRung {
+        providers: GPT_6_2_ASTRA_PROVIDERS,
+        model: "gpt-6.2-astra",
+        variant: Some("high"),
+    },
+    BuiltinRung {
+        providers: GPT_PROVIDERS,
+        model: "gpt-6-astra",
+        variant: Some("high"),
+    },
+];
 
 // Key order is the order a picker renders. `deep` is deliberately NOT an id: builtin delegation
 // categories already carry that name, and the two axes never compete (a profile picks the MAIN
@@ -266,16 +280,18 @@ mod tests {
     }
 
     #[test]
-    fn daily_heavy_stages_the_launch_gated_fable_55_rung_but_drops_it_until_released() {
-        assert_eq!(DAILY_HEAVY_LAUNCH_MODELS[0].model, "claude-fable-5-5");
+    fn no_builtin_lane_routes_to_a_claude_fable_model() {
+        for (id, profile) in builtin_model_profiles() {
+            assert!(
+                profile
+                    .models
+                    .iter()
+                    .all(|rung| !rung.model.contains("fable")),
+                "{id}"
+            );
+        }
         let heavy = &builtin_model_profiles()["daily-heavy"];
-        assert!(
-            heavy
-                .models
-                .iter()
-                .all(|rung| rung.model != "claude-fable-5-5")
-        );
-        assert_eq!(heavy.models[0].model, "claude-fable-5-1");
+        assert_eq!(heavy.models[0].model, "claude-opus-5-5");
         assert_eq!(heavy.models[0].variant, Some("xhigh"));
     }
 }

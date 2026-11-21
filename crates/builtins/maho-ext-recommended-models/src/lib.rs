@@ -54,6 +54,8 @@ const GPT_PROVIDERS: &[&str] = &[
     "github-copilot",
     "opencode",
 ];
+// Copilot does not serve GPT-6.2 (omo #14149).
+const GPT_6_2_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "opencode"];
 const GLM_PROVIDERS: &[&str] = &["zai-coding-plan", "opencode-go"];
 /// Providers serving a recommended model, best first (empty for an unknown id).
 pub fn ranked_providers(model_id: &str) -> &'static [&'static str] {
@@ -61,6 +63,7 @@ pub fn ranked_providers(model_id: &str) -> &'static [&'static str] {
         "claude-opus-5-5" | "claude-fable-5-1" | "claude-fable-5-5" => CLAUDE_PROVIDERS,
         "kimi-k3.1-pro" => KIMI_PROVIDERS,
         "gpt-6-astra" | "gpt-6.1-sol" => GPT_PROVIDERS,
+        "gpt-6.2-astra" | "gpt-6.2-sol" => GPT_6_2_PROVIDERS,
         "glm-5.3" => GLM_PROVIDERS,
         _ => &[],
     }

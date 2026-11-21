@@ -13,6 +13,7 @@ use support::{PRIVATE_MARKER, TestRegistry, model};
 
 const OPUS: (&str, &str) = ("anthropic", "claude-opus-5-5");
 const FABLE: (&str, &str) = ("anthropic", "claude-fable-5-1");
+const SONNET: (&str, &str) = ("anthropic", "claude-sonnet-5-5");
 const SUBSCRIPTION_OPUS: (&str, &str) = ("anthropic-subscription", "claude-opus-5-5");
 const KIMI: (&str, &str) = ("moonshotai", "kimi-k3.1-pro");
 const CODING_KIMI: (&str, &str) = ("kimi-coding", "kimi-k3.1-pro");
@@ -109,10 +110,14 @@ async fn default_walk_shares_failures_across_lanes_and_keeps_all_failures() {
 
 #[tokio::test]
 async fn default_walk_keeps_request_failures_scoped_to_the_selector() {
+    // Daily · Heavy is overridden onto a second Anthropic model: the builtin heavy lane runs the same
+    // Opus id as Daily · Normal, so only a different selector on the same provider shows the request
+    // failure stays scoped to the one selector.
     let harness = start(
-        json!({}),
+        json!({"model_profiles": {"daily-heavy": {"models": ["anthropic/claude-sonnet-5-5"]}}}),
         Arc::new(
-            TestRegistry::new(fixture(&[OPUS, FABLE])).broken_model("anthropic", "claude-opus-5-5"),
+            TestRegistry::new(fixture(&[OPUS, SONNET]))
+                .broken_model("anthropic", "claude-opus-5-5"),
         ),
         "session-default",
         ExtensionMode::Rpc,
@@ -122,7 +127,7 @@ async fn default_walk_keeps_request_failures_scoped_to_the_selector() {
     .await;
     assert_eq!(
         selectors(&harness.session_models()),
-        ["anthropic/claude-fable-5-1"]
+        ["anthropic/claude-sonnet-5-5"]
     );
     assert_eq!(harness.first_details()["profile"], json!("daily-heavy"));
     assert_eq!(
@@ -131,7 +136,7 @@ async fn default_walk_keeps_request_failures_scoped_to_the_selector() {
             "anthropic",
             "anthropic/claude-opus-5-5",
             "anthropic",
-            "anthropic/claude-fable-5-1"
+            "anthropic/claude-sonnet-5-5"
         ]
     );
 }
@@ -427,10 +432,10 @@ async fn daily_normal_with_only_the_third_rung_applies_kimi_max_and_names_the_sk
 }
 
 #[tokio::test]
-async fn daily_heavy_applies_fable_xhigh() {
+async fn daily_heavy_applies_opus_xhigh_without_fable() {
     let harness = start(
         json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE, KIMI]))),
+        Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS, KIMI]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
@@ -439,7 +444,7 @@ async fn daily_heavy_applies_fable_xhigh() {
     .await;
     assert_eq!(
         selectors(&harness.session_models()),
-        ["anthropic/claude-fable-5-1"]
+        ["anthropic/claude-opus-5-5"]
     );
     assert_eq!(
         harness.session_thinking_levels(),
@@ -918,7 +923,7 @@ async fn a_lane_whose_first_rung_resolves_credentials_applies_after_one_provider
  {
     let harness = start(
         json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS, KIMI]))),
+        Arc::new(TestRegistry::new(fixture(&[OPUS, KIMI]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
@@ -927,11 +932,11 @@ async fn a_lane_whose_first_rung_resolves_credentials_applies_after_one_provider
     .await;
     assert_eq!(
         selectors(&harness.session_models()),
-        ["anthropic/claude-fable-5-1"]
+        ["anthropic/claude-opus-5-5"]
     );
     assert_eq!(
         harness.registry.calls(),
-        ["anthropic", "anthropic/claude-fable-5-1"]
+        ["anthropic", "anthropic/claude-opus-5-5"]
     );
     assert_eq!(harness.first_details()["authFailed"], json!(null));
 }
@@ -1075,7 +1080,7 @@ async fn an_unknown_reasoning_token_leaves_the_session_level_alone() {
 async fn the_session_only_setter_is_used_and_the_durable_thinking_level_is_untouched() {
     let harness = start(
         json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE]))),
+        Arc::new(TestRegistry::new(fixture(&[OPUS]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
@@ -1259,7 +1264,7 @@ async fn a_registry_reporting_the_runtime_source_turns_rotation_off_so_the_hook_
 async fn the_applied_notice_is_the_only_message_sent() {
     let harness = start(
         json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE]))),
+        Arc::new(TestRegistry::new(fixture(&[OPUS]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
@@ -1276,7 +1281,7 @@ async fn the_applied_notice_is_the_only_message_sent() {
 async fn a_second_registration_of_the_same_component_still_applies_to_a_fresh_session() {
     let harness = support::harness_in(
         component(json!({"model_profile": "daily-heavy"})),
-        Arc::new(TestRegistry::new(fixture(&[FABLE]))),
+        Arc::new(TestRegistry::new(fixture(&[OPUS]))),
         "session-1",
         ExtensionMode::Rpc,
         "/project",
@@ -1285,7 +1290,7 @@ async fn a_second_registration_of_the_same_component_still_applies_to_a_fresh_se
     harness.start(STARTUP, Some("settings")).await;
     let reloaded = support::harness_in(
         component(json!({"model_profile": "daily-heavy"})),
-        Arc::new(TestRegistry::new(fixture(&[FABLE]))),
+        Arc::new(TestRegistry::new(fixture(&[OPUS]))),
         "session-1",
         ExtensionMode::Rpc,
         "/project",
@@ -1299,7 +1304,7 @@ async fn a_second_registration_of_the_same_component_still_applies_to_a_fresh_se
 async fn a_json_mode_session_applies_the_profile_like_any_headless_run() {
     let harness = start(
         json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE]))),
+        Arc::new(TestRegistry::new(fixture(&[OPUS]))),
         "session-json",
         ExtensionMode::Json,
         STARTUP,
@@ -1308,7 +1313,7 @@ async fn a_json_mode_session_applies_the_profile_like_any_headless_run() {
     .await;
     assert_eq!(
         selectors(&harness.session_models()),
-        ["anthropic/claude-fable-5-1"]
+        ["anthropic/claude-opus-5-5"]
     );
 }
 
@@ -1405,7 +1410,7 @@ async fn geeky_normal_with_gpt_6_astra_beside_the_sol_tiers_applies_astra_medium
 async fn a_lane_without_a_caution_never_renders_the_bold_warning() {
     let harness = start(
         json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE]))),
+        Arc::new(TestRegistry::new(fixture(&[OPUS]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
