@@ -1486,13 +1486,15 @@ impl ModelRuntime {
                 ),
             })?;
         let after = self.credentials.get(&id);
-        crate::credential_pool::state_store::retire_login_slot_health(
-            self.pool_repository.path(),
-            &id,
-            before.as_ref(),
-            after.as_ref(),
-        )
-        .await;
+        let retire: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> = Box::pin(
+            crate::credential_pool::state_store::retire_login_slot_health(
+                self.pool_repository.path(),
+                &id,
+                before.as_ref(),
+                after.as_ref(),
+            ),
+        );
+        retire.await;
         if let Some(receipt) = receipt {
             maho_ai::auth::types::AuthInteraction::on_account_committed(
                 interaction.as_ref(),

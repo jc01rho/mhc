@@ -141,19 +141,17 @@ fn restart_verdict(branch: &[Value]) -> RestartVerdict {
         }
         if is_restart_continuation(entry) {
             continuations += 1;
-        } else if entry.get("type").and_then(Value::as_str) == Some("message")
+        } else if (entry.get("type").and_then(Value::as_str) == Some("message")
             && entry
                 .get("message")
                 .and_then(|message| message.get("role"))
                 .and_then(Value::as_str)
-                == Some("user")
-        {
-            engine_started = Some(false);
-        } else if entry.get("type").and_then(Value::as_str) == Some("custom_message")
-            && entry
-                .get("customType")
-                .and_then(Value::as_str)
-                .is_some_and(is_user_directed_turn)
+                == Some("user"))
+            || (entry.get("type").and_then(Value::as_str) == Some("custom_message")
+                && entry
+                    .get("customType")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_user_directed_turn))
         {
             engine_started = Some(false);
         } else if entry.get("type").and_then(Value::as_str) == Some("custom")

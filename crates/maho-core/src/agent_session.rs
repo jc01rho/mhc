@@ -6715,10 +6715,6 @@ impl AgentSession {
 
     /// senpi `_stopEngineTurn`: an engine-originated turn that would exceed the engine-wide bound is not
     /// started; the stop is recorded (best effort), emitted and shown (senpi#2967).
-    fn stop_engine_turn(&self, custom_type: &str) -> bool {
-        self.stop_engine_turn_with_release(custom_type, false)
-    }
-
     fn stop_engine_turn_with_release(&self, custom_type: &str, released: bool) -> bool {
         use crate::engine_turn_limit::{
             ENGINE_TURN_LIMIT_ENTRY_TYPE, ENGINE_TURN_LIMIT_EVENT, EngineTurnStopReason,
@@ -7398,7 +7394,10 @@ impl AgentSession {
                 if interrupted_run {
                     self.continue_after_restart();
                 }
-                if let Err(error) = self.resume_session().await {
+                let resume: std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>,
+                > = Box::pin(self.resume_session());
+                if let Err(error) = resume.await {
                     self.session_logger.warn(
                         "host_restart_resume_failed",
                         Some(&serde_json::Map::from_iter([(
@@ -18962,7 +18961,9 @@ impl AgentSession {
                 Ok(()) | Err(_) => {}
             }
         }
-        self.continue_after_host_restart().await;
+        let continue_restart: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> =
+            Box::pin(self.continue_after_host_restart());
+        continue_restart.await;
     }
 
     /// Whether the first extension lifecycle dispatch has completed.
