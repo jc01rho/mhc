@@ -179,21 +179,17 @@ impl RecordRenderer {
             Some("thinking_start") => {
                 set_part(content, index, json!({"type": "thinking", "thinking": ""}));
             }
-            Some("text_delta") => {
-                let appended = append_to_part(content, index, "text", "text", delta);
-                if !appended {
-                    set_part(content, index, json!({"type": "text", "text": delta}));
-                }
+            Some("text_delta") if !append_to_part(content, index, "text", "text", delta) => {
+                set_part(content, index, json!({"type": "text", "text": delta}));
             }
-            Some("thinking_delta") => {
-                let appended = append_to_part(content, index, "thinking", "thinking", delta);
-                if !appended {
-                    set_part(
-                        content,
-                        index,
-                        json!({"type": "thinking", "thinking": delta}),
-                    );
-                }
+            Some("thinking_delta")
+                if !append_to_part(content, index, "thinking", "thinking", delta) =>
+            {
+                set_part(
+                    content,
+                    index,
+                    json!({"type": "thinking", "thinking": delta}),
+                );
             }
             Some("toolcall_start") => set_part(
                 content,
