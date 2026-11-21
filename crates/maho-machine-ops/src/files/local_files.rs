@@ -104,10 +104,12 @@ async fn write_range(path: &Path, req: &WriteRequest, offset: u64) -> Result<(),
             "total must cover offset + bytes",
         ));
     }
+    // A ranged write keeps the bytes outside its range: the file is created when missing but never truncated.
     let mut file = tokio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .await?;
     file.seek(SeekFrom::Start(offset)).await?;
@@ -126,7 +128,8 @@ async fn check_access(path: &Path, mode: AccessMode, info: &Metadata) -> io::Res
     let wants_write = matches!(mode, AccessMode::Write | AccessMode::ReadWrite);
     if info.is_dir() {
         if wants_read {
-            tokio::fs::read_dir(path).await?;
+            // Listing it is the read check; a directory this process may not read fails here.
+            let _ = tokio::fs::read_dir(path).await?;
         }
         if wants_write && info.permissions().readonly() {
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));

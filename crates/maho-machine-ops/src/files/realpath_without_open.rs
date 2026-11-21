@@ -196,8 +196,8 @@ mod tests {
     use super::*;
 
     fn base() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let canonical = std::fs::canonicalize(dir.path()).unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonical = std::fs::canonicalize(dir.path()).expect("canonical tempdir");
         (dir, canonical)
     }
 

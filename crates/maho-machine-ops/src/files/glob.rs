@@ -146,7 +146,7 @@ mod tests {
     use super::*;
 
     fn matches(glob: &str, text: &str) -> bool {
-        glob_to_regex(glob).unwrap().is_match(text)
+        glob_to_regex(glob).expect("valid glob").is_match(text)
     }
 
     #[test]

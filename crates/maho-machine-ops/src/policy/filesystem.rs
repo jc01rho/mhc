@@ -201,7 +201,7 @@ mod tests {
         }
 
         fn asked(&self) -> u32 {
-            *self.asked.lock().unwrap()
+            *self.asked.lock().expect("verdict lock")
         }
     }
 
@@ -211,7 +211,7 @@ mod tests {
             _request: &'a FilesystemPolicyRequest,
         ) -> BoxFuture<'a, FilesystemPolicyDecision> {
             Box::pin(async move {
-                *self.asked.lock().unwrap() += 1;
+                *self.asked.lock().expect("verdict lock") += 1;
                 self.decision.clone()
             })
         }
