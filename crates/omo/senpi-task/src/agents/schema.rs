@@ -49,6 +49,11 @@ pub(crate) fn parse_raw_agent_definition(
         check(&mut issues, raw, key, |value| value.as_u64().is_some());
     }
     check(&mut issues, raw, "reasoningEffort", is_reasoning_effort);
+    check(&mut issues, raw, "models_distribution", |value| {
+        value
+            .as_str()
+            .is_some_and(|policy| omo_config_core::MODELS_DISTRIBUTION_VALUES.contains(&policy))
+    });
     check(&mut issues, raw, "temperature", |value| {
         value
             .as_f64()
@@ -93,6 +98,7 @@ pub(crate) fn parse_raw_agent_definition(
             .get("models")
             .and_then(Value::as_array)
             .map(|entries| entries.iter().filter_map(parse_model_entry).collect()),
+        models_distribution: text("models_distribution"),
         categories: strings("categories"),
         variant: text("variant"),
         reasoning_effort: text("reasoningEffort"),

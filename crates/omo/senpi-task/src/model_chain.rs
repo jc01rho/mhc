@@ -22,6 +22,14 @@ impl ModelChainCandidate {
     }
 }
 
+pub use omo_config_core::{ModelDistributor, ModelsDistributionEntry};
+
+impl ModelsDistributionEntry for ModelChainCandidate {
+    fn distribution_model(&self) -> &str {
+        &self.model
+    }
+}
+
 pub struct BuildModelChainOptions<'a> {
     pub candidates: Vec<ModelChainCandidate>,
     pub selected_model: &'a str,

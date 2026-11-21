@@ -1708,6 +1708,76 @@ fn resolve_skips_an_excluded_direct_candidate() {
     );
 }
 
+// ---- planner-models-distribution.test.ts (agent half, omo #11905) ----
+
+#[test]
+fn raw_agent_definition_keeps_the_distribution_policy_and_rejects_unknown_ones() {
+    let parsed = super::schema::parse_raw_agent_definition(
+        "fixture",
+        &json!({ "models": ["test-provider/a", "test-provider/b"], "models_distribution": "round_robin" }),
+        None,
+    )
+    .expect("valid definition");
+    assert_eq!(parsed.models_distribution.as_deref(), Some("round_robin"));
+    assert_eq!(
+        super::schema::parse_raw_agent_definition(
+            "fixture",
+            &json!({ "models_distribution": "random" }),
+            None
+        ),
+        Err(vec!["models_distribution".to_string()])
+    );
+}
+
+#[test]
+fn omo_config_agents_carry_the_distribution_policy() {
+    let agents = map_omo_config_agents(&json!({ "agents": { "rotating": {
+        "models": ["test-provider/a"],
+        "models_distribution": "round_robin",
+    } } }));
+    assert_eq!(
+        agents[0].1.models_distribution.as_deref(),
+        Some("round_robin")
+    );
+}
+
+#[test]
+fn round_robin_agent_rotates_its_models_and_never_leads_with_its_single_model() {
+    let agents = roster(vec![AgentDefinition {
+        model: text("test-provider/pinned"),
+        models: Some(vec![
+            AgentModelEntry::Model("test-provider/a".to_string()),
+            AgentModelEntry::Model("test-provider/b".to_string()),
+        ]),
+        models_distribution: text("round_robin"),
+        ..AgentDefinition::named("rotating")
+    }]);
+    let models = registry(vec![
+        model("test-provider", "pinned"),
+        model("test-provider", "a"),
+        model("test-provider", "b"),
+    ]);
+    let options = ResolveAgentOptions {
+        distribute_models: Some(std::sync::Arc::new(
+            crate::model_chain::ModelDistributor::new(),
+        )),
+        ..ResolveAgentOptions::default()
+    };
+    let first = expect_resolved(resolve_agent("rotating", &agents, Some(&models), &options));
+    let read = expect_resolved(resolve("rotating", &agents, &models));
+    let second = expect_resolved(resolve_agent("rotating", &agents, Some(&models), &options));
+    let third = expect_resolved(resolve_agent("rotating", &agents, Some(&models), &options));
+    assert_eq!(
+        [first.model, read.model, second.model, third.model],
+        [
+            "test-provider/a",
+            "test-provider/a",
+            "test-provider/b",
+            "test-provider/a"
+        ]
+    );
+}
+
 #[test]
 fn resolve_treats_an_excluded_only_model_as_unavailable() {
     let agents = roster(vec![AgentDefinition {

@@ -71,6 +71,8 @@ pub mod model_error_text;
 pub mod parent_notifier;
 #[path = "pause_resume_runtime.rs"]
 pub mod pause_resume_runtime;
+#[path = "planner_distribution.rs"]
+pub mod planner_distribution;
 #[path = "planner_effort.rs"]
 pub mod planner_effort;
 #[path = "planner_fallback.rs"]

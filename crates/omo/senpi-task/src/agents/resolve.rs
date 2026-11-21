@@ -2,6 +2,9 @@
 //! `agents/agent-model-registry.ts`).
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use omo_config_core::{MODELS_DISTRIBUTION_ROUND_ROBIN, ModelDistributor};
 
 use super::builtin::agent_fallback_chain;
 use super::types::{AgentDefinition, AgentModelEntry, agent_model_candidates};
@@ -25,6 +28,8 @@ pub struct ResolveAgentOptions {
     /// `omoConfig.exclude_models`: the registry is filtered through it before any candidate is read.
     pub exclude_models: Option<Vec<String>>,
     pub omo_config: Option<serde_json::Value>,
+    /// The spawn planner's distributor (omo #11905); unset for reads, which never advance it.
+    pub distribute_models: Option<Arc<ModelDistributor>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,12 +212,26 @@ pub fn resolve_agent(
 
     let mut attempted_model = None;
     let entries: Option<&[AgentModelEntry]> = definition.models.as_deref();
-    let direct_models = agent_model_candidates(
-        definition.model.as_deref(),
+    let has_models = entries.is_some_and(|entries| !entries.is_empty());
+    let distribution = definition.models_distribution.as_deref();
+    // A round-robin agent rotates over `models` alone: its single `model` is no candidate then.
+    let primary = if has_models && distribution == Some(MODELS_DISTRIBUTION_ROUND_ROBIN) {
+        None
+    } else {
+        definition.model.as_deref()
+    };
+    let configured_models = agent_model_candidates(
+        primary,
         entries,
         definition.variant.as_deref(),
         definition.reasoning_effort.as_deref(),
     );
+    let direct_models = match &options.distribute_models {
+        Some(distributor) if has_models => {
+            distributor.distribute(&format!("agent:{name}"), &configured_models, distribution)
+        }
+        _ => configured_models,
+    };
     for candidate in &direct_models {
         attempted_model = Some(candidate.model.clone());
         let Some(found) = find_exact_agent_model(&candidate.model, registry) else {
@@ -244,7 +263,10 @@ pub fn resolve_agent(
                 category,
                 &config,
                 registry,
-                &crate::category::ResolveCategoryOptions::default(),
+                &crate::category::ResolveCategoryOptions {
+                    distribute_models: options.distribute_models.clone(),
+                    ..crate::category::ResolveCategoryOptions::default()
+                },
             )
         {
             let found = ParsedModel {

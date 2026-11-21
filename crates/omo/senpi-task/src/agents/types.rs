@@ -55,6 +55,8 @@ pub struct AgentDefinition {
     pub mode: Option<String>,
     pub model: Option<String>,
     pub models: Option<Vec<AgentModelEntry>>,
+    /// `sequential` (absent) or `round_robin` (omo #11905).
+    pub models_distribution: Option<String>,
     pub categories: Option<Vec<String>>,
     pub variant: Option<String>,
     pub reasoning_effort: Option<String>,
@@ -86,6 +88,7 @@ impl AgentDefinition {
             mode: overlay.mode.or(self.mode),
             model: overlay.model.or(self.model),
             models: overlay.models.or(self.models),
+            models_distribution: overlay.models_distribution.or(self.models_distribution),
             categories: overlay.categories.or(self.categories),
             variant: overlay.variant.or(self.variant),
             reasoning_effort: overlay.reasoning_effort.or(self.reasoning_effort),
