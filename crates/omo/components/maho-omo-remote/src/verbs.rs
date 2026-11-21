@@ -38,6 +38,10 @@ pub fn is_local_only_verb(verb: &str) -> bool {
 
 pub const NOT_RUNNING: &str = "The device service is not running on this device. Start it with `mhc remote daemon`, or set it up with `mhc remote bootstrap`.";
 
+/// How a close refused because the session is running a turn says so (`/remote` offers "Close
+/// anyway" on it).
+pub const TURN_ACTIVE: &str = "is running a turn";
+
 /// Runs `mhc remote <args>`; the process exit code.
 pub async fn run_remote(ctx: &RemoteContext, args: &[String]) -> i32 {
     let Some(first) = args.first().map(String::as_str) else {
@@ -487,14 +491,14 @@ async fn session_verb(
                     &json!({
                         "kind": "error",
                         "code": "refused",
-                        "message": format!("{} is running a turn", resolved.label),
+                        "message": format!("{} {TURN_ACTIVE}", resolved.label),
                         "details": { "reason": "turn_active" },
                     })
                     .to_string(),
                 );
             }
             ctx.err(&format!(
-                "mhc remote close: {} is running a turn; `mhc remote close {} --force` ends it anyway.",
+                "mhc remote close: {} {TURN_ACTIVE}; `mhc remote close {} --force` ends it anyway.",
                 resolved.label, resolved.label
             ));
             return RemoteExit::Failed.code();

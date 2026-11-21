@@ -2,6 +2,7 @@
 //! shows its answer; a bare `/remote` walks from a device to a session to what to do with it. A close
 //! refused because the session is running a turn offers "Close anyway".
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use maho_ext_api::{
@@ -10,10 +11,12 @@ use maho_ext_api::{
 use serde_json::Value;
 
 use crate::context::RemoteContext;
-use crate::verbs::run_remote;
+use crate::verbs::{TURN_ACTIVE, run_remote};
 
 pub struct RemoteCommandComponent {
     pub version: String,
+    /// The device service's state dir; `None` is this process's (`device_service_state_dir`).
+    pub state_dir: Option<PathBuf>,
 }
 
 /// The verb's argv from the command text: for `send` everything after the session is the message.
@@ -36,8 +39,16 @@ pub fn command_argv(args: &str) -> Vec<String> {
 
 type Captured = Arc<Mutex<Vec<(bool, String)>>>;
 
-fn context_for(ctx: &ExtensionContext, version: &str, captured: &Captured) -> RemoteContext {
+fn context_for(
+    ctx: &ExtensionContext,
+    version: &str,
+    state_dir: Option<&Path>,
+    captured: &Captured,
+) -> RemoteContext {
     let mut remote = RemoteContext::for_process(ctx.agent_dir.clone(), version);
+    if let Some(state_dir) = state_dir {
+        remote.state_dir = state_dir.to_path_buf();
+    }
     let (out, err) = (Arc::clone(captured), Arc::clone(captured));
     remote.output = Arc::new(move |line: &str| {
         out.lock()
@@ -58,13 +69,14 @@ fn drain(captured: &Captured) -> Vec<(bool, String)> {
     std::mem::take(&mut *captured.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// Runs one verb and shows what it printed; the exit code.
+/// Runs one verb and shows what it printed. True when it was a close refused because the session is
+/// running a turn.
 async fn run_and_show(
     ctx: &ExtensionContext,
     remote: &RemoteContext,
     captured: &Captured,
     argv: &[String],
-) -> i32 {
+) -> bool {
     let code = run_remote(remote, argv).await;
     let lines = drain(captured);
     let text = lines
@@ -80,7 +92,11 @@ async fn run_and_show(
         };
         ctx.ui.notify(&text, kind);
     }
-    code
+    code != 0
+        && argv.first().is_some_and(|verb| verb == "close")
+        && lines
+            .iter()
+            .any(|(error, line)| *error && line.contains(TURN_ACTIVE))
 }
 
 /// One verb's `--json` value, run silently.
@@ -213,8 +229,8 @@ async fn pick(ctx: &ExtensionContext, remote: &RemoteContext, captured: &Capture
         }
         _ => vec!["close".into(), target.clone()],
     };
-    let code = run_and_show(ctx, remote, captured, &argv).await;
-    if action == "Close" && code != 0 {
+    let turn_active = run_and_show(ctx, remote, captured, &argv).await;
+    if turn_active {
         let anyway = ctx
             .ui
             .confirm(
@@ -238,16 +254,18 @@ async fn pick(ctx: &ExtensionContext, remote: &RemoteContext, captured: &Capture
 impl Extension for RemoteCommandComponent {
     fn register(&self, api: &mut ExtensionApi) {
         let version = self.version.clone();
+        let state_dir = self.state_dir.clone();
         api.register_command(
             "remote",
             Some("Devices and sessions on your other devices".into()),
             Some("[status|devices|sessions|send|model|interrupt|close|control|wake] ...".into()),
             Arc::new(move |args: &str, ctx: &ExtensionContext| {
                 let version = version.clone();
+                let state_dir = state_dir.clone();
                 let argv = command_argv(args);
                 Box::pin(async move {
                     let captured: Captured = Arc::default();
-                    let remote = context_for(ctx, &version, &captured);
+                    let remote = context_for(ctx, &version, state_dir.as_deref(), &captured);
                     if argv
                         .first()
                         .is_some_and(|verb| verb == "daemon" || verb == "bootstrap")

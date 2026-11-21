@@ -11,14 +11,14 @@ use mhc_relayd::{
 use serde_json::{Value, json};
 
 #[derive(Default)]
-struct FakeHost {
-    sessions: Mutex<Vec<HostSession>>,
+pub(crate) struct FakeHost {
+    pub(crate) sessions: Mutex<Vec<HostSession>>,
     records: Mutex<Vec<(String, Value)>>,
-    streaming: Mutex<bool>,
+    pub(crate) streaming: Mutex<bool>,
 }
 
 impl FakeHost {
-    fn with(ids: &[&str]) -> Arc<Self> {
+    pub(crate) fn with(ids: &[&str]) -> Arc<Self> {
         let host = Self::default();
         *host.sessions.lock().unwrap_or_else(PoisonError::into_inner) = ids
             .iter()
@@ -37,7 +37,7 @@ impl FakeHost {
         Arc::new(host)
     }
 
-    fn methods(&self) -> Vec<String> {
+    pub(crate) fn methods(&self) -> Vec<String> {
         self.records
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -174,57 +174,87 @@ async fn without_a_device_service_every_verb_is_unavailable_and_usage_comes_firs
     );
 }
 
+/// Two devices of one account: alpha (whose state dir the verbs use) and beta, which lists `b1`.
+pub(crate) struct Pair {
+    pub(crate) alpha: DeviceIdentity,
+    pub(crate) alpha_state: PathBuf,
+    pub(crate) beta_host: Arc<FakeHost>,
+    alpha_relayd: Relayd,
+    beta_relayd: Relayd,
+    _dirs: [tempfile::TempDir; 2],
+}
+
+impl Pair {
+    pub(crate) async fn start() -> Self {
+        let alpha_dir = tempfile::tempdir().expect("tempdir");
+        let beta_dir = tempfile::tempdir().expect("tempdir");
+        let alpha_state = alpha_dir.path().join("ds");
+        let beta_state = beta_dir.path().join("ds");
+        let alpha = DeviceIdentity::generate("alpha").expect("identity");
+        alpha.save(&alpha_state).expect("save alpha");
+        let beta = DeviceIdentity::generate("beta").expect("identity");
+        let beta_host = FakeHost::with(&["b1"]);
+        let beta_relayd = Relayd::start(RelaydOptions {
+            state_dir: beta_state,
+            config: RelaydConfig {
+                account: "home".into(),
+                name: None,
+                listen: Some("127.0.0.1:0".into()),
+                peers: vec![PeerConfig {
+                    name: "alpha".into(),
+                    address: "127.0.0.1:9".into(),
+                    public_key: alpha.public_key(),
+                }],
+            },
+            identity: beta.clone(),
+            host: Arc::clone(&beta_host) as Arc<dyn SessionHost>,
+            service_version: "0.0.0-test".into(),
+        })
+        .await
+        .expect("beta");
+        let beta_address = beta_relayd
+            .peer_address()
+            .expect("beta listens")
+            .to_string();
+        let alpha_relayd = Relayd::start(RelaydOptions {
+            state_dir: alpha_state.clone(),
+            config: RelaydConfig {
+                account: "home".into(),
+                name: None,
+                listen: None,
+                peers: vec![PeerConfig {
+                    name: "beta".into(),
+                    address: beta_address,
+                    public_key: beta.public_key(),
+                }],
+            },
+            identity: alpha.clone(),
+            host: FakeHost::with(&["a1"]) as Arc<dyn SessionHost>,
+            service_version: "0.0.0-test".into(),
+        })
+        .await
+        .expect("alpha");
+        Self {
+            alpha,
+            alpha_state,
+            beta_host,
+            alpha_relayd,
+            beta_relayd,
+            _dirs: [alpha_dir, beta_dir],
+        }
+    }
+
+    pub(crate) async fn stop(self) {
+        self.alpha_relayd.shutdown().await;
+        self.beta_relayd.shutdown().await;
+    }
+}
+
 #[tokio::test]
 async fn the_verbs_answer_through_two_devices() {
-    let alpha_dir = tempfile::tempdir().expect("tempdir");
-    let beta_dir = tempfile::tempdir().expect("tempdir");
-    let alpha_state = alpha_dir.path().join("ds");
-    let beta_state = beta_dir.path().join("ds");
-    let alpha = DeviceIdentity::generate("alpha").expect("identity");
-    alpha.save(&alpha_state).expect("save alpha");
-    let beta = DeviceIdentity::generate("beta").expect("identity");
-    let beta_host = FakeHost::with(&["b1"]);
-    let beta_relayd = Relayd::start(RelaydOptions {
-        state_dir: beta_state,
-        config: RelaydConfig {
-            account: "home".into(),
-            name: None,
-            listen: Some("127.0.0.1:0".into()),
-            peers: vec![PeerConfig {
-                name: "alpha".into(),
-                address: "127.0.0.1:9".into(),
-                public_key: alpha.public_key(),
-            }],
-        },
-        identity: beta.clone(),
-        host: Arc::clone(&beta_host) as Arc<dyn SessionHost>,
-        service_version: "0.0.0-test".into(),
-    })
-    .await
-    .expect("beta");
-    let beta_address = beta_relayd
-        .peer_address()
-        .expect("beta listens")
-        .to_string();
-    let alpha_relayd = Relayd::start(RelaydOptions {
-        state_dir: alpha_state.clone(),
-        config: RelaydConfig {
-            account: "home".into(),
-            name: None,
-            listen: None,
-            peers: vec![PeerConfig {
-                name: "beta".into(),
-                address: beta_address,
-                public_key: beta.public_key(),
-            }],
-        },
-        identity: alpha.clone(),
-        host: FakeHost::with(&["a1"]) as Arc<dyn SessionHost>,
-        service_version: "0.0.0-test".into(),
-    })
-    .await
-    .expect("alpha");
-    let (ctx, captured) = context(&alpha_state);
+    let pair = Pair::start().await;
+    let (alpha, beta_host) = (pair.alpha.clone(), Arc::clone(&pair.beta_host));
+    let (ctx, captured) = context(&pair.alpha_state);
 
     assert_eq!(run_remote(&ctx, &argv(&["status", "--json"])).await, 0);
     let status = captured.json();
@@ -381,6 +411,5 @@ async fn the_verbs_answer_through_two_devices() {
         "login took the device back"
     );
 
-    alpha_relayd.shutdown().await;
-    beta_relayd.shutdown().await;
+    pair.stop().await;
 }

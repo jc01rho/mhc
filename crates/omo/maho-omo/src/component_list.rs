@@ -411,6 +411,7 @@ pub fn omo_components(
         "remote",
         maho_omo_remote::RemoteCommandComponent {
             version: env!("CARGO_PKG_VERSION").into(),
+            state_dir: None,
         },
     ));
     components
