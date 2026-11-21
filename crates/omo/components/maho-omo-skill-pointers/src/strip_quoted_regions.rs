@@ -77,6 +77,18 @@ static NEGATED_INVOCATION: LazyLock<FancyRegex> = LazyLock::new(|| {
     )
 });
 
+const PROHIBITED_ITEM: &str =
+    r"(?:mass[-\s]?)?(?:ultrawork|ulw)(?:[-_](?:loop|plan|research|execute|mass))?(?![A-Za-z0-9_])";
+
+static PROHIBITED_KEYWORD: LazyLock<FancyRegex> = LazyLock::new(|| {
+    prompt_regex(
+        &format!(
+            "(?i)(?<![A-Za-z0-9_])(?:avoid(?:ing)?|skip(?:ping)?|without|no|never|do\\s+not|don['\u{2019}]t|dont)\\s+(?:(?:using|use\\s+of|the)\\s+)?{PROHIBITED_ITEM}(?:(?:\\s*,\\s*{PROHIBITED_ITEM})*\\s*,?\\s*(?:or|and|nor|/)\\s*{PROHIBITED_ITEM})?"
+        ),
+        "prohibited keyword",
+    )
+});
+
 pub const NOT_AFTER_IDENTIFIER: &str = r"(?<![A-Za-z0-9][-_.]|[/\\])";
 pub const NOT_BEFORE_PATH: &str = r"(?![-_.]?[A-Za-z0-9]*[/\\])";
 pub const NOT_INTO_IDENTIFIER: &str = r"(?![-_](?!(?:loop|plan|research|execute|mass)(?![-_.]?[A-Za-z0-9]))[A-Za-z0-9]|\.[A-Za-z0-9])";
@@ -172,7 +184,8 @@ pub fn strip_quoted_spans(text: &str) -> String {
 }
 
 pub fn mask_negated_invocations(text: &str) -> String {
-    masked_replace_all(&NEGATED_INVOCATION, text).unwrap_or_else(|| mask(text))
+    let after_negated = masked_replace_all(&NEGATED_INVOCATION, text).unwrap_or_else(|| mask(text));
+    masked_replace_all(&PROHIBITED_KEYWORD, &after_negated).unwrap_or_else(|| mask(text))
 }
 
 pub fn strip_quoted_regions(text: &str) -> String {

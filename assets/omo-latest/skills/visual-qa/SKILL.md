@@ -222,7 +222,7 @@ This is the platform baseline, distilled from Apple's Human Interface Guidelines
 - A10 Content that continues out of view shows a cue (partial item, fade, chevron).
 - A11 (mac) Nothing important lives only at the window's bottom edge; the minimum window size keeps toolbar and content legible; the sidebar collapses when the window narrows.
 - A12 (web and app screens; N/A for a TUI, a printed page, or a figure) Layout contract: every changed screen or region has a `Layout:` line (in `DESIGN.md`, or in the change description when the project has none; the `frontend` skill's Brief step); the capture shows that pattern's structure; the logged owner is the region's main scroller in the probe output, every other scroller listed is nested inside it for its own content (a code block, a dropdown, a composer) or is named in the line too; none of the line's anti-patterns appear. A missing line, a different main scroller, an unexplained sibling scroller, or a present anti-pattern is a FAIL; a logged skip still owes the scroll-owner check.
-- A13 Vertical rhythm, judged on computed styles. Compare each heading's top spacing with its bottom spacing: the ratio must reach 1.5x. Compare spacing between groups with spacing among one group's items: that ratio must reach 2x. Thresholds come from `references/perfection/craft-floor.md` in the `frontend` skill.
+- A13 Vertical rhythm, judged on computed styles. Compare each heading's top spacing with its bottom spacing: the ratio must reach 1.5x. Compare spacing between groups with spacing among one group's items: that ratio must reach 2x, unless the brief's chosen style route sets its own spacing rhythm and the deviation is recorded in the brief or DESIGN.md, in which case that value is the check (the `frontend` skill's `references/perfection/craft-floor.md`).
 
 **B. Hierarchy**
 - B1 One primary action per view, in the prominent style (accent on its background, not its glyph); peers differ by style, never by size.
@@ -318,7 +318,7 @@ Paste evidence directly into each prompt: source code, the plain-text TUI captur
 ### Pass A - Design-system and functional integrity (deeper, strict)
 
 ```
-task(subagent_type="reviewer",
+task(subagent_type="oracle",
   run_in_background=true,
   load_skills=[],
   description="Visual QA pass A: design-system and functional integrity",
@@ -372,7 +372,7 @@ BLOCKING: items that must be fixed; empty if PASS
 ### Pass B - Visual fidelity and CJK precision (focused)
 
 ```
-task(subagent_type="reviewer",
+task(subagent_type="oracle",
   run_in_background=true,
   load_skills=[],
   description="Visual QA pass B: visual fidelity and CJK precision",
@@ -506,7 +506,7 @@ node "$SKILL_DIR/scripts/visual-qa.mjs" image-diff <reference.png> <actual.png>
 2. Code-level design-system fidelity (code reviewer). Dispatch with `task`, as a fresh one-shot reviewer:
 
    `````
-   task(subagent_type="reviewer",
+   task(subagent_type="oracle",
      run_in_background=true,
      load_skills=[],
      description="Clone/design-system fidelity review",

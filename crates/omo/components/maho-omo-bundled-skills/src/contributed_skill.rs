@@ -1,5 +1,5 @@
 //! Port of `omo-senpi/src/components/bundled-skills/contributed-skill.ts` at latest
-//! `455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b`.
+//! `v5.1.79`.
 //!
 //! `readDisabledSkills` reads the `disabled_skills` union through the config loader on every call.
 //! The native union collector (`collect_disabled_skills`) is owned by the config lane (contract
@@ -20,6 +20,13 @@ use omo_config_core::{
 /// `OMO_CONFIG_LEGACY_HARNESS_ALIASES = { senpi: "native" }` -> keys `[native]` and `[senpi]`).
 pub const HARNESS: &str = "senpi";
 
+/// Bundled skills that are shipped on disk but off by default until opted in (POL-03, omo #7593).
+pub const DEFAULT_OPT_IN_SKILLS: &[&str] = &["eval-integrity"];
+pub const ENABLE_EVAL_INTEGRITY_ENV: &str = "OMO_ENABLE_EVAL_INTEGRITY";
+pub const MAHO_ENABLE_EVAL_INTEGRITY_ENV: &str = "MAHO_ENABLE_EVAL_INTEGRITY";
+pub const ENABLED_SKILLS_ENV: &str = "OMO_ENABLED_SKILLS";
+pub const MAHO_ENABLED_SKILLS_ENV: &str = "MAHO_ENABLED_SKILLS";
+
 /// Upstream `pi.getCommands()`: one entry per registered slash command. Optional as a whole —
 /// `None` means the host predates the API, exactly like upstream's `getCommands === undefined`.
 pub type HostCommands =
@@ -36,6 +43,13 @@ pub struct HostCommandInfo {
     pub description: Option<String>,
     pub source: String,
     pub source_info_path: Option<String>,
+}
+
+/// Upstream `BundledSkillProvenance` (`#12544` review): whether a bundled skill is shadowed by a
+/// user or project skill of the same name in the host's loaded command listing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BundledSkillProvenance {
+    pub shadowed: bool,
 }
 
 /// Upstream `pi.getCommands?.()` reached through the runtime the component captured at
@@ -75,6 +89,118 @@ pub fn read_disabled_skills(cwd: &Path, env: &BTreeMap<String, String>) -> BTree
     })
     .into_iter()
     .collect()
+}
+
+fn is_truthy_env(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn list_env_contains(env: &BTreeMap<String, String>, key: &str, skill_name: &str) -> bool {
+    env.get(key).is_some_and(|raw| {
+        raw.split([',', ' '])
+            .map(str::trim)
+            .any(|item| item == skill_name)
+    })
+}
+
+fn layer_enables_skill(data: &serde_json::Value, skill_name: &str) -> bool {
+    if data
+        .get("enabled_skills")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|items| items.iter().any(|v| v.as_str() == Some(skill_name)))
+    {
+        return true;
+    }
+    if let Some(skills_obj) = data.get("skills").and_then(serde_json::Value::as_object) {
+        if skills_obj
+            .get("enable")
+            .or_else(|| skills_obj.get("enabled"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| items.iter().any(|v| v.as_str() == Some(skill_name)))
+        {
+            return true;
+        }
+        if let Some(entry) = skills_obj.get(skill_name) {
+            if entry.as_bool() == Some(true)
+                || entry.get("enabled").and_then(serde_json::Value::as_bool) == Some(true)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a bundled skill is enabled by default or explicitly opted in (POL-03).
+///
+/// Skills outside [`DEFAULT_OPT_IN_SKILLS`] are always enabled unless listed in `disabled_skills`.
+/// An opt-in skill such as `eval-integrity` (#7593) is off by default and turns on when enabled by
+/// environment (`OMO_ENABLE_EVAL_INTEGRITY=1`, `MAHO_ENABLE_EVAL_INTEGRITY=1`, `OMO_ENABLED_SKILLS`,
+/// `MAHO_ENABLED_SKILLS`) or by an `omo.jsonc` layer (`enabled_skills: ["eval-integrity"]` or
+/// `skills.eval-integrity.enabled = true`).
+pub fn is_opt_in_skill_enabled(name: &str, cwd: &Path, env: &BTreeMap<String, String>) -> bool {
+    if !DEFAULT_OPT_IN_SKILLS.contains(&name) {
+        return true;
+    }
+    if name == "eval-integrity"
+        && (env
+            .get(ENABLE_EVAL_INTEGRITY_ENV)
+            .is_some_and(|v| is_truthy_env(v))
+            || env
+                .get(MAHO_ENABLE_EVAL_INTEGRITY_ENV)
+                .is_some_and(|v| is_truthy_env(v)))
+    {
+        return true;
+    }
+    if list_env_contains(env, ENABLED_SKILLS_ENV, name)
+        || list_env_contains(env, MAHO_ENABLED_SKILLS_ENV, name)
+    {
+        return true;
+    }
+    let loaded = load_omo_config(&LoadOmoConfigOptions {
+        cwd: Some(cwd.to_string_lossy().into_owned()),
+        env: Some(env.clone()),
+        ..Default::default()
+    });
+    loaded
+        .layers
+        .iter()
+        .filter_map(|layer| layer.data.as_ref())
+        .any(|data| {
+            let value = serde_json::Value::Object(
+                data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            );
+            layer_enables_skill(&value, name)
+        })
+}
+
+/// Which file the session's skills listing resolves for `name`, compared with the bundled copy at
+/// `builtin_path` (`#12544` review).
+pub fn resolve_bundled_skill_provenance(
+    commands: Option<&[HostCommandInfo]>,
+    name: &str,
+    builtin_path: &Path,
+) -> BundledSkillProvenance {
+    let command = format!("skill:{name}");
+    let owner_path = commands
+        .and_then(|commands| {
+            commands
+                .iter()
+                .find(|entry| entry.source == "skill" && entry.name == command)
+        })
+        .and_then(|entry| entry.source_info_path.as_deref());
+    match owner_path {
+        None => BundledSkillProvenance { shadowed: false },
+        Some(owner_path)
+            if canonical_path(Path::new(owner_path)) == canonical_path(builtin_path) =>
+        {
+            BundledSkillProvenance { shadowed: false }
+        }
+        Some(_) => BundledSkillProvenance { shadowed: true },
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,7 +266,9 @@ pub fn resolve_bundled_skill_provenance(
 /// still occupies the name and contributing ours would collide. Our own copy left over from an
 /// earlier pass is not a rival. `disabled_skills` hides the skill exactly as it hides a bundled one.
 pub fn resolve_contributed_skill(options: ResolveContributedSkillOptions<'_>) -> ContributedSkill {
-    if read_disabled_skills(&options.cwd, options.env).contains(options.name) {
+    if read_disabled_skills(&options.cwd, options.env).contains(options.name)
+        || !is_opt_in_skill_enabled(options.name, &options.cwd, options.env)
+    {
         return ContributedSkill::Disabled;
     }
     let command = format!("skill:{}", options.name);

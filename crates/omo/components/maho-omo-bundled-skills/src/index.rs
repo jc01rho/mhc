@@ -21,7 +21,7 @@ use maho_ext_api::{
     ExtensionEvent, ExtensionFailure, ResourceDiscoverEntry, ResourcesDiscoverResult, SourceScope,
 };
 
-use crate::contributed_skill::{read_disabled_skills, read_discover_cwd};
+use crate::contributed_skill::{is_opt_in_skill_enabled, read_disabled_skills, read_discover_cwd};
 use crate::override_dir::resolve_bundled_skills_override;
 
 pub const BUNDLED_SKILLS_COMPONENT_NAME: &str = "bundled-skills";
@@ -123,6 +123,9 @@ fn collect_skill_paths(
         }
         if disabled.contains(&name) {
             hidden.push(name);
+            continue;
+        }
+        if !is_opt_in_skill_enabled(&name, cwd, env) {
             continue;
         }
         skill_paths.push(ResourceDiscoverEntry {

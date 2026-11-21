@@ -157,7 +157,7 @@ If your review agent cannot read files or run commands, it receives everything i
 
 ```
 task(
-  subagent_type="reviewer",  # your read-only review agent
+  subagent_type="oracle",  # your read-only review agent
   run_in_background=true,
   load_skills=[],
   description="Gate-review the completed work against goal, constraints, and QA evidence",
