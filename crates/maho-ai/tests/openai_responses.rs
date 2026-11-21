@@ -2766,13 +2766,23 @@ fn configuration_updates_follow_new_catalog_opt_in_flags() {
             &[
                 "gpt-6.1-sol",
                 "gpt-6.1-sol-fast",
+                "gpt-6.2-astra",
+                "gpt-6.2-astra-fast",
+                "gpt-6.2-sol",
+                "gpt-6.2-sol-fast",
                 "gpt-daybreak-blue-latest",
                 "gpt-daybreak-red-latest",
             ][..],
         ),
         (
             "chatgpt-subscription",
-            &["gpt-6.1-sol", "gpt-6.1-sol-fast", "gpt-6.1-sol-ultrafast"][..],
+            &[
+                "gpt-6.1-sol",
+                "gpt-6.1-sol-fast",
+                "gpt-6.1-sol-ultrafast",
+                "gpt-6.2-astra",
+                "gpt-6.2-sol-ultrafast",
+            ][..],
         ),
     ] {
         for id in ids {
@@ -2801,7 +2811,12 @@ fn configuration_updates_follow_new_catalog_opt_in_flags() {
             "gpt-6-astra-fast",
             "gpt-6.1-sol",
             "gpt-6.1-sol-fast",
-            "gpt-6.1-sol-ultrafast"
+            "gpt-6.1-sol-ultrafast",
+            "gpt-6.2-astra",
+            "gpt-6.2-astra-fast",
+            "gpt-6.2-sol",
+            "gpt-6.2-sol-fast",
+            "gpt-6.2-sol-ultrafast"
         ]
     );
 }
@@ -2818,6 +2833,8 @@ fn sol_service_tiers_use_route_specific_rates_and_preserve_requested_tier() {
         ("gpt-6.1-sol", "flex", 0.5, 0.5),
         ("gpt-6.1-sol", "default", 1.0, 1.0),
         ("gpt-6-luna", "ultrafast", 1.0, 1.0),
+        ("gpt-6.2-sol-ultrafast", "ultrafast", 6.0, 8.0),
+        ("gpt-6.2-sol", "flex", 0.5, 0.5),
     ] {
         let model = builtin("chatgpt-subscription", id);
         assert_close(
@@ -3634,7 +3651,8 @@ async fn cache_retention_omits_prompt_cache_options_for_models_that_reject_it() 
 async fn cache_retention_uses_the_supported_long_cache_field_per_model() {
     for (id, retention, cache_options) in [
         ("gpt-4o-mini", Some(json!("24h")), None),
-        ("gpt-6-astra", None, Some(json!({ "ttl": "30m" }))),
+        ("gpt-6-astra", None, Some(json!({ "ttl": "12h" }))),
+        ("gpt-6.2-sol", None, Some(json!({ "ttl": "12h" }))),
     ] {
         let model = builtin("openai", id);
         let mut options = responses_options();

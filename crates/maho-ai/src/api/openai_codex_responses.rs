@@ -386,7 +386,7 @@ pub fn get_codex_service_tier_cost_multiplier(model: &Model, service_tier: Optio
     match service_tier {
         Some("ultrafast") => {
             let id = model.upstream_model_id.as_deref().unwrap_or(&model.id);
-            if ["gpt-6-astra", "gpt-6.1-sol"].contains(&id) {
+            if crate::api::openai_responses_shared::ULTRAFAST_DOCUMENTED_MODEL_IDS.contains(&id) {
                 8.0
             } else {
                 1.0

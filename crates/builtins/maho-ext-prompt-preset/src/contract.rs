@@ -58,6 +58,7 @@ fn any_marker(model_id: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| normalized.contains(marker))
 }
 
+const GPT62: &str = r"(?:^|[/@:._-])gpt[._-]?6(?:[._-]2|2)[._-](?:astra|sol)(?:$|[/@:._-])";
 const GPT6_FAMILY: &str =
     r"(?:^|[/@:._-])gpt[._-]?6(?:[._-]\d+|\d)?[._-](?:astra|sol|luna)(?:$|[/@:._-])";
 const KIMI_K31: &str = r"(?:^|[/@._-])(?:kimi-)?k3(?:[._-]|p)1(?:$|[/@._:-])";
@@ -133,6 +134,10 @@ pub fn resolve_preset_name(model: ContractModel<'_>) -> Option<PromptPresetName>
     use PromptPresetName as P;
     let id = model.model_id;
     let signal = |pattern: &'static str| id_or_name(model, |value| matches(value, pattern));
+    // The point release must resolve before the GPT-6 family signal, which accepts any point release.
+    if signal(GPT62) {
+        return Some(P::Gpt62);
+    }
     if signal(GPT6_FAMILY) {
         return Some(P::Gpt6Astra);
     }
@@ -240,6 +245,7 @@ const fn case(
 pub const PROMPT_PRESET_MODEL_CASES: &[PromptPresetModelCase] = {
     use PromptPresetName as P;
     &[
+        case("openai", "gpt-6.2-sol", P::Gpt62),
         case("openai", "gpt-6-astra", P::Gpt6Astra),
         case("openai", "gpt-5.6", P::Gpt56),
         case("openai", "gpt-5.5", P::Gpt55),
@@ -283,6 +289,7 @@ pub const PROMPT_PRESET_MODEL_CASES: &[PromptPresetModelCase] = {
 pub const AUTO_RESOLVED_PRESET_NAMES: &[PromptPresetName] = {
     use PromptPresetName as P;
     &[
+        P::Gpt62,
         P::Gpt6Astra,
         P::Gpt56,
         P::Gpt55,
@@ -481,6 +488,43 @@ mod tests {
         for id in ["gpt-6.1", "gpt-61", "gpt-6"] {
             assert_eq!(contract("openai", id), None, "{id}");
         }
+    }
+
+    #[test]
+    fn gpt62_point_release_resolves_ahead_of_the_gpt6_family() {
+        for id in [
+            "gpt-6.2-sol",
+            "gpt-6.2-astra",
+            "gpt-6.2-astra-fast",
+            "gpt-6.2-sol-ultrafast",
+            "openai/gpt-6.2-sol",
+            "openai-gpt-62-astra",
+            "gpt_6_2_sol",
+        ] {
+            assert_eq!(
+                contract("openai", id),
+                Some(PromptPresetName::Gpt62),
+                "{id}"
+            );
+            assert_eq!(runtime("openai", id), Some(PromptPresetName::Gpt62), "{id}");
+        }
+        for id in [
+            "gpt-6.2-luna",
+            "gpt-6.2",
+            "gpt-6.20-sol",
+            "gpt-6.1-sol",
+            "gpt-6-astra",
+        ] {
+            assert_ne!(
+                contract("openai", id),
+                Some(PromptPresetName::Gpt62),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            contract("openai", "gpt-6.1-sol"),
+            Some(PromptPresetName::Gpt6Astra)
+        );
     }
 
     #[test]

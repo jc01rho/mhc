@@ -14,7 +14,7 @@ use crate::types::{
 #[path = "prompt_cache_warmers.rs"]
 pub mod prompt_cache_warmers;
 use crate::utils::headers::provider_headers_to_record;
-use crate::utils::prompt_cache_ttl::is_anthropic_api_base_url;
+use crate::utils::prompt_cache_ttl::supports_anthropic_cache_warming;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WarmPromptCacheUsage {
@@ -83,7 +83,7 @@ pub async fn warm_prompt_cache_simple(
             usage_raw,
         });
     }
-    if model.api != "anthropic-messages" || !is_anthropic_api_base_url(&model.base_url) {
+    if model.api != "anthropic-messages" || !supports_anthropic_cache_warming(model) {
         return Ok(WarmPromptCacheResult::Unsupported);
     }
 

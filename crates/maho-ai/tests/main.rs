@@ -39,6 +39,8 @@ pub mod google_thinking_signature;
 pub mod google_thinking_wire_audit;
 #[path = "google_vertex_api_key_resolution.rs"]
 pub mod google_vertex_api_key_resolution;
+#[path = "gpt_6_2_catalog.rs"]
+pub mod gpt_6_2_catalog;
 #[path = "independent_image_boundary.rs"]
 pub mod independent_image_boundary;
 #[path = "openai_completions.rs"]
