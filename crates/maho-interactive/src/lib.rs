@@ -67,3 +67,12 @@ pub mod composer_user_activity;
 pub mod model_change_notice;
 pub mod session_failure_info;
 pub mod unknown_command_feedback;
+
+// senpi#4271: the `--attach` presentation of an existing RPC endpoint.
+pub mod attach;
+pub mod attach_client;
+pub mod attach_dialogs;
+#[cfg(all(test, unix))]
+mod attach_test_endpoint;
+pub mod record_renderer;
+pub mod run_attached_tui;
