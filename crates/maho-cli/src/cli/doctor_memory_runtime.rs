@@ -57,7 +57,7 @@ pub fn doctor_memory_runtime_lines(
         .map(ForeignMemoryRuntimeSettings::from_json)
         .unwrap_or_default();
     let budget_ms = DEFAULT_RUNTIME_RETENTION.pass_budget_ms;
-    let now_ms = || memory_core::support::time::now_millis();
+    let now_ms: fn() -> i64 = memory_core::support::time::now_millis;
     let cancel = || false;
     let mut entries = Vec::new();
     for identity in identities {

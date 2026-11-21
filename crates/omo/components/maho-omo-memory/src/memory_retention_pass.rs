@@ -106,25 +106,25 @@ pub fn run_maintenance_retention(input: &MaintenanceRetentionInput<'_>) -> Resul
     options.owned_sidecars = input.owned_sidecars;
     let report = run_runtime_retention(&options).map_err(|error| error.to_string())?;
     let summary = summarize_runtime_retention(&report);
-    if summary.removed > 0 || !report.skipped.is_empty() || report.cursor.is_some() {
-        if let Some(info) = input.info {
-            info(&format!(
-                "omo-senpi memory runtime retention identity={} removed={} runs={} completions={} journals={} sidecars={} ledgers={} legacy={}{}",
-                input.identity,
-                summary.removed,
-                summary.runs,
-                summary.completions,
-                summary.journals,
-                summary.sidecars,
-                summary.ledgers,
-                summary.reflection_sessions,
-                if summary.recall_runs == LegacyRecallRunsOutcome::Removed {
-                    " + recall/runs"
-                } else {
-                    ""
-                }
-            ));
-        }
+    if (summary.removed > 0 || !report.skipped.is_empty() || report.cursor.is_some())
+        && let Some(info) = input.info
+    {
+        info(&format!(
+            "omo-senpi memory runtime retention identity={} removed={} runs={} completions={} journals={} sidecars={} ledgers={} legacy={}{}",
+            input.identity,
+            summary.removed,
+            summary.runs,
+            summary.completions,
+            summary.journals,
+            summary.sidecars,
+            summary.ledgers,
+            summary.reflection_sessions,
+            if summary.recall_runs == LegacyRecallRunsOutcome::Removed {
+                " + recall/runs"
+            } else {
+                ""
+            }
+        ));
     }
     // A pass whose stores finished and whose cap could not even measure is stamped too: its cap
     // resume point is kept for the next due pass, which comes at the interval (#12538 review r5 L1).
@@ -179,11 +179,12 @@ pub struct MaintenanceHostSweepInput<'a> {
 pub fn run_maintenance_host_sweep(
     input: MaintenanceHostSweepInput<'_>,
 ) -> Result<HostSweepResult, String> {
-    let deadline = input.now() + HOST_SWEEP_SLICE_MS as i64;
+    let now = input.now;
+    let deadline = now() + HOST_SWEEP_SLICE_MS as i64;
     let step_options = RetentionHostSweepStepOptions {
         settings: input.settings,
         is_hosted_identity: Some(input.is_hosted_identity),
-        now: Some(input.now),
+        now: Some(now),
         cancel: Some(input.cancel),
         deadline: Some(deadline),
         dry_run: false,
@@ -192,7 +193,8 @@ pub fn run_maintenance_host_sweep(
     options.steps = vec![create_retention_host_sweep_step(step_options)];
     options.max_identities = Some(HOST_SWEEP_IDENTITIES_PER_PASS);
     options.budget_ms = Some(HOST_SWEEP_SLICE_MS);
-    options.now = Some(&|| input.now().max(0) as u64);
+    let now_unsigned = || now().max(0) as u64;
+    options.now = Some(&now_unsigned);
     options.aborted = Some(input.cancel);
     let result = sweep_host_identities(options)?;
     if let HostSweepResult::Swept { visited, lines, .. } = &result
