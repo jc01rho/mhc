@@ -1,7 +1,10 @@
+use serde_json::Value;
+
 use crate::internal::validate::{
     Node, ObjectSpec, PreprocessFn, any, array, boolean, enumeration, number, optional,
     positive_integer, record, string, union,
 };
+use crate::models::models_distribution::MODELS_DISTRIBUTION_VALUES;
 use crate::schema::fallback_models::{
     normalize_legacy_model_fields, omo_fallback_model_object_schema, omo_fallback_models_schema,
     omo_reasoning_effort_schema, omo_thinking_config_schema,
@@ -16,6 +19,10 @@ pub fn omo_category_config_object_spec() -> ObjectSpec {
             optional(
                 "models",
                 array(union(vec![string(), omo_fallback_model_object_schema()])),
+            ),
+            optional(
+                "models_distribution",
+                enumeration(&MODELS_DISTRIBUTION_VALUES),
             ),
             optional("reasoning", omo_reasoning_schema()),
             optional(
@@ -39,9 +46,19 @@ pub fn omo_category_config_object_spec() -> ObjectSpec {
             optional("warn_unavailable", boolean()),
         ],
         strict: true,
-        preprocess: Some(normalize_legacy_model_fields as PreprocessFn),
+        preprocess: Some(without_retired_category_keys as PreprocessFn),
         refine: None,
     }
+}
+
+// `provider_lock` only withheld a parent-session model fallback that upstream retired (omo #12010):
+// an omo.json that still carries the key loads unchanged and the key is dropped.
+fn without_retired_category_keys(value: &Value) -> Value {
+    let mut normalized = normalize_legacy_model_fields(value);
+    if let Value::Object(entry) = &mut normalized {
+        entry.shift_remove("provider_lock");
+    }
+    normalized
 }
 
 pub fn omo_category_config_object_schema() -> Node {

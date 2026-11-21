@@ -154,7 +154,12 @@ pub fn resolve_computer_settings(
             | "auditLog"
             | "screenshotGc"
             | "enginePath"
-            | "cuaAdapter" => {}
+            | "cuaAdapter"
+            | "showCursor"
+            | "runSandbox"
+            | "intervention"
+            | "macosKeyPriming"
+            | "trace" => {}
             other => {
                 issues.push(format!("computer: unknown property '{other}'"));
             }
@@ -318,6 +323,26 @@ pub fn resolve_computer_settings(
         }
         None => false,
     };
+
+    // The omo config schema accepts these keys (omo #13055 and the macOS cursor switch); they are
+    // validated here so a now-valid config does not fail resolution, and are not consumed yet.
+    for (key, allowed) in [
+        ("runSandbox", &["vm", "quickjs"][..]),
+        ("intervention", &["continue", "pause"][..]),
+        ("macosKeyPriming", &["on", "off"][..]),
+    ] {
+        match obj.get(key) {
+            None => {}
+            Some(Value::String(s)) if allowed.contains(&s.as_str()) => {}
+            Some(_) => issues.push(format!("/{key}: must be one of {}", allowed.join(", "))),
+        }
+    }
+    for key in ["showCursor", "trace"] {
+        match obj.get(key) {
+            None | Some(Value::Bool(_)) => {}
+            Some(_) => issues.push(format!("/{key}: must be boolean")),
+        }
+    }
 
     if !issues.is_empty() {
         return Err(ComputerSettingsError::new(issues));

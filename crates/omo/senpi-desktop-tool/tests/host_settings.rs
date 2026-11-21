@@ -87,3 +87,40 @@ fn resolve_computer_settings_rejects_unknown_key_and_wrongly_typed_value() {
     );
     assert!(err.issues.iter().any(|i| i.contains("maxWidth")));
 }
+
+#[test]
+fn resolve_computer_settings_accepts_the_reserved_v2_keys_and_the_cursor_switch() {
+    let raw = json!({
+        "showCursor": false,
+        "runSandbox": "quickjs",
+        "intervention": "pause",
+        "macosKeyPriming": "on",
+        "trace": true
+    });
+    assert!(resolve_computer_settings(Some(&raw), "darwin").is_ok());
+}
+
+#[test]
+fn resolve_computer_settings_rejects_reserved_keys_outside_their_values() {
+    let raw = json!({
+        "runSandbox": "wasm",
+        "intervention": "stop",
+        "macosKeyPriming": true,
+        "trace": "yes",
+        "showCursor": 1
+    });
+    let err = resolve_computer_settings(Some(&raw), "darwin").unwrap_err();
+    for key in [
+        "runSandbox",
+        "intervention",
+        "macosKeyPriming",
+        "trace",
+        "showCursor",
+    ] {
+        assert!(
+            err.issues.iter().any(|issue| issue.contains(key)),
+            "{key}: {:?}",
+            err.issues
+        );
+    }
+}

@@ -3,9 +3,10 @@ use crate::internal::validate::{
     strict_object,
 };
 
-pub const COMPUTER_HARNESS_SUPPORT: [(&str, &[&str]); 12] = [
+pub const COMPUTER_HARNESS_SUPPORT: [(&str, &[&str]); 17] = [
     ("computer.enabled", &["native"]),
     ("computer.display", &["native"]),
+    ("computer.showCursor", &["native"]),
     ("computer.max_width", &["native"]),
     ("computer.max_height", &["native"]),
     ("computer.screenshot_max_bytes", &["native"]),
@@ -16,6 +17,10 @@ pub const COMPUTER_HARNESS_SUPPORT: [(&str, &[&str]); 12] = [
     ("computer.screenshot_gc", &["native"]),
     ("computer.engine_path", &["native"]),
     ("computer.cua_adapter", &["native"]),
+    ("computer.run_sandbox", &["native"]),
+    ("computer.intervention", &["native"]),
+    ("computer.macos_key_priming", &["native"]),
+    ("computer.trace", &["native"]),
 ];
 
 pub fn computer_setting_harness_support(setting_path: &str) -> Option<&'static [&'static str]> {
@@ -29,6 +34,7 @@ fn computer_settings_fields() -> Vec<crate::internal::validate::Field> {
     vec![
         optional("enabled", boolean()),
         optional("display", non_empty_string()),
+        optional("showCursor", boolean()),
         optional("max_width", positive_integer()),
         optional("max_height", positive_integer()),
         optional("screenshot_max_bytes", positive_integer()),
@@ -49,6 +55,10 @@ fn computer_settings_fields() -> Vec<crate::internal::validate::Field> {
         ),
         optional("engine_path", non_empty_string()),
         optional("cua_adapter", boolean()),
+        optional("run_sandbox", enumeration(&["vm", "quickjs"])),
+        optional("intervention", enumeration(&["continue", "pause"])),
+        optional("macos_key_priming", enumeration(&["on", "off"])),
+        optional("trace", boolean()),
     ]
 }
 

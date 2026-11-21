@@ -2,6 +2,7 @@ use crate::internal::validate::{
     Node, ObjectSpec, PreprocessFn, array, boolean, enumeration, nonnegative_integer,
     number_between, optional, record, string, union,
 };
+use crate::models::models_distribution::MODELS_DISTRIBUTION_VALUES;
 use crate::schema::fallback_models::{
     normalize_legacy_model_fields, omo_fallback_model_object_schema, omo_reasoning_effort_schema,
 };
@@ -57,6 +58,10 @@ fn omo_agent_def_input_spec() -> ObjectSpec {
             optional("prompt", string()),
             optional("model", string()),
             optional("models", array(omo_agent_model_entry_schema())),
+            optional(
+                "models_distribution",
+                enumeration(&MODELS_DISTRIBUTION_VALUES),
+            ),
             optional("reasoning", omo_reasoning_schema()),
             optional("variant", string()),
             optional("reasoningEffort", omo_reasoning_effort_schema()),
