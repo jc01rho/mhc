@@ -45,6 +45,7 @@ impl BashOperations for ChildBashOperations {
                 signal,
                 timeout,
                 env,
+                session_id: _,
             } = options;
             if signal.is_aborted() {
                 return Err(ToolError::Message("aborted".to_owned()));

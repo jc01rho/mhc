@@ -158,6 +158,31 @@ pub async fn run(
             local_mcp_presenter: Some(Arc::new(
                 crate::cli::mcp_local_presenter::register_local_mcp_presenter,
             )),
+            resolve_account_pin: Some(Arc::new({
+                let agent_dir = session.agent_dir();
+                let home_dir = maho_core::config::home_dir();
+                let environment = super::oauth_providers::environment_from_process();
+                move |session_id: &str, cwd: &str| {
+                    let cli_pin = maho_ext_anthropic_subscription::account_command::session_pin(
+                        Some(session_id),
+                    );
+                    let settings_pin = maho_ext_anthropic_subscription::settings::load_from_disk(
+                        std::path::Path::new(cwd),
+                        std::path::Path::new(&agent_dir),
+                        std::path::Path::new(&home_dir),
+                        &environment,
+                    )
+                    .ok()
+                    .and_then(|settings| {
+                        settings
+                            .values
+                            .get("pinnedAccount")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    });
+                    cli_pin.or(settings_pin)
+                }
+            })),
         },
     );
     *mode

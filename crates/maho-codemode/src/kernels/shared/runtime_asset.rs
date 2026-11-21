@@ -96,6 +96,20 @@ const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
         )),
     ),
     (
+        "kernels/js/power-throttling.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/power-throttling.js"
+        )),
+    ),
+    (
+        "kernels/js/power-throttling-startup.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/power-throttling-startup.js"
+        )),
+    ),
+    (
         "kernels/js/process-drain-scan.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

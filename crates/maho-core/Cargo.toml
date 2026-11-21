@@ -23,10 +23,15 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 filetime = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v7"] }
-tokio = { workspace = true, features = ["fs", "sync", "time", "macros", "rt", "io-util", "process"] }
+tokio = { workspace = true, features = ["fs", "sync", "time", "macros", "rt", "io-util", "process", "net"] }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 futures = { workspace = true }
+# The loopback credential proxy (credential_proxy/proxy.rs; senpi#6828), same versions as maho-codemode's bridge.
+bytes = "=1.12.1"
+hyper = { version = "=1.8.1", features = ["server", "http1"] }
+hyper-util = { version = "=0.1.20", features = ["tokio"] }
+http-body-util = "=0.1.3"
 indexmap = { workspace = true }
 serde_yaml = "=0.9.34"
 ignore = "=0.4.33"

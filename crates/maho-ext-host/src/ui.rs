@@ -76,6 +76,38 @@ impl LifecycleUi {
     }
 }
 impl ExtensionUi for LifecycleUi {
+    fn supports_secret_input(&self) -> bool {
+        if self.runtime.assert_active().is_err() {
+            return false;
+        }
+        self.inner.supports_secret_input()
+    }
+    fn input_secret<'a>(
+        &'a self,
+        title: &'a str,
+        placeholder: Option<&'a str>,
+        dialog: ExtensionUiDialogOptions,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        Option<String>,
+                        maho_ext_api::secret_input::SecretInputUnavailableError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let prompt_title = (!dialog.secret).then_some(title);
+            let _guard = self
+                .begin(UiPromptKind::Input, prompt_title)
+                .unwrap_or_else(|error| std::panic::panic_any(error));
+            let result = self.inner.input_secret(title, placeholder, dialog).await;
+            self.active();
+            result
+        })
+    }
     fn supports_subagent_cost(&self) -> bool {
         if self.runtime.assert_active().is_err() {
             return false;
@@ -137,8 +169,9 @@ impl ExtensionUi for LifecycleUi {
         dialog: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, Option<String>> {
         Box::pin(async move {
+            let prompt_title = (!dialog.secret).then_some(title);
             let _guard = self
-                .begin(UiPromptKind::Input, Some(title))
+                .begin(UiPromptKind::Input, prompt_title)
                 .unwrap_or_else(|error| std::panic::panic_any(error));
             let result = self.inner.input(title, placeholder, dialog).await;
             self.active();

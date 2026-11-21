@@ -2,6 +2,10 @@ use maho_ext_api::{ExecOptions, ExecResult};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::io::AsyncReadExt;
 
+/// Win32 `CREATE_NO_WINDOW`.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 pub async fn exec_command(
     command: &str,
     args: &[String],
@@ -17,6 +21,9 @@ pub async fn exec_command(
         .stderr(Stdio::piped())
         .env_remove("__PI_INTERNAL_SPAWN")
         .kill_on_drop(true);
+    // senpi#3965 (senpi#6279): hide the console window for console-subsystem children on Windows.
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {

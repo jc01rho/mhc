@@ -15661,6 +15661,20 @@ impl AgentSession {
 
     pub fn get_all_tools(&self) -> Vec<ToolInfo> {
         let state = self.state();
+        // senpi#6886 (`toolInfosOf`): the registered tools the armed eval-only routing withholds from the model
+        // are marked `eval_only`; nothing is marked while the policy is not armed.
+        let eval_only: BTreeSet<String> =
+            if state.eval_only_tool_names.is_some() && state.tool_registry.contains_key("eval") {
+                state
+                    .eval_only_tool_names
+                    .iter()
+                    .flatten()
+                    .filter(|name| state.tool_registry.contains_key(name.as_str()))
+                    .cloned()
+                    .collect()
+            } else {
+                BTreeSet::new()
+            };
         let mut tools: BTreeMap<String, ToolInfo> = state
             .tool_definitions
             .iter()
@@ -15693,9 +15707,16 @@ impl AgentSession {
                     search_keywords: Vec::new(),
                     search_group: None,
                     allow_lazy_activation: false,
+                    eval_only: false,
                 });
         }
-        tools.into_values().collect()
+        tools
+            .into_values()
+            .map(|mut tool| {
+                tool.eval_only = eval_only.contains(&tool.name);
+                tool
+            })
+            .collect()
     }
 
     pub fn get_active_tool_names(&self) -> Vec<String> {

@@ -538,6 +538,7 @@ fn tool(name: &str, description: &str) -> ToolInfo {
         search_group: None,
         allow_lazy_activation: false,
         kernel_prelude: None,
+        eval_only: false,
     }
 }
 

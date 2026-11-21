@@ -1721,3 +1721,63 @@ fn external_write_observers_see_passthrough_and_stderr_writes() {
         process_stdio::set_stderr_writer(previous_stderr);
     });
 }
+
+#[test]
+fn osc52_clipboard_frames_pass_through_stdout_guard() {
+    with_env(&[("PI_TUI_KEYBOARD_PROTOCOL", Some("0"))], || {
+        let mut g = Guard::new(GuardHandler::Record);
+        g.start();
+        for encoded in ["", "YQ==", "YWI=", "YWJj", "aMOpbGxvCuS4lueVjA=="] {
+            let frame = format!("\x1b]52;c;{encoded}\x07");
+            g.writes.lock().unwrap().clear();
+            process_stdio::stdout_write(&frame);
+            assert_eq!(g.writes.lock().unwrap().as_slice(), &[frame]);
+            assert!(g.hidden().is_empty());
+        }
+    });
+}
+
+#[test]
+fn non_clipboard_only_stdout_writes_stay_hidden_under_guard() {
+    with_env(&[("PI_TUI_KEYBOARD_PROTOCOL", Some("0"))], || {
+        let mut g = Guard::new(GuardHandler::Record);
+        g.start();
+        let cases = [
+            "visible\x1b]52;c;YQ==\x07",
+            "\x1b]52;c;YQ==\x07visible",
+            "\x1b]52;c;YQ==\x07\n",
+            "\x1b]52;c;?\x07",
+            "\x1b]52;c;YQ==",
+            "\x1b]52;c;not base64\x07",
+            "\x1b]52;c;====\x07",
+            "\x1b]52;c;YQ===\x07",
+            "ordinary external stdout\n",
+        ];
+        g.writes.lock().unwrap().clear();
+        for text in cases {
+            process_stdio::stdout_write(text);
+        }
+        assert!(g.writes.lock().unwrap().is_empty());
+        assert_eq!(g.hidden(), cases);
+    });
+}
+
+#[test]
+fn osc52_clipboard_frame_does_not_trigger_external_write_observers() {
+    with_env(&[("PI_TUI_KEYBOARD_PROTOCOL", Some("0"))], || {
+        let mut g = Guard::new(GuardHandler::None);
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&seen);
+        g.start();
+        let _unsubscribe = g
+            .term()
+            .observe_external_writes(Arc::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }))
+            .expect("observer");
+        let frame = "\x1b]52;c;YQ==\x07";
+        process_stdio::stdout_write(frame);
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
+        assert!(g.wrote(frame));
+    });
+}

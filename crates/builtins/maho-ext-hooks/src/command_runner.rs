@@ -59,7 +59,9 @@ pub async fn run_command_hook(
             .unwrap_or(serde_json::Value::Null),
     )
     .map_err(std::io::Error::other)?;
-    let inherited = std::env::vars().collect::<BTreeMap<_, _>>();
+    // Hooks run agent-triggered commands: declared credentials are withheld as for the bash tool (senpi#6820).
+    let inherited: BTreeMap<String, String> =
+        maho_tools::credential_proxy_holds::with_credential_proxy(std::env::vars());
     let env = build_hook_environment(
         handler,
         event,

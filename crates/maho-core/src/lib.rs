@@ -34,6 +34,7 @@ pub mod config_reference_resolver;
 pub mod credential_accounts;
 pub mod credential_policy_schema;
 pub mod credential_pool;
+pub mod credential_proxy;
 pub mod defaults;
 pub mod diagnostics;
 pub mod discovered_resource_scope;

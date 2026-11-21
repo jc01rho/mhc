@@ -190,6 +190,7 @@ impl MiniView {
             prompt: Some("› ".to_owned()),
             placeholder: None,
             placeholder_style: None,
+            ..InputOptions::default()
         });
         {
             let submitted = submitted.clone();

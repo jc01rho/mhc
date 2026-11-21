@@ -53,7 +53,7 @@ for one run, `--no-approve` / `-na` ignores them. `/trust` in the TUI saves the 
 | --- | --- |
 | Model | `--provider <name>`, `--model <pattern>` (`provider/id`, optional `:<thinking>` suffix), `--thinking off\|minimal\|low\|medium\|high\|xhigh\|max`, `--models <patterns>` (Ctrl+P cycle list, globs allowed), `--api-key <key>`, `--list-models [search]` |
 | Mode | `--print` / `-p` (one shot), `--mode text\|json\|rpc`, `--tui-mode regular\|fullscreen`, `--offline` |
-| Sessions | `--continue` / `-c`, `--resume` / `-r`, `--session <path\|id>`, `--session-id <id>`, `--fork <path\|id>`, `--session-dir <dir>`, `--no-session`, `--name` / `-n <name>`, `--export <file> [out.html]` |
+| Sessions | `--continue` / `-c`, `--resume` / `-r`, `--session <path\|id>`, `--attach <address>` (needs `--session <ref>`), `--session-id <id>`, `--fork <path\|id>`, `--session-dir <dir>`, `--no-session`, `--name` / `-n <name>`, `--export <file> [out.html]` |
 | Tools | `--tools` / `-t <list>` (allowlist), `--exclude-tools` / `-xt <list>`, `--no-tools` / `-nt`, `--no-builtin-tools` / `-nbt` |
 | Prompt | `--system-prompt <text>`, `--append-system-prompt <text\|file>` (repeatable), `--no-context-files` / `-nc` (skip `AGENTS.md` / `CLAUDE.md`) |
 | Resources | `--extension` / `-e <path>`, `--no-extensions` / `-ne`, `--skill <path>`, `--no-skills` / `-ns`, `--prompt-template <path>`, `--no-prompt-templates` / `-np`, `--theme <path>`, `--use-theme <name>`, `--no-themes` |

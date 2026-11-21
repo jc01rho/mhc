@@ -95,6 +95,7 @@ pub struct HostSessionBinding {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RemoteSessionState {
     pub model: Option<Value>,
+    pub pending_model_switch: Option<Value>,
     pub thinking_level: Option<String>,
     pub thinking_selection: Option<Value>,
     pub last_abort_source: Option<String>,
@@ -132,6 +133,7 @@ impl RemoteSessionState {
     pub fn from_rpc(state: &Value) -> Self {
         Self {
             model: present(state, "model"),
+            pending_model_switch: present(state, "pendingModelSwitch"),
             thinking_level: string_field(state, "thinkingLevel"),
             thinking_selection: present(state, "thinkingSelection"),
             last_abort_source: string_field(state, "lastAbortSource"),
@@ -687,6 +689,7 @@ impl RemoteSessionProxy {
             }
             Some(RpcClientEventKind::ModelChanged) => {
                 state.model = event.get("model").cloned();
+                state.pending_model_switch = None;
                 state.thinking_level = string_field(event, "thinkingLevel");
             }
             Some(RpcClientEventKind::ThinkingLevelChanged) => {
@@ -704,7 +707,16 @@ impl RemoteSessionProxy {
             Some(RpcClientEventKind::SessionInfoChanged) => {
                 state.session_name = string_field(event, "name")
             }
-            _ => {}
+            _ => match event.get("type").and_then(Value::as_str) {
+                Some("model_change_pending") => {
+                    state.pending_model_switch =
+                        event.get("model").map(|model| json!({ "model": model }));
+                }
+                Some("model_change_cancelled") => {
+                    state.pending_model_switch = None;
+                }
+                _ => {}
+            },
         }
         let order = state.next_queued_input_order();
         *self
@@ -1820,8 +1832,28 @@ mod tests {
         assert!(!state.is_bash_running);
         assert_eq!(state.next_queued_input_order(), 0.);
         assert!(state.model.is_none());
+        assert!(state.pending_model_switch.is_none());
         assert!(state.entries.is_none());
         assert!(state.usage_totals.is_none());
+    }
+
+    #[tokio::test]
+    async fn proxy_tracks_pending_model_switch_events() {
+        let proxy = proxy();
+        proxy.apply_state_event(&json!({
+            "type": "model_change_pending",
+            "model": {"id": "372k", "provider": "faux"}
+        }));
+        assert_eq!(
+            proxy.state().pending_model_switch,
+            Some(json!({"model": {"id": "372k", "provider": "faux"}}))
+        );
+        proxy.apply_state_event(&json!({
+            "type": "model_changed",
+            "model": {"id": "372k", "provider": "faux"},
+            "thinkingLevel": "medium"
+        }));
+        assert!(proxy.state().pending_model_switch.is_none());
     }
 
     #[test]

@@ -862,7 +862,11 @@ pub struct InteractiveModeOptions {
     /// this crate does not depend on maho-ext-mcp. Called per extension binding under
     /// `mcp_presenter_enforcement`.
     pub local_mcp_presenter: Option<LocalMcpPresenterFactory>,
+    pub resolve_account_pin: Option<AccountPinResolver>,
 }
+
+/// Resolves the active Anthropic subscription account pin (`session_id`, `cwd`) for the footer.
+pub type AccountPinResolver = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 
 /// Builds a binding's private-forms presenter: `(ui, session_id, lifetime, admit)`. `admit` runs once
 /// per presenter action.
@@ -962,6 +966,7 @@ pub struct InteractiveMode {
     pub extension_ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
     ui_requests: tokio::sync::mpsc::UnboundedReceiver<crate::interactive_extension_ui::UiRequest>,
     ui_dialog: Option<Box<dyn Component>>,
+    secret_input_active: bool,
     /// senpi `CountdownTimer` of the mounted extension dialog: the next 1 s deadline and its tick.
     dialog_countdown: Option<(f64, Box<dyn FnMut() -> bool>)>,
     login_dialog: Option<crate::components::login_dialog::LoginDialogComponent>,
@@ -1124,6 +1129,9 @@ pub struct InteractiveMode {
     /// no human admission.
     mcp_presenter_enforcement: bool,
     local_mcp_presenter: Option<LocalMcpPresenterFactory>,
+    resolve_account_pin: Option<AccountPinResolver>,
+    account_dirty: Arc<std::sync::atomic::AtomicBool>,
+    unsubscribe_provider_account_events: Option<Box<dyn FnOnce() + Send + Sync>>,
     /// The private form whose selector is mounted but not yet painted; marked presented at the next render.
     pending_mcp_form_presented: Option<maho_ext_api::DialogPresentedKey>,
     unsubscribe_security_notices: Option<Box<dyn FnOnce() + Send + 'static>>,
@@ -1401,6 +1409,15 @@ impl InteractiveMode {
     /// footer sources and UI intervals are polled, and a running time-driven element (working row,
     /// spinners, reveal pacing, dialogs, animations, transcript warm-up) repaints every frame.
     pub fn take_frame_rebuild(&mut self, now_ms: f64) -> bool {
+        if self
+            .account_dirty
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.frame_dirty = true;
+            if let Some(footer) = &mut self.footer {
+                footer.invalidate();
+            }
+        }
         if self.poll_footer_sources(now_ms) {
             self.frame_dirty = true;
         }
@@ -3001,6 +3018,13 @@ impl InteractiveMode {
                 ui.reset_before_session_invalidate();
             }
         })));
+        let account_dirty = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let account_flag = Arc::clone(&account_dirty);
+        let unsubscribe_provider_account_events = Some(
+            maho_core::subscribe_provider_account_events(Arc::new(move |_| {
+                account_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            })),
+        );
         Self {
             side_column_widget_bounds: None,
             side_column: None,
@@ -3008,6 +3032,9 @@ impl InteractiveMode {
             mcp_mrtr_presentation_lifetime: std::sync::Mutex::new(None),
             mcp_presenter_enforcement: options.mcp_presenter_enforcement,
             local_mcp_presenter: options.local_mcp_presenter,
+            resolve_account_pin: options.resolve_account_pin,
+            account_dirty,
+            unsubscribe_provider_account_events,
             pending_mcp_form_presented: None,
             unsubscribe_security_notices: None,
             lifecycle_status: crate::lifecycle_status::LifecycleStatus::new(),
@@ -3120,6 +3147,7 @@ impl InteractiveMode {
             extension_ui,
             ui_requests,
             ui_dialog: None,
+            secret_input_active: false,
             login_dialog: None,
             ui_reply: Rc::new(RefCell::new(None)),
             header_container: Container::new(),
@@ -3397,6 +3425,12 @@ impl InteractiveMode {
             .unwrap_or_else(|| self.session.cwd())
     }
 
+    fn host_session_id(&self) -> String {
+        self.with_remote_state(|state| state.session_id.clone())
+            .flatten()
+            .unwrap_or_else(|| self.session.session_id())
+    }
+
     fn host_model(&self) -> maho_ai::model::Model {
         self.with_remote_state(|state| {
             state.model.as_ref().and_then(|value| {
@@ -3405,6 +3439,25 @@ impl InteractiveMode {
         })
         .flatten()
         .unwrap_or_else(|| self.session.model())
+    }
+
+    fn host_pending_model_switch(&self) -> Option<maho_ai::model::Model> {
+        if self.session_host.is_some() {
+            self.with_remote_state(|state| {
+                state
+                    .pending_model_switch
+                    .as_ref()
+                    .and_then(|pending| pending.get("model").or(Some(pending)))
+                    .and_then(|value| {
+                        <maho_ai::model::Model as serde::Deserialize>::deserialize(value).ok()
+                    })
+            })
+            .flatten()
+        } else {
+            self.session
+                .pending_model_switch()
+                .map(|pending| pending.model)
+        }
     }
 
     fn host_thinking_level(&self) -> maho_ai::types::ModelThinkingLevel {
@@ -3710,7 +3763,15 @@ impl InteractiveMode {
                 let suffix = system_prompt_name
                     .map(|name| format!(" (optimized system prompt applied: {name})"))
                     .unwrap_or_default();
-                self.show_status(format!("Model: {}{suffix}", model.id));
+                let held_tail = if self.host_pending_model_switch().is_some_and(|pending| {
+                    pending.provider == model.provider && pending.id == model.id
+                }) {
+                    " · after the next compaction"
+                } else {
+                    ""
+                };
+                self.show_status(format!("Model: {}{suffix}{held_tail}", model.id));
+                self.editor_host.request_render();
                 self.show_risky_main_model_warning(&model);
                 let (provider, id) = (model.provider.clone(), model.id.clone());
                 self.maybe_warn_about_anthropic_subscription_auth(model);
@@ -5524,6 +5585,9 @@ impl InteractiveMode {
     /// senpi's extension `onTerminalInput` listeners (`ui.addInputListener`), which run for all
     /// input before focus delivery whichever component is focused.
     pub fn filter_terminal_input(&self, data: &str) -> Option<String> {
+        if self.secret_input_active {
+            return Some(data.to_owned());
+        }
         let listeners = self
             .extension_ui
             .terminal_input
@@ -12034,6 +12098,9 @@ impl InteractiveMode {
                 self.login_dialog = None;
                 self.pending_auth_prompt = None;
                 self.pending_auth_select = None;
+                if self.secret_input_active {
+                    self.clear_ui_dialog();
+                }
                 match result {
                     Ok(()) => {
                         self.complete_provider_authentication(
@@ -12208,6 +12275,51 @@ impl InteractiveMode {
                 ));
                 self.pending_auth_select = Some((answer, reply));
             }
+            AuthPromptKind::Secret { message, .. } => {
+                let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
+                let (close, receiver) = tokio::sync::oneshot::channel();
+                self.clear_ui_dialog();
+                self.local_dialog_reply = Some(receiver);
+                *self.ui_reply.borrow_mut() = Some(close);
+                let submit_tx = Rc::new(RefCell::new(Some(answer_tx)));
+                let cancel_tx = submit_tx.clone();
+                let submit_closed = self.ui_reply.clone();
+                let cancel_closed = self.ui_reply.clone();
+                let component = Rc::new(RefCell::new(
+                    crate::components::extension_input::ExtensionInputComponent::new(
+                        &self.theme,
+                        &message,
+                        Box::new(move |value| {
+                            if let Some(tx) = submit_tx.borrow_mut().take() {
+                                let _ = tx.send(value.to_owned());
+                            }
+                            submit_closed.borrow_mut().take();
+                        }),
+                        Box::new(move || {
+                            cancel_tx.borrow_mut().take();
+                            cancel_closed.borrow_mut().take();
+                        }),
+                        crate::components::extension_input::ExtensionInputOptions {
+                            has_tui: true,
+                            secret: true,
+                            ..Default::default()
+                        },
+                    ),
+                ));
+                maho_tui::tui::Focusable::set_focused(&mut *component.borrow_mut(), true);
+                self.secret_input_active = true;
+                let countdown = Rc::downgrade(&component);
+                self.mount_counting_dialog(
+                    Box::new(SharedDialog(component)),
+                    Box::new(move || {
+                        countdown
+                            .upgrade()
+                            .map(|component| component.borrow_mut().tick())
+                            .is_some()
+                    }),
+                );
+                self.pending_auth_prompt = Some((answer_rx, reply));
+            }
             kind => {
                 let Some(dialog) = self.login_dialog.as_mut() else {
                     let _ = reply.send(Err(crate::login_outcome::LOGIN_CANCELLED_NOTICE.into()));
@@ -12220,13 +12332,9 @@ impl InteractiveMode {
                     AuthPromptKind::Text {
                         message,
                         placeholder,
-                    }
-                    | AuthPromptKind::Secret {
-                        message,
-                        placeholder,
                     } => dialog.show_prompt(&message, placeholder.as_deref()),
-                    AuthPromptKind::Select { .. } => {
-                        unreachable!("select prompts are handled above")
+                    AuthPromptKind::Select { .. } | AuthPromptKind::Secret { .. } => {
+                        unreachable!("select and secret prompts are handled above")
                     }
                 };
                 self.pending_auth_prompt = Some((receiver, reply));
@@ -12396,6 +12504,20 @@ impl InteractiveMode {
         }
     }
 
+    fn clear_ui_dialog(&mut self) {
+        self.secret_input_active = false;
+        self.dialog_countdown = None;
+        self.ui_reply.borrow_mut().take();
+        if let Some(mut dialog) = self.ui_dialog.take() {
+            dialog.dispose();
+        }
+        self.local_dialog_reply = None;
+    }
+
+    pub fn hide_extension_input(&mut self) {
+        self.clear_ui_dialog();
+    }
+
     /// Mount an extension dialog whose countdown `tick` the mode drives once per second.
     fn mount_counting_dialog(
         &mut self,
@@ -12424,8 +12546,16 @@ impl InteractiveMode {
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
             // senpi v2026.10.27-2 `session_recovered` (a torn session tail kept aside, senpi#4295).
             AgentSessionEvent::SessionRecovered { notice, .. } => self.show_warning(&maho_tui::terminal_text::sanitize_terminal_label(notice)),
-            // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
-            AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
+            // senpi `model_change_pending`: warn, invalidate the footer, and request a render (senpi#6097).
+            AgentSessionEvent::ModelChangePending { notice, .. } => {
+                self.show_warning(notice);
+                if let Some(footer) = &mut self.footer {
+                    footer.invalidate();
+                }
+                self.editor_host.request_render();
+            }
+            // senpi `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
+            AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
             // senpi `offload_module_stuck`: `showWarning` naming the module, the files whose locks it holds, and the `--tool-runtime child` alternative.
             AgentSessionEvent::OffloadModuleStuck { notice, .. } => self.show_warning(&maho_tui::terminal_text::sanitize_terminal_label(notice)),
             // senpi `system_prompt_change`.
@@ -12491,7 +12621,14 @@ impl InteractiveMode {
                 extra: Vec::new(), expanded_line: None,
             }),
             // senpi `model_changed`: the new model does not inherit the delegation episode.
-            AgentSessionEvent::ModelChanged { .. } => { self.external_owner_compaction_notice_shown = false; self.compaction_delegated = false; }
+            AgentSessionEvent::ModelChanged { .. } => {
+                self.external_owner_compaction_notice_shown = false;
+                self.compaction_delegated = false;
+                if let Some(footer) = &mut self.footer {
+                    footer.invalidate();
+                }
+                self.editor_host.request_render();
+            }
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
             // senpi `model_change_skipped`.
             AgentSessionEvent::ModelChangeSkipped { model, budget, .. } => {
@@ -12783,10 +12920,7 @@ impl InteractiveMode {
             .as_ref()
             .is_some_and(tokio::sync::oneshot::Sender::is_closed);
         if closed {
-            self.ui_reply.borrow_mut().take();
-            if let Some(mut dialog) = self.ui_dialog.take() {
-                dialog.dispose();
-            }
+            self.clear_ui_dialog();
         }
         let result = self.custom_ui_result.borrow_mut().take();
         if let Some(result) = result {
@@ -12817,6 +12951,9 @@ impl InteractiveMode {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|key, _| HOST_STATUS_KEYS.contains(&key.as_str()));
         use crate::interactive_extension_ui::UiRequest;
+        if self.secret_input_active {
+            self.clear_ui_dialog();
+        }
         self.handle_ui_request(UiRequest::SideColumn(None));
         self.footer = None;
         self.set_extension_header(None);
@@ -13503,7 +13640,11 @@ impl InteractiveMode {
                 timeout_ms,
                 reply,
                 private,
+                secret,
             } => {
+                if self.secret_input_active {
+                    self.clear_ui_dialog();
+                }
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone();
                 let cancelled = self.ui_reply.clone();
@@ -13529,10 +13670,15 @@ impl InteractiveMode {
                         crate::components::extension_input::ExtensionInputOptions {
                             has_tui: true,
                             timeout_ms,
+                            secret,
                             ..Default::default()
                         },
                     ),
                 ));
+                if secret {
+                    maho_tui::tui::Focusable::set_focused(&mut *component.borrow_mut(), true);
+                    self.secret_input_active = true;
+                }
                 let countdown = Rc::downgrade(&component);
                 self.mount_counting_dialog(
                     Box::new(SharedDialog(component)),
@@ -14113,6 +14259,34 @@ impl InteractiveMode {
             *self.footer_subscription_cache.borrow_mut() = Some((subscription_key, value));
             value
         });
+        let account_suffix = {
+            let session_id = self.host_session_id();
+            let cwd = self.host_cwd();
+            let pinned_account = if model.provider == "anthropic-subscription" {
+                self.resolve_account_pin
+                    .as_ref()
+                    .and_then(|resolve| resolve(&session_id, &cwd))
+            } else {
+                None
+            };
+            let pooled = self
+                .session
+                .model_registry()
+                .auth_storage
+                .get(&model.provider)
+                .and_then(|value| {
+                    serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value)
+                        .ok()
+                });
+            crate::components::footer::account_footer_suffix_with(
+                pooled.as_ref(),
+                &session_id,
+                crate::components::footer::AccountFooterOptions {
+                    pinned_account: pinned_account.as_deref(),
+                    now_ms: None,
+                },
+            )
+        };
         crate::components::footer::FooterSnapshot {
             cwd: self.host_cwd(),
             home: std::env::var("HOME").ok(),
@@ -14135,6 +14309,8 @@ impl InteractiveMode {
             thinking_level: Some(self.host_thinking_level().as_str().into()),
             subscription,
             provider_count: self.footer_data.available_provider_count(),
+            account_suffix,
+            pending_model_id: self.host_pending_model_switch().map(|pending| pending.id),
             ..Default::default()
         }
     }
@@ -14636,8 +14812,8 @@ impl InteractiveMode {
                 break;
             }
             if self.ui_reply.borrow().is_none() {
-                self.ui_dialog = None;
-                self.dialog_countdown = None;
+                self.clear_ui_dialog();
+                break;
             }
         }
         if let Some(widget) = &mut self.async_question_widget {
@@ -15409,12 +15585,16 @@ impl Component for InteractiveMode {
         self.editor.invalidate();
     }
     fn dispose(&mut self) {
+        self.clear_ui_dialog();
         if let Some(detach) = self.detach_mcp_grant_presentation.take() {
             detach();
         }
         // senpi `shutdown`: the MRTR presentation lifetime ends with the terminal.
         self.end_mcp_mrtr_presentation();
         if let Some(unsubscribe) = self.unsubscribe_security_notices.take() {
+            unsubscribe();
+        }
+        if let Some(unsubscribe) = self.unsubscribe_provider_account_events.take() {
             unsubscribe();
         }
         // senpi `dispose`: retire the lifecycle subscription and clear its status without a frame.
@@ -15730,8 +15910,7 @@ impl InteractiveMode {
                 self.terminal_request = Some(TerminalRequest::ExternalEditor);
             }
             if self.ui_reply.borrow().is_none() && self.custom_ui_reply.is_none() {
-                self.ui_dialog = None;
-                self.local_dialog_reply = None;
+                self.clear_ui_dialog();
             }
             self.drain_auth_ui_events();
             return;

@@ -577,6 +577,43 @@ pub fn bind_runtime_into_context(
 pub struct NoninteractiveUi;
 
 impl ExtensionUi for NoninteractiveUi {
+    fn supports_secret_input(&self) -> bool {
+        true
+    }
+    fn input_secret<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        opts: maho_ext_api::ExtensionUiDialogOptions,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        Option<String>,
+                        maho_ext_api::secret_input::SecretInputUnavailableError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            if opts
+                .signal
+                .as_ref()
+                .is_some_and(maho_ext_api::AbortSignal::is_aborted)
+            {
+                return Ok(None);
+            }
+            if opts.secret {
+                return Err(
+                    maho_ext_api::secret_input::SecretInputUnavailableError::new(
+                        maho_ext_api::secret_input::SecretInputUnavailableReason::Headless,
+                    ),
+                );
+            }
+            Ok(None)
+        })
+    }
     fn select<'a>(
         &'a self,
         _: &'a str,

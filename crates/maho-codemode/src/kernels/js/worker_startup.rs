@@ -79,6 +79,7 @@ pub async fn start_worker_with_inline_fallback(
         )
     });
     if let Ok(mut worker) = primary {
+        worker.attest_session(options.session_env);
         match worker.initialize(options, signal).await {
             Ok(()) => return Ok(worker),
             Err(error) => {
@@ -99,6 +100,7 @@ pub async fn start_worker_with_inline_fallback(
         options.parallel_pool_width,
         options.env_passthrough,
     )?;
+    worker.attest_session(options.session_env);
     if let Err(error) = worker.initialize(options, signal).await {
         worker.terminate().await?;
         return Err(error);

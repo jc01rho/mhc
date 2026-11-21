@@ -525,6 +525,7 @@ mod tests {
             search_group: None,
             allow_lazy_activation: true,
             kernel_prelude: None,
+            eval_only: false,
         })
         .unwrap();
         assert_eq!(doc.owner_label, "");
@@ -582,6 +583,7 @@ mod tests {
             search_group: None,
             allow_lazy_activation: true,
             kernel_prelude: None,
+            eval_only: false,
         })
         .unwrap();
         assert_eq!(doc.owner_label, "docs");

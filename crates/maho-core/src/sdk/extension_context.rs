@@ -106,6 +106,39 @@ impl SessionManager for SessionView {
 
 struct HeadlessUi;
 impl ExtensionUi for HeadlessUi {
+    fn supports_secret_input(&self) -> bool {
+        true
+    }
+    fn input_secret<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        opts: ExtensionUiDialogOptions,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        Option<String>,
+                        maho_ext_api::secret_input::SecretInputUnavailableError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            if opts.signal.as_ref().is_some_and(AbortSignal::is_aborted) {
+                return Ok(None);
+            }
+            if opts.secret {
+                return Err(
+                    maho_ext_api::secret_input::SecretInputUnavailableError::new(
+                        maho_ext_api::secret_input::SecretInputUnavailableReason::Headless,
+                    ),
+                );
+            }
+            Ok(None)
+        })
+    }
     fn select<'a>(
         &'a self,
         _: &'a str,
@@ -237,12 +270,56 @@ pub(crate) fn encode_uri_component(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::encode_uri_component;
+    use super::{HeadlessUi, encode_uri_component};
+    use maho_ext_api::{
+        AbortSignal, ExtensionUi, ExtensionUiDialogOptions,
+        secret_input::SecretInputUnavailableReason,
+    };
 
     #[test]
     fn encode_uri_component_keeps_the_unreserved_set_and_escapes_the_rest() {
         assert_eq!(encode_uri_component("abc-_.!~*'()"), "abc-_.!~*'()");
         assert_eq!(encode_uri_component("a/b c"), "a%2Fb%20c");
         assert_eq!(encode_uri_component("세션"), "%EC%84%B8%EC%85%98");
+    }
+
+    #[tokio::test]
+    async fn headless_ui_advertises_secret_input_and_refuses_without_plaintext_fallback() {
+        let ui = HeadlessUi;
+        assert!(ui.supports_secret_input());
+        assert_eq!(
+            ui.input_secret("ordinary", None, ExtensionUiDialogOptions::default())
+                .await,
+            Ok(None)
+        );
+        let err = ui
+            .input_secret(
+                "private",
+                None,
+                ExtensionUiDialogOptions {
+                    secret: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("headless secret input must refuse");
+        assert_eq!(err.code, "secret_input_unavailable");
+        assert_eq!(err.reason, SecretInputUnavailableReason::Headless);
+
+        let signal = AbortSignal::default();
+        signal.abort();
+        assert_eq!(
+            ui.input_secret(
+                "private",
+                None,
+                ExtensionUiDialogOptions {
+                    secret: true,
+                    signal: Some(signal),
+                    ..Default::default()
+                },
+            )
+            .await,
+            Ok(None)
+        );
     }
 }

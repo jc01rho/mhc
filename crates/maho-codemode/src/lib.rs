@@ -549,6 +549,8 @@ fn install_eval(
                         description: Some(tool.description),
                         parameters: Some(tool.parameters),
                         kernel_prelude: None,
+                        exposure: Some(tool.exposure),
+                        eval_only: tool.eval_only,
                     })
                     .collect()
             })
@@ -620,12 +622,7 @@ fn install_eval(
             .get_all_tools()
             .map_err(|error| error.to_string())?
             .into_iter()
-            .map(|tool| bridges::schema_bridge::EvalSchemaToolInfo {
-                name: tool.name,
-                description: Some(tool.description),
-                parameters: Some(tool.parameters),
-                kernel_prelude: tool.kernel_prelude,
-            })
+            .map(bridges::schema_bridge::EvalSchemaToolInfo::from)
             .collect::<Vec<_>>();
         Ok(extension::kernel_preludes::active_kernel_preludes(
             &active, &all,
@@ -636,15 +633,11 @@ fn install_eval(
         .get_all_tools()
         .unwrap_or_default()
         .into_iter()
-        .map(|tool| bridges::schema_bridge::EvalSchemaToolInfo {
-            name: tool.name,
-            description: Some(tool.description),
-            parameters: Some(tool.parameters),
-            kernel_prelude: tool.kernel_prelude,
-        })
+        .map(bridges::schema_bridge::EvalSchemaToolInfo::from)
         .collect::<Vec<_>>();
     let prompt_preludes =
         extension::kernel_preludes::active_kernel_preludes(&prompt_active, &prompt_tools);
+    let eval_only_tools = extension::reachable_tools::eval_only_tool_names(&prompt_tools);
     let prompt = prompt::eval_prompt::EvalPromptOptions {
         model_id: state.model_id.clone(),
         spawns: runtime.as_ref().is_some_and(|runtime| runtime.spawns),
@@ -654,6 +647,7 @@ fn install_eval(
         js_runtime: Some(options.js_runtime.clone()),
         bun_skill_path: active_bun_skill_path(&options.js_runtime),
         kernel_preludes: prompt_preludes,
+        eval_only_tools,
         ..Default::default()
     };
     let mut definition = tool::eval_tool::create_eval_tool(Arc::new(CreateEvalToolOptions {

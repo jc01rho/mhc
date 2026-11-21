@@ -17,6 +17,8 @@ Commands:
   mhc auth <command>            Print credentials or check provider readiness
   mhc doctor                    Run diagnostics on configuration, trust, and resources
   mhc doctor --fix [--dry-run]  Release stale reflection locks and dead-owner runtime locks (omo build only)
+  mhc session-of-pid <pid> --json
+                                 Which session spawned a process (kernel ancestry, not the environment)
   mhc import-omo [--from <dir>] [--force]
                                  Import config, auth, and sessions from OmO agent directory
   mhc ulw-loop <command>        Manage ulw-loop goals, criteria, and evidence
@@ -43,6 +45,7 @@ Options:
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume
   --session <path|id>            Use specific session file or partial UUID
+  --attach <address>             Attach the TUI to an RPC endpoint (requires --session <ref>)
   --session-id <id>              Use exact project session ID, creating it if missing
   --spawned-by <json>            Fresh session ancestry: parentSessionId, rootSessionId, taskId
                                  Ignored with a warning when resuming or forking

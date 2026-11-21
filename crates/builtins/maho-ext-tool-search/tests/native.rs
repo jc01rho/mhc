@@ -62,6 +62,7 @@ fn read_docs_tool() -> ToolInfo {
         search_group: Some("docs".into()),
         allow_lazy_activation: true,
         kernel_prelude: None,
+        eval_only: false,
     }
 }
 /// The real registered definition an MCP server contributes: a resident tool with its own object

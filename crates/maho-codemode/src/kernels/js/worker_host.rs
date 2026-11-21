@@ -90,6 +90,13 @@ pub fn crashed_result(cell_id: &str, error: &ProcessError, duration_ms: f64) -> 
 }
 
 impl WorkerHost {
+    /// Attests the kernel process to the session it runs for (senpi#6978).
+    pub fn attest_session(
+        &mut self,
+        session_env: Option<&crate::kernels::session_env::SessionEnvironment>,
+    ) {
+        self.process.attest_session(session_env);
+    }
     pub(crate) fn from_process(process: SubprocessProcess) -> Self {
         Self {
             mode: JavaScriptKernelMode::Process,
@@ -123,10 +130,12 @@ impl WorkerHost {
             cwd.to_string_lossy().into_owned(),
             parallel_pool_width.to_string(),
         ];
-        // A senpi worker thread inherits the host `process.env`, extension writes included.
-        let mut env = maho_ext_api::process_env::vars()
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
+        // A senpi worker thread inherits the host `process.env`, extension writes included; declared credentials are
+        // withheld from it and its children (senpi#6820).
+        let mut env: std::collections::HashMap<String, String> =
+            maho_tools::credential_proxy_holds::with_credential_proxy(
+                maho_ext_api::process_env::vars(),
+            );
         scrub_host_env(&mut env, env_passthrough);
         let process = SubprocessProcess::spawn("bun", &args, cwd, &env)?;
         Ok(Self { mode, process })

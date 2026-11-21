@@ -244,6 +244,10 @@ pub async fn create_agent_session(
         .agent_dir
         .take()
         .unwrap_or_else(crate::config::get_agent_dir);
+    // senpi#6978: the tool crates write their session spawn records under this agent directory.
+    maho_tools::session_spawn_attestation::set_session_spawns_store(Some(
+        maho_tools::session_spawn_attestation::session_spawns_dir(std::path::Path::new(&agent_dir)),
+    ));
     let runtime = match options.model_runtime.take().or_else(|| {
         options
             .model_registry
@@ -269,6 +273,13 @@ pub async fn create_agent_session(
         SettingsManager::create(&cwd, &agent_dir, &crate::config::home_dir(), true)
     });
     runtime.set_settings_manager(&settings);
+    // senpi#6820 (credential-proxy builtin): credentials named in the user's global settings are withheld from
+    // every agent child and served through the loopback proxy; withheld even when the proxy cannot start.
+    let credential_proxy_settings = settings.get_global().get("credentialProxy").cloned();
+    crate::credential_proxy::runtime::activate_engine_credential_proxy(
+        credential_proxy_settings.as_ref(),
+    )
+    .await;
     let mut manager = options
         .session_manager
         .take()

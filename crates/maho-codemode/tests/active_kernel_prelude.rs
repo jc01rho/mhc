@@ -89,6 +89,8 @@ async fn test_active_tool_kernel_prelude_js_execution() {
         description: Some("Drive desktop GUI".into()),
         parameters: Some(json!({"type": "object"})),
         kernel_prelude: Some(computer_prelude.clone()),
+        exposure: None,
+        eval_only: false,
     }];
 
     let all_tools_catalog = all_tools.clone();

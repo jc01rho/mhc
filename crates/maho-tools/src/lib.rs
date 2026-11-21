@@ -6,6 +6,7 @@ pub mod bash;
 pub mod bash_executor;
 pub mod bash_sandbox;
 pub mod bounded_realpath;
+pub mod credential_proxy_holds;
 pub mod definition;
 pub mod edit;
 pub mod edit_diff;

@@ -66,6 +66,8 @@ pub struct EvalPromptOptions {
     pub run_budget_seconds: Option<f64>,
     pub max_detached_cells: Option<f64>,
     pub kernel_preludes: Vec<KernelPrelude>,
+    /// Tools withheld from the model's direct list and reachable only as `tool.<name>(...)` in a cell (senpi#6886).
+    pub eval_only_tools: Vec<String>,
 }
 
 pub struct EvalPromptParts {
@@ -150,6 +152,7 @@ pub fn build_eval_prompt(
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
+        ("evalOnlyTools", options.eval_only_tools.join(", ")),
     ] {
         context.insert(key.to_owned(), serde_json::Value::String(value));
     }

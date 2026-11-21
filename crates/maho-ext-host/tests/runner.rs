@@ -223,6 +223,48 @@ async fn lifecycle_ui_emits_prompt_pair_for_ephemeral_dialogs() {
     }
 }
 
+#[tokio::test]
+async fn lifecycle_ui_omits_prompt_title_for_secret_input() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let ui = maho_ext_host::ui::LifecycleUi::new(
+        Arc::new(TestUi),
+        ExtensionRuntime::default(),
+        Arc::new(move |event| {
+            observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event)
+        }),
+    );
+    let _ = ui
+        .input(
+            "Sensitive Secret Title",
+            None,
+            ExtensionUiDialogOptions {
+                secret: true,
+                ..Default::default()
+            },
+        )
+        .await;
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        &events[0],
+        ExtensionEvent::UiPromptStart {
+            kind: UiPromptKind::Input,
+            title: None
+        }
+    ));
+    assert!(matches!(
+        &events[1],
+        ExtensionEvent::UiPromptEnd {
+            kind: UiPromptKind::Input,
+            title: None
+        }
+    ));
+}
+
 #[test]
 fn retained_ui_factory_interface_cannot_bypass_stale_guard() {
     let runtime = ExtensionRuntime::default();

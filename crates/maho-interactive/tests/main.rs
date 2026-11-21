@@ -37,10 +37,14 @@ mod components32_transcript;
 mod extension_ui_repaint;
 #[path = "footer_corpus.rs"]
 mod footer_corpus;
+#[path = "footer_pending_model_switch.rs"]
+mod footer_pending_model_switch;
 #[path = "foundation.rs"]
 mod foundation;
 #[path = "grok_mermaid_edges.rs"]
 mod grok_mermaid_edges;
+#[path = "issue_5983_footer_serving_account.rs"]
+mod issue_5983_footer_serving_account;
 #[path = "mermaid_golden.rs"]
 mod mermaid_golden;
 #[path = "mermaid_transformer.rs"]
@@ -67,6 +71,8 @@ mod runtime35_transfer;
 mod runtime35_viewport;
 #[path = "runtime35_widget_clock.rs"]
 mod runtime35_widget_clock;
+#[path = "secret_input.rs"]
+mod secret_input;
 #[cfg(unix)]
 #[path = "session_control_endpoint.rs"]
 mod session_control_endpoint;

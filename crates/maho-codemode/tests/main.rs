@@ -5,6 +5,8 @@
 mod active_kernel_prelude;
 #[path = "agent_bridge.rs"]
 mod agent_bridge;
+#[path = "attest_and_prelude.rs"]
+mod attest_and_prelude;
 #[path = "bridge_http.rs"]
 mod bridge_http;
 #[path = "bridge_protocol.rs"]

@@ -636,6 +636,7 @@ impl ExtensionActions for Host {
                 search_group: None,
                 allow_lazy_activation: false,
                 kernel_prelude: tool.definition.kernel_prelude.clone(),
+                eval_only: false,
             })
             .collect())
     }

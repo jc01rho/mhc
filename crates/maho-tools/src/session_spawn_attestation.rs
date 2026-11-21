@@ -83,6 +83,33 @@ pub fn session_spawns_dir(agent_dir: &Path) -> PathBuf {
     agent_dir.join(SESSION_SPAWNS_DIR)
 }
 
+static STORE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// The record directory spawners in this process write to, installed once by session creation from its
+/// agent directory (mhc: the tool crates cannot resolve the agent directory themselves). `None` stops
+/// recording.
+pub fn set_session_spawns_store(dir: Option<PathBuf>) {
+    if let Ok(mut store) = STORE.write() {
+        *store = dir;
+    }
+}
+
+pub fn session_spawns_store() -> Option<PathBuf> {
+    STORE.read().ok().and_then(|store| store.clone())
+}
+
+/// [`attest_session_spawn`] into the installed store; `None` when no store is installed.
+pub fn attest_session_spawn_in_store(
+    session_id: &str,
+    pid: u32,
+) -> Option<SessionSpawnAttestation> {
+    Some(attest_session_spawn(
+        &session_spawns_store()?,
+        session_id,
+        pid,
+    ))
+}
+
 /// The record one spawn wrote, if it could be written: release it once the child exited.
 pub struct SessionSpawnAttestation {
     path: PathBuf,

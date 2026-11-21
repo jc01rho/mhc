@@ -32,12 +32,15 @@ enum LastAction {
 }
 
 pub type PlaceholderStyle = std::rc::Rc<dyn Fn(&str) -> String>;
+pub type OnInvalidInput = std::rc::Rc<dyn Fn()>;
 
 #[derive(Default)]
 pub struct InputOptions {
     pub prompt: Option<String>,
     pub placeholder: Option<String>,
     pub placeholder_style: Option<PlaceholderStyle>,
+    pub secret: bool,
+    pub on_invalid_input: Option<OnInvalidInput>,
 }
 
 pub type OnSubmit = Box<dyn FnMut(&str)>;
@@ -48,6 +51,8 @@ pub struct Input {
     value: String,
     cursor: usize,
     prompt: String,
+    secret: bool,
+    on_invalid_input: Option<OnInvalidInput>,
     placeholder: String,
     placeholder_style: PlaceholderStyle,
     rendered_start_column: usize,
@@ -67,6 +72,8 @@ impl Input {
             value: String::new(),
             cursor: 0,
             prompt: options.prompt.unwrap_or_else(|| "> ".to_string()),
+            secret: options.secret,
+            on_invalid_input: options.on_invalid_input,
             placeholder: options.placeholder.unwrap_or_default(),
             placeholder_style: options
                 .placeholder_style
@@ -83,13 +90,69 @@ impl Input {
         }
     }
 
+    pub fn is_secret(&self) -> bool {
+        self.secret
+    }
+
     pub fn get_value(&self) -> &str {
         &self.value
     }
 
     pub fn set_value(&mut self, value: impl Into<String>) {
-        self.value = value.into();
+        let value = value.into();
+        if self.secret && !Self::is_secret_input_char_valid(&value) {
+            self.notify_invalid_input();
+            return;
+        }
+        self.value = value;
         self.cursor = self.cursor.min(self.value.len());
+    }
+
+    fn is_secret_input_char_valid(value: &str) -> bool {
+        !value.chars().any(|ch| {
+            let code = ch as u32;
+            code < 32
+                || code == 0x7f
+                || (0x80..=0x9f).contains(&code)
+                || code == 0x2028
+                || code == 0x2029
+        })
+    }
+
+    fn notify_invalid_input(&self) {
+        if let Some(callback) = &self.on_invalid_input {
+            callback();
+        }
+    }
+
+    fn scrub_string(text: &mut String) {
+        let len = text.len();
+        if len > 0 {
+            text.clear();
+            text.push_str(&"\0".repeat(len));
+        }
+        *text = String::new();
+    }
+
+    pub fn dispose(&mut self) {
+        if !self.secret {
+            return;
+        }
+        Self::scrub_string(&mut self.value);
+        self.cursor = 0;
+        Self::scrub_string(&mut self.paste_buffer);
+        self.is_in_paste = false;
+        for mut entry in self.kill_ring.drain(..) {
+            Self::scrub_string(&mut entry);
+        }
+        self.kill_ring = Vec::new();
+        for mut state in self.undo_stack.drain(..) {
+            Self::scrub_string(&mut state.value);
+        }
+        self.undo_stack = Vec::new();
+        self.last_action = None;
+        self.on_submit = None;
+        self.on_escape = None;
     }
 
     fn kill_ring_push(&mut self, text: &str, prepend: bool, accumulate: bool) {
@@ -267,10 +330,16 @@ impl Input {
         });
         if !has_control_chars {
             self.insert_character(&data);
+        } else if self.secret && !data.starts_with('\x1b') {
+            self.notify_invalid_input();
         }
     }
 
     fn insert_character(&mut self, char: &str) {
+        if self.secret && !Self::is_secret_input_char_valid(char) {
+            self.notify_invalid_input();
+            return;
+        }
         if is_whitespace_char(char) || self.last_action != Some(LastAction::TypeWord) {
             self.push_undo();
         }
@@ -421,6 +490,10 @@ impl Input {
     }
 
     fn handle_paste(&mut self, pasted_text: &str) {
+        if self.secret {
+            self.insert_character(pasted_text);
+            return;
+        }
         self.last_action = None;
         self.push_undo();
         let clean_text = pasted_text.replace(['\r', '\n'], "").replace('\t', "    ");
@@ -461,7 +534,12 @@ impl Component for Input {
         self.cursor = self.value.len();
         for grapheme in graphemes(&self.value) {
             let index = grapheme.as_ptr() as usize - self.value.as_ptr() as usize;
-            let next_column = current_column + visible_width(grapheme);
+            let next_column = current_column
+                + if self.secret {
+                    1
+                } else {
+                    visible_width(grapheme)
+                };
             if target_column < next_column {
                 self.cursor = index;
                 break;
@@ -487,12 +565,37 @@ impl Component for Input {
 
     fn invalidate(&mut self) {}
 
+    fn dispose(&mut self) {
+        self.dispose();
+    }
+
     fn render(&mut self, width: usize) -> Vec<String> {
         let available_width = width as i64 - visible_width(&self.prompt) as i64;
         if available_width <= 0 {
             return vec![truncate_to_width(&self.prompt, width, "", false)];
         }
         let available_width = available_width as usize;
+
+        if self.secret {
+            let total_graphemes = graphemes(&self.value).count();
+            let cursor_grapheme = graphemes(&self.value[..self.cursor]).count();
+            let start = cursor_grapheme.saturating_sub(available_width.saturating_sub(1));
+            self.rendered_start_column = start;
+            let shown_count = total_graphemes.saturating_sub(start).min(available_width);
+            let shown = "*".repeat(shown_count);
+            let offset = cursor_grapheme.saturating_sub(start);
+            let marker = if self.focused { CURSOR_MARKER } else { "" };
+            let at_cursor = if offset < shown.len() { "*" } else { " " };
+            let before = &shown[..offset.min(shown.len())];
+            let after = if offset < shown.len() {
+                &shown[offset + 1..]
+            } else {
+                ""
+            };
+            let rendered = format!("{before}{marker}\x1b[7m{at_cursor}\x1b[27m{after}");
+            let padding = " ".repeat(available_width.saturating_sub(visible_width(&rendered)));
+            return vec![format!("{}{rendered}{padding}", self.prompt)];
+        }
 
         if self.value.is_empty() && !self.placeholder.is_empty() {
             let placeholder = truncate_to_width(&self.placeholder, available_width, "", false);

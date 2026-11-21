@@ -1,4 +1,4 @@
-use maho_tools::definition::KernelPrelude;
+use maho_tools::definition::{KernelPrelude, ToolExposure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -9,6 +9,27 @@ pub struct EvalSchemaToolInfo {
     pub parameters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel_prelude: Option<KernelPrelude>,
+    /// The tool's declared exposure (senpi#6269 follow-up): an `eval`-exposed tool stays reachable from a cell
+    /// while the session withholds it from the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<ToolExposure>,
+    /// The session routes the tool through eval only (senpi#6886).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub eval_only: bool,
+}
+
+/// What `pi.getAllTools()` reports, read through the eval catalog's shape.
+impl From<maho_ext_api::ToolInfo> for EvalSchemaToolInfo {
+    fn from(tool: maho_ext_api::ToolInfo) -> Self {
+        Self {
+            name: tool.name,
+            description: Some(tool.description),
+            parameters: Some(tool.parameters),
+            kernel_prelude: tool.kernel_prelude,
+            exposure: Some(tool.exposure),
+            eval_only: tool.eval_only,
+        }
+    }
 }
 
 impl EvalSchemaToolInfo {
@@ -22,6 +43,8 @@ impl EvalSchemaToolInfo {
             description,
             parameters,
             kernel_prelude: None,
+            exposure: None,
+            eval_only: false,
         }
     }
 }

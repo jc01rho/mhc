@@ -91,6 +91,7 @@ pub enum UiRequest {
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Option<String>>,
         private: PrivateDialog,
+        secret: bool,
     },
     Notify(String, NotificationType),
     Widget(String, Option<WidgetContent>, ExtensionWidgetOptions),
@@ -371,6 +372,28 @@ impl InteractiveExtensionUi {
 }
 
 impl ExtensionUi for InteractiveExtensionUi {
+    fn supports_secret_input(&self) -> bool {
+        true
+    }
+    fn input_secret<'a>(
+        &'a self,
+        title: &'a str,
+        placeholder: Option<&'a str>,
+        opts: ExtensionUiDialogOptions,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        Option<String>,
+                        maho_ext_api::secret_input::SecretInputUnavailableError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        let value = self.input(title, placeholder, opts);
+        Box::pin(async move { Ok(value.await) })
+    }
     fn supports_subagent_cost(&self) -> bool {
         true
     }
@@ -530,8 +553,15 @@ impl ExtensionUi for InteractiveExtensionUi {
         &'a self,
         title: &'a str,
         _placeholder: Option<&'a str>,
-        opts: ExtensionUiDialogOptions,
+        mut opts: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, Option<String>> {
+        if opts.secret {
+            opts.ephemeral = true;
+            match maho_ext_api::secret_input::resolve_secret_input_timeout(opts.timeout_ms) {
+                Ok(ms) => opts.timeout_ms = Some(ms),
+                Err(_) => return Box::pin(async { None }),
+            }
+        }
         if Self::settled_ephemeral(&opts) {
             return Box::pin(async { None });
         }
@@ -542,6 +572,7 @@ impl ExtensionUi for InteractiveExtensionUi {
             timeout_ms: opts.timeout_ms,
             reply,
             private: PrivateDialog::of(&opts),
+            secret: opts.secret,
         });
         Box::pin(async move {
             let _blocked = blocked;
