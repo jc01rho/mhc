@@ -732,3 +732,103 @@ async fn live_lifecycle(shutdown_live: bool, peer_live: bool) {
     drop(child);
     root.close().expect("cleanup");
 }
+
+fn turn_event() -> ExtensionEvent {
+    ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
+        prompt: "work".into(),
+        trigger: "prompt".into(),
+        preview: false,
+        images: None,
+        system_prompt: String::new(),
+        system_prompt_options: Default::default(),
+    })
+}
+
+/// #12122 (#12113): a real turn waits for the session's DAG attach, so the attach's
+/// `omo.dag.updated` snapshot is on the wire before the turn runs, and a client reattaching to the
+/// retained session (`session_resumed`) gets that snapshot restated.
+#[tokio::test]
+async fn registered_turn_waits_for_the_dag_snapshot_and_resume_restates_it() {
+    let root = tempfile::tempdir().expect("root");
+    let (created, _children) = mpsc::channel();
+    let runner = Arc::new(Runner(created));
+    let engine = compose_task_engine(ComposeTaskEngineDeps {
+        cwd: root.path().into(),
+        config: json!({}),
+        runners: ManagedRunners {
+            in_process: runner.clone(),
+            process: runner,
+        },
+        actions: Arc::new(Actions),
+        coordinator: None,
+        resolve_registry: support::fake_resolve_registry(),
+        host_transport: None,
+    });
+    let mut api = support::api();
+    let component = TaskComponent::register_with_dag_timers(
+        &mut api,
+        engine,
+        Default::default(),
+        senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps {
+            state_dir: senpi_task::store::StateDirConfig {
+                project_dir: root.path().into(),
+                task_state_dir: None,
+            },
+            team_bounds: senpi_task::team::runtime_config::TeamTaskBounds {
+                max_members: 4,
+                max_parallel_members: 2,
+                max_wall_clock_minutes: 10,
+            },
+            load_runtime_state: None,
+        },
+        false,
+        (
+            Arc::new(Timers::default()),
+            Arc::new(Timers::default()),
+            Arc::new(Timers::default()),
+        ),
+    )
+    .expect("register")
+    .expect("component");
+    let dag = component
+        .dag_engine()
+        .expect("component owns the dag engine");
+    let updates = Arc::new(Mutex::new(0_usize));
+    let counted = updates.clone();
+    let subscription = api.events.on(
+        "senpi:extension-rpc-event",
+        Arc::new(move |event| {
+            if event["name"] == "omo.dag.updated" {
+                *counted.lock().expect("updates") += 1;
+            }
+        }),
+    );
+    let mut ctx = support::context();
+    ctx.cwd = root.path().into();
+    dispatch(&api, EventKind::SessionStart, &mut start_event(), &ctx).await;
+    dispatch(&api, EventKind::BeforeAgentStart, &mut turn_event(), &ctx).await;
+    assert_eq!(
+        *updates.lock().expect("updates"),
+        1,
+        "the turn starts only after the attach published the snapshot"
+    );
+    dispatch(
+        &api,
+        EventKind::SessionResumed,
+        &mut ExtensionEvent::SessionResumed,
+        &ctx,
+    )
+    .await;
+    assert_eq!(
+        *updates.lock().expect("updates"),
+        2,
+        "a reattaching client gets the snapshot restated"
+    );
+    settle_start(&component, &dag).await;
+    drop(subscription);
+    component.dispose();
+    drop(api);
+    drop(dag);
+    drop(component);
+    root.close().expect("cleanup");
+}
