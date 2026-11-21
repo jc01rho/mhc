@@ -38,6 +38,7 @@ pub mod host_prewarm_intent;
 pub mod judge_runner;
 pub mod lead_poller_lifecycle;
 pub mod lifecycle_adapters;
+pub mod live_config_provider;
 pub mod member_extension;
 pub mod member_liveness;
 pub mod memory_reporter;

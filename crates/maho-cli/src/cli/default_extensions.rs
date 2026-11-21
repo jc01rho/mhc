@@ -857,7 +857,7 @@ impl Extension for Task {
                     }));
                 }
                 let process = super::task_runners::authenticated_rpc_options(native, weak.clone());
-                let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
+                let (config, live_config) = super::task_runners::live_omo_config(&ctx.cwd, &environment);
                 // pin `engine-runners.ts:62`: the in-process cap derives from the resolved `task.max_depth` (default 1, as `engine.rs`).
                 let max_depth = config["task"]["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1);
                 let mut runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
@@ -874,11 +874,11 @@ impl Extension for Task {
                     let mut slot = engine_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let stale = slot.as_ref().is_none_or(|(cwd, retained, _)| *cwd != ctx.cwd || *retained != config);
                     if stale {
-                        let engine = maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {
+                        let engine = maho_omo_task::engine::compose_task_engine_with_live_config(maho_omo_task::engine::ComposeTaskEngineDeps {
                             cwd: ctx.cwd.clone(), config: config.clone(), runners, actions: actions.clone(), coordinator: Some(coordinator.clone()),
                             resolve_registry: Arc::new(move || Some(registry.clone())),
                             host_transport: Some(super::host_transport::create_cli_host_transport_with_agent_dir(executor.clone(), Some(ctx.agent_dir.clone()))),
-                        }, Some(Arc::new(super::task_host::HostRespawn { runner: Default::default(), assembly: host_assembly.clone(), settings: config.clone(), fallback: maho_omo_task::engine_runners::build_rpc_respawn_runner(process) })));
+                        }, Some(Arc::new(super::task_host::HostRespawn { runner: Default::default(), assembly: host_assembly.clone(), settings: config.clone(), fallback: maho_omo_task::engine_runners::build_rpc_respawn_runner(process) })), live_config);
                         *slot = Some((ctx.cwd.clone(), config, engine));
                     }
                     let Some((_, _, engine)) = slot.as_ref() else { return Err(ExtensionFailure::new("task engine slot empty after composition")); };

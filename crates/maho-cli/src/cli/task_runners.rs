@@ -23,6 +23,77 @@ pub fn resolved_omo_config(
     .config
 }
 
+/// The task planner's live omo config (`createLiveConfigProvider`): the register-time load, plus a
+/// provider that re-reads per plan, keeps the last good config when a reload introduces an error and
+/// warns once per cause.
+pub fn live_omo_config(
+    cwd: &std::path::Path,
+    env: &BTreeMap<String, String>,
+) -> (serde_json::Value, maho_omo_task::planner::ResolveOmoConfig) {
+    use maho_omo_task::live_config_provider::{
+        DEFAULT_LIVE_CONFIG_CACHE_TTL_MS, LiveConfigProviderOptions, create_live_config_provider,
+        system_clock_ms,
+    };
+    let load = {
+        let cwd = cwd.to_path_buf();
+        let env = env.clone();
+        move || live_config_load(&cwd, &env)
+    };
+    let initial = load();
+    let config = initial.config.clone();
+    let provider = create_live_config_provider(LiveConfigProviderOptions {
+        load_config: Arc::new(move || Ok(load())),
+        initial,
+        merged_config_path: omo_config_core::MERGED_OMO_CONFIG_PATH.to_string(),
+        warn: Arc::new(|message: &str, meta: serde_json::Value| {
+            maho_ext_api::diagnostic(&format!("{message}: {meta}"));
+        }),
+        cache_ttl_ms: DEFAULT_LIVE_CONFIG_CACHE_TTL_MS,
+        now: Arc::new(system_clock_ms),
+    });
+    (config, provider)
+}
+
+fn live_config_load(
+    cwd: &std::path::Path,
+    env: &BTreeMap<String, String>,
+) -> maho_omo_task::live_config_provider::LiveConfigLoad {
+    use maho_omo_config_resolution::SenpiConfigDiagnostic;
+    use maho_omo_task::live_config_provider::{LiveConfigDiagnostic, LiveConfigLoad};
+    let loaded =
+        maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            env: Some(env.clone()),
+            ..Default::default()
+        });
+    let diagnostics = loaded
+        .diagnostics
+        .iter()
+        .map(|diagnostic| match diagnostic {
+            SenpiConfigDiagnostic::Config(diagnostic) => LiveConfigDiagnostic {
+                kind: diagnostic.kind.to_string(),
+                path: diagnostic.path.clone(),
+                message: diagnostic.message.clone(),
+            },
+            SenpiConfigDiagnostic::Model(diagnostic) => LiveConfigDiagnostic {
+                kind: diagnostic.kind.to_string(),
+                path: diagnostic.path.clone(),
+                message: diagnostic.message.clone(),
+            },
+        })
+        .collect();
+    LiveConfigLoad {
+        config: loaded.config,
+        diagnostics,
+        source_paths: loaded
+            .loaded
+            .sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect(),
+    }
+}
+
 /// `registerModelRoutingRpc` inputs (omo #14025): the register-time cwd, a merged-config read per
 /// answer, the session registry and the planner's own agent table.
 pub fn model_routing_rpc_deps(

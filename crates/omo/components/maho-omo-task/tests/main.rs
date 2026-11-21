@@ -61,6 +61,8 @@ pub mod lead_message_sink;
 pub mod lead_poller_lifecycle;
 #[path = "lifecycle_adapters.rs"]
 pub mod lifecycle_adapters;
+#[path = "live_config_provider.rs"]
+pub mod live_config_provider;
 #[path = "member_liveness.rs"]
 pub mod member_liveness;
 #[path = "message_renderers.rs"]
