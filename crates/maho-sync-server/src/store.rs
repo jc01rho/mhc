@@ -237,7 +237,7 @@ impl Store {
             .db
             .lock()
             .map_err(|_| StoreError("store lock poisoned".into()))?;
-        f(&mut *db)
+        f(&mut db)
     }
 
     /// Registers a device from the token file; an existing row keeps its revocation.
