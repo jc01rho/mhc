@@ -39,6 +39,7 @@ pub mod facts_runner_types;
 pub mod facts_terminal_writes;
 pub mod facts_wiring;
 pub mod guard;
+pub mod guard_foreign_roots;
 #[cfg(test)]
 #[path = "guard_raw_target_tests.rs"]
 mod guard_raw_target_tests;
