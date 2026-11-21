@@ -214,3 +214,7 @@ pub fn measure_runtime_size(
     });
     Ok(RuntimeSize { bytes, stores })
 }
+
+#[cfg(test)]
+#[path = "size_tests.rs"]
+mod tests;

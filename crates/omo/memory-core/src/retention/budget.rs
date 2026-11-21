@@ -193,3 +193,7 @@ impl<'a> PassBudget<'a> {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "budget_tests.rs"]
+mod tests;
