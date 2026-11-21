@@ -46,6 +46,7 @@ members = [
     "crates/maho-onboarding",
     "crates/maho-context-files",
     "crates/maho-socket-secret",
+    "crates/maho-machine-ops",
     "crates/builtins/maho-ext-account",
     "crates/builtins/maho-ext-anthropic-bash",
     "crates/builtins/maho-ext-anthropic-subscription",
