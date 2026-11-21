@@ -63,4 +63,5 @@ pub mod tool_client;
 pub mod tool_registrar;
 pub mod transport;
 pub mod transport_sdk;
+pub mod transport_sse;
 pub mod wrap;
