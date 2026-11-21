@@ -12,6 +12,7 @@ use telemetry_core::{
 
 use crate::pinned_model_ids::pinned_model_id;
 use crate::product_identity::mask_provider_and_model;
+use crate::session_role::TelemetrySessionRole;
 
 /// The `gen_ai.provider.name` well-known values for our provider ids; an id with no well-known value keeps
 /// our id, and `custom` stays `custom`.
@@ -55,7 +56,7 @@ pub struct OmoNativeTurnSpansOptions {
     pub is_consented: Arc<dyn Fn() -> bool + Send + Sync>,
     /// The fresh send-time consent read, taken at the moment a span would end and so be exported.
     pub is_send_allowed: Arc<dyn Fn() -> bool + Send + Sync>,
-    pub session_role: String,
+    pub session_role: TelemetrySessionRole,
     pub inherited_traceparent: Option<String>,
 }
 
@@ -134,7 +135,7 @@ impl OmoNativeTurnSpans {
             ),
             (
                 "omo.session.role".to_string(),
-                TurnSpanAttribute::String(self.options.session_role.clone()),
+                TurnSpanAttribute::String(self.options.session_role.as_str().into()),
             ),
             (
                 "omo.turn.index".to_string(),
@@ -284,7 +285,7 @@ mod tests {
             traces: Arc::new(move || Some(Arc::clone(&tracing))),
             is_consented: Arc::new(move || consented_flag.load(Ordering::SeqCst)),
             is_send_allowed: Arc::new(move || allowed_flag.load(Ordering::SeqCst)),
-            session_role: "main".into(),
+            session_role: TelemetrySessionRole::Root,
             inherited_traceparent: None,
         });
         Fixture {
@@ -333,7 +334,7 @@ mod tests {
             );
             assert_eq!(
                 record.attributes["omo.session.role"],
-                TurnSpanAttribute::String("main".into())
+                TurnSpanAttribute::String("root".into())
             );
             assert_eq!(
                 record.attributes["gen_ai.request.model"],
@@ -496,7 +497,7 @@ mod tests {
             traces: Arc::new(move || Some(Arc::clone(&tracing))),
             is_consented: Arc::new(|| true),
             is_send_allowed: Arc::new(|| true),
-            session_role: "child".into(),
+            session_role: TelemetrySessionRole::Child,
             inherited_traceparent: Some(parent.into()),
         });
         spans.start(1.0, "hashed", None, None);
@@ -512,7 +513,7 @@ mod tests {
             traces: Arc::new(|| None),
             is_consented: Arc::new(|| true),
             is_send_allowed: Arc::new(|| true),
-            session_role: "main".into(),
+            session_role: TelemetrySessionRole::Root,
             inherited_traceparent: Some("invalid".into()),
         });
         spans.start(1.0, "hashed", Some("raw"), None);

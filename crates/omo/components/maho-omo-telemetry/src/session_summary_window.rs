@@ -8,7 +8,19 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
+use crate::model_vocabulary::KNOWN_MODELS;
+
 pub const MODEL_SLOTS: usize = 3;
+
+/// A window recovered from disk may predate a vocabulary change, so the provider is re-masked when a
+/// summary is built, not trusted.
+fn masked_provider(provider: &str) -> &str {
+    if KNOWN_MODELS.iter().any(|(known, _)| *known == provider) {
+        provider
+    } else {
+        "custom"
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SummaryTurn {
@@ -339,7 +351,7 @@ pub fn summary_properties(session_hash: &str, window: &SummaryWindow, meta: &Sum
         let model = ranked.get(slot - 1);
         properties.insert(
             format!("m{slot}_provider"),
-            json!(model.map_or("none", |model| model.provider.as_str())),
+            json!(model.map_or("none", |model| masked_provider(&model.provider))),
         );
         properties.insert(
             format!("m{slot}_model"),
@@ -519,6 +531,34 @@ mod tests {
         assert_eq!(props["session_role"], "root");
         assert_eq!(props["summary_seq"], 4);
         assert_eq!(props["summary_epoch"], "0123456789abcdef");
+    }
+
+    #[test]
+    fn a_provider_recovered_from_an_older_window_is_masked_again() {
+        let mut window = open_window(0.0, 1.0);
+        add_turn(
+            &mut window,
+            &turn(1, "retired-provider", "gemini-3.1-pro", 2.0, 1.0),
+            1.0,
+        );
+        add_turn(
+            &mut window,
+            &turn(2, "openai", "gpt-5.6-sol", 2.0, 1.0),
+            2.0,
+        );
+        add_turn(
+            &mut window,
+            &turn(3, "openai", "gpt-5.6-sol", 2.0, 1.0),
+            3.0,
+        );
+        let props = summary_properties(
+            &"a".repeat(64),
+            &window,
+            &meta(EndedBy::Shutdown, 1, "root"),
+        );
+        assert_eq!(props["m1_provider"], "openai");
+        assert_eq!(props["m2_provider"], "custom");
+        assert_eq!(props["m3_provider"], "none");
     }
 
     #[test]
