@@ -182,6 +182,116 @@ fn stale_base_answers_the_head_from_state_and_5xx_is_unavailable()
     Ok(())
 }
 
+/// Answers every request with 200 and the body that request needs, keeping each request's headers.
+struct Recording {
+    seen: RefCell<Vec<(String, Vec<(String, String)>)>>,
+}
+
+impl Recording {
+    fn record(&self, request: &HttpRequest) -> String {
+        let path = request
+            .url
+            .strip_prefix("https://svc")
+            .unwrap_or(&request.url)
+            .to_string();
+        self.seen
+            .borrow_mut()
+            .push((path.clone(), request.headers.clone()));
+        path
+    }
+}
+
+impl HttpClient for Recording {
+    fn send(&self, request: HttpRequest) -> PortFuture<'_, HttpResponse> {
+        let path = self.record(&request);
+        let body = if path.starts_with("/v1/sync/state") {
+            r#"{"head":{"seq":0},"oldest_retained_seq":1,"snapshot":null}"#
+        } else if path.starts_with("/v1/sync/batches?") {
+            r#"{"entries":[]}"#
+        } else if path == "/v1/sync/uploads" {
+            r#"{"upload_id":"u1"}"#
+        } else if path == "/v1/sync/batches" {
+            r#"{"seq":1}"#
+        } else {
+            "{}"
+        };
+        Box::pin(async move {
+            Ok(HttpResponse {
+                status: 200,
+                body: body.as_bytes().to_vec(),
+            })
+        })
+    }
+
+    fn open_stream(&self, request: HttpRequest) -> PortFuture<'_, StreamResponse> {
+        self.record(&request);
+        Box::pin(async { Err(EngineError::Other("stream closed by the test".into())) })
+    }
+}
+
+#[tokio::test]
+async fn every_engine_request_declares_the_sync_contract() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::sync::contract_version::misses_sync_contract;
+    let client = Rc::new(Recording {
+        seen: RefCell::new(Vec::new()),
+    });
+    let token: TokenSource = Rc::new(|| Box::pin(async { Ok("tok".to_string()) }));
+    let transport = create_http_transport(HttpTransportOptions {
+        base_url: "https://svc".into(),
+        token: token.clone(),
+        client: client.clone(),
+    });
+    transport.pull(0, 10).await?;
+    transport.download("o1").await?;
+    let upload = transport.reserve(3, &"ab".repeat(32)).await?;
+    transport.upload(&upload, b"abc").await?;
+    transport
+        .append(AppendRequest {
+            upload_id: upload,
+            digest: "ab".repeat(32),
+            base_seq: 0,
+            batch_id: "b".into(),
+            epoch: 1,
+            link: "l".into(),
+            record_sig: "s".into(),
+        })
+        .await?;
+    let handlers = StreamHandlers {
+        on_advanced: Rc::new(|_| {}),
+        on_connected: Rc::new(|_| {}),
+    };
+    let mut up = false;
+    assert!(
+        stream_once("https://svc", &token, client.as_ref(), &handlers, &mut up)
+            .await
+            .is_err()
+    );
+    let seen = client.seen.borrow();
+    let paths: Vec<&str> = seen.iter().map(|(path, _)| path.as_str()).collect();
+    for route in [
+        "/v1/sync/state",
+        "/v1/sync/batches?after=0",
+        "/v1/sync/objects/o1",
+        "/v1/sync/uploads",
+        "/v1/sync/uploads/u1",
+        "/v1/sync/batches",
+        "/v1/me/events",
+    ] {
+        assert!(paths.contains(&route), "{route} was not requested");
+    }
+    for (path, headers) in seen.iter() {
+        // The event stream is not floored today, yet it carries the same headers (#13691).
+        let floored = if path.starts_with("/v1/sync/") {
+            path.clone()
+        } else {
+            format!("/v1/sync{path}")
+        };
+        assert!(!misses_sync_contract(&floored, headers), "{path}");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn token_and_network_failures_are_typed_without_leaking_detail() {
     struct Offline;

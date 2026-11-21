@@ -1,4 +1,5 @@
 use crate::sync::{
+    contract_version::sync_request_headers,
     crypto::entry::Head,
     engine::{
         adapters::http_transport::{HttpRequest, HttpTransportOptions},
@@ -42,7 +43,7 @@ impl AccountHttp {
         body: Option<Value>,
     ) -> EngineResult<(u16, Value)> {
         let token = (self.options.token)().await?;
-        let mut headers = vec![("authorization".into(), format!("Bearer {token}"))];
+        let mut headers = sync_request_headers(&token);
         if body.is_some() {
             headers.push(("content-type".into(), "application/json".into()));
         }

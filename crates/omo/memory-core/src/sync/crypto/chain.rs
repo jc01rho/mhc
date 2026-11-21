@@ -41,6 +41,10 @@ impl ChainState {
     pub fn received(&self) -> &[VerifiedKeyringEntry] {
         &self.received
     }
+    /// The folded keyring records, oldest first (the freeze settler reads the newest one's kind).
+    pub fn history(&self) -> &[FoldedRecord] {
+        &self.history
+    }
     pub fn anchored(&self) -> bool {
         self.anchored
     }

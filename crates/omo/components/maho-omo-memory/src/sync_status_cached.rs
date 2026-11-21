@@ -311,6 +311,9 @@ pub fn rpc_status(status: &crate::sync_runner::SyncRepoStatus) -> serde_json::Va
                 serde_json::json!({"state":"synced","lastSyncedAtISO":iso(*at)})
             }
             EngineStatus::Paused { .. } => serde_json::json!({"state":"paused"}),
+            EngineStatus::Frozen { reason, since } => {
+                serde_json::json!({"state":"frozen","reason":reason.as_str(),"sinceISO":iso(*since)})
+            }
             EngineStatus::Failing {
                 failure,
                 since,

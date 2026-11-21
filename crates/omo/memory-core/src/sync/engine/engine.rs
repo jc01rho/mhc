@@ -16,7 +16,7 @@ use super::error::{EngineError, EngineResult};
 use super::failure::{SyncFailure, describe_sync_failure, is_failure_shown};
 use super::journal::{CycleStage, EngineState, SyncJournal};
 use super::local_signal::{Generation, Signal};
-use super::ports::{Cancel, RefusalCode, StreamHandlers, Unsubscribe};
+use super::ports::{Cancel, FreezeOutcome, FreezeReason, RefusalCode, StreamHandlers, Unsubscribe};
 use super::push::{PushOutcome, push, stale_backoff_ms, system_random};
 use super::receive::receive;
 
@@ -41,6 +41,12 @@ pub enum EngineStatus {
     Paused {
         seq: u64,
         code: RefusalCode,
+    },
+    /// The service froze pushes for a key rotation this device could not finish (#12280): sync is
+    /// blocked, not synced, until a rotation lands.
+    Frozen {
+        reason: FreezeReason,
+        since: i64,
     },
 }
 
@@ -73,6 +79,8 @@ struct Inner {
     rerun: Cell<bool>,
     event_head: Cell<u64>,
     applied_mirror: Cell<u64>,
+    /// The open service freeze and when this device first saw it.
+    frozen: Cell<Option<(FreezeReason, i64)>>,
     /// Bumped whenever a cycle settles (successfully or not).
     settled: Generation,
     /// Bumped on every successful cycle, carrying its report.
@@ -104,6 +112,7 @@ impl SyncEngine {
                 rerun: Cell::new(false),
                 event_head: Cell::new(0),
                 applied_mirror: Cell::new(0),
+                frozen: Cell::new(None),
                 settled: Generation::default(),
                 reports: Generation::default(),
                 last_report: RefCell::new(None),
@@ -141,6 +150,9 @@ impl SyncEngine {
                 seq: p.seq,
                 code: p.code,
             });
+        }
+        if let Some((reason, since)) = self.inner.frozen.get() {
+            return Ok(EngineStatus::Frozen { reason, since });
         }
         Ok(match s.last_synced_at {
             None => EngineStatus::NeverSynced,
@@ -395,6 +407,25 @@ impl Inner {
         Ok(())
     }
 
+    /// Records what a settle found: a freeze keeps the moment it was first seen, anything else ends it.
+    fn note_freeze(&self, outcome: FreezeOutcome) {
+        let next = match outcome {
+            FreezeOutcome::Frozen(reason) => Some((
+                reason,
+                self.frozen
+                    .get()
+                    .map_or_else(|| self.deps.clock.now(), |(_, since)| since),
+            )),
+            _ => None,
+        };
+        if next != self.frozen.get() {
+            self.frozen.set(next);
+            if let Some(notify) = &self.deps.on_status_change {
+                notify();
+            }
+        }
+    }
+
     async fn cycle(&self) -> EngineResult<CycleReport> {
         let deps = &self.deps;
         let journal = &self.journal;
@@ -428,9 +459,26 @@ impl Inner {
             let outcome = push(deps, journal).await?;
             if outcome != PushOutcome::Stale {
                 pushed = outcome == PushOutcome::Pushed;
+                if pushed {
+                    self.frozen.set(None);
+                }
                 break;
             }
-            self.sleep(stale_backoff_ms(attempt, random.as_ref())).await;
+            // A push refused `stale_base` asks the session's settler first: while a rotation is
+            // pending the device rotates or waits instead of retrying (#12280).
+            let settled = match &deps.freeze {
+                Some(freeze) => Some(freeze.settle().await),
+                None => None,
+            };
+            if let Some(outcome) = settled {
+                self.note_freeze(outcome);
+                if matches!(outcome, FreezeOutcome::Frozen(_)) {
+                    break;
+                }
+            }
+            if !settled.is_some_and(FreezeOutcome::ended) {
+                self.sleep(stale_backoff_ms(attempt, random.as_ref())).await;
+            }
             self.inbound(&mut refused, &mut snapshot, &mut applied, &mut memories)
                 .await?;
         }
