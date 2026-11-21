@@ -248,14 +248,16 @@ fn held_closer(
     opens: Arc<Mutex<usize>>,
 ) -> HostSessionCloser {
     let release = Mutex::new(release);
-    Arc::new(move |_request: &HostSessionCloseRequest| {
-        *lock(&opens) += 1;
-        entered.send(()).expect("the test watches every close");
-        lock(&release)
-            .recv_timeout(WAIT)
-            .expect("the test releases the held close");
-        Ok(())
-    })
+    Arc::new(
+        move |_request: &HostSessionCloseRequest| -> Result<(), HostSessionCloseError> {
+            *lock(&opens) += 1;
+            entered.send(()).expect("the test watches every close");
+            lock(&release)
+                .recv_timeout(WAIT)
+                .expect("the test releases the held close");
+            Ok(())
+        },
+    )
 }
 
 #[test]
