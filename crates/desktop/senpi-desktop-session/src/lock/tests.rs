@@ -9,6 +9,8 @@ fn never() -> Option<DesktopError> {
     None
 }
 
+// `/run/user/1000` is not an absolute path on Windows (no drive or UNC prefix).
+#[cfg(unix)]
 #[test]
 fn linux_uses_an_absolute_xdg_runtime_dir() {
     // When

@@ -32,7 +32,7 @@ use common::{fake_backend, Engine, BINARY, HANG_GUARD};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
 const CORPUS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/v1-consumers");
 const MIN_CASES: usize = 9;
 /// Engine variables a case never inherits from the test's environment.
@@ -393,7 +393,11 @@ impl Driver {
 }
 
 fn replay(index: usize, name: &str, case: &Case) -> Result<(), String> {
-    let scenario = Path::new(REPO_ROOT).join(&case.scenario);
+    let scenario = Path::new(REPO_ROOT).join(
+        case.scenario
+            .strip_prefix("crates/")
+            .unwrap_or(&case.scenario),
+    );
     if !scenario.is_file() {
         return Err(format!("{name}: scenario {} does not exist", case.scenario));
     }

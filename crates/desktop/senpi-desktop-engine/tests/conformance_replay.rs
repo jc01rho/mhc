@@ -20,7 +20,7 @@ use common::{fake_backend, Engine};
 use serde::Deserialize;
 use serde_json::Value;
 
-const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
 const CORPUS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../senpi-desktop-core/fixtures/conformance"
@@ -86,7 +86,11 @@ fn matches(expected: &Expected, actual: &Value) -> bool {
 }
 
 fn replay(name: &str, case: &Case) -> Result<(), String> {
-    let scenario = Path::new(REPO_ROOT).join(&case.scenario);
+    let scenario = Path::new(REPO_ROOT).join(
+        case.scenario
+            .strip_prefix("crates/")
+            .unwrap_or(&case.scenario),
+    );
     if !scenario.is_file() {
         return Err(format!("{name}: scenario {} does not exist", case.scenario));
     }
