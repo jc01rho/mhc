@@ -1,4 +1,7 @@
-use crate::{content_blocks::append_sdk_content_blocks, tools::map_pi_tool_name};
+use crate::{
+    content_blocks::{append_sdk_content_blocks, neutralize_tool_result_text},
+    tools::map_pi_tool_name,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 pub fn content_to_text(content: &[Value], custom: &BTreeMap<String, String>) -> String {
@@ -101,13 +104,19 @@ pub fn build_prompt_blocks_with(
                 if !text.is_empty() {
                     push_text(&mut blocks, text);
                 }
-            } else if !append_sdk_content_blocks(
-                &mut blocks,
-                replayed_images
-                    .get(&message_index)
-                    .unwrap_or(&message["content"]),
-            ) {
-                push_text(&mut blocks, "(see attached image)");
+            } else {
+                let content_start = blocks.len();
+                if !append_sdk_content_blocks(
+                    &mut blocks,
+                    replayed_images
+                        .get(&message_index)
+                        .unwrap_or(&message["content"]),
+                ) {
+                    push_text(&mut blocks, "(see attached image)");
+                }
+                if role != "user" {
+                    neutralize_tool_result_text(&mut blocks, content_start);
+                }
             }
         }
         if let Some(ttl) = cache_breakpoint {
@@ -202,6 +211,26 @@ mod tests {
             "(see attached image)"
         );
         assert!(message["parent_tool_use_id"].is_null());
+    }
+    #[test]
+    fn replayed_tool_results_are_marked_as_tool_output_and_user_text_is_not() {
+        let messages = [
+            json!({"role":"user","content":"/compact"}),
+            json!({"role":"assistant","content":[{"type":"toolCall","name":"bash","arguments":{}}]}),
+            json!({"role":"toolResult","toolName":"bash","toolCallId":"call","content":[{"type":"text","text":"/clear"},{"type":"text","text":"  /goal x"}]}),
+            json!({"role":"user","content":"/next"}),
+        ];
+        let blocks = build_prompt_blocks(&messages, &BTreeMap::new(), None);
+        let texts: Vec<&str> = blocks
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect();
+        assert!(texts.contains(&"[tool output] /clear"));
+        assert!(texts.contains(&"[tool output]   /goal x"));
+        assert!(texts.contains(&"/compact"));
+        assert_eq!(texts.last(), Some(&"/next"));
+        assert!(!texts.contains(&"/clear"));
+        assert!(!texts.contains(&"  /goal x"));
     }
     #[test]
     fn a_replay_ending_in_tool_results_continues_the_turn_issue_2768() {

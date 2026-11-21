@@ -128,6 +128,8 @@ pub const NOTICE_TAIL_MAX_CHARS: usize = 2000;
 pub enum NotificationDelivery {
     Steer,
     FollowUp,
+    /// The notice of a session an interrupt stopped: it reaches the next turn and starts none (senpi `nextTurn`).
+    NextTurn,
 }
 pub fn get_terminal_notification_delivery(
     notify_mode: NotifyMode,
@@ -174,8 +176,14 @@ pub fn build_notice(id: &str, view: &TerminalExitView) -> String {
         };
         format!("\nFinal output:\n{shown}{note}")
     };
+    let ended = match &view.stopped_by_interrupt {
+        None => format!("finished: {status}{code_text}."),
+        Some(turn_id) => {
+            format!("was stopped when turn {turn_id} was interrupted ({status}{code_text}).")
+        }
+    };
     format!(
-        "<system-reminder>Background terminal session {id} finished: {status}{code_text}.{tail_section}</system-reminder>"
+        "<system-reminder>Background terminal session {id} {ended}{tail_section}</system-reminder>"
     )
 }
 /// Once-only completion notices. An id is `pending` from the send until its receipt settles, then
@@ -185,6 +193,8 @@ pub struct TerminalNotifier {
     notified: Arc<Mutex<HashSet<String>>>,
     pending: Arc<Mutex<HashSet<String>>>,
     report: Report,
+    /// The run jobs of the background sessions whose exit this notifier announces (senpi#6675).
+    pub run_jobs: crate::run_jobs::RunJobs,
 }
 impl Default for TerminalNotifier {
     fn default() -> Self {
@@ -192,6 +202,7 @@ impl Default for TerminalNotifier {
             notified: Default::default(),
             pending: Default::default(),
             report: diagnostic_report(),
+            run_jobs: Default::default(),
         }
     }
 }
@@ -240,6 +251,11 @@ impl TerminalNotifier {
     ) {
         let Some(delivery) = delivery else {
             return;
+        };
+        let delivery = if view.stopped_by_interrupt.is_some() {
+            NotificationDelivery::NextTurn
+        } else {
+            delivery
         };
         {
             let mut pending = lock(&self.pending);
@@ -319,6 +335,52 @@ mod tests {
             ),
             Some(NotificationDelivery::Steer)
         );
+    }
+    #[test]
+    fn a_session_an_interrupt_stopped_reads_as_stopped_and_reaches_the_next_turn_without_waking() {
+        let mut view = TerminalExitView::new(None, "partial\n".to_owned());
+        view.stopped_by_interrupt = Some("3".to_owned());
+        let notice = build_notice("bash_1", &view);
+        assert!(
+            notice.contains("was stopped when turn 3 was interrupted"),
+            "{notice}"
+        );
+        assert!(notice.contains("Final output:\npartial"), "{notice}");
+        assert!(!notice.contains("finished:"), "{notice}");
+        let mut notifier = TerminalNotifier::default();
+        let mut sent = Vec::new();
+        notifier.notify_completion(
+            "bash_1",
+            Some(NotificationDelivery::Steer),
+            &view,
+            |text, delivery| {
+                sent.push((text, delivery));
+                Ok(MessageDeliveryReceipt::delivered())
+            },
+        );
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1, NotificationDelivery::NextTurn);
+        assert_eq!(sent[0].0, notice);
+    }
+    #[test]
+    fn an_exit_nothing_interrupted_keeps_its_wording_and_delivery() {
+        let notice = build_notice("bash_2", &TerminalExitView::new(None, String::new()));
+        assert!(
+            notice.contains("Background terminal session bash_2 finished: exited."),
+            "{notice}"
+        );
+        let mut notifier = TerminalNotifier::default();
+        let mut sent = Vec::new();
+        notifier.notify_completion(
+            "bash_2",
+            Some(NotificationDelivery::FollowUp),
+            &view(),
+            |_, delivery| {
+                sent.push(delivery);
+                Ok(MessageDeliveryReceipt::delivered())
+            },
+        );
+        assert_eq!(sent, [NotificationDelivery::FollowUp]);
     }
     #[test]
     fn once_only_after_deliverable() {

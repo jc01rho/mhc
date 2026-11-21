@@ -1169,6 +1169,8 @@ pub struct AgentSessionInner {
     settling_with_background_work: std::sync::atomic::AtomicBool,
     /// senpi `_isAgentRunActive`: set right before the agent run starts, cleared when it settles.
     agent_run_active: std::sync::atomic::AtomicBool,
+    /// senpi `_runBackgroundJobs`: the background jobs each turn started, for `interrupt { background: "stop" }`.
+    run_background_jobs: maho_ext_api::RunBackgroundJobs,
     /// senpi `_runtimeMessagesTokenized`: the idle release tokenized the agent's runtime messages
     /// in place; the next reader or run re-materializes them through `runtime_messages()`.
     runtime_messages_tokenized: std::sync::atomic::AtomicBool,
@@ -2115,6 +2117,15 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_agent_dir(&self) -> std::path::PathBuf {
         self.session()
             .map_or_else(|_| Default::default(), |session| session.agent_dir().into())
+    }
+    fn register_run_background_job(
+        &self,
+        job: maho_ext_api::RunBackgroundJob,
+    ) -> maho_ext_api::RunBackgroundJobRelease {
+        match self.session() {
+            Ok(session) => session.register_run_background_job(job),
+            Err(_) => Box::new(|| {}),
+        }
     }
     fn get_pause_state(&self) -> serde_json::Value {
         self.session().map_or_else(
@@ -4804,6 +4815,7 @@ impl AgentSession {
                 ),
                 settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
                 agent_run_active: std::sync::atomic::AtomicBool::new(false),
+                run_background_jobs: maho_ext_api::RunBackgroundJobs::default(),
                 runtime_messages_tokenized: std::sync::atomic::AtomicBool::new(false),
                 idle_park_generation: Mutex::new(0),
                 wake_source_subscription: Mutex::new(None),
@@ -5862,6 +5874,28 @@ impl AgentSession {
 
     pub fn external_admission(&self) -> &crate::external_admission::ExternalAdmission {
         &self.external_admission
+    }
+
+    /// senpi `registerRunBackgroundJob`: records a background job under the running turn, so an `interrupt` with
+    /// `background: "stop"` stops it. Outside a turn nothing is recorded. The release drops the job once it ended
+    /// on its own.
+    pub fn register_run_background_job(
+        &self,
+        job: maho_ext_api::RunBackgroundJob,
+    ) -> maho_ext_api::RunBackgroundJobRelease {
+        if !self.agent_run_active.load(Ordering::SeqCst) {
+            return Box::new(|| {});
+        }
+        let turn_id = self.external_admission.turn_epoch().to_string();
+        self.run_background_jobs.register(&turn_id, job)
+    }
+
+    /// senpi `stopRunBackgroundJobs`: stops the background jobs `turn_id` started (`interrupt { background: "stop" }`).
+    pub async fn stop_run_background_jobs(
+        &self,
+        turn_id: &str,
+    ) -> maho_ext_api::RunBackgroundStopOutcome {
+        self.run_background_jobs.stop(turn_id).await
     }
 
     /// The provider failure of the last agent_end (senpi agent_end `failure`). The maho-ext-api agent_end

@@ -56,7 +56,12 @@ fn bind_completion(
                 .record_background_exit(&id, manifest_now_ms())
                 .await;
         }
-        let view = handle.exit_view();
+        let mut view = handle.exit_view();
+        view.stopped_by_interrupt = notifier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .run_jobs
+            .finish(&id);
         send_completion_notice(&id, &view, &sender, &delivery, &notifier);
     }))
 }
@@ -1454,6 +1459,7 @@ impl Extension for TerminalExtension {
             }),
         );
         let bash_backgrounds = backgrounds.clone();
+        let bash_run_ctx = terminal_state.ctx.clone();
         let bash_lifecycle = state_lifecycle.clone();
         let bash_ensure = ensure_persistence.clone();
         // The tool context the child placement reads (upstream `buildToolContext`): the live configuration, the
@@ -1471,6 +1477,7 @@ impl Extension for TerminalExtension {
                 let tasks = bash_tasks.clone();
                 let bash_configuration = bash_configuration.clone();
                 let backgrounds = bash_backgrounds.clone();
+                let run_ctx = bash_run_ctx.clone();
                 let lifecycle = bash_lifecycle.clone();
                 let ensure = bash_ensure.clone();
                 Box::pin(async move {
@@ -1520,6 +1527,17 @@ impl Extension for TerminalExtension {
                                 },
                             );
                         publish_backgrounds(&backgrounds, &sender);
+                        crate::run_jobs::record_run_job(
+                            &run_ctx,
+                            &notifier,
+                            &id,
+                            &description,
+                            crate::run_jobs::in_process_stop(
+                                manager.clone(),
+                                notifier.clone(),
+                                id.clone(),
+                            ),
+                        );
                         // Upstream `onBackgroundState`: a live background session with no
                         // recorder bound yet binds persistence first.
                         crate::extension_state::ensure_persistence(&ensure).await;
@@ -1983,10 +2001,11 @@ impl Extension for TerminalExtension {
                     {
                         task.abort();
                     }
-                    *notifier
+                    let mut notifier = notifier
                         .lock()
-                        .map_err(|_| ExtensionFailure::new("terminal notifier state poisoned"))? =
-                        crate::notify::TerminalNotifier::default();
+                        .map_err(|_| ExtensionFailure::new("terminal notifier state poisoned"))?;
+                    notifier.run_jobs.release_all();
+                    *notifier = crate::notify::TerminalNotifier::default();
                     Ok(EventResult::None)
                 })
             }),

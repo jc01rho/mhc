@@ -7,6 +7,8 @@ pub type PromptStartObserver<'a> =
 pub mod handler_budget;
 #[path = "shutdown_quit_budget.rs"]
 pub mod shutdown_quit_budget;
+#[path = "tool_hook_wait.rs"]
+pub mod tool_hook_wait;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -601,6 +603,12 @@ impl ExtensionContextActions for ContextSessionManager {
     fn release_run_fence(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
         self.actions.release_run_fence(run_ref)
+    }
+    fn register_run_background_job(&self, job: RunBackgroundJob) -> RunBackgroundJobRelease {
+        if self.runtime.assert_active().is_err() {
+            return Box::new(|| {});
+        }
+        self.actions.register_run_background_job(job)
     }
     fn has_queued_person_input(&self) -> bool {
         self.active();
@@ -3154,7 +3162,30 @@ impl ExtensionRunner {
                 ToolHookName::PreToolUse,
                 &mut context,
             );
-            let result = handler(&mut current, &context).await;
+            // No deadline: a tool_call handler may hold an approval prompt open. The turn's abort still ends
+            // the wait, and the tool then does not run (senpi#7069).
+            let waited = tool_hook_wait::wait_for_tool_hook(
+                handler(&mut current, &context),
+                tool_hook_wait::running_turn_signal(&context),
+                0,
+            )
+            .await;
+            let result = match waited {
+                tool_hook_wait::ToolHookWaitOutcome::Settled(result) => result,
+                tool_hook_wait::ToolHookWaitOutcome::Aborted => {
+                    self.end_hook(hook, ToolHookStatus::Blocked, None);
+                    self.runtime.assert_active()?;
+                    if let ExtensionEvent::ToolCall(updated) = &current {
+                        *event = updated.clone();
+                    }
+                    return Ok(Some(ToolCallEventResult {
+                        block: Some(true),
+                        reason: Some("Operation aborted".into()),
+                        terminate: None,
+                    }));
+                }
+                tool_hook_wait::ToolHookWaitOutcome::TimedOut { .. } => Ok(EventResult::None),
+            };
             let (status, error) = match &result {
                 Err(e) => (ToolHookStatus::Failed, Some(e.message.clone())),
                 Ok(EventResult::ToolCall(r)) if r.block == Some(true) => {
@@ -3195,7 +3226,37 @@ impl ExtensionRunner {
                 ToolHookName::PostToolUse,
                 &mut context,
             );
-            let result = handler(&mut current, &context).await;
+            let timeout_ms = tool_hook_wait::tool_result_handler_timeout_ms(&path, |name| {
+                std::env::var(name).ok()
+            });
+            let waited = tool_hook_wait::wait_for_tool_hook(
+                handler(&mut current, &context),
+                tool_hook_wait::running_turn_signal(&context),
+                timeout_ms,
+            )
+            .await;
+            let result = match waited {
+                tool_hook_wait::ToolHookWaitOutcome::Settled(result) => result,
+                tool_hook_wait::ToolHookWaitOutcome::Aborted => {
+                    self.end_hook(hook, ToolHookStatus::Failed, Some("interrupted".into()));
+                    self.runtime.assert_active()?;
+                    continue;
+                }
+                tool_hook_wait::ToolHookWaitOutcome::TimedOut { elapsed_ms } => {
+                    let message = format!(
+                        "handler timed out after {elapsed_ms}ms; the tool result continues without it"
+                    );
+                    self.end_hook(hook, ToolHookStatus::Failed, Some(message.clone()));
+                    self.runtime.assert_active()?;
+                    self.emit_error(ExtensionError {
+                        extension_path: path.clone(),
+                        event: EventKind::ToolResult.as_str().into(),
+                        error: message,
+                        stack: None,
+                    });
+                    continue;
+                }
+            };
             self.end_hook(
                 hook,
                 if result.is_err() {
