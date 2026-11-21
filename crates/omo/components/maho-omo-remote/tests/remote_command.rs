@@ -208,7 +208,7 @@ async fn a_close_refused_for_a_running_turn_offers_close_anyway() {
     );
     assert_eq!(asked[3], "Close anyway?");
     assert_eq!(asked.len(), 4);
-    let notices = lock(&ui.notices);
+    let notices = lock(&ui.notices).clone();
     assert_eq!(notices.len(), 2, "{notices:?}");
     assert_eq!(notices[0].1, NotificationType::Error);
     assert!(notices[0].0.contains("is running a turn"), "{notices:?}");
@@ -216,7 +216,6 @@ async fn a_close_refused_for_a_running_turn_offers_close_anyway() {
         notices[1],
         ("Closed beta/b1.".to_owned(), NotificationType::Info)
     );
-    drop(notices);
     assert_eq!(pair.beta_host.methods(), vec!["get_state", "close_session"]);
     pair.stop().await;
 }
