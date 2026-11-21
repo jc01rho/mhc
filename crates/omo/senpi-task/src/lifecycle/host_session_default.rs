@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 
-use super::host_session::{HostSessionProbe, HostSessionProbePorts, create_host_session_probe};
+use super::host_session::{
+    HostGenerationView, HostSessionProbe, HostSessionProbePorts, create_host_session_probe,
+};
 use super::host_session_close::{
     HostSessionCloseError, HostSessionCloseRequest, HostSessionCloser,
 };
@@ -46,6 +48,11 @@ pub trait HostTransport: Send + Sync {
         &self,
         request: &HostSessionCloseRequest,
     ) -> Result<(), HostSessionCloseError>;
+    /// `rpc-host/generation-view.createHostGenerationView(agentDir)` (omo#11765): the daemon state a
+    /// cancel reads once the serving generation does not list a child; `None` without a daemon dir.
+    fn generation_view(&self) -> Option<Arc<dyn HostGenerationView>> {
+        None
+    }
 }
 
 /// The safe default when no host transport is wired: nothing is reachable, nothing can be closed.

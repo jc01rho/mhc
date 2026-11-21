@@ -11,13 +11,14 @@ use isolation_core::OwnerProbe;
 use super::deferred_owner_reconcile::DeferredOwnerRetries;
 use super::deferred_revival::ScopedRetries;
 use super::host_session::{
-    HostEndpointPort, HostSessionProbe, HostSessionRetryPolicy, NoHostEndpoint,
+    HostEndpointPort, HostGenerationView, HostSessionProbe, HostSessionRetryPolicy, NoHostEndpoint,
     default_host_session_retry_policy,
 };
 use super::host_session_close::HostSessionCloser;
 use super::host_session_default::{
     HostTransport, NoHostTransport, default_host_session_closer, default_host_session_probe,
 };
+use super::host_session_end::HostSessionEnds;
 use super::port::{
     LifecycleReattachPorts, OrphanSignal, ProcessSignaller, ReattachPort, ResidencyRegistry,
     RespawnPort,
@@ -65,6 +66,9 @@ pub struct LifecycleDeps {
     pub host_session_probe: Option<Arc<dyn HostSessionProbe>>,
     /// The ONLY way a session this process does not hold is ended; defaults to the production closer.
     pub host_session_close: Option<HostSessionCloser>,
+    /// What a cancel reads once the serving generation does not list a child (omo#11765); defaults to
+    /// the host transport's view. Absent, "not listed" keeps reading as ended.
+    pub host_generation_view: Option<Arc<dyn HostGenerationView>>,
     pub host_retry: Option<HostSessionRetryPolicy>,
     // API-DIVERGENCE(omo lifecycle/host-session.ts): TS carries `wait` inside the retry policy; the
     // native policy stays a plain comparable value, so the wait is its own dependency.
@@ -100,6 +104,7 @@ impl LifecycleDeps {
             host_transport: None,
             host_session_probe: None,
             host_session_close: None,
+            host_generation_view: None,
             host_retry: None,
             host_retry_wait: None,
             host_endpoint: None,
@@ -134,6 +139,9 @@ pub struct LifecycleContext {
     /// session path. `host_session_close` is the ONLY way a session this process does not hold is ended.
     pub host_session_probe: Arc<dyn HostSessionProbe>,
     pub host_session_close: Option<HostSessionCloser>,
+    pub host_generation_view: Option<Arc<dyn HostGenerationView>>,
+    /// The single-flight end checks of daemon-hosted children (`host_session_end.rs`).
+    pub host_session_ends: Arc<HostSessionEnds>,
     pub host_retry: HostSessionRetryPolicy,
     pub host_retry_wait: RetryWaitFn,
     /// Sessions whose deferred retries were stopped (TS `deferred-revival.ts` WeakMaps).
@@ -212,6 +220,10 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         host_session_probe: deps
             .host_session_probe
             .unwrap_or_else(|| default_host_session_probe(host_transport.clone())),
+        host_generation_view: deps
+            .host_generation_view
+            .or_else(|| host_transport.generation_view()),
+        host_session_ends: Arc::default(),
         host_session_close: deps
             .host_session_close
             .or_else(|| Some(default_host_session_closer(host_transport))),

@@ -8,7 +8,9 @@ use pretty_assertions::assert_eq;
 use super::*;
 use crate::agents::interaction_policy_for_agent;
 use crate::host::HostError;
-use crate::lifecycle::DestroyCause;
+use crate::lifecycle::{
+    DestroyCause, HostSessionCancelPort, HostSessionCancelSink, HostSessionEnd, HostSessionEndVia,
+};
 use crate::manager::{ManagedChildHandle, ManagedChildListener, Unsubscribe};
 use crate::runners::RunnerOutcome;
 use crate::state::{
@@ -165,12 +167,32 @@ impl ManagedChildHandle for FakeHandle {
 #[derive(Default)]
 struct FakeDestruction {
     calls: Mutex<Vec<(String, DestroyCause)>>,
+    host_cancel: Mutex<Option<Arc<dyn HostSessionCancelPort>>>,
 }
 
 impl DestructionPort for FakeDestruction {
     fn destroy_resident_task(&self, task_id: &str, cause: DestroyCause) -> Result<(), HostError> {
         lock(&self.calls).push((task_id.to_string(), cause));
         Ok(())
+    }
+    fn host_session_cancel(&self) -> Option<Arc<dyn HostSessionCancelPort>> {
+        lock(&self.host_cancel).clone()
+    }
+}
+
+/// A lifecycle cancel port whose first end answers `end`; the driver it is handed is kept for the
+/// test to finish or settle.
+struct ScriptedHostCancel {
+    end: HostSessionEnd,
+    drivers: Mutex<Vec<Arc<dyn HostSessionCancelSink>>>,
+}
+
+impl HostSessionCancelPort for ScriptedHostCancel {
+    fn end(&self, _record: &TaskRecord) -> HostSessionEnd {
+        self.end
+    }
+    fn drive(&self, _record: TaskRecord, sink: Arc<dyn HostSessionCancelSink>) {
+        lock(&self.drivers).push(sink);
     }
 }
 
@@ -1235,4 +1257,116 @@ fn a_completed_child_whose_session_is_unresponsive_answers_retryable_unresponsiv
     assert!(fake.follow_ups().is_empty());
     assert_eq!(h.load(&record.task_id).status, TaskStatus::Completed);
     assert_eq!(pending_len(&h.load(&record.task_id)), 0);
+}
+
+fn running_host_session_child(h: &Harness) -> TaskRecord {
+    let record = h.seed(|input| {
+        input.execution_mode = "process".to_string();
+        input.runner_kind = Some(crate::state::RunnerKind::HostSession);
+        input.host_session = Some(crate::state::HostSessionIdentity {
+            socket: "/tmp/host.sock".to_string(),
+            routing_id: "rpc-1".to_string(),
+            session_path: "/tmp/unhandled-host-session.jsonl".to_string(),
+            instance_id: "inst-1".to_string(),
+            daemon_pid: None,
+            effect_seq: None,
+            adopted_entry_id: None,
+        });
+    });
+    h.to_running(&record);
+    h.load(&record.task_id)
+}
+
+fn scripted_host_cancel(h: &Harness, end: HostSessionEnd) -> Arc<ScriptedHostCancel> {
+    let port = Arc::new(ScriptedHostCancel {
+        end,
+        drivers: Mutex::default(),
+    });
+    *lock(&h.destruction.host_cancel) = Some(port.clone());
+    port
+}
+
+/// omo#11765: a host-session child this process holds no handle for is cancelled only once the
+/// lifecycle confirmed its session ended; until then the cancel stays pending on the record and the
+/// lifecycle's driver finishes it.
+#[test]
+fn cancel_of_an_unhandled_host_session_child_waits_for_its_confirmed_end() {
+    let h = harness();
+    let port = scripted_host_cancel(&h, HostSessionEnd::NotEnded("close_refused"));
+    let record = running_host_session_child(&h);
+
+    let outcome = cancel(&h, &record.task_id, Some("stop"));
+
+    assert_eq!(
+        outcome,
+        CancelOutcome::CancelPending {
+            task_id: record.task_id.clone(),
+            previous_status: TaskStatus::Running,
+            reason: "close_refused".to_string(),
+        }
+    );
+    let pending = h.load(&record.task_id);
+    assert_eq!(pending.status, TaskStatus::Running);
+    assert!(pending.cancel_requested.is_some());
+    assert!(h.destroy_calls().is_empty());
+
+    let driver = lock(&port.drivers).pop().expect("the driver took the stop");
+    driver.ended();
+    driver.settle();
+
+    assert_eq!(h.load(&record.task_id).status, TaskStatus::Cancelled);
+    assert_eq!(
+        h.destroy_calls(),
+        vec![(record.task_id.clone(), DestroyCause::Cancel)]
+    );
+    assert_eq!(
+        cancel(&h, &record.task_id, None),
+        CancelOutcome::Noop {
+            task_id: record.task_id.clone(),
+            status: TaskStatus::Cancelled,
+            reason: format!("Task {} is already cancelled.", record.task_id),
+        }
+    );
+}
+
+#[test]
+fn cancel_of_an_unhandled_host_session_child_whose_end_is_confirmed_cancels_at_once() {
+    let h = harness();
+    let port = scripted_host_cancel(&h, HostSessionEnd::Ended(HostSessionEndVia::CloseSession));
+    let record = running_host_session_child(&h);
+
+    let outcome = cancel(&h, &record.task_id, None);
+
+    assert_eq!(
+        outcome,
+        CancelOutcome::Cancelled {
+            task_id: record.task_id.clone(),
+            previous_status: TaskStatus::Running,
+        }
+    );
+    assert_eq!(h.load(&record.task_id).status, TaskStatus::Cancelled);
+    assert_eq!(
+        h.destroy_calls(),
+        vec![(record.task_id.clone(), DestroyCause::Cancel)]
+    );
+    assert!(lock(&port.drivers).is_empty());
+}
+
+#[test]
+fn cancel_of_an_unhandled_host_session_child_without_a_lifecycle_port_stays_pending() {
+    let h = harness();
+    let record = running_host_session_child(&h);
+
+    let outcome = cancel(&h, &record.task_id, None);
+    let repeat = cancel(&h, &record.task_id, None);
+
+    let pending = CancelOutcome::CancelPending {
+        task_id: record.task_id.clone(),
+        previous_status: TaskStatus::Running,
+        reason: CANCEL_PENDING_REASON.to_string(),
+    };
+    assert_eq!(outcome, pending);
+    assert_eq!(repeat, pending);
+    assert!(h.load(&record.task_id).cancel_requested.is_some());
+    assert!(h.destroy_calls().is_empty());
 }
