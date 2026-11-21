@@ -56,7 +56,22 @@ const COMMON: &[&str] = &[
     "record_sig",
 ];
 
+/// The contract's batch id (its `readBatchId`): 16 bytes as unpadded base64url (#12292).
+fn is_batch_id(value: &Value) -> bool {
+    value.as_str().is_some_and(|id| {
+        id.len() == 22
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+
 /// Closed transport parsing happens before admission can access any fields.
+///
+/// A batch row may also carry the contract's `batch_id`, which `/v1/sync/entries` served before the
+/// service dropped it there. It is checked for shape here and never read: the sealed header's id is
+/// bound to the `/v1/sync/batches` row where the object opens (`engine/receive.rs`), and the chain
+/// never opens objects. A present `batch_id` that is null or malformed is refused, not ignored.
 pub fn parse_entry(row: &Value) -> Result<SyncEntry, &'static str> {
     let bad = "bad_envelope";
     if !row.is_object() || !within_depth(row) {
@@ -73,7 +88,13 @@ pub fn parse_entry(row: &Value) -> Result<SyncEntry, &'static str> {
         }
         keys.extend(["body", "wraps"]);
     }
-    if !exact(row, &keys) {
+    let closed = exact(row, &keys)
+        || (batch && {
+            let mut with_id = keys.clone();
+            with_id.push("batch_id");
+            exact(row, &with_id) && is_batch_id(&row["batch_id"])
+        });
+    if !closed {
         return Err(bad);
     }
     let seq = integer(&row["seq"], 1).ok_or(bad)?;
@@ -150,4 +171,62 @@ pub fn parse_entry(row: &Value) -> Result<SyncEntry, &'static str> {
 
 pub fn envelope_refusal(entry: &SyncEntry) -> Option<&'static str> {
     parse_entry(&entry.wire()).err()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_entry;
+    use serde_json::{Value, json};
+
+    fn batch_row() -> Value {
+        json!({
+            "seq": 2, "base_seq": 1, "kind": "batch", "account": "acct", "epoch": 1,
+            "author": {"kind": "device", "id": "d1", "sealing_public_key": "s", "signing_public_key": "g"},
+            "digest": "dg", "link": "ln", "keyring_link": null, "record_sig": "sig"
+        })
+    }
+
+    fn with(mut row: Value, key: &str, value: Value) -> Value {
+        if let Some(object) = row.as_object_mut() {
+            object.insert(key.to_string(), value);
+        }
+        row
+    }
+
+    #[test]
+    fn a_batch_row_with_or_without_a_well_formed_batch_id_parses() {
+        assert!(parse_entry(&batch_row()).is_ok());
+        let with_id = with(batch_row(), "batch_id", json!("AAAAAAAAAAAAAAAAAAAA-_"));
+        assert!(parse_entry(&with_id).is_ok());
+    }
+
+    #[test]
+    fn a_null_or_malformed_batch_id_is_refused() {
+        for bad in [
+            json!(null),
+            json!("short"),
+            json!("AAAAAAAAAAAAAAAAAAAAA="),
+            json!("AAAAAAAAAAAAAAAAAAAAAAA"),
+            json!(7),
+        ] {
+            assert_eq!(
+                parse_entry(&with(batch_row(), "batch_id", bad.clone())).err(),
+                Some("bad_envelope"),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_keyring_row_carrying_a_batch_id_is_refused() {
+        let keyring = json!({
+            "seq": 1, "base_seq": 0, "kind": "keyring", "account": "acct", "epoch": 1,
+            "author": {"kind": "recovery", "credential_id": "c"},
+            "digest": "dg", "link": "ln", "keyring_link": "kl", "record_sig": "sig",
+            "body": {}, "wraps": []
+        });
+        assert!(parse_entry(&keyring).is_ok());
+        let with_id = with(keyring, "batch_id", json!("AAAAAAAAAAAAAAAAAAAAAA"));
+        assert_eq!(parse_entry(&with_id).err(), Some("bad_envelope"));
+    }
 }

@@ -1,5 +1,9 @@
 use super::{
-    account_chain::open_account_chain, http::create_account_http, sealer::create_chain_sealer,
+    account_chain::open_account_chain,
+    freeze_settler::{FreezeSettlerInput, SharedAccountChain, create_freeze_settler},
+    http::create_account_http,
+    revocation_view::read_revocation_view,
+    sealer::create_chain_sealer,
     verifier::create_chain_verifier,
 };
 use crate::sync::{
@@ -21,6 +25,8 @@ pub enum AccountSessionIdle {
     NoPin,
     CorruptPin,
     NotMember,
+    /// Sync is turned off on this device for the account (#14093).
+    SyncOff,
 }
 pub enum AccountSessionOutcome {
     Session(SyncSession),
@@ -43,6 +49,9 @@ pub async fn open_account_session(
             "openAccountSession: a space id is 16 bytes".into(),
         ));
     }
+    if super::device_switch::is_device_sync_off(&options.pin_dir, &options.account)? {
+        return Ok(AccountSessionOutcome::Idle(AccountSessionIdle::SyncOff));
+    }
     let anchor = match load_trust_anchor(&options.pin_dir, &options.account)
         .map_err(|e| EngineError::Recovery(e.into()))?
     {
@@ -55,6 +64,7 @@ pub async fn open_account_session(
             }));
         }
     };
+    let account = options.account.clone();
     let chain = open_account_chain(
         options.account,
         ChainAnchor::Pinned(anchor),
@@ -67,7 +77,26 @@ pub async fn open_account_session(
         return Ok(AccountSessionOutcome::Idle(AccountSessionIdle::NotMember));
     }
     let chain = Rc::new(tokio::sync::Mutex::new(chain));
+    let account_http = create_account_http(options.http.clone());
+    let view_http = account_http.clone();
+    let freeze = create_freeze_settler(FreezeSettlerInput {
+        chain: Rc::new(SharedAccountChain {
+            account: account.clone(),
+            chain: chain.clone(),
+        }),
+        http: account_http,
+        keyring: options.keyring.clone(),
+        revocation_view: Rc::new(move || {
+            let http = view_http.clone();
+            Box::pin(async move { read_revocation_view(&http).await })
+        }),
+        scope: format!("{account}:{}", options.keyring.principal().id),
+        on_event: None,
+        fault: None,
+        sleep: None,
+    });
     Ok(AccountSessionOutcome::Session(SyncSession {
+        freeze: Some(Rc::new(freeze)),
         transport: Rc::new(create_http_transport(options.http)),
         verifier: Rc::new(create_chain_verifier(
             chain.clone(),

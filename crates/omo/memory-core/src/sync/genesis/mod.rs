@@ -1,6 +1,10 @@
 //! Genesis keyring builder: native-prepared bootstrap, validation and the signed first append.
 
+pub mod bridge;
 pub mod build;
+pub mod intent_store;
+pub mod phrase_gate;
+pub mod phrase_marker;
 pub mod prepare;
 pub mod types;
 pub mod validate;

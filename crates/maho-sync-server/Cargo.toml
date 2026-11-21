@@ -1,0 +1,34 @@
+[package]
+name = "maho-sync-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT"
+
+[lib]
+name = "maho_sync_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mhc-sync-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = "=0.8.9"
+base64.workspace = true
+futures-util = { version = "=0.3.34", features = ["sink"] }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { version = "=1.52.3", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+
+[dev-dependencies]
+maho-memory-core = { path = "../omo/memory-core" }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+tempfile.workspace = true
+tokio = { version = "=1.52.3", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }
+
+[lints]
+workspace = true
