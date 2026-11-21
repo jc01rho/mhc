@@ -35,6 +35,7 @@ pub enum PromptPresetName {
     Gpt55,
     Gpt56,
     Gpt6Astra,
+    Gpt62,
 }
 impl PromptPresetName {
     pub const fn as_str(self) -> &'static str {
@@ -73,6 +74,7 @@ impl PromptPresetName {
             Self::Gpt55 => "gpt-5.5",
             Self::Gpt56 => "gpt-5.6",
             Self::Gpt6Astra => "gpt-6-astra",
+            Self::Gpt62 => "gpt-6.2",
         }
     }
 }
@@ -112,6 +114,7 @@ pub fn parse_prompt_preset(value: Option<&str>) -> Option<PromptPresetName> {
         "gpt-5.5" => Some(PromptPresetName::Gpt55),
         "gpt-5.6" => Some(PromptPresetName::Gpt56),
         "gpt-6-astra" => Some(PromptPresetName::Gpt6Astra),
+        "gpt-6.2" => Some(PromptPresetName::Gpt62),
         _ => None,
     }
 }
@@ -159,6 +162,7 @@ pub const VALID_PRESETS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.6",
     "gpt-6-astra",
+    "gpt-6.2",
 ];
 
 pub fn is_valid_preset(value: &str) -> bool {

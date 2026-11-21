@@ -3,7 +3,7 @@ pub const CACHE_KEEPALIVE_ENTRY_TYPE: &str = "cache-keepalive";
 pub const CACHE_WARM_PING_EVENT: &str = "cache_warm_ping";
 pub fn is_warm_supported_model(model: &Model) -> bool {
     model.api == "anthropic-messages"
-        && maho_ai::utils::prompt_cache_ttl::is_anthropic_api_base_url(&model.base_url)
+        && maho_ai::utils::prompt_cache_ttl::supports_anthropic_cache_warming(model)
 }
 pub fn projected_ping_cost(model: &Model, usage: Option<&Usage>) -> f64 {
     let tokens = usage.map_or(0.0, |usage| {

@@ -49,6 +49,12 @@ pub mod openai_responses_prompt_cache;
 /// `CUSTOM_TOOL_CALL_ITEM_ID_SENTINEL`.
 pub const CUSTOM_TOOL_CALL_ITEM_ID_SENTINEL: &str = "custom";
 
+/// `ULTRAFAST_DOCUMENTED_MODEL_IDS` (senpi#2978): the models Ultrafast is documented for. OpenAI prices
+/// GPT-6 Astra, GPT-6.1 Sol and both GPT-6.2 tiers at 6x Standard on the API and 8x of a ChatGPT plan's
+/// included usage; both pricing adapters read this one list.
+pub const ULTRAFAST_DOCUMENTED_MODEL_IDS: &[&str] =
+    &["gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"];
+
 const MAX_NATIVE_IMAGE_BASE64_CHARS: usize = 24 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
