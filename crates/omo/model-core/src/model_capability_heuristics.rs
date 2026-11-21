@@ -60,6 +60,12 @@ fn openai_reasoning_pattern(model_id: &str) -> bool {
     PATTERN.is_match(model_id)
 }
 
+/// `gpt-6-2-(?:astra|sol)` anywhere in the normalized id.
+fn gpt_6_2_pattern(model_id: &str) -> bool {
+    static PATTERN: LazyLock<Regex> = LazyLock::new(|| regex(r"gpt-6-2-(?:astra|sol)"));
+    PATTERN.is_match(model_id)
+}
+
 /// `-thinking`/`-think` suffixed kimi/k2 ids, or kimi-for-coding k2p* ids (k2p5, k2-p6, k2.p6).
 fn kimi_thinking_pattern(model_id: &str) -> bool {
     static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
@@ -84,7 +90,7 @@ const OPENAI_REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", 
 const HIGH_MAX: &[&str] = &["high", "max"];
 const HIGH_MAX_ALIASES: &[(&str, &str)] = &[("low", "high"), ("medium", "high"), ("xhigh", "max")];
 
-pub static HEURISTIC_MODEL_FAMILY_REGISTRY: [HeuristicModelFamilyDefinition; 19] = [
+pub static HEURISTIC_MODEL_FAMILY_REGISTRY: [HeuristicModelFamilyDefinition; 20] = [
     HeuristicModelFamilyDefinition {
         pattern: Some(claude_opus_pattern),
         variants: Some(LOW_TO_MAX),
@@ -126,6 +132,16 @@ pub static HEURISTIC_MODEL_FAMILY_REGISTRY: [HeuristicModelFamilyDefinition; 19]
         reasoning_effort_aliases: Some(&[("none", "low"), ("minimal", "low")]),
         supports_temperature: Some(false),
         ..HeuristicModelFamilyDefinition::named("gpt-6.1-sol")
+    },
+    // GPT-6.2 Astra and Sol (2026-11-17): the API rejects `none` on both, so they share the low..max
+    // ladder with the downgrade. Matched on the normalized id (`gpt-6.2-sol` -> `gpt-6-2-sol`).
+    HeuristicModelFamilyDefinition {
+        pattern: Some(gpt_6_2_pattern),
+        variants: Some(&["low", "medium", "high", "xhigh", "max"]),
+        reasoning_efforts: Some(&["low", "medium", "high", "xhigh", "max"]),
+        reasoning_effort_aliases: Some(&[("none", "low"), ("minimal", "low")]),
+        supports_temperature: Some(false),
+        ..HeuristicModelFamilyDefinition::named("gpt-6.2")
     },
     HeuristicModelFamilyDefinition {
         includes: Some(&["gpt-6"]),
@@ -242,6 +258,8 @@ mod tests {
             ("openai/gpt-6-astra-fast:max", "gpt-6-astra"),
             ("gpt-6.1-sol", "gpt-6.1-sol"),
             ("openai/gpt-6.1-sol-fast (high)", "gpt-6.1-sol"),
+            ("gpt-6.2-astra", "gpt-6.2"),
+            ("openai/gpt-6.2-sol-fast:max", "gpt-6.2"),
             ("gpt-6-sol", "gpt-6"),
             ("gpt-6-luna-fast", "gpt-6"),
         ] {
@@ -256,8 +274,15 @@ mod tests {
     }
 
     #[test]
-    fn astra_and_six_point_one_sol_downgrade_none_and_minimal_to_low() {
-        for model in ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-sol-fast"] {
+    fn astra_and_later_sol_downgrade_none_and_minimal_to_low() {
+        for model in [
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+            "gpt-6.1-sol-fast",
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
+            "gpt-6.2-sol-fast",
+        ] {
             let result =
                 detect_heuristic_model_family(model).expect("specific GPT six family exists");
             assert_eq!(

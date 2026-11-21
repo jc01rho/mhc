@@ -436,12 +436,12 @@ fn builtin_defaults_pin_machine_routing_fields() {
         defaults,
         vec![
             ("visual-engineering", "anthropic/claude-opus-5", Some("max")),
-            ("artistry", "anthropic/claude-fable-5-1", Some("max")),
+            ("artistry", "anthropic/claude-opus-5-5", Some("max")),
             ("ultrabrain", "openai/gpt-5.6-sol", Some("max")),
             ("deep", "openai/gpt-5.6-sol", Some("medium")),
             ("quick", "kimi-coding/kimi-for-coding-highspeed", None),
             ("unspecified-low", "xai/grok-4.6", Some("xhigh")),
-            ("architect", "anthropic/claude-fable-5", Some("xhigh")),
+            ("architect", "anthropic/claude-opus-5-5", Some("xhigh")),
             ("unspecified-high", "kimi-coding/k3", Some("max")),
             ("writing", "kimi-coding/k3", Some("low")),
         ]
@@ -451,7 +451,7 @@ fn builtin_defaults_pin_machine_routing_fields() {
     assert_eq!(
         requires,
         vec![
-            ("architect", "claude-fable-5"),
+            ("architect", "claude-opus-5-5"),
             ("deep", "gpt-5.6-sol"),
             ("ultrabrain", "gpt-5.6-sol")
         ]
@@ -464,7 +464,7 @@ fn builtin_defaults_pin_machine_routing_fields() {
 fn available_exposes_architect_with_gate_model() {
     let names = resolve_available_category_names(
         &json!({}),
-        &registry(vec![model("anthropic", "claude-fable-5")]),
+        &registry(vec![model("anthropic", "claude-opus-5-5")]),
     );
     assert!(names.contains(&"architect".to_string()));
 }
@@ -480,7 +480,7 @@ fn available_hides_architect_without_gate_model() {
 
 #[test]
 fn available_explicit_declaration_exposes_architect() {
-    let config = json!({ "categories": { "architect": { "model": "anthropic/claude-fable-5" } } });
+    let config = json!({ "categories": { "architect": { "model": "anthropic/claude-opus-5-5" } } });
     let names =
         resolve_available_category_names(&config, &registry(vec![model("omo-mock", "mock-weak")]));
     assert!(names.contains(&"architect".to_string()));
@@ -500,41 +500,64 @@ fn architect() -> &'static BuiltinCategoryDefinition {
 }
 
 #[test]
-fn anthropic_architect_description_names_fable() {
-    assert!(architect().description.contains("Fable 5"));
+fn anthropic_architect_description_names_no_fable_consultant() {
+    assert!(!architect().description.to_lowercase().contains("fable"));
 }
 
 #[test]
-fn anthropic_architect_description_names_sensitive_content() {
-    assert!(
-        architect()
-            .description
-            .contains("security- and biology-related content")
-    );
-}
-
-#[test]
-fn anthropic_architect_description_prescribes_refusal_recovery() {
-    assert!(
-        architect()
-            .description
-            .contains("indirectly-phrased sub-questions")
-    );
-    assert!(architect().description.contains("reasoning yourself"));
-}
-
-#[test]
-fn anthropic_architect_requires_fable_at_xhigh() {
+fn anthropic_architect_requires_opus_5_5_at_xhigh() {
     assert_eq!(
         (architect().config, architect().requires_model),
         (
             BuiltinCategoryConfig {
-                model: "anthropic/claude-fable-5",
+                model: "anthropic/claude-opus-5-5",
                 variant: Some("xhigh")
             },
-            Some("claude-fable-5")
+            Some("claude-opus-5-5")
         )
     );
+}
+
+#[test]
+fn builtin_chains_route_to_no_claude_fable_model() {
+    for (name, chain) in CATEGORY_FALLBACK_CHAINS.iter() {
+        assert!(
+            !chain.iter().any(|rung| rung.model.contains("fable")),
+            "{name}"
+        );
+    }
+    assert!(!BUILTIN_CATEGORY_DEFAULTS.iter().any(|definition| {
+        definition.config.model.contains("fable")
+            || definition
+                .requires_model
+                .is_some_and(|gate| gate.contains("fable"))
+    }));
+}
+
+#[test]
+fn gpt_6_2_lane_rungs_keep_gpt_6_x_rungs_right_behind_them() {
+    let ultrabrain = chain("ultrabrain");
+    let models: Vec<&str> = ultrabrain.iter().map(|rung| rung.model.as_str()).collect();
+    assert_eq!(
+        models,
+        vec![
+            "gpt-6.2-astra",
+            "gpt-6-astra",
+            "gpt-6-astra",
+            "gpt-6.2-astra",
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-sol",
+            "gpt-5.6-sol",
+        ]
+    );
+    assert!(
+        ultrabrain
+            .iter()
+            .all(|rung| rung.variant.as_deref() == Some("max"))
+    );
+    let deep: Vec<String> = chain("deep").into_iter().map(|rung| rung.model).collect();
+    assert_eq!(deep, vec!["gpt-6.2-sol", "gpt-6.1-sol", "gpt-5.6-sol"]);
 }
 
 // ---- category/category-routing-policy.test.ts ----
@@ -569,6 +592,16 @@ fn routing_policy_unspecified_low_chain_is_grok_first_without_luna() {
                 &["xai", "github-copilot", "opencode", "vercel"],
                 "grok-4.6",
                 Some("xhigh")
+            ),
+            entry(
+                &["openai", "quotio-openai", "vercel"],
+                "gpt-6.2-sol",
+                Some("medium")
+            ),
+            entry(
+                &["openai", "quotio-openai", "vercel"],
+                "gpt-6.1-sol",
+                Some("medium")
             ),
             entry(OPENAI_RUNG, "gpt-5.6-terra", Some("high")),
             entry(
@@ -843,15 +876,15 @@ fn gating_architect_unavailable_on_cross_family_models() {
     ));
     assert_eq!(
         unavailable.attempted_model.as_deref(),
-        Some("anthropic/claude-fable-5")
+        Some("anthropic/claude-opus-5-5")
     );
     assert!(!contains(&unavailable.available_categories, "architect"));
 }
 
 #[test]
-fn gating_architect_resolves_with_fable() {
+fn gating_architect_resolves_with_opus_5_5() {
     let mut models = pre_gating_models();
-    models.push(model("anthropic", "claude-fable-5"));
+    models.push(model("anthropic", "claude-opus-5-5"));
     let resolved = expect_resolved(resolve("architect", json!({}), &registry(models)));
     assert_eq!(
         (
@@ -859,7 +892,7 @@ fn gating_architect_resolves_with_fable() {
             resolved.spec.model_id.as_str(),
             resolved.spec.variant.as_deref()
         ),
-        ("anthropic", "claude-fable-5", Some("xhigh"))
+        ("anthropic", "claude-opus-5-5", Some("xhigh"))
     );
     assert!(contains(&resolved.available_categories, "architect"));
 }
@@ -980,21 +1013,21 @@ fn gating_visual_engineering_kimi_is_real_chain_fallback() {
 }
 
 #[test]
-fn gating_artistry_fable_is_primary_hit() {
+fn gating_artistry_opus_is_primary_hit() {
     let resolved = expect_resolved(resolve(
         "artistry",
         json!({}),
-        &registry(vec![model("anthropic", "claude-fable-5-1")]),
+        &registry(vec![model("anthropic", "claude-opus-5-5")]),
     ));
     assert!(!resolved.selection.matched_fallback);
 }
 
 #[test]
-fn gating_unrelated_vendor_does_not_open_fable_gate() {
+fn gating_unrelated_vendor_does_not_open_architect_gate() {
     let result = resolve(
         "architect",
         json!({}),
-        &registry(vec![model("custom", "unrelated/claude-fable-5")]),
+        &registry(vec![model("custom", "unrelated/claude-opus-5-5")]),
     );
     assert_eq!(result.kind(), "model_unavailable");
     assert!(!contains(result.available_categories(), "architect"));
