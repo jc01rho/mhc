@@ -9,15 +9,15 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use maho_memory_core::sync::engine::adapters::http_transport::{
+use maho_sync_server::{ServerState, Tokens, router};
+use memory_core::sync::engine::adapters::http_transport::{
     ByteStream, HttpClient, HttpRequest, HttpResponse, HttpTransportOptions, StreamResponse,
     create_http_transport,
 };
-use maho_memory_core::sync::engine::error::{EngineError, EngineResult};
-use maho_memory_core::sync::engine::ports::{
+use memory_core::sync::engine::error::{EngineError, EngineResult};
+use memory_core::sync::engine::ports::{
     AppendRequest, AppendResult, EntryKind, StreamHandlers, Transport,
 };
-use maho_sync_server::{ServerState, Tokens, router};
 
 struct ReqwestClient(reqwest::Client);
 
@@ -99,7 +99,7 @@ tok-x account-2 device-x device:x
 fn transport(
     base: &str,
     token: &'static str,
-) -> maho_memory_core::sync::engine::adapters::http_transport::HttpTransport {
+) -> memory_core::sync::engine::adapters::http_transport::HttpTransport {
     create_http_transport(HttpTransportOptions {
         base_url: base.into(),
         token: Rc::new(move || Box::pin(async move { Ok(token.to_string()) })),
