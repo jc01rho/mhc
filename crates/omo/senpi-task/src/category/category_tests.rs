@@ -1241,14 +1241,17 @@ fn fable_and_kimi() -> Vec<Value> {
 fn excluded_head_rung_leads_with_the_next_rung() {
     // Artistry's head rung is Claude Opus 5.5 since the Fable routing was dropped; excluding it walks
     // to the Kimi rung, and the excluded id never reaches the runtime chain.
-    let models = registry(fable_and_kimi());
+    let models = registry(vec![
+        model("anthropic", "claude-opus-5-5"),
+        model("kimi-for-coding", "k3.1-pro"),
+    ]);
     let resolved = expect_resolved(resolve(
         "artistry",
         json!({ "exclude_models": ["claude-opus-*"] }),
         &models,
     ));
     assert_eq!(resolved.spec.provider, "kimi-for-coding");
-    assert_eq!(resolved.spec.model_id, "k3");
+    assert_eq!(resolved.spec.model_id, "k3.1-pro");
     assert_eq!(resolved.spec.variant.as_deref(), Some("max"));
     assert!(resolved.selection.matched_fallback);
     let fallbacks = resolved.spec.fallback_models.unwrap_or_default();
