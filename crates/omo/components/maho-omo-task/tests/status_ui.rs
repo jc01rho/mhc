@@ -340,6 +340,28 @@ fn terminal_set_clears_status() {
     assert_eq!(timers.count(), 0);
     assert_eq!(footer(&ui), None);
 }
+/// #12160: a finished team member never keeps the task surface alive, resident handle or not: the
+/// footer clears, no widget content is published and no refresh timer runs.
+#[test]
+fn a_completed_team_member_leaves_the_background_surface() {
+    let (status, timers, ui, manager) = fixture(true, ExtensionMode::Tui);
+    {
+        let mut records = manager.records.lock().expect("records");
+        records[0].name = Some("team:12345678-1234-1234-1234-123456789abc:researcher".into());
+        records[0].task_summary = Some("settled researcher".into());
+        records[0].status = TaskStatus::Completed;
+    }
+    status.sync_now();
+    assert_eq!(timers.count(), 0);
+    assert_eq!(footer(&ui), None);
+    assert!(
+        ui.widgets
+            .lock()
+            .expect("widgets")
+            .iter()
+            .all(|widget| widget.0.is_none())
+    );
+}
 #[test]
 fn repeated_schedule_coalesces_to_one_render() {
     let (status, timers, ui, _) = fixture(false, ExtensionMode::Tui);
