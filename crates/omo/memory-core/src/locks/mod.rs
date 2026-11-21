@@ -3,6 +3,7 @@
 pub mod acquire;
 pub mod candidate_sweep;
 pub mod counting_lease;
+pub mod dead_owner_sweep;
 pub mod domains;
 pub mod lock_record;
 pub mod os_file_lock;
@@ -26,6 +27,7 @@ pub use counting_lease::{
     CountingLeaseOptions, acquire_counting_lease, counting_lease_lock_path,
     counting_lease_ticket_directory,
 };
+pub use dead_owner_sweep::sweep_dead_owner_locks;
 pub use domains::{
     LOCK_DOMAINS, LockDomain, LockDomainError, facts_queue_lock_path, facts_runs_lock_path,
     memory_writer_lock_path, notice_lock_path, receipts_lock_path, reflection_scheduler_lock_path,

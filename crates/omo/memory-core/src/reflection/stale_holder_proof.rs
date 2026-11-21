@@ -116,7 +116,7 @@ fn stuck(run_id: &str, reason: impl Into<String>) -> ReflectionLockVerdict {
 
 /// A live pid still counts as gone when its recorded start identity proves the pid was reused; an
 /// unreadable or incomparable start keeps it live (`rule:pid-reused`).
-fn launcher_liveness(
+pub fn reflection_launcher_liveness(
     pid: u32,
     recorded_start: Option<&serde_json::Value>,
     probe: &ReflectionLockProbe<'_>,
@@ -195,7 +195,7 @@ pub fn classify_reflection_lock_holder(
             format!("it is owned by host {launcher_hostname}, which cannot be checked from here"),
         );
     }
-    match launcher_liveness(launcher_pid, fields.get("launcherProcessStart"), probe) {
+    match reflection_launcher_liveness(launcher_pid, fields.get("launcherProcessStart"), probe) {
         // rule:launcher-alive
         ProcessLiveness::Alive => return ReflectionLockVerdict::Live { run_id },
         // rule:launcher-unknown
