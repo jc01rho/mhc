@@ -182,9 +182,12 @@ fn stale_base_answers_the_head_from_state_and_5xx_is_unavailable()
     Ok(())
 }
 
+/// One recorded request: the path it asked for and the headers it carried.
+type SeenRequest = (String, Vec<(String, String)>);
+
 /// Answers every request with 200 and the body that request needs, keeping each request's headers.
 struct Recording {
-    seen: RefCell<Vec<(String, Vec<(String, String)>)>>,
+    seen: RefCell<Vec<SeenRequest>>,
 }
 
 impl Recording {
