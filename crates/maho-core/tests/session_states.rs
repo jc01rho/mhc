@@ -32,7 +32,7 @@ fn hold(kind: HoldKind, key: &str) -> SessionHold {
 
 #[test]
 fn session_operating_state_transitions_between_active_held_settled_and_archived() {
-    let mut manager = SessionManager::in_memory("/workspace");
+    let mut manager = SessionManager::in_memory("/workspace", None, None);
     assert_eq!(
         manager.operating_state(false),
         SessionOperatingState::Active
@@ -97,7 +97,7 @@ fn session_operating_state_transitions_between_active_held_settled_and_archived(
 
 #[test]
 fn archived_and_settled_markers_are_scoped_to_their_own_session_id_and_validated() {
-    let mut manager = SessionManager::in_memory("/workspace");
+    let mut manager = SessionManager::in_memory("/workspace", None, None);
     let source_id = manager.session_id().to_owned();
     let foreign_archived = manager.append_custom(
         "session_archived",
