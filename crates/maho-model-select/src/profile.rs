@@ -143,19 +143,6 @@ pub fn gate_rungs(
         .collect()
 }
 
-/// The released top model of the gated model's family, from the MIT recommended-model data.
-fn same_family_top_model() -> &'static str {
-    use maho_ext_recommended_models::{
-        FABLE55_PROMOTE_DEFAULTS, FABLE55_RELEASED, recommended_fable_model,
-    };
-    let current = recommended_fable_model(FABLE55_RELEASED, FABLE55_PROMOTE_DEFAULTS);
-    if is_launch_gated(current) {
-        recommended_fable_model(false, false)
-    } else {
-        current
-    }
-}
-
 /// Built-in profiles plus the rungs the launch gate dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuiltProfiles {
@@ -168,10 +155,10 @@ pub struct BuiltProfiles {
 ///
 /// Composition (suggested in the spec, to be confirmed by the maintainer): `daily-normal` is the
 /// first recommended general model at medium effort with the non-GPT alternates after it;
-/// `daily-heavy` stages the launch-gated model at xhigh, then the released top model of the same
-/// family at xhigh, then the recommended top general model at high effort; the `geeky-*` lanes
-/// use the recommended GPT-family models. Gated rungs pass through [`gate_rungs`] with the
-/// release flag of `maho-ext-recommended-models`.
+/// `daily-heavy` runs Claude Opus 5.5 at xhigh (no built-in lane routes to a Claude Fable model);
+/// the `geeky-*` lanes lead with GPT-6.2 Astra and Sol and keep GPT-6 Astra and GPT-6.1 Sol right
+/// behind them at the same effort (omo #14149). Built-in rungs still pass through [`gate_rungs`]
+/// with the release flag of `maho-ext-recommended-models`.
 pub fn builtin_profiles() -> Vec<ModelProfile> {
     build_builtin_profiles(
         maho_ext_recommended_models::FABLE55_RELEASED,
@@ -199,17 +186,15 @@ pub fn build_builtin_profiles(released: bool, warn: &mut dyn FnMut(&str)) -> Bui
             "daily-heavy",
             "daily",
             "heavy",
-            vec![
-                recommended_rung(LAUNCH_GATED_MODEL, Some("xhigh")),
-                recommended_rung(same_family_top_model(), Some("xhigh")),
-                recommended_rung("claude-opus-5-5", Some("high")),
-            ],
+            vec![recommended_rung("claude-opus-5-5", Some("xhigh"))],
         ),
         (
             "geeky-normal",
             "geeky",
             "normal",
             vec![
+                recommended_rung("gpt-6.2-astra", Some("medium")),
+                recommended_rung("gpt-6.2-sol", Some("medium")),
                 recommended_rung("gpt-6.1-sol", Some("medium")),
                 recommended_rung("gpt-6-astra", Some("medium")),
             ],
@@ -219,7 +204,9 @@ pub fn build_builtin_profiles(released: bool, warn: &mut dyn FnMut(&str)) -> Bui
             "geeky",
             "heavy",
             vec![
+                recommended_rung("gpt-6.2-astra", Some("xhigh")),
                 recommended_rung("gpt-6-astra", None),
+                recommended_rung("gpt-6.2-sol", Some("high")),
                 recommended_rung("gpt-6.1-sol", Some("high")),
             ],
         ),
