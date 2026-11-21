@@ -194,6 +194,7 @@ fn given_clean_worktree_with_valid_commit_when_validated_then_validation_succeed
             tip_sha,
             changed_paths,
             dropped,
+            ..
         } => {
             assert_eq!(changed_paths, vec!["learned.md"]);
             assert!(dropped.is_empty());
