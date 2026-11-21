@@ -1781,16 +1781,19 @@ pub fn format_stale_lock_fix_lines(
             .filter(|(_, reason)| reason != OWNER_NOT_PROVABLY_DEAD)
             .map(|(name, reason)| format!("{name}: {reason}"))
             .collect();
-        let detail = if failed.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", failed.join("; "))
-        };
-        lines.push(format!(
-            "INFO {identity} locks reclaimed {}, kept {}{detail}",
-            locks.reclaimed.len(),
-            locks.kept.len()
-        ));
+        // A sweep that found nothing to reclaim and nothing to explain is not worth a line.
+        if !locks.reclaimed.is_empty() || !failed.is_empty() {
+            let detail = if failed.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", failed.join("; "))
+            };
+            lines.push(format!(
+                "INFO {identity} locks reclaimed {}, kept {}{detail}",
+                locks.reclaimed.len(),
+                locks.kept.len()
+            ));
+        }
     }
     lines
 }
