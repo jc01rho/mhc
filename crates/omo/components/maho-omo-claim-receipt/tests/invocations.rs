@@ -72,6 +72,23 @@ fn vp_check_covers_both_typecheck_and_lint() {
 }
 
 #[test]
+fn bun_check_is_a_typecheck_and_bun_run_check_stays_a_script_lookup() {
+    assert_eq!(invoked_kinds("bun check", 0), vec![InvokedKind::Typecheck]);
+    assert_eq!(
+        invoked_kinds("bun check --no-script --all -p tsconfig.json", 0),
+        vec![InvokedKind::Typecheck]
+    );
+    assert!(
+        invoked_kinds("cd w && bun check -p a && bun check -p b", 0)
+            .contains(&InvokedKind::Typecheck)
+    );
+    assert_eq!(
+        invoked_kinds("bun run check", 0),
+        invoked_kinds("npm run check", 0)
+    );
+}
+
+#[test]
 fn the_remote_command_of_ssh_is_parsed() {
     assert_eq!(
         invoked_kinds(

@@ -249,6 +249,8 @@ fn tool_kinds(exe: &str, rest: &[String]) -> Vec<InvokedKind> {
     if contains(&RUNNERS, exe) {
         let kinds = if exe == "bun" && first == "test" {
             vec![InvokedKind::Test]
+        } else if exe == "bun" && first == "check" {
+            vec![InvokedKind::Typecheck]
         } else if exe == "bun" && first == "build" {
             vec![InvokedKind::Build]
         } else if first == "run" {
