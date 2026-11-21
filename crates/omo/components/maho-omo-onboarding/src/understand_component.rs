@@ -68,7 +68,7 @@ fn is_model_selector(model: &str) -> bool {
 }
 
 impl OnboardingUnderstandingHandlers {
-    /// The scan's digests exist only in memory, with the retained scan: an expired, evicted or applied scan has none.
+    /// The scan's digests exist only in memory, with the retained scan: an expired or evicted scan has none.
     async fn scan_for_understanding(
         &self,
         scan_id: &str,
@@ -121,7 +121,7 @@ impl OnboardingUnderstandingHandlers {
         let Some(scan) = self.scan_for_understanding(&scan_id).await else {
             release();
             return unavailable(
-                "No retained scan with this id: it never ran, failed, expired after ten minutes, or was applied. Run omo.onboarding.scan again.",
+                "No retained scan with this id: it never ran, failed, or expired after ten minutes. Run omo.onboarding.scan again.",
             );
         };
         let Some(seams) = self.registration.seams.clone() else {
@@ -265,6 +265,30 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn an_applied_scan_is_still_understood_until_it_expires() {
+        let h = handlers(true);
+        let (sender, receiver) =
+            tokio::sync::watch::channel::<crate::scan_component::ScanOutcomeSlot>(None);
+        let outcome = crate::scan_runtime::OnboardingScanOutcome {
+            plans: None,
+            results: vec![],
+            digests: vec![],
+            project_roots: Default::default(),
+        };
+        sender
+            .send(Some(Some(Arc::new(outcome))))
+            .expect("receiver alive");
+        let held = Arc::new(crate::scan_component::HeldScan {
+            finished_at: std::sync::Mutex::new(Some(0)),
+            outcome: receiver,
+            applied: std::sync::atomic::AtomicBool::new(true),
+        });
+        h.registration.store.insert("applied", held, 0);
+
+        assert!(h.scan_for_understanding("applied").await.is_some());
+    }
+
     #[test]
     fn the_model_selector_is_provider_slash_model() {
         assert!(is_model_selector("anthropic/claude-x"));
@@ -298,7 +322,7 @@ mod tests {
             .await;
         assert_eq!(
             missing["reason"],
-            "No retained scan with this id: it never ran, failed, expired after ten minutes, or was applied. Run omo.onboarding.scan again."
+            "No retained scan with this id: it never ran, failed, or expired after ten minutes. Run omo.onboarding.scan again."
         );
     }
 

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 use telemetry_core::{OtlpWireProjection, SpanAllowlist, WireAttributes};
 
+use crate::event_schemas::OMO_NATIVE_EVENT_SCHEMAS;
 pub use crate::otlp_events::is_otlp_event;
 use crate::pinned_model_ids::pinned_model_id;
 
@@ -520,6 +521,34 @@ fn number(value: f64) -> Value {
     }
 }
 
+/// The collector refuses a whole record for one unlisted enum value (`invalid_enum`). A closed string
+/// property therefore never leaves raw when its value is outside the client vocabulary: it becomes that
+/// vocabulary's own catch-all (`custom`, then `unknown`, then `other`), or is left out when the
+/// vocabulary has none.
+const CLOSED_FALLBACKS: [&str; 3] = ["custom", "unknown", "other"];
+
+fn closed_values(event: &str, property: &str) -> Option<&'static Vec<Value>> {
+    OMO_NATIVE_EVENT_SCHEMAS
+        .get(event)?
+        .get(property)?
+        .get("values")?
+        .as_array()
+}
+
+fn is_outside_closed_vocabulary(event: &str, property: &str, value: &str) -> bool {
+    closed_values(event, property)
+        .is_some_and(|values| !values.iter().any(|allowed| allowed.as_str() == Some(value)))
+}
+
+fn closed_fallback(event: &str, property: &str) -> Option<&'static str> {
+    let values = closed_values(event, property)?;
+    CLOSED_FALLBACKS.into_iter().find(|fallback| {
+        values
+            .iter()
+            .any(|allowed| allowed.as_str() == Some(*fallback))
+    })
+}
+
 pub fn project_otlp_event(event: &str, properties: &Map<String, Value>) -> WireAttributes {
     let mut attributes = WireAttributes::new();
     if !is_otlp_event(event) {
@@ -559,6 +588,11 @@ pub fn project_otlp_event(event: &str, properties: &Map<String, Value>) -> WireA
                     pinned_model_id(text)
                 };
                 attributes.insert((*wire).into(), kept.into());
+            }
+            Some(Value::String(text)) if is_outside_closed_vocabulary(event, property, text) => {
+                if let Some(fallback) = closed_fallback(event, property) {
+                    attributes.insert((*wire).into(), fallback.into());
+                }
             }
             Some(kept @ (Value::String(_) | Value::Bool(_))) => {
                 attributes.insert((*wire).into(), kept.clone());
@@ -630,6 +664,86 @@ mod tests {
         );
         assert!(!out.contains_key("omo.custom_category_count"));
         assert!(project_otlp_event("unlisted", &props(json!({"a": 1}))).is_empty());
+    }
+
+    const OPEN_STRING_PROPERTIES: [&str; 7] = [
+        "$session_id",
+        "day_utc",
+        "summary_epoch",
+        "combo_fingerprint",
+        "crashed_bun_version",
+        "crashed_engine_version",
+        "crashed_omo_version",
+    ];
+
+    /// The client schema's actual property names and vocabulary, not relay aliases.
+    fn client_bag(schema: &Map<String, Value>) -> Map<String, Value> {
+        schema
+            .iter()
+            .map(|(key, spec)| {
+                let value = match spec.get("type").and_then(Value::as_str) {
+                    Some("number") => json!(1),
+                    Some("boolean") => json!(false),
+                    _ => spec
+                        .get("values")
+                        .and_then(Value::as_array)
+                        .and_then(|values| values.first())
+                        .cloned()
+                        .unwrap_or_else(|| json!("a".repeat(64))),
+                };
+                (key.clone(), value)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn closed_string_properties_never_leave_raw_and_only_the_listed_open_ones_pass_raw() {
+        let unlisted = "zz-unlisted-raw";
+        let mut leaked = Vec::new();
+        let events = OMO_NATIVE_EVENT_SCHEMAS
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        for (event, schema) in &events {
+            let Some(properties) = schema.as_object() else {
+                continue;
+            };
+            if !is_otlp_event(event) {
+                continue;
+            }
+            for (property, spec) in properties {
+                if spec.get("type").and_then(Value::as_str) != Some("string") {
+                    continue;
+                }
+                let mut bag = client_bag(properties);
+                bag.insert(property.clone(), json!(unlisted));
+                let raw = project_otlp_event(event, &bag)
+                    .values()
+                    .any(|value| value == unlisted);
+                if raw && !OPEN_STRING_PROPERTIES.contains(&property.as_str()) {
+                    leaked.push(format!("{event}.{property}"));
+                }
+                if raw && spec.get("values").is_some() {
+                    leaked.push(format!("{event}.{property} (closed)"));
+                }
+            }
+        }
+        assert_eq!(leaked, Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_unlisted_closed_value_maps_to_the_vocabularys_own_catch_all_or_is_left_out() {
+        let out = project_otlp_event("session_started", &props(json!({"session_role": "main"})));
+        assert_eq!(out["omo.session.role"], "unknown");
+        let out = project_otlp_event(
+            "delegation_started",
+            &props(json!({"name": "my-custom-agent"})),
+        );
+        assert_eq!(out["omo.name"], "custom");
+        let out = project_otlp_event("handoff_hint", &props(json!({"action": "bogus"})));
+        assert!(!out.contains_key("omo.action"));
+        let out = project_otlp_event("handoff_hint", &props(json!({"action": "accepted"})));
+        assert_eq!(out["omo.action"], "accepted");
     }
 
     #[test]

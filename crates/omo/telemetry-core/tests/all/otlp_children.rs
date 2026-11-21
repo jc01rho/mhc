@@ -143,6 +143,7 @@ async fn a_collector_that_never_answers_ends_the_attempt_at_the_request_timeout(
         abort: AbortSignal::new(),
         request_timeout_ms: 50,
         before_attempt: None,
+        not_before: None,
     };
 
     let outcome = post_with_retry(&deps, Signal::Logs, b"body").await;

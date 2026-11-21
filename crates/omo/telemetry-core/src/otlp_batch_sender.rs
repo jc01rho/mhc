@@ -32,6 +32,7 @@ use crate::otlp_spool_dir::renew_claim;
 use crate::otlp_spool_file::SpoolRequest;
 use crate::otlp_spool_file::spool_request;
 use crate::otlp_spool_names::SpoolEntry;
+use crate::otlp_spool_not_before::create_spool_not_before;
 use crate::types::TelemetryDiagnosticEvent;
 use crate::types::TelemetryError;
 
@@ -305,6 +306,7 @@ impl BatchSender {
             abort: self.abort.clone(),
             request_timeout_ms: self.input.request_timeout_ms,
             before_attempt: Some(Arc::new(move || sender.gate())),
+            not_before: Some(create_spool_not_before(&ctx.dir)),
         };
         let outcome = post_with_retry(&deps, signal, &body).await;
         let current = self.in_flight().unwrap_or_else(|| claimed.to_string());
