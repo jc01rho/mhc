@@ -38,6 +38,8 @@ pub struct Args {
     pub name: Option<String>,
     pub no_session: bool,
     pub session: Option<String>,
+    /// `--attach <address>`: attach the interactive TUI to an existing RPC endpoint (senpi#4271).
+    pub attach: Option<String>,
     pub session_id: Option<String>,
     /// Fresh-session ancestry (`--spawned-by <json>`).
     pub spawned_by: Option<maho_core::session_lifecycle_types::SpawnedBy>,
@@ -404,6 +406,7 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
         }
         i += 1;
     }
+    super::attach_args::apply_attach_args(&mut result);
     Ok(result)
 }
 pub fn help_text(grok_neo_enabled: bool, extension_flags: &str) -> String {
