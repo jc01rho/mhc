@@ -204,7 +204,7 @@ fn orders_daily_normal_opus_medium_then_kimi_max_then_glm_max() {
 }
 
 #[test]
-fn runs_daily_heavy_as_fable_xhigh_only() {
+fn runs_daily_heavy_as_opus_xhigh_only_without_fable() {
     let models: Vec<(Vec<&str>, &str, Option<&str>)> = profiles()["daily-heavy"]
         .models
         .iter()
@@ -220,14 +220,14 @@ fn runs_daily_heavy_as_fable_xhigh_only() {
                 "github-copilot",
                 "opencode"
             ],
-            "claude-fable-5-1",
+            "claude-opus-5-5",
             Some("xhigh")
         )]
     );
 }
 
 #[test]
-fn runs_geeky_normal_as_astra_medium_then_the_two_sol_tiers_medium_on_the_oi_lanes() {
+fn runs_geeky_normal_as_gpt_6_2_astra_then_gpt_6_astra_then_the_sol_tiers_medium() {
     let models: Vec<(Vec<&str>, &str, Option<&str>)> = profiles()["geeky-normal"]
         .models
         .iter()
@@ -237,6 +237,11 @@ fn runs_geeky_normal_as_astra_medium_then_the_two_sol_tiers_medium_on_the_oi_lan
         models,
         [
             (
+                vec!["chatgpt-subscription", "openai", "opencode"],
+                "gpt-6.2-astra",
+                Some("medium")
+            ),
+            (
                 vec![
                     "chatgpt-subscription",
                     "openai",
@@ -244,6 +249,16 @@ fn runs_geeky_normal_as_astra_medium_then_the_two_sol_tiers_medium_on_the_oi_lan
                     "opencode"
                 ],
                 "gpt-6-astra",
+                Some("medium")
+            ),
+            (
+                vec!["chatgpt-subscription", "openai"],
+                "gpt-6.2-sol-fast",
+                Some("medium")
+            ),
+            (
+                vec!["chatgpt-subscription", "openai"],
+                "gpt-6.2-sol",
                 Some("medium")
             ),
             (
@@ -271,7 +286,7 @@ fn runs_geeky_normal_as_astra_medium_then_the_two_sol_tiers_medium_on_the_oi_lan
 }
 
 #[test]
-fn runs_geeky_heavy_as_astra_high_with_the_same_provider_ranking_as_deep_high() {
+fn runs_geeky_heavy_as_gpt_6_2_astra_then_gpt_6_astra_high_like_deep_high() {
     let models: Vec<(Vec<&str>, &str, Option<&str>)> = profiles()["geeky-heavy"]
         .models
         .iter()
@@ -279,15 +294,22 @@ fn runs_geeky_heavy_as_astra_high_with_the_same_provider_ranking_as_deep_high() 
         .collect();
     assert_eq!(
         models,
-        [(
-            vec![
-                "chatgpt-subscription",
-                "openai",
-                "github-copilot",
-                "opencode"
-            ],
-            "gpt-6-astra",
-            Some("high")
-        )]
+        [
+            (
+                vec!["chatgpt-subscription", "openai", "opencode"],
+                "gpt-6.2-astra",
+                Some("high")
+            ),
+            (
+                vec![
+                    "chatgpt-subscription",
+                    "openai",
+                    "github-copilot",
+                    "opencode"
+                ],
+                "gpt-6-astra",
+                Some("high")
+            ),
+        ]
     );
 }

@@ -23,6 +23,10 @@ const OPENAI: &[&str] = &[
     "vercel",
 ];
 
+// GPT-6.x rungs: only the OpenAI lanes serve GPT-6.1 Sol and GPT-6.2 (not Copilot or OpenCode Zen).
+const GPT_NATIVE: &[&str] = &["openai", "quotio-openai", "vercel"];
+const GPT_ZEN: &[&str] = &["openai", "opencode", "vercel"];
+
 fn rung(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFallbackEntry {
     crate::delegate_adapter::fallback_entry(providers, model, variant)
 }
@@ -48,29 +52,36 @@ pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFal
             ),
             (
                 "architect",
-                vec![rung(ANTHROPIC, "claude-fable-5", Some("xhigh"))],
+                vec![rung(ANTHROPIC, "claude-opus-5-5", Some("xhigh"))],
             ),
             (
                 "ultrabrain",
                 vec![
-                    rung(
-                        &["openai", "quotio-openai", "vercel"],
-                        "gpt-5.6-sol",
-                        Some("max"),
-                    ),
+                    // Each GPT-6.2 rung keeps GPT-6 Astra right behind it, so a registry without 6.2
+                    // resolves what it did before; Copilot does not serve 6.2 and keeps GPT-6 Astra.
+                    rung(GPT_NATIVE, "gpt-6.2-astra", Some("max")),
+                    rung(GPT_NATIVE, "gpt-6-astra", Some("max")),
+                    rung(&["github-copilot"], "gpt-6-astra", Some("max")),
+                    rung(GPT_ZEN, "gpt-6.2-astra", Some("max")),
+                    rung(GPT_ZEN, "gpt-6-astra", Some("max")),
+                    rung(GPT_NATIVE, "gpt-5.6-sol", Some("max")),
                     rung(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-                    rung(
-                        &["openai", "opencode", "vercel"],
-                        "gpt-5.6-sol",
-                        Some("max"),
-                    ),
+                    rung(GPT_ZEN, "gpt-5.6-sol", Some("max")),
                 ],
             ),
-            ("deep", vec![rung(OPENAI, "gpt-5.6-sol", Some("medium"))]),
+            (
+                "deep",
+                vec![
+                    // GPT-6.2 Sol leads at the same medium effort on the OpenAI lanes, then GPT-6.1 Sol
+                    // for a registry without 6.2; GPT-5.6 Sol stays behind them for every other lane.
+                    rung(GPT_NATIVE, "gpt-6.2-sol", Some("medium")),
+                    rung(GPT_NATIVE, "gpt-6.1-sol", Some("medium")),
+                    rung(OPENAI, "gpt-5.6-sol", Some("medium")),
+                ],
+            ),
             (
                 "artistry",
                 vec![
-                    rung(ANTHROPIC, "claude-fable-5-1", Some("max")),
                     rung(ANTHROPIC, "claude-opus-5-5", Some("max")),
                     rung(KIMI, "kimi-k3.1-pro", Some("max")),
                 ],
@@ -113,6 +124,8 @@ pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFal
                         "grok-4.6",
                         Some("xhigh"),
                     ),
+                    rung(GPT_NATIVE, "gpt-6.2-sol", Some("medium")),
+                    rung(GPT_NATIVE, "gpt-6.1-sol", Some("medium")),
                     rung(OPENAI, "gpt-5.6-terra", Some("high")),
                     rung(ANTHROPIC, "claude-sonnet-5", Some("low")),
                     rung(

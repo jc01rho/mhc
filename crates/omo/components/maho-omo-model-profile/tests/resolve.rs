@@ -11,7 +11,6 @@ const OPUS_SUBSCRIPTION: &str = "anthropic-subscription/claude-opus-5-5";
 const OPUS_ZEN: &str = "opencode/claude-opus-5-5";
 const OPUS_API: &str = "anthropic-api/claude-opus-5-5";
 const FABLE: &str = "anthropic-subscription/claude-fable-5-1";
-const FABLE_ZEN: &str = "opencode/claude-fable-5-1";
 const KIMI: &str = "moonshotai/kimi-k3.1-pro";
 const FLASH: &str = "deepseek/deepseek-flash";
 const LUNA: &str = "openai/gpt-5.6-luna-fast";
@@ -307,10 +306,10 @@ fn reports_a_blank_value_as_unknown_rather_than_silently_doing_nothing() {
 
 #[test]
 fn keeps_daily_heavy_on_the_claude_subscription_when_an_opencode_zen_key_serves_the_same_model() {
-    let result = resolve("daily-heavy", &[FABLE_ZEN, FABLE], None);
+    let result = resolve("daily-heavy", &[OPUS_ZEN, FABLE, OPUS_SUBSCRIPTION], None);
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "anthropic-subscription");
-    assert_eq!(resolved.model_id, "claude-fable-5-1");
+    assert_eq!(resolved.model_id, "claude-opus-5-5");
     assert_eq!(resolved.reasoning, Some("xhigh"));
 }
 
@@ -567,7 +566,10 @@ fn a_profile_whose_registry_serves_nothing_reports_the_whole_chain() {
     let result = resolve("geeky-heavy", &["example/nothing"], None);
     assert_eq!(
         chain_of(&result),
-        ["chatgpt-subscription/gpt-6-astra".to_owned()]
+        [
+            "chatgpt-subscription/gpt-6.2-astra".to_owned(),
+            "chatgpt-subscription/gpt-6-astra".to_owned()
+        ]
     );
 }
 

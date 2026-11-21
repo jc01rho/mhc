@@ -3,7 +3,7 @@ use model_core::CATEGORY_MODEL_REQUIREMENTS;
 use pretty_assertions::assert_eq;
 
 #[test]
-fn visual_engineering_prioritizes_fable_opus_then_kimi_k3_1_pro_and_kimi_k3() {
+fn visual_engineering_prioritizes_opus_then_kimi_k3_1_pro_and_kimi_k3_without_fable() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain,
         vec![
@@ -11,11 +11,6 @@ fn visual_engineering_prioritizes_fable_opus_then_kimi_k3_1_pro_and_kimi_k3() {
                 &["google", "google-vertex", "opencode"],
                 "gemini-4-argon",
                 Some("low")
-            ),
-            entry(
-                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                "claude-fable-5-1",
-                Some("max")
             ),
             entry(
                 &["anthropic", "anthropic-api", "github-copilot", "opencode"],
@@ -35,20 +30,37 @@ fn visual_engineering_prioritizes_fable_opus_then_kimi_k3_1_pro_and_kimi_k3() {
 fn deep_lanes_keep_astra_high_separate_from_sol_medium() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["deep-high"].fallback_chain,
-        vec![entry(
-            &[
-                "openai",
-                "chatgpt-subscription",
-                "github-copilot",
-                "opencode"
-            ],
-            "gpt-6-astra",
-            Some("high")
-        )]
+        vec![
+            entry(
+                &["openai", "chatgpt-subscription", "opencode"],
+                "gpt-6.2-astra",
+                Some("high")
+            ),
+            entry(
+                &[
+                    "openai",
+                    "chatgpt-subscription",
+                    "github-copilot",
+                    "opencode"
+                ],
+                "gpt-6-astra",
+                Some("high")
+            ),
+        ]
     );
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["deep-low"].fallback_chain,
         vec![
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.2-sol",
+                Some("medium")
+            ),
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.2-sol-fast",
+                Some("medium")
+            ),
             entry(
                 &["openai", "chatgpt-subscription"],
                 "gpt-6.1-sol",
@@ -111,7 +123,7 @@ fn quick_prioritizes_luna_deepseek_then_speed_tier() {
     );
 }
 #[test]
-fn unspecified_low_uses_the_selected_ten_rung_chain() {
+fn unspecified_low_uses_the_selected_eleven_rung_chain() {
     let chain = &CATEGORY_MODEL_REQUIREMENTS["unspecified-low"].fallback_chain;
     assert!(!chain.iter().any(|e| e.model == "gpt-5.6-luna"));
     assert_eq!(
@@ -129,6 +141,11 @@ fn unspecified_low_uses_the_selected_ten_rung_chain() {
                 Some("xhigh")
             ),
             entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("high")),
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.2-sol",
+                Some("medium")
+            ),
             entry(
                 &["openai", "chatgpt-subscription"],
                 "gpt-6.1-sol",
@@ -181,7 +198,6 @@ fn high_artistry_and_writing_follow_selected_chains() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,
         vec![
-            entry(providers, "claude-fable-5-1", Some("max")),
             entry(providers, "claude-opus-5-5", Some("max")),
             entry(kimi, "kimi-k3.1-pro", Some("max")),
             kimi_k3.clone()

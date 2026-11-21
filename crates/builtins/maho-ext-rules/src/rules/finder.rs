@@ -21,13 +21,78 @@ pub fn hephaestus_variant_file_for_model(model: Option<&str>) -> &'static str {
         .map_or(HEPHAESTUS_DEFAULT_VARIANT_FILE, |(_, file)| file)
 }
 
+fn is_model_id_boundary(byte: u8) -> bool {
+    matches!(byte, b'/' | b'@' | b':' | b'.' | b'_' | b'-')
+}
+
+fn is_model_id_separator(byte: u8) -> bool {
+    matches!(byte, b'.' | b'_' | b'-')
+}
+
+/// One match of senpi's `hasGpt62Signal` (`(?:^|[/@:._-])gpt[._-]?6(?:[._-]2|2)[._-](?:astra|sol)
+/// (?:$|[/@:._-])`) starting at `start`, the index right after "gpt".
+fn gpt_6_2_signal_at(id: &[u8], start: usize) -> bool {
+    let mut at = start;
+    if id.get(at).copied().is_some_and(is_model_id_separator) {
+        at += 1;
+    }
+    if id.get(at) != Some(&b'6') {
+        return false;
+    }
+    at += 1;
+    if id.get(at).copied().is_some_and(is_model_id_separator) {
+        at += 1;
+    }
+    if id.get(at) != Some(&b'2') {
+        return false;
+    }
+    at += 1;
+    if !id.get(at).copied().is_some_and(is_model_id_separator) {
+        return false;
+    }
+    at += 1;
+    let Some(rest) = id.get(at..) else {
+        return false;
+    };
+    [b"astra".as_slice(), b"sol".as_slice()].iter().any(|tier| {
+        rest.starts_with(tier)
+            && rest
+                .get(tier.len())
+                .is_none_or(|byte| is_model_id_boundary(*byte))
+    })
+}
+
+/// Whether `model` is a GPT-6.2 Astra or Sol id or display name: the models senpi's `gpt-6.2` prompt
+/// preset serves (`hasGpt62Signal`, senpi 6d4426a28), provider prefixes and Venice's dotless
+/// `openai-gpt-62-astra` included.
+pub fn is_gpt_6_2_model(model: &str) -> bool {
+    let normalized = model
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-");
+    let id = normalized.as_bytes();
+    id.windows(3).enumerate().any(|(index, window)| {
+        window == b"gpt"
+            && (index == 0 || id.get(index - 1).copied().is_some_and(is_model_id_boundary))
+            && gpt_6_2_signal_at(id, index + 3)
+    })
+}
+
+/// A bundled Hephaestus variant is enabled only for the active model's variant, and never on a
+/// GPT-6.2 model: that preset stands alone and takes no Hephaestus role prompt (omo #14186).
 pub fn is_hephaestus_candidate_enabled(relative_path: &str, model: Option<&str>) -> bool {
-    !relative_path.starts_with(HEPHAESTUS_BUNDLED_RULE_PREFIX)
-        || relative_path
-            == format!(
-                "{HEPHAESTUS_BUNDLED_RULE_PREFIX}{}",
-                hephaestus_variant_file_for_model(model)
-            )
+    if !relative_path.starts_with(HEPHAESTUS_BUNDLED_RULE_PREFIX) {
+        return true;
+    }
+    if model.is_some_and(is_gpt_6_2_model) {
+        return false;
+    }
+    relative_path
+        == format!(
+            "{HEPHAESTUS_BUNDLED_RULE_PREFIX}{}",
+            hephaestus_variant_file_for_model(model)
+        )
 }
 
 #[derive(Default)]

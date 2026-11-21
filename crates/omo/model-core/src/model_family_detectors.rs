@@ -43,7 +43,7 @@ pub fn is_gpt6_astra_model(model: Option<&str>) -> bool {
     }
     matches!(
         extract_model_name(&parsed.model_id),
-        "gpt-6-astra" | "gpt-6-astra-fast"
+        "gpt-6-astra" | "gpt-6-astra-fast" | "gpt-6.2-astra" | "gpt-6.2-astra-fast"
     )
 }
 
@@ -275,6 +275,8 @@ mod tests {
             " GPT-6-Astra ",
             "gpt-6-astra:high",
             "gpt-6-astra-fast:max",
+            "gpt-6.2-astra",
+            "openai/gpt-6.2-astra-fast:max",
             "chatgpt-subscription/gpt-6-astra (high)",
             "openai/gpt-6-astra-fast xhigh",
             "vercel/openai/gpt-6-astra: auto",

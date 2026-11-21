@@ -314,6 +314,71 @@ fn fallback_capability_refusal_and_expired_probe_never_prevent_the_prompt() {
     }
 }
 
+// rpc-process-fallback-chain.test.ts (omo #12006, #12759) under `task.parent_model_fallback: false`:
+// a child whose engine cannot hold its designated chain is never prompted; one that can completes.
+#[test]
+fn designated_chain_only_children_start_only_on_an_engine_that_holds_their_chain() {
+    for (mode, refusal) in [
+        ("supported", None),
+        ("refused", Some("refused")),
+        ("unsupported", Some("unsupported")),
+        ("silent", Some("timeout")),
+    ] {
+        let child = Arc::new(RpcChildProcess::spawn_command(fake_command(
+            "rpc",
+            &BTreeMap::from([("FAKE_FALLBACK".into(), mode.into())]),
+            true,
+        )));
+        let _guard = ChildGuard(child.clone());
+        let spawned = child.clone();
+        let runner = RpcProcessRunner::new(RpcProcessRunnerOptions {
+            fallback_chain_deadline_ms: Some(if mode == "silent" { 0 } else { 5000 }),
+            spawn_child: Some(Arc::new(move |_| spawned.clone())),
+            build_spawn: Some(Arc::new(|_| RpcSpawnDescriptor::default())),
+            model_admission: Some(Arc::new(|_| Ok(()))),
+            designated_chain_only: true,
+            ..Default::default()
+        });
+        let started = runner.start(&RpcRunnerSpec {
+            task_id: "designated-task".into(),
+            model: Some("p/m".into()),
+            fallback_models: Some(vec!["q/n".into()]),
+            prompt: "answer".into(),
+            ..Default::default()
+        });
+        match refusal {
+            None => assert_eq!(
+                started.expect("held chain starts").wait_for_outcome(),
+                crate::runners::RunnerOutcome::completed("answer")
+            ),
+            Some(code) => {
+                let failure = started.err().expect("start refused");
+                assert_eq!(
+                    failure.kind,
+                    crate::runners::RunnerFailureKind::ChildPromptFailed,
+                    "{mode}"
+                );
+                assert!(
+                    failure.message.contains("(p/m -> q/n)"),
+                    "{mode}: {}",
+                    failure.message
+                );
+                let cause = failure.cause.as_deref().expect("classified cause");
+                assert_eq!(
+                    cause.cause_class,
+                    crate::manager::start_failure_cause::StartCauseClass::ChainNotHeld
+                );
+                assert_eq!(cause.cause_code.as_deref(), Some(code), "{mode}");
+                assert_eq!(
+                    cause.designated_models,
+                    Some(vec!["p/m".to_string(), "q/n".to_string()])
+                );
+            }
+        }
+        runner.settle_teardowns();
+    }
+}
+
 #[test]
 fn identity_received_before_listener_is_replayed_without_waiting_for_another_event() {
     let child = spawn_mode("rpc");

@@ -49,9 +49,9 @@ fn flag_off_removes_the_gated_rung_everywhere() {
     // The shipped flag is off, so the default builder matches.
     assert_eq!(builtin_profiles(), built.profiles);
 
-    // Starts with the same-family rung at xhigh on the Anthropic providers.
+    // Daily · Heavy runs Opus 5.5 at the xhigh the Fable rung used, on the Anthropic providers.
     let first = &heavy(&built.profiles).rungs[0];
-    assert!(first.model.starts_with("claude-fable-"));
+    assert_eq!(first.model, "claude-opus-5-5");
     assert_eq!(first.reasoning.as_deref(), Some("xhigh"));
     assert_eq!(first.providers[0], "anthropic-subscription");
 
@@ -78,14 +78,61 @@ fn flag_off_removes_the_gated_rung_everywhere() {
 }
 
 #[test]
-fn flag_on_with_xhigh_starts_with_the_gated_rung() {
-    let mut warnings = Vec::new();
-    let built = build_builtin_profiles(true, &mut |m: &str| warnings.push(m.to_owned()));
-    let first = &heavy(&built.profiles).rungs[0];
-    assert!(is_launch_gated(&first.model));
-    assert_eq!(first.reasoning.as_deref(), Some("xhigh"));
-    assert!(built.dropped.is_empty());
-    assert!(warnings.is_empty());
+fn no_builtin_rung_routes_to_a_claude_fable_model_in_either_gate_state() {
+    for released in [false, true] {
+        let mut warnings = Vec::new();
+        let built = build_builtin_profiles(released, &mut |m: &str| warnings.push(m.to_owned()));
+        for profile in &built.profiles {
+            assert!(
+                profile.rungs.iter().all(|r| !r.model.contains("fable")),
+                "{}",
+                profile.id
+            );
+        }
+        assert_eq!(heavy(&built.profiles).rungs[0].model, "claude-opus-5-5");
+        assert!(built.dropped.is_empty());
+        assert!(warnings.is_empty());
+    }
+}
+
+#[test]
+fn obsessive_lanes_lead_with_gpt_6_2_and_keep_the_gpt_6_x_rungs_behind() {
+    let profiles = builtin_profiles();
+    let models = |id: &str| -> Vec<(String, Option<String>)> {
+        profiles
+            .iter()
+            .find(|p| p.id == id)
+            .expect("lane")
+            .rungs
+            .iter()
+            .map(|r| (r.model.clone(), r.reasoning.clone()))
+            .collect()
+    };
+    let pair = |model: &str, level: &str| (model.to_owned(), Some(level.to_owned()));
+    assert_eq!(
+        models("geeky-normal"),
+        [
+            pair("gpt-6.2-astra", "medium"),
+            pair("gpt-6.2-sol", "medium"),
+            pair("gpt-6.1-sol", "medium"),
+            pair("gpt-6-astra", "medium"),
+        ]
+    );
+    assert_eq!(
+        models("geeky-heavy"),
+        [
+            pair("gpt-6.2-astra", "xhigh"),
+            pair("gpt-6-astra", "xhigh"),
+            pair("gpt-6.2-sol", "high"),
+            pair("gpt-6.1-sol", "high"),
+        ]
+    );
+    let astra_6_2 = &profiles
+        .iter()
+        .find(|p| p.id == "geeky-heavy")
+        .expect("geeky-heavy")
+        .rungs[0];
+    assert!(!astra_6_2.providers.iter().any(|p| p == "github-copilot"));
 }
 
 #[test]

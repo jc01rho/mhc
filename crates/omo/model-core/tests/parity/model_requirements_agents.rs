@@ -1,5 +1,4 @@
 use model_core::AGENT_MODEL_REQUIREMENTS;
-use model_core::FABLE_55_RELEASED;
 use model_core::FallbackEntry;
 use pretty_assertions::assert_eq;
 
@@ -165,24 +164,12 @@ fn multimodal_looker_keeps_vision_capable_fallback_order() {
 }
 
 #[test]
-fn prometheus_uses_fable_5_5_once_released_then_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max()
- {
-    let full_chain = chain("prometheus");
+fn prometheus_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_without_fable() {
+    let chain = chain("prometheus");
 
-    // the 5.5 rung exists only once FABLE_55_RELEASED is true
-    let fable_55_rungs = usize::from(FABLE_55_RELEASED);
-    assert_eq!(full_chain.len(), fable_55_rungs + 4);
-    let chain = &full_chain[fable_55_rungs..];
+    assert_eq!(chain.len(), 3);
     assert_eq!(
         chain[0],
-        entry(
-            &["anthropic", "github-copilot", "opencode"],
-            "claude-fable-5-1",
-            Some("xhigh")
-        )
-    );
-    assert_eq!(
-        chain[1],
         entry(
             &["anthropic", "github-copilot", "opencode"],
             "claude-opus-5-5",
@@ -190,35 +177,24 @@ fn prometheus_uses_fable_5_5_once_released_then_5_1_xhigh_then_opus_5_5_max_befo
         )
     );
     assert_eq!(
-        chain[2],
+        chain[1],
         entry(
             &["opencode-go", "kimi-for-coding", "moonshotai"],
             "kimi-k3.1-pro",
             Some("max")
         )
     );
-    assert_eq!(chain[3], entry(&["opencode"], "kimi-k3", Some("max")));
+    assert_eq!(chain[2], entry(&["opencode"], "kimi-k3", Some("max")));
+    assert!(!chain.iter().any(|entry| entry.model.contains("fable")));
 }
 
 #[test]
-fn metis_uses_fable_5_5_once_released_then_5_1_max_then_opus_5_5_max_then_kimi_k3_1_pro_max_and_kimi_k3_max()
- {
-    let full_chain = chain("metis");
+fn metis_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_without_fable() {
+    let chain = chain("metis");
 
-    // the 5.5 rung exists only once FABLE_55_RELEASED is true
-    let fable_55_rungs = usize::from(FABLE_55_RELEASED);
-    assert_eq!(full_chain.len(), fable_55_rungs + 4);
-    let chain = &full_chain[fable_55_rungs..];
+    assert_eq!(chain.len(), 3);
     assert_eq!(
         chain[0],
-        entry(
-            &["anthropic", "github-copilot", "opencode"],
-            "claude-fable-5-1",
-            Some("max")
-        )
-    );
-    assert_eq!(
-        chain[1],
         entry(
             &["anthropic", "github-copilot", "opencode"],
             "claude-opus-5-5",
@@ -226,18 +202,20 @@ fn metis_uses_fable_5_5_once_released_then_5_1_max_then_opus_5_5_max_then_kimi_k
         )
     );
     assert_eq!(
-        chain[2],
+        chain[1],
         entry(
             &["opencode-go", "kimi-for-coding", "moonshotai"],
             "kimi-k3.1-pro",
             Some("max")
         )
     );
-    assert_eq!(chain[3], entry(&["opencode"], "kimi-k3", Some("max")));
+    assert_eq!(chain[2], entry(&["opencode"], "kimi-k3", Some("max")));
+    assert!(!chain.iter().any(|entry| entry.model.contains("fable")));
 }
 
 #[test]
-fn momus_leads_with_native_gpt_6_astra_xhigh_before_copilot_and_opencode_astra_rungs() {
+fn momus_leads_with_native_gpt_6_2_astra_xhigh_then_gpt_6_astra_before_copilot_and_opencode_rungs()
+{
     let chain = chain("momus");
 
     assert!(chain.len() > 1);
@@ -245,16 +223,32 @@ fn momus_leads_with_native_gpt_6_astra_xhigh_before_copilot_and_opencode_astra_r
         chain[0],
         entry(
             &["openai", "chatgpt-subscription"],
-            "gpt-6-astra",
+            "gpt-6.2-astra",
             Some("xhigh")
         )
     );
     assert_eq!(
         chain[1],
-        entry(&["github-copilot"], "gpt-6-astra", Some("high"))
+        entry(
+            &["openai", "chatgpt-subscription"],
+            "gpt-6-astra",
+            Some("xhigh")
+        )
     );
     assert_eq!(
         chain[2],
+        entry(&["github-copilot"], "gpt-6-astra", Some("high"))
+    );
+    assert_eq!(
+        chain[3],
+        entry(
+            &["openai", "chatgpt-subscription", "opencode"],
+            "gpt-6.2-astra",
+            Some("high")
+        )
+    );
+    assert_eq!(
+        chain[4],
         entry(
             &["openai", "chatgpt-subscription", "opencode"],
             "gpt-6-astra",
@@ -262,7 +256,7 @@ fn momus_leads_with_native_gpt_6_astra_xhigh_before_copilot_and_opencode_astra_r
         )
     );
     assert_eq!(
-        chain[3],
+        chain[5],
         entry(
             &["anthropic", "github-copilot", "opencode"],
             "claude-opus-5-5",
@@ -270,7 +264,7 @@ fn momus_leads_with_native_gpt_6_astra_xhigh_before_copilot_and_opencode_astra_r
         )
     );
     assert_eq!(
-        chain[5],
+        chain[7],
         entry(
             &["google", "github-copilot", "opencode"],
             "gemini-3.1-pro",
@@ -278,14 +272,14 @@ fn momus_leads_with_native_gpt_6_astra_xhigh_before_copilot_and_opencode_astra_r
         )
     );
     assert_eq!(
-        chain[4],
+        chain[6],
         entry(
             &["google", "google-vertex", "opencode"],
             "gemini-4-argon",
             Some("high")
         )
     );
-    assert_eq!(chain[6], entry(&["opencode-go"], "glm-5.2", None));
+    assert_eq!(chain[8], entry(&["opencode-go"], "glm-5.2", None));
     assert!(
         !chain
             .iter()

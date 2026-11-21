@@ -13,16 +13,26 @@ fn writing_only_activates_when_one_of_its_own_chain_models_is_available() {
 }
 
 #[test]
-fn ultrabrain_routes_gpt_6_astra_max_before_the_existing_sol_max_fallbacks() {
+fn ultrabrain_routes_gpt_6_2_astra_then_gpt_6_astra_max_before_the_existing_sol_max_fallbacks() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["ultrabrain"].fallback_chain,
         vec![
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.2-astra",
+                Some("max")
+            ),
             entry(
                 &["openai", "chatgpt-subscription"],
                 "gpt-6-astra",
                 Some("max")
             ),
             entry(&["github-copilot"], "gpt-6-astra", Some("max")),
+            entry(
+                &["openai", "chatgpt-subscription", "opencode"],
+                "gpt-6.2-astra",
+                Some("max")
+            ),
             entry(
                 &["openai", "chatgpt-subscription", "opencode"],
                 "gpt-6-astra",
@@ -71,27 +81,44 @@ fn ultrabrain_keeps_gpt_5_6_sol_max_on_every_fallback_rung() {
 }
 
 #[test]
-fn deep_high_routes_gpt_6_astra_high_only() {
+fn deep_high_routes_gpt_6_2_astra_then_gpt_6_astra_high_only() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["deep-high"].fallback_chain,
-        vec![entry(
-            &[
-                "openai",
-                "chatgpt-subscription",
-                "github-copilot",
-                "opencode"
-            ],
-            "gpt-6-astra",
-            Some("high")
-        )]
+        vec![
+            entry(
+                &["openai", "chatgpt-subscription", "opencode"],
+                "gpt-6.2-astra",
+                Some("high")
+            ),
+            entry(
+                &[
+                    "openai",
+                    "chatgpt-subscription",
+                    "github-copilot",
+                    "opencode"
+                ],
+                "gpt-6-astra",
+                Some("high")
+            ),
+        ]
     );
 }
 
 #[test]
-fn deep_low_leads_with_gpt_6_1_sol_then_gpt_6_1_sol_fast_medium_on_the_openai_lanes() {
+fn deep_low_leads_with_gpt_6_2_sol_then_gpt_6_1_sol_medium_on_the_openai_lanes() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["deep-low"].fallback_chain,
         vec![
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.2-sol",
+                Some("medium")
+            ),
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.2-sol-fast",
+                Some("medium")
+            ),
             entry(
                 &["openai", "chatgpt-subscription"],
                 "gpt-6.1-sol",
@@ -137,13 +164,15 @@ fn neither_deep_lane_carries_the_other_lanes_model() {
     assert_eq!(
         low_models,
         vec![
+            "gpt-6.2-sol",
+            "gpt-6.2-sol-fast",
             "gpt-6.1-sol",
             "gpt-6.1-sol-fast",
             "gpt-5.6-sol",
             "gpt-5.6-sol-fast"
         ]
     );
-    assert_eq!(high_models, vec!["gpt-6-astra"]);
+    assert_eq!(high_models, vec!["gpt-6.2-astra", "gpt-6-astra"]);
 }
 
 #[test]
@@ -161,7 +190,7 @@ fn visual_engineering_starts_with_argon_low() {
 }
 
 #[test]
-fn visual_engineering_follows_the_approved_5_rung_chain_with_the_gated_fable_5_5_rung_dropped() {
+fn visual_engineering_follows_the_approved_4_rung_chain_without_fable() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain,
         vec![
@@ -169,11 +198,6 @@ fn visual_engineering_follows_the_approved_5_rung_chain_with_the_gated_fable_5_5
                 &["google", "google-vertex", "opencode"],
                 "gemini-4-argon",
                 Some("low")
-            ),
-            entry(
-                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                "claude-fable-5-1",
-                Some("max")
             ),
             entry(
                 &["anthropic", "anthropic-api", "github-copilot", "opencode"],
@@ -225,7 +249,7 @@ fn quick_follows_the_approved_9_rung_chain() {
 }
 
 #[test]
-fn unspecified_low_follows_the_approved_10_rung_chain_headed_by_claude_sonnet_5_5_medium() {
+fn unspecified_low_follows_the_approved_11_rung_chain_headed_by_claude_sonnet_5_5_medium() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["unspecified-low"].fallback_chain,
         vec![
@@ -241,6 +265,11 @@ fn unspecified_low_follows_the_approved_10_rung_chain_headed_by_claude_sonnet_5_
                 Some("xhigh")
             ),
             entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("high")),
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.2-sol",
+                Some("medium")
+            ),
             entry(
                 &["openai", "chatgpt-subscription"],
                 "gpt-6.1-sol",
@@ -299,15 +328,10 @@ fn unspecified_high_follows_the_approved_opus_first_3_rung_chain() {
 }
 
 #[test]
-fn artistry_follows_the_approved_4_rung_chain_with_the_gated_fable_5_5_rung_dropped() {
+fn artistry_follows_the_approved_3_rung_chain_without_fable() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,
         vec![
-            entry(
-                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                "claude-fable-5-1",
-                Some("max")
-            ),
             entry(
                 &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-opus-5-5",
@@ -327,7 +351,7 @@ fn artistry_follows_the_approved_4_rung_chain_with_the_gated_fable_5_5_rung_drop
 fn writing_leads_with_argon_low_then_opus_without_fable() {
     let chain = &CATEGORY_MODEL_REQUIREMENTS["writing"].fallback_chain;
 
-    assert!(!chain.iter().any(|entry| entry.model == "claude-fable-5-1"));
+    assert!(!chain.iter().any(|entry| entry.model.contains("fable")));
     assert_eq!(
         chain,
         &vec![

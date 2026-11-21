@@ -13,9 +13,9 @@ pub use builtins::{
 };
 pub use fallback_chains::{CATEGORY_FALLBACK_CHAINS, category_fallback_chain};
 pub use resolver::{
-    CategoryModelSelection, CategoryResolutionResult, ModelUnavailable, ResolveCategoryOptions,
-    ResolvedChildSpec, builtin_category_chain_candidates, resolve_available_category_names,
-    resolve_category,
+    CategoryModelSelection, CategoryResolutionResult, ModelSelectionSource, ModelUnavailable,
+    ResolveCategoryOptions, ResolvedChildSpec, builtin_category_chain_candidates,
+    resolve_available_category_names, resolve_category,
 };
 pub(crate) use resolver::{
     category_model_candidates, exclude_model_patterns, missing_chain_providers,
@@ -24,3 +24,7 @@ pub(crate) use resolver::{
 #[cfg(test)]
 #[path = "category_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "distribution_tests.rs"]
+mod distribution_tests;

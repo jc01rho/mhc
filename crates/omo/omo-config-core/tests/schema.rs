@@ -1312,6 +1312,11 @@ fn computer_settings_round_trip_every_key() {
         "screenshot_gc": { "enabled": true, "stale_ms": 0, "scan_interval_ms": 60_000 },
         "engine_path": "/opt/engine",
         "cua_adapter": true,
+        "showCursor": false,
+        "run_sandbox": "quickjs",
+        "intervention": "continue",
+        "macos_key_priming": "on",
+        "trace": true,
     });
     assert_eq!(
         parsed(
@@ -1357,6 +1362,11 @@ fn computer_harness_support_is_native_only() {
         "computer.screenshot_gc",
         "computer.engine_path",
         "computer.cua_adapter",
+        "computer.showCursor",
+        "computer.run_sandbox",
+        "computer.intervention",
+        "computer.macos_key_priming",
+        "computer.trace",
     ] {
         let supported = omo_config_core::computer_setting_harness_support(setting_path);
         assert_eq!(

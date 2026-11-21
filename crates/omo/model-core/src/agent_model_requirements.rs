@@ -4,8 +4,6 @@ use std::sync::LazyLock;
 
 use indexmap::IndexMap;
 
-use crate::fable_55_launch::FABLE_55_LAUNCH_ID;
-use crate::fable_55_launch::launch_rungs;
 use crate::model_requirement_types::FallbackEntry;
 use crate::model_requirement_types::ModelRequirement;
 
@@ -230,17 +228,7 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
             (
                 "prometheus",
                 ModelRequirement {
-                    fallback_chain: launch_rungs(vec![
-                        entry(
-                            &["anthropic", "github-copilot", "opencode"],
-                            FABLE_55_LAUNCH_ID,
-                            Some("xhigh"),
-                        ),
-                        entry(
-                            &["anthropic", "github-copilot", "opencode"],
-                            "claude-fable-5-1",
-                            Some("xhigh"),
-                        ),
+                    fallback_chain: vec![
                         entry(
                             &["anthropic", "github-copilot", "opencode"],
                             "claude-opus-5-5",
@@ -252,24 +240,14 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             Some("max"),
                         ),
                         entry(&["opencode"], "kimi-k3", Some("max")),
-                    ]),
+                    ],
                     ..ModelRequirement::default()
                 },
             ),
             (
                 "metis",
                 ModelRequirement {
-                    fallback_chain: launch_rungs(vec![
-                        entry(
-                            &["anthropic", "github-copilot", "opencode"],
-                            FABLE_55_LAUNCH_ID,
-                            Some("max"),
-                        ),
-                        entry(
-                            &["anthropic", "github-copilot", "opencode"],
-                            "claude-fable-5-1",
-                            Some("max"),
-                        ),
+                    fallback_chain: vec![
                         entry(
                             &["anthropic", "github-copilot", "opencode"],
                             "claude-opus-5-5",
@@ -281,7 +259,7 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             Some("max"),
                         ),
                         entry(&["opencode"], "kimi-k3", Some("max")),
-                    ]),
+                    ],
                     ..ModelRequirement::default()
                 },
             ),
@@ -291,10 +269,20 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                     fallback_chain: vec![
                         entry(
                             &["openai", "chatgpt-subscription"],
+                            "gpt-6.2-astra",
+                            Some("xhigh"),
+                        ),
+                        entry(
+                            &["openai", "chatgpt-subscription"],
                             "gpt-6-astra",
                             Some("xhigh"),
                         ),
                         entry(&["github-copilot"], "gpt-6-astra", Some("high")),
+                        entry(
+                            &["openai", "chatgpt-subscription", "opencode"],
+                            "gpt-6.2-astra",
+                            Some("high"),
+                        ),
                         entry(
                             &["openai", "chatgpt-subscription", "opencode"],
                             "gpt-6-astra",
@@ -392,7 +380,7 @@ mod tests {
 
     #[test]
     fn argon_high_precedes_previous_pro_without_copilot() {
-        for (agent, index) in [("oracle", 2), ("momus", 4)] {
+        for (agent, index) in [("oracle", 2), ("momus", 6)] {
             let chain = &AGENT_MODEL_REQUIREMENTS[agent].fallback_chain;
             assert_eq!(
                 chain[index],

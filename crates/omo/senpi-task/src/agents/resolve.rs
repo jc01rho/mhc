@@ -2,9 +2,13 @@
 //! `agents/agent-model-registry.ts`).
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
-use super::builtin::agent_fallback_chain;
+use omo_config_core::{MODELS_DISTRIBUTION_ROUND_ROBIN, ModelDistributor};
+
+use super::builtin::{agent_fallback_chain, builtin_agent};
 use super::types::{AgentDefinition, AgentModelEntry, agent_model_candidates};
+use crate::category::ModelSelectionSource;
 use crate::delegate_adapter::{
     DelegateFallbackEntry, DelegateModelResolutionInput, DelegateModelResolutionResult,
     resolve_model_for_delegate_task, warm_cache_deps,
@@ -25,6 +29,8 @@ pub struct ResolveAgentOptions {
     /// `omoConfig.exclude_models`: the registry is filtered through it before any candidate is read.
     pub exclude_models: Option<Vec<String>>,
     pub omo_config: Option<serde_json::Value>,
+    /// The spawn planner's distributor (omo #11905); unset for reads, which never advance it.
+    pub distribute_models: Option<Arc<ModelDistributor>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +57,9 @@ pub struct AgentPersona {
 pub struct ResolvedAgent {
     pub agent: String,
     pub model: String,
+    /// `User` when the model came from omo.json (the agent's own model/models, a user category it
+    /// runs through) or a call-site pin (omo #14025).
+    pub model_source: ModelSelectionSource,
     pub requested_model: Option<ResolvedModelRecord>,
     pub fallback_models: Option<Vec<ResolvedModelRecord>>,
     pub resolved_model: Option<ResolvedModelRecord>,
@@ -145,6 +154,7 @@ pub fn resolve_agent(
         return AgentResolutionResult::Resolved(Box::new(ResolvedAgent {
             agent: name.to_string(),
             model: model.clone(),
+            model_source: ModelSelectionSource::User,
             requested_model: None,
             fallback_models: None,
             resolved_model: None,
@@ -185,6 +195,7 @@ pub fn resolve_agent(
         .and_then(|models| parse_available_models(&models))
         .map(|models| models.into_iter().collect());
     let resolve = |found: ParsedModel,
+                   model_source: ModelSelectionSource,
                    variant: Option<String>,
                    reasoning_effort: Option<String>,
                    chain: RuntimeModelChain,
@@ -197,6 +208,7 @@ pub fn resolve_agent(
         AgentResolutionResult::Resolved(Box::new(ResolvedAgent {
             agent: name.to_string(),
             model: record.display.clone(),
+            model_source,
             requested_model: chain.requested_model,
             fallback_models: chain.fallback_models,
             resolved_model: Some(record),
@@ -207,12 +219,36 @@ pub fn resolve_agent(
 
     let mut attempted_model = None;
     let entries: Option<&[AgentModelEntry]> = definition.models.as_deref();
-    let direct_models = agent_model_candidates(
-        definition.model.as_deref(),
+    let has_models = entries.is_some_and(|entries| !entries.is_empty());
+    let distribution = definition.models_distribution.as_deref();
+    // A round-robin agent rotates over `models` alone: its single `model` is no candidate then.
+    let primary = if has_models && distribution == Some(MODELS_DISTRIBUTION_ROUND_ROBIN) {
+        None
+    } else {
+        definition.model.as_deref()
+    };
+    let configured_models = agent_model_candidates(
+        primary,
         entries,
         definition.variant.as_deref(),
         definition.reasoning_effort.as_deref(),
     );
+    let direct_models = match &options.distribute_models {
+        Some(distributor) if has_models => {
+            distributor.distribute(&format!("agent:{name}"), &configured_models, distribution)
+        }
+        _ => configured_models,
+    };
+    // A builtin agent still on its own builtin model/models is omo's; an omo.json override or an
+    // omo.json-only agent is the user's.
+    let direct_source = match builtin_agent(name) {
+        Some(builtin)
+            if definition.model == builtin.model && definition.models == builtin.models =>
+        {
+            ModelSelectionSource::Builtin
+        }
+        _ => ModelSelectionSource::User,
+    };
     for candidate in &direct_models {
         attempted_model = Some(candidate.model.clone());
         let Some(found) = find_exact_agent_model(&candidate.model, registry) else {
@@ -231,6 +267,7 @@ pub fn resolve_agent(
         });
         return resolve(
             found,
+            direct_source,
             candidate.variant.clone(),
             candidate.reasoning_effort.clone(),
             chain,
@@ -239,14 +276,19 @@ pub fn resolve_agent(
     }
 
     for category in definition.categories.iter().flatten() {
-        if let Ok(crate::category::CategoryResolutionResult::Resolved { spec, .. }) =
-            crate::category::resolve_category(
-                category,
-                &config,
-                registry,
-                &crate::category::ResolveCategoryOptions::default(),
-            )
-        {
+        if let Ok(crate::category::CategoryResolutionResult::Resolved {
+            spec,
+            model_selection,
+            ..
+        }) = crate::category::resolve_category(
+            category,
+            &config,
+            registry,
+            &crate::category::ResolveCategoryOptions {
+                distribute_models: options.distribute_models.clone(),
+                ..crate::category::ResolveCategoryOptions::default()
+            },
+        ) {
             let found = ParsedModel {
                 provider: spec.provider.clone(),
                 model_id: spec.model_id.clone(),
@@ -258,6 +300,7 @@ pub fn resolve_agent(
                 .or(spec.reasoning_effort.clone());
             return resolve(
                 found,
+                model_selection.source,
                 variant,
                 reasoning,
                 RuntimeModelChain {
@@ -296,6 +339,7 @@ pub fn resolve_agent(
             // Configured tuning wins over the rung's own variant.
             return resolve(
                 found,
+                ModelSelectionSource::Builtin,
                 definition.variant.clone().or(resolution.variant),
                 definition.reasoning_effort.clone(),
                 runtime_chain,

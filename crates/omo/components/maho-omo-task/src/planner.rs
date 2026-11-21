@@ -16,6 +16,7 @@ use senpi_task::{
         execution_mode::ExecutionMode,
         types::{ChildPlanner, PlanResolutionCode, PlanResolutionError, ResolvedChildPlan},
     },
+    model_chain::ModelDistributor,
     model_exclusion::is_excluded_model,
     state::{ResolvedModelRecord, ResolvedModelSource},
 };
@@ -23,6 +24,8 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub type ResolveModelRegistry = Arc<dyn Fn() -> Option<Arc<dyn SenpiModelRegistry>> + Send + Sync>;
+/// `omoConfig | (() => OmoConfig)`: the config one plan resolves against, read once per plan.
+pub type ResolveOmoConfig = Arc<dyn Fn() -> Value + Send + Sync>;
 const NO_REGISTRY_MESSAGE: &str =
     "No senpi model registry is available yet to resolve a task model.";
 
@@ -37,7 +40,7 @@ fn explicit_model_metadata(model: &str) -> Option<ResolvedModelRecord> {
 }
 
 /// `omoConfig.exclude_models`: the patterns every resolution path honors.
-fn exclude_models(config: &Value) -> Vec<String> {
+pub(crate) fn exclude_models(config: &Value) -> Vec<String> {
     config
         .get("exclude_models")
         .and_then(Value::as_array)
@@ -88,14 +91,33 @@ pub fn create_task_child_planner_with_tiers(
     resolve_parent_service_tier: ResolveParentServiceTier,
     resolve_default_route: Option<ResolveDefaultRoute>,
 ) -> ChildPlanner {
-    let excluded = exclude_models(&config);
-    // Whatever path resolved, the plan then inherits the parent's effective execution tier, and an
-    // excluded `-fast` sibling keeps the base plan instead of failing the spawn.
-    let finish: Arc<dyn Fn(ResolvedChildPlan) -> ResolvedChildPlan + Send + Sync> = {
-        let resolve_registry = resolve_registry.clone();
-        let resolve_parent_service_tier = resolve_parent_service_tier.clone();
-        let excluded = excluded.clone();
-        Arc::new(move |plan: ResolvedChildPlan| {
+    create_task_child_planner_live(
+        Arc::new(move || config.clone()),
+        agents,
+        resolve_registry,
+        resolve_parent_service_tier,
+        resolve_default_route,
+    )
+}
+
+/// [`create_task_child_planner_with_tiers`] over a config read per plan, so a mid-session
+/// omo.json(c) edit reaches the next spawn instead of the composition-time snapshot.
+pub fn create_task_child_planner_live(
+    resolve_config: ResolveOmoConfig,
+    agents: Vec<(String, AgentDefinition)>,
+    resolve_registry: ResolveModelRegistry,
+    resolve_parent_service_tier: ResolveParentServiceTier,
+    resolve_default_route: Option<ResolveDefaultRoute>,
+) -> ChildPlanner {
+    // One distributor per planner, not per resolution or model retry (omo #11905): only a spawn's
+    // plan advances a round-robin start.
+    let distributor = Arc::new(ModelDistributor::new());
+    Arc::new(move |spec| {
+        let config = resolve_config();
+        let excluded = exclude_models(&config);
+        // Whatever path resolved, the plan then inherits the parent's effective execution tier, and an
+        // excluded `-fast` sibling keeps the base plan instead of failing the spawn.
+        let finish = |plan: ResolvedChildPlan| {
             let live = resolve_registry();
             let fast = inherit_parent_fast_mode(
                 plan.clone(),
@@ -107,10 +129,7 @@ pub fn create_task_child_planner_with_tiers(
             } else {
                 fast
             }
-        })
-    };
-    Arc::new(move |spec| {
-        let finish = finish.clone();
+        };
         let mut available_agents: Vec<_> = agents
             .iter()
             .filter(|(_, definition)| definition.disable != Some(true))
@@ -205,6 +224,7 @@ pub fn create_task_child_planner_with_tiers(
                 &ResolveAgentOptions {
                     omo_config: Some(config.clone()),
                     model_override: explicit.map(str::to_owned),
+                    distribute_models: Some(distributor.clone()),
                     ..ResolveAgentOptions::default()
                 },
             ) {
@@ -316,7 +336,10 @@ pub fn create_task_child_planner_with_tiers(
             category,
             &config,
             registry.as_ref(),
-            &ResolveCategoryOptions::default(),
+            &ResolveCategoryOptions {
+                distribute_models: Some(distributor.clone()),
+                ..ResolveCategoryOptions::default()
+            },
         )
         .map_err(|error| {
             Box::new(PlanResolutionError::new(

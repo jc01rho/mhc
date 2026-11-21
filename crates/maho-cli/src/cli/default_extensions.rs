@@ -856,8 +856,10 @@ impl Extension for Task {
                         build(&spec)
                     }));
                 }
+                let (config, live_config) = super::task_runners::live_omo_config(&ctx.cwd, &environment);
+                // omo.json `task.parent_model_fallback: false` holds process children to their designated chain (omo #12006).
+                native.designated_chain_only = config["task"]["parent_model_fallback"].as_bool() == Some(false);
                 let process = super::task_runners::authenticated_rpc_options(native, weak.clone());
-                let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
                 // pin `engine-runners.ts:62`: the in-process cap derives from the resolved `task.max_depth` (default 1, as `engine.rs`).
                 let max_depth = config["task"]["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1);
                 let mut runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
@@ -869,15 +871,16 @@ impl Extension for Task {
                 let host_assembly = super::task_host::HostAssembly { session_context: registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).profile.session_context.clone(), turns: Default::default(), runtime: executor.clone(), agent_dir: ctx.agent_dir.clone(), parent: parent.weak_accessor() };
                 runners.process = super::task_host::select_runner(host_assembly.clone(), &config, runners.process);
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
+                let routing_registry = registry.clone();
                 let engine = {
                     let mut slot = engine_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let stale = slot.as_ref().is_none_or(|(cwd, retained, _)| *cwd != ctx.cwd || *retained != config);
                     if stale {
-                        let engine = maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {
+                        let engine = maho_omo_task::engine::compose_task_engine_with_live_config(maho_omo_task::engine::ComposeTaskEngineDeps {
                             cwd: ctx.cwd.clone(), config: config.clone(), runners, actions: actions.clone(), coordinator: Some(coordinator.clone()),
                             resolve_registry: Arc::new(move || Some(registry.clone())),
                             host_transport: Some(super::host_transport::create_cli_host_transport_with_agent_dir(executor.clone(), Some(ctx.agent_dir.clone()))),
-                        }, Some(Arc::new(super::task_host::HostRespawn { runner: Default::default(), assembly: host_assembly.clone(), settings: config.clone(), fallback: maho_omo_task::engine_runners::build_rpc_respawn_runner(process) })));
+                        }, Some(Arc::new(super::task_host::HostRespawn { runner: Default::default(), assembly: host_assembly.clone(), settings: config.clone(), fallback: maho_omo_task::engine_runners::build_rpc_respawn_runner(process) })), live_config);
                         *slot = Some((ctx.cwd.clone(), config, engine));
                     }
                     let Some((_, _, engine)) = slot.as_ref() else { return Err(ExtensionFailure::new("task engine slot empty after composition")); };
@@ -962,6 +965,7 @@ impl Extension for Task {
                         Arc::new(move |m: &str| warn_log.warn(m, None)),
                     );
                     if let Some(component) = maho_omo_task::component::TaskComponent::register_with_process_sweep(&mut api, engine, spawn, ownership, member, sweep)? {
+                        maho_omo_task::model_routing_rpc::wire_model_routing_rpc(&mut api, super::task_runners::model_routing_rpc_deps(ctx.cwd.clone(), environment.clone(), routing_registry, &component.engine))?;
                         let mut workpools = senpi_task::workpool::engine::WorkpoolEngine::with_events(
                             component.engine.store.state_dir(), maho_omo_task::workpool_admission::from_engine(&component.engine),
                             workpool_events,

@@ -67,7 +67,7 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 9] = [
     },
     BuiltinCategoryDefinition {
         name: "artistry",
-        config: config("anthropic/claude-fable-5-1", Some("max")),
+        config: config("anthropic/claude-opus-5-5", Some("max")),
         description: prompts::ARTISTRY_DESCRIPTION,
         prompt_append: prompts::ARTISTRY_PROMPT_APPEND,
         resolve_prompt_append: None,
@@ -107,11 +107,11 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 9] = [
     },
     BuiltinCategoryDefinition {
         name: "architect",
-        config: config("anthropic/claude-fable-5", Some("xhigh")),
+        config: config("anthropic/claude-opus-5-5", Some("xhigh")),
         description: prompts::ARCHITECT_DESCRIPTION,
         prompt_append: prompts::ARCHITECT_PROMPT_APPEND,
         resolve_prompt_append: None,
-        requires_model: Some("claude-fable-5"),
+        requires_model: Some("claude-opus-5-5"),
     },
     BuiltinCategoryDefinition {
         name: "unspecified-high",

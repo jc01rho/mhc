@@ -33,10 +33,51 @@ pub fn with_spawned_by(
     true
 }
 
+/// `assertHostUsable(info, retryFallback)` (omo #12759): under the designated-chain-only policy a host
+/// that does not advertise `retry_fallback_profile` would run the child on its own fallback settings, so
+/// it is refused as incompatible, naming the child's designated models.
+pub fn designated_chain_host_refusal(
+    capabilities: &Value,
+    model: &str,
+    fallback_models: &[String],
+) -> Option<String> {
+    let advertised = capabilities
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item == "retry_fallback_profile"));
+    (!advertised).then(|| {
+        format!(
+            "missing retry_fallback_profile; the child's designated models ({}) cannot be held to on this host",
+            crate::runners::designated_fallback_profile::designated_chain_text(model, fallback_models)
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // rpc-host-retry-fallback.test.ts (#12759): an older host is refused naming every designated model.
+    #[test]
+    fn a_host_without_retry_fallback_profile_is_refused_naming_the_designated_models() {
+        let chain = vec!["openai/gpt-5.6-sol".to_string()];
+        let refusal = designated_chain_host_refusal(
+            &json!(["multi_session", "session_context"]),
+            "anthropic/claude-opus-5-5",
+            &chain,
+        )
+        .expect("refused");
+        assert!(refusal.contains("missing retry_fallback_profile"));
+        assert!(refusal.contains("(anthropic/claude-opus-5-5 -> openai/gpt-5.6-sol)"));
+        assert_eq!(
+            designated_chain_host_refusal(
+                &json!(["multi_session", "retry_fallback_profile"]),
+                "anthropic/claude-opus-5-5",
+                &chain,
+            ),
+            None
+        );
+    }
 
     // rpc-host-spawned-by.test.ts
     #[test]

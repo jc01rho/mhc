@@ -19,7 +19,7 @@ fn description_of(name: &str, config: &Value) -> String {
 #[test]
 fn given_builtin_only_gated_category_when_listed_then_architect_carries_required_model_annotation()
 {
-    assert!(description_of("architect", &json!({})).contains("(requires claude-fable-5)"));
+    assert!(description_of("architect", &json!({})).contains("(requires claude-opus-5-5)"));
 }
 
 #[test]

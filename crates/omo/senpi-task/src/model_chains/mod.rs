@@ -131,7 +131,6 @@ mod upstream_cases {
     use crate::host::fake::{FakeRegistry, model};
     fn report(config: Value) -> ModelChainsReport {
         let models = vec![
-            model("anthropic", "claude-fable-5-1"),
             model("anthropic", "claude-opus-5-5"),
             model("kimi-for-coding", "k3.1-pro"),
             model("kimi-for-coding", "kimi-for-coding-highspeed"),
@@ -153,11 +152,7 @@ mod upstream_cases {
             .unwrap();
         assert_eq!(
             entry.runtime,
-            vec![
-                "anthropic/claude-fable-5-1",
-                "anthropic/claude-opus-5-5",
-                "kimi-for-coding/k3.1-pro"
-            ]
+            vec!["anthropic/claude-opus-5-5", "kimi-for-coding/k3.1-pro"]
         );
         assert_eq!(
             entry
@@ -165,15 +160,11 @@ mod upstream_cases {
                 .iter()
                 .map(|rung| &rung.state)
                 .collect::<Vec<_>>(),
-            vec![
-                &ChainRungState::Primary,
-                &ChainRungState::Fallback,
-                &ChainRungState::Fallback
-            ]
+            vec![&ChainRungState::Primary, &ChainRungState::Fallback]
         );
     }
     #[test]
-    fn later_override_leaves_earlier_builtin_not_reached() {
+    fn override_keeps_the_builtin_tail_as_fallback() {
         let report = report(
             serde_json::json!({"categories":{"artistry":{"model":"anthropic/claude-opus-5-5"}}}),
         );
@@ -187,22 +178,19 @@ mod upstream_cases {
             vec!["anthropic/claude-opus-5-5", "kimi-for-coding/k3.1-pro"]
         );
         assert_eq!(entry.rungs[0].source, "omo.json");
-        assert_eq!(entry.rungs[1].state, ChainRungState::NotReached);
+        assert_eq!(entry.rungs[1].state, ChainRungState::Fallback);
     }
     #[test]
     fn exclusion_promotes_next_builtin_rung() {
-        let report = report(serde_json::json!({"exclude_models":["claude-fable-*"]}));
+        let report = report(serde_json::json!({"exclude_models":["claude-opus-*"]}));
         let entry = report
             .categories
             .iter()
             .find(|entry| entry.name == "artistry")
             .unwrap();
-        assert_eq!(entry.primary.as_deref(), Some("anthropic/claude-opus-5-5"));
+        assert_eq!(entry.primary.as_deref(), Some("kimi-for-coding/k3.1-pro"));
         assert_eq!(entry.rungs[0].state, ChainRungState::Excluded);
-        assert_eq!(
-            entry.rungs[0].excluded_by.as_deref(),
-            Some("claude-fable-*")
-        );
+        assert_eq!(entry.rungs[0].excluded_by.as_deref(), Some("claude-opus-*"));
     }
     #[test]
     fn agent_no_login_rungs_retain_provider_choices() {

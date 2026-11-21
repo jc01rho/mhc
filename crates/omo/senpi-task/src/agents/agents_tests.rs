@@ -550,7 +550,7 @@ fn fallback_chain_lengths_match_transcription() {
         vec![
             ("explore", 6),
             ("librarian", 6),
-            ("plan-consultant", 4),
+            ("plan-consultant", 3),
             ("plan-reviewer", 8)
         ]
     );
@@ -594,7 +594,6 @@ fn fallback_chain_table_is_pinned() {
         (
             "plan-consultant",
             vec![
-                entry(&claude, "claude-fable-5-1", Some("max")),
                 entry(&claude, "claude-opus-5-5", Some("max")),
                 entry(
                     &["opencode-go", "kimi-for-coding", "moonshotai"],
@@ -1705,6 +1704,76 @@ fn resolve_skips_an_excluded_direct_candidate() {
     assert_eq!(
         expect_resolved(resolve_agent("explore", &agents, Some(&models), &options)).model,
         "openai/gpt-6-luna"
+    );
+}
+
+// ---- planner-models-distribution.test.ts (agent half, omo #11905) ----
+
+#[test]
+fn raw_agent_definition_keeps_the_distribution_policy_and_rejects_unknown_ones() {
+    let parsed = super::schema::parse_raw_agent_definition(
+        "fixture",
+        &json!({ "models": ["test-provider/a", "test-provider/b"], "models_distribution": "round_robin" }),
+        None,
+    )
+    .expect("valid definition");
+    assert_eq!(parsed.models_distribution.as_deref(), Some("round_robin"));
+    assert_eq!(
+        super::schema::parse_raw_agent_definition(
+            "fixture",
+            &json!({ "models_distribution": "random" }),
+            None
+        ),
+        Err(vec!["models_distribution".to_string()])
+    );
+}
+
+#[test]
+fn omo_config_agents_carry_the_distribution_policy() {
+    let agents = map_omo_config_agents(&json!({ "agents": { "rotating": {
+        "models": ["test-provider/a"],
+        "models_distribution": "round_robin",
+    } } }));
+    assert_eq!(
+        agents[0].1.models_distribution.as_deref(),
+        Some("round_robin")
+    );
+}
+
+#[test]
+fn round_robin_agent_rotates_its_models_and_never_leads_with_its_single_model() {
+    let agents = roster(vec![AgentDefinition {
+        model: text("test-provider/pinned"),
+        models: Some(vec![
+            AgentModelEntry::Model("test-provider/a".to_string()),
+            AgentModelEntry::Model("test-provider/b".to_string()),
+        ]),
+        models_distribution: text("round_robin"),
+        ..AgentDefinition::named("rotating")
+    }]);
+    let models = registry(vec![
+        model("test-provider", "pinned"),
+        model("test-provider", "a"),
+        model("test-provider", "b"),
+    ]);
+    let options = ResolveAgentOptions {
+        distribute_models: Some(std::sync::Arc::new(
+            crate::model_chain::ModelDistributor::new(),
+        )),
+        ..ResolveAgentOptions::default()
+    };
+    let first = expect_resolved(resolve_agent("rotating", &agents, Some(&models), &options));
+    let read = expect_resolved(resolve("rotating", &agents, &models));
+    let second = expect_resolved(resolve_agent("rotating", &agents, Some(&models), &options));
+    let third = expect_resolved(resolve_agent("rotating", &agents, Some(&models), &options));
+    assert_eq!(
+        [first.model, read.model, second.model, third.model],
+        [
+            "test-provider/a",
+            "test-provider/a",
+            "test-provider/b",
+            "test-provider/a"
+        ]
     );
 }
 

@@ -3,6 +3,7 @@ mod claim;
 mod concurrency;
 mod continue_outcome;
 mod core;
+mod designated_models_only;
 mod facts;
 pub(crate) mod fakes;
 mod fallback;

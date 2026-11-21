@@ -1,5 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
+use omo_config_core::{MODELS_DISTRIBUTION_ROUND_ROBIN, ModelDistributor};
 use serde_json::{Map, Value};
 
 use super::builtins::{
@@ -24,6 +26,17 @@ use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolveCategoryOptions {
     pub system_default_model: Option<String>,
+    /// The spawn planner's distributor (omo #11905). Reads leave it unset, so introspection never
+    /// advances a round-robin rotation.
+    pub distribute_models: Option<Arc<ModelDistributor>>,
+}
+
+/// Who chose the selected model: the user's omo.json (`model`/`models`/`fallback_models`) or omo's
+/// builtin default/chain (`ModelSelectionSource`, omo #14025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSelectionSource {
+    User,
+    Builtin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +45,7 @@ pub struct CategoryModelSelection {
     pub variant: Option<String>,
     pub matched_fallback: bool,
     pub fallback_entry: Option<DelegateFallbackEntry>,
+    pub source: ModelSelectionSource,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -342,6 +356,27 @@ fn prompt_append_for_category(
     }
 }
 
+/// `{ ...merged, models: distributeModels("category:<name>", merged.models, merged.models_distribution) }`.
+fn distribute_category_models(
+    config: Value,
+    category_name: &str,
+    distributor: Option<&ModelDistributor>,
+) -> Value {
+    let (Some(distributor), Some(models)) =
+        (distributor, config.get("models").and_then(Value::as_array))
+    else {
+        return config;
+    };
+    let distributed = distributor.distribute(
+        &format!("category:{category_name}"),
+        models,
+        config.get("models_distribution").and_then(Value::as_str),
+    );
+    let mut config = config;
+    config["models"] = Value::Array(distributed);
+    config
+}
+
 fn merge_config(builtin: Option<Value>, user: Option<&Value>) -> Value {
     let mut merged = builtin
         .and_then(|builtin| builtin.as_object().cloned())
@@ -402,9 +437,13 @@ pub fn resolve_category(
         });
     }
     let builtin_model = builtin.map(|definition| definition.config.model.to_string());
-    let config = merge_config(
-        builtin.map(|definition| definition.config.to_value()),
-        user_config,
+    let config = distribute_category_models(
+        merge_config(
+            builtin.map(|definition| definition.config.to_value()),
+            user_config,
+        ),
+        category_name,
+        options.distribute_models.as_deref(),
     );
     let unavailable = |attempted_model: Option<String>,
                        available_models: &[String],
@@ -498,6 +537,7 @@ pub fn resolve_category(
         None => flatten_fallback_models(config.get("fallback_models")),
     };
     let available_set: BTreeSet<String> = available_models.iter().cloned().collect();
+    let has_user_model = user_model.is_some();
     let resolution = resolve_model_for_delegate_task(
         &DelegateModelResolutionInput {
             user_model,
@@ -521,11 +561,20 @@ pub fn resolve_category(
         )));
     };
 
+    // A user model always answers from the user branch (as itself or a promoted user fallback); with
+    // none, a fallback match without a chain rung is a user fallback_models entry.
+    let source =
+        if has_user_model || (resolution.matched_fallback && resolution.fallback_entry.is_none()) {
+            ModelSelectionSource::User
+        } else {
+            ModelSelectionSource::Builtin
+        };
     let selection = CategoryModelSelection {
         selected_model: resolution.model,
         variant: resolution.variant,
         matched_fallback: resolution.matched_fallback,
         fallback_entry: resolution.fallback_entry,
+        source,
     };
     let parsed_model = parse_model(&selection.selected_model);
     let found_model = parsed_model.as_ref().and_then(|parsed| {
@@ -575,7 +624,14 @@ pub fn resolve_category(
         })
     });
     let mut candidates = category_model_candidates(&config);
-    candidates.extend(chain_candidates);
+    // A round-robin canonical chain already wraps through every configured model; builtin rungs
+    // would let a rotated start fall outside the configured chain.
+    let round_robin_chain = canonical_chain.is_some()
+        && config.get("models_distribution").and_then(Value::as_str)
+            == Some(MODELS_DISTRIBUTION_ROUND_ROBIN);
+    if !round_robin_chain {
+        candidates.extend(chain_candidates);
+    }
     let runtime_chain = build_runtime_model_chain(&BuildModelChainOptions {
         candidates,
         selected_model: &selection.selected_model,

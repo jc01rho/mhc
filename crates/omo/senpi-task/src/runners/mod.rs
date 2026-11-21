@@ -1,6 +1,8 @@
 //! Child runners (`runners/` in TypeScript): in-process sessions and RPC child processes.
 
 pub mod child_ancestry;
+pub mod designated_chain_error;
+pub mod designated_fallback_profile;
 pub mod engine_spawned_by;
 pub mod in_process;
 pub mod input_admission_read;

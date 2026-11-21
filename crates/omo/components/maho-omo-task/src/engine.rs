@@ -96,6 +96,24 @@ pub fn compose_task_engine_with_clock(
     rpc_respawn: Option<Arc<dyn senpi_task::manager::types::RpcRespawnRunner>>,
     now: Option<senpi_task::lifecycle::context::NowFn>,
 ) -> TaskEngine {
+    compose_task_engine_parts(deps, rpc_respawn, now, None)
+}
+/// Composes the engine with a planner that reads `resolve_config` per plan (`getOmoConfig`), so a
+/// mid-session omo.json(c) edit reaches the next spawn; `deps.config` stays the composition-time
+/// snapshot every other part reads.
+pub fn compose_task_engine_with_live_config(
+    deps: ComposeTaskEngineDeps,
+    rpc_respawn: Option<Arc<dyn senpi_task::manager::types::RpcRespawnRunner>>,
+    resolve_config: crate::planner::ResolveOmoConfig,
+) -> TaskEngine {
+    compose_task_engine_parts(deps, rpc_respawn, None, Some(resolve_config))
+}
+fn compose_task_engine_parts(
+    deps: ComposeTaskEngineDeps,
+    rpc_respawn: Option<Arc<dyn senpi_task::manager::types::RpcRespawnRunner>>,
+    now: Option<senpi_task::lifecycle::context::NowFn>,
+    resolve_config: Option<crate::planner::ResolveOmoConfig>,
+) -> TaskEngine {
     let settings = deps
         .config
         .get("task")
@@ -175,11 +193,20 @@ pub fn compose_task_engine_with_clock(
         &deps.cwd,
         &claude_dir,
     );
-    let planner = create_task_child_planner(
-        deps.config.clone(),
-        agents.clone().into_iter().collect(),
-        deps.resolve_registry,
-    );
+    let planner = match resolve_config {
+        Some(resolve_config) => crate::planner::create_task_child_planner_live(
+            resolve_config,
+            agents.clone().into_iter().collect(),
+            deps.resolve_registry,
+            Arc::new(|| None),
+            None,
+        ),
+        None => create_task_child_planner(
+            deps.config.clone(),
+            agents.clone().into_iter().collect(),
+            deps.resolve_registry,
+        ),
+    };
     let state = runtime.clone();
     let warning_state = runtime.clone();
     let planner = crate::category_unavailable_warning::create_category_unavailable_warning_planner(
@@ -225,6 +252,8 @@ pub fn compose_task_engine_with_clock(
     options.traceparent_for = Some(Arc::new(telemetry_core::read_turn_traceparent));
     options.isolation = Some(isolation_runtime);
     options.isolation_settings = isolation_settings;
+    // Fork policy gate for omo #12010/#12761: absent or `true` keeps the parent-model rung.
+    options.parent_model_fallback = settings["parent_model_fallback"].as_bool() != Some(false);
     options.config = ManagerConfig {
         max_depth: settings["max_depth"]
             .as_u64()
