@@ -175,7 +175,7 @@ impl SessionGate {
                 if payload.is_empty() || payload.len() > MAX_REQUEST_BYTES {
                     return Err(TransportError::Dictionary);
                 }
-                if !self.deadline.is_some_and(|deadline| now < deadline)
+                if self.deadline.is_none_or(|deadline| now >= deadline)
                     || self.hashes.front() != Some(&Self::digest(&payload))
                 {
                     return Err(TransportError::Approval);

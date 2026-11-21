@@ -33,8 +33,8 @@ pub fn named_xtest(name: &[u8]) -> bool {
 /// a physical keyboard. A real keyboard is always present when it is pressed.
 pub fn physical_from(found: Option<Described<'_>>) -> bool {
     found.is_some_and(|device| {
-        !device.xtest_property
-            && !(device.kind == DeviceType::SLAVE_KEYBOARD && named_xtest(device.name))
+        !(device.xtest_property
+            || device.kind == DeviceType::SLAVE_KEYBOARD && named_xtest(device.name))
     })
 }
 

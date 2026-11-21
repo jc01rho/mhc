@@ -115,7 +115,7 @@ impl FakeBackend {
                 FrameAxis::Height,
             ] {
                 let positional = matches!(axis, FrameAxis::X | FrameAxis::Y);
-                if !kept.contains(&axis) && !(immovable && positional) {
+                if !(kept.contains(&axis) || immovable && positional) {
                     apply(axis, &mut applied, frame);
                 }
             }
