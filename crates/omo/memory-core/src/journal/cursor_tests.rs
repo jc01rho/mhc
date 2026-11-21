@@ -258,3 +258,27 @@ fn test_snapshot_respects_byte_budget_and_reflected_offset_tracks_message_group(
         serialized_bytes
     );
 }
+
+#[test]
+fn test_transcript_pruned_at_survives_parse_and_derive_and_serializes_only_when_set() {
+    let stamped = parse_state(r#"{"transcript_pruned_at":"2026-08-09T12:00:00.000Z"}"#).unwrap();
+    assert_eq!(
+        stamped.transcript_pruned_at.as_deref(),
+        Some("2026-08-09T12:00:00.000Z")
+    );
+    let derived = derive_state(&stamped, &[]);
+    assert_eq!(derived.transcript_pruned_at, stamped.transcript_pruned_at);
+    assert!(
+        serde_json::to_string(&derived)
+            .unwrap()
+            .contains("transcript_pruned_at")
+    );
+
+    let blank = parse_state(r#"{"transcript_pruned_at":""}"#).unwrap();
+    assert_eq!(blank.transcript_pruned_at, None);
+    assert!(
+        !serde_json::to_string(&initial_reflection_state())
+            .unwrap()
+            .contains("transcript_pruned_at")
+    );
+}

@@ -2,20 +2,7 @@ use std::path::Path;
 pub const PRUNE_TOMBSTONE_PREFIX: &str = ".prune-";
 const DISPOSABLE: [&str; 2] = ["facts-payload.json", ".sandbox-tmp"];
 pub fn remove_run_artifact(path: &Path) -> std::io::Result<()> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    let result = if metadata.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    };
-    match result {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        result => result,
-    }
+    memory_core::fs::remove_tree(path)
 }
 pub fn is_terminal_run_dir(dir: &Path) -> bool {
     dir.join("final.json").exists() || dir.join("abandoned.json").exists()
