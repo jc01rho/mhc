@@ -275,7 +275,7 @@ pub(crate) fn protected_dir(dir: &Path) -> io::Result<()> {
     match admit_dacl(&first, &owners, &user) {
         Ok(()) => Ok(()),
         // A directory this call created, or one another principal owns, is never tightened.
-        Err(error) if created || owner(&first).is_none_or(|found| !owners.contains(&found)) => {
+        Err(error) if created || !owner(&first).is_some_and(|found| owners.contains(&found)) => {
             Err(error)
         }
         // An existing directory this user (or its default owner) owns gets L3's DACL applied.
