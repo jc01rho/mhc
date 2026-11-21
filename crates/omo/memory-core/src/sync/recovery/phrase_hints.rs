@@ -23,7 +23,7 @@ pub enum PhraseHintRefusal {
     TooManyRecoveryKeys,
 }
 
-fn text(value: &Value, key: &str) -> Option<&str> {
+fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value[key].as_str().filter(|text| !text.is_empty())
 }
 
