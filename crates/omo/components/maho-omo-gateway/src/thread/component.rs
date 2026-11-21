@@ -32,6 +32,11 @@ pub struct GatewayThreadComponentOptions {
     pub locate: LocateCallback,
     pub notify: NotifyCallback,
     pub log: NotifyCallback,
+    /// The host surface the session-control tools read; `None` answers them `host_unavailable`.
+    pub host: Option<Arc<dyn super::host_view::ThreadHost>>,
+    pub caller_workspace_root: Arc<dyn Fn() -> String + Send + Sync>,
+    pub sessions_directory: Option<std::path::PathBuf>,
+    pub remote: Option<Arc<dyn super::control::locate::RemoteControlLocator>>,
 }
 
 /// One session's gateway: its drain, its relay and the tools its model calls.
@@ -81,6 +86,10 @@ pub fn create_gateway_thread_component(
         caller_session_id: options.caller_session_id.clone(),
         caller_name: options.caller_name.clone(),
         caller_provenance: options.caller_provenance.clone(),
+        host: options.host.clone(),
+        caller_workspace_root: options.caller_workspace_root.clone(),
+        sessions_directory: options.sessions_directory.clone(),
+        remote: options.remote.clone(),
     }));
     if let Some(log) = options.log.clone() {
         options.store.on_after_commit_error(Arc::new(move |extension, error| log(&format!("thread gateway: extension {extension} committed, but an after-commit effect (its wake hint) failed: {error}"))));
@@ -331,6 +340,10 @@ mod tests {
             locate: Arc::new(|_| Box::pin(async { None })),
             notify: None,
             log: None,
+            host: None,
+            caller_workspace_root: Arc::new(String::new),
+            sessions_directory: None,
+            remote: None,
         }));
         let names: Vec<&str> = component
             .tools
@@ -344,7 +357,16 @@ mod tests {
             "thread_bind",
             "thread_bindings",
             "thread_outbox",
+            "thread_outbox_ack",
             "thread_answer",
+            "thread_list",
+            "thread_read",
+            "thread_interrupt",
+            "thread_close",
+            "thread_rename",
+            "thread_set_model",
+            "thread_set_reasoning",
+            "thread_archive",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }

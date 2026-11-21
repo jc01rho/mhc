@@ -4,13 +4,16 @@
 //! session op's tool is its own namespace (`ext_<extension>_<toolName>`).
 
 pub type ExecuteCallback = Arc<dyn Fn(&str, Value) -> BoxFuture<Value> + Send + Sync>;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 
 use super::adapter::BoxFuture;
+use super::control::locate::RemoteControlLocator;
 use super::engine::{GatewayDeliverRequest, GatewayEngine};
 use super::errors::thread_tool_failure;
+use super::host_view::ThreadHost;
 use super::relay::{AnswerRequest, GatewayRelay, Keyed};
 use super::store_api::GatewayStoreApi;
 use super::store_extensions::{DeclaredSessionOp, SessionCaller, StoreExtensionResult};
@@ -43,6 +46,15 @@ pub struct ThreadToolsOptions {
     pub caller_name: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     /// The caller's own provenance, resolved in its runtime.
     pub caller_provenance: Arc<dyn Fn() -> super::types::Provenance + Send + Sync>,
+    /// The host surface the session-control tools read (`control_tools.rs`); without one they answer
+    /// `host_unavailable` as data.
+    pub host: Option<Arc<dyn ThreadHost>>,
+    /// The caller's workspace root: the default scope of every address.
+    pub caller_workspace_root: Arc<dyn Fn() -> String + Send + Sync>,
+    /// `<agentDir>/sessions`: threads no endpoint lists are listed and read from their session files.
+    pub sessions_directory: Option<PathBuf>,
+    /// The account's other devices, asked for an address this device's book does not name.
+    pub remote: Option<Arc<dyn RemoteControlLocator>>,
 }
 
 fn error_result(error: impl serde::Serialize) -> Value {
@@ -74,17 +86,16 @@ fn delivery_result(result: GatewayDeliveryResult, link: String) -> Value {
             message_seq,
             delivery,
             effective_mode,
-            endpoint_kind,
+            endpoint_kind: _,
             deduplicated,
         } => ok_result(json!({
-            "thread_id": thread_id,
+            "thread": thread_id,
             "link": link,
             "delivery": delivery,
             "message_seq": message_seq,
             "deduplicated": deduplicated,
             "delivery_id": delivery_id,
             "effective_mode": effective_mode,
-            "endpoint": endpoint_kind.map(|kind| kind.as_str()),
         })),
         GatewayDeliveryResult::Error { error } => error_result(error),
     }
@@ -319,6 +330,44 @@ pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> 
     {
         let options = options.clone();
         tools.push(ThreadTool {
+            name: "thread_outbox_ack".into(),
+            description: "Marks outbox rows up to a cursor as posted to the chat, for when a connector confirms delivery.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "binding_id": { "type": "string", "minLength": 1 },
+                    "cursor": { "type": "integer", "minimum": 1 },
+                    "provider_message_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+                },
+                "required": ["binding_id", "cursor"],
+                "additionalProperties": false,
+            }),
+            execute: Arc::new(move |_call_id: &str, args: Value| {
+                let options = options.clone();
+                Box::pin(async move {
+                    let (Some(binding_id), Some(cursor)) = (
+                        args.get("binding_id").and_then(Value::as_str),
+                        args.get("cursor").and_then(Value::as_i64).filter(|cursor| *cursor >= 1),
+                    ) else {
+                        return invalid_arguments("binding_id and a cursor of at least 1 are required");
+                    };
+                    let provider_message_id = args.get("provider_message_id").and_then(Value::as_str);
+                    match options.relay.ack(binding_id, cursor, provider_message_id) {
+                        Ok((acked_cursor, changed)) => ok_result(json!({
+                            "binding_id": binding_id,
+                            "acked_cursor": acked_cursor,
+                            "changed": changed,
+                        })),
+                        Err(error) => error_result(error),
+                    }
+                })
+            }),
+        });
+    }
+
+    {
+        let options = options.clone();
+        tools.push(ThreadTool {
             name: "thread_answer".into(),
             description: "Answer a question this session asked through a binding.".into(),
             parameters: json!({
@@ -352,6 +401,7 @@ pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> 
         });
     }
 
+    tools.extend(super::control_tools::create_control_tools(&options));
     tools
 }
 

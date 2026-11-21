@@ -24,6 +24,7 @@ impl Extension for NativeThreadComponent {
                     .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                     let caller = ctx.session_manager.session_id().to_owned();
                     let project = ctx.cwd.to_string_lossy().into_owned();
+                    let workspace_root = project.clone();
                     let component =
                         create_gateway_thread_component(Arc::new(GatewayThreadComponentOptions {
                             store,
@@ -66,6 +67,10 @@ impl Extension for NativeThreadComponent {
                             locate: Arc::new(|_| Box::pin(async { None })),
                             notify: None,
                             log: Some(Arc::new(maho_ext_api::diagnostic)),
+                            host: None,
+                            caller_workspace_root: Arc::new(move || workspace_root.clone()),
+                            sessions_directory: Some(ctx.agent_dir.join("sessions")),
+                            remote: None,
                         }));
                     let mut session_api = ExtensionApi::new(
                         maho_ext_api::LoadedExtension::new(
@@ -80,7 +85,11 @@ impl Extension for NativeThreadComponent {
                     for tool in component.tools.into_iter().filter(|tool| {
                         matches!(
                             tool.name.as_str(),
-                            "thread_report" | "thread_bind" | "thread_bindings" | "thread_outbox"
+                            "thread_report"
+                                | "thread_bind"
+                                | "thread_bindings"
+                                | "thread_outbox"
+                                | "thread_outbox_ack"
                         )
                     }) {
                         let execute = tool.execute;
