@@ -74,8 +74,12 @@ pub fn format_runtime_bytes(bytes: u64) -> String {
         value /= 1024.0;
         unit += 1;
     }
-    let digits: usize = if value >= 100.0 { 0 } else { 1 };
-    format!("{value:.digits$} {}", UNITS[unit])
+    let text = if value >= 100.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
+    };
+    format!("{text} {}", UNITS[unit])
 }
 
 fn is_split_store(name: &str) -> bool {
