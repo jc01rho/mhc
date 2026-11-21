@@ -191,6 +191,40 @@ fn task_row_appends_run_stats_for_tasks_list() {
 fn terminal_tasks_leave_widget() {
     assert!(build_widget_rows(&[record("st_1", TaskStatus::Completed)]).is_empty());
 }
+/// #12160: the widget shows work that is still running or parked. A finished team member leaves it
+/// even while its handle stays resident; `/tasks` still lists it and `task_send` revives it.
+#[test]
+fn finished_team_members_leave_the_widget_beside_a_running_one() {
+    let member = |id: &str, name: &str, summary: &str, status: TaskStatus| {
+        let mut item = record(id, status);
+        item.name = Some(format!("team:12345678-1234-1234-1234-123456789abc:{name}"));
+        item.task_summary = Some(summary.into());
+        item
+    };
+    let mut ordinary = record("st_ordinary", TaskStatus::Completed);
+    ordinary.task_summary = Some("ordinary task".into());
+    let records = [
+        member("st_alpha", "alpha", "settled alpha", TaskStatus::Completed),
+        ordinary,
+        member("st_gamma", "gamma", "gamma job", TaskStatus::Running),
+        member("st_beta", "beta", "settled beta", TaskStatus::Completed),
+    ];
+    let rows = build_widget_rows(&records);
+    let live = background_widget_rows(&records, &BTreeMap::new(), 0, &|_| None, Some(220));
+    for rendered in [&rows, &live] {
+        assert_eq!(rendered.len(), 1, "{rendered:?}");
+        assert!(rendered[0].contains("gamma job"), "{rendered:?}");
+        let text = rendered.join("\n");
+        for finished in [
+            "settled alpha",
+            "settled beta",
+            "ordinary task",
+            "completed",
+        ] {
+            assert!(!text.contains(finished), "{finished}: {text}");
+        }
+    }
+}
 #[test]
 fn widget_overflow_reports_remaining_tasks() {
     let records: Vec<_> = (0..7)
