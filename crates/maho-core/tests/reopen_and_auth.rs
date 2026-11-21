@@ -122,11 +122,12 @@ async fn account_keyed_blocks_survive_token_refresh_and_login_retires_slot_healt
         None
     );
 
-    repo.mutate_slot_state("anthropic-subscription", "stored", "slot-a", |_| {
-        Some(rate_limited.clone())
-    })
-    .await
-    .expect("persist block");
+    let _persisted = repo
+        .mutate_slot_state("anthropic-subscription", "stored", "slot-a", |_| {
+            Some(rate_limited.clone())
+        })
+        .await
+        .expect("persist block");
     let before = json!({
         "type": "oauth",
         "accounts": [
