@@ -150,14 +150,19 @@ pub enum StrandedRunDecision {
     },
 }
 
+/// Reads the subdirectory names of a directory; empty when it does not exist.
+pub type DirectoryLister<'a> = &'a dyn Fn(&Path) -> Vec<String>;
+/// Reads a path's modification time in milliseconds since the epoch.
+pub type ModifiedAtReader<'a> = &'a dyn Fn(&Path) -> Option<f64>;
+
 /// The lock-holder probe plus the clock and directory seams the reaper reads through.
 #[derive(Default, Clone, Copy)]
 pub struct StaleLockProbe<'a> {
     pub base: ReflectionLockProbe<'a>,
     pub now: Option<&'a dyn Fn() -> f64>,
     /// Names of the subdirectories of the path; empty when it does not exist.
-    pub list_directory: Option<&'a dyn Fn(&Path) -> Vec<String>>,
-    pub modified_at: Option<&'a dyn Fn(&Path) -> Option<f64>>,
+    pub list_directory: Option<DirectoryLister<'a>>,
+    pub modified_at: Option<ModifiedAtReader<'a>>,
 }
 
 impl<'a> StaleLockProbe<'a> {
