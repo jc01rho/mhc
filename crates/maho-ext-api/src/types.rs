@@ -3100,6 +3100,7 @@ pub enum CompactionRejectionCause {
     CircuitBreaker,
     PerTurnCap,
     StaleRevision,
+    TransientFailure,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompactionResult {

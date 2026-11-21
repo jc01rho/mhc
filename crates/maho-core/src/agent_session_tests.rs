@@ -2460,6 +2460,7 @@ fn every_rejection_cause_has_a_message() {
         CompactionRejectionCause::CircuitBreaker,
         CompactionRejectionCause::PerTurnCap,
         CompactionRejectionCause::StaleRevision,
+        CompactionRejectionCause::TransientFailure,
     ] {
         assert!(describe_compaction_rejection(cause).starts_with("Compaction rejected"));
     }

@@ -12676,6 +12676,7 @@ impl InteractiveMode {
                 Some(CompactionRejectionCause::CircuitBreaker) => "circuit-breaker",
                 Some(CompactionRejectionCause::PerTurnCap) => "per-turn-cap",
                 Some(CompactionRejectionCause::StaleRevision) => "stale-revision",
+                Some(CompactionRejectionCause::TransientFailure) => "transient-failure",
                 None => "unknown",
             };
             let message = format!("Compaction failed (no result); cause: {cause}");

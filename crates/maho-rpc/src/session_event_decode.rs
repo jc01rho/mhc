@@ -40,6 +40,7 @@ fn cause(value: &str) -> Option<CompactionRejectionCause> {
         "circuit-breaker" => CompactionRejectionCause::CircuitBreaker,
         "per-turn-cap" => CompactionRejectionCause::PerTurnCap,
         "stale-revision" => CompactionRejectionCause::StaleRevision,
+        "transient-failure" => CompactionRejectionCause::TransientFailure,
         _ => return None,
     })
 }

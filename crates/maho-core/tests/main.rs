@@ -3,12 +3,16 @@
 
 #[path = "compaction_estimate.rs"]
 mod compaction_estimate;
+#[path = "compaction_suite.rs"]
+mod compaction_suite;
 #[path = "context_selection.rs"]
 mod context_selection;
 #[path = "extension_lock_release.rs"]
 mod extension_lock_release;
 #[path = "keyword_paint_arm_parity.rs"]
 mod keyword_paint_arm_parity;
+#[path = "reopen_and_auth.rs"]
+mod reopen_and_auth;
 #[path = "sdk_accounts.rs"]
 mod sdk_accounts;
 #[path = "sdk_async_hook_contract.rs"]
@@ -47,5 +51,7 @@ mod sdk_tool_selection;
 mod sdk_tool_updates;
 #[path = "session_qa.rs"]
 mod session_qa;
+#[path = "session_states.rs"]
+mod session_states;
 #[path = "tool_barrier_read_only.rs"]
 mod tool_barrier_read_only;
