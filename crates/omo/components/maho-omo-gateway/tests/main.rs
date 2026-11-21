@@ -7,3 +7,5 @@ mod prompt_tests;
 mod rules_block_tests;
 #[path = "store_extension_tests.rs"]
 mod store_extension_tests;
+#[path = "thread_control_tests.rs"]
+mod thread_control_tests;

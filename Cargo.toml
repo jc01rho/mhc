@@ -171,6 +171,7 @@ members = [
     "crates/omo/components/maho-omo-claude-code",
     "crates/omo/components/maho-omo-x-search",
     "crates/omo/components/maho-omo-gateway",
+    "crates/omo/thread-address-core",
     "crates/omo/components/maho-omo-formatter",
     "crates/omo/components/maho-omo-post-mutation",
     "crates/omo/components/maho-omo-skill-pointers",
