@@ -490,8 +490,11 @@ pub async fn release_session(
     let attempt: Result<Value, ReleaseWriteError> = async {
         if interrupted {
             first.session.admission_close(RELEASED_ADMISSION_CLOSED);
-            dropped = take_queued_input(first.session.as_ref());
-            abort_and_settle(port, &command.session_id, &first.session).await;
+            let mut taken = take_queued_input(first.session.as_ref());
+            // Deliveries the aborted run left queued are handed back too, and named with the ones taken above (senpi#6971).
+            let handed_back = abort_and_settle(port, &command.session_id, &first.session).await;
+            taken.deliveries.extend(handed_back);
+            dropped = taken;
             // What the clear retired is on disk before `session_released` seals the file (senpi#3549).
             first.session.when_queue_clear_recorded().await;
         }

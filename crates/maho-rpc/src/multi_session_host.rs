@@ -849,6 +849,8 @@ impl HostCore {
             AUTO_TITLE_PER_SESSION_CAPABILITY,
             DURABLE_SESSION_ID_CAPABILITY,
             crate::host_capabilities::UNLOAD_SESSION_CAPABILITY,
+            crate::host_capabilities::UNLOAD_REFUSE_DELIVERIES_CAPABILITY,
+            crate::host_capabilities::FIND_SESSION_CAPABILITY,
             DETACH_CONNECTION_CAPABILITY,
             MEMORY_WRITE_DENY_CAPABILITY,
             MEMORY_WRITE_DENY_EFFECTS_CAPABILITY,
@@ -1616,6 +1618,21 @@ impl HostCore {
             .unwrap_or_else(|error| {
                 serde_json::json!({"id":value["id"],"type":"response","command":"move_session","success":false,"error":"move_failed","errorCode":"move_failed","errorData":{"detail":error.to_string()}})
             });
+            self.respond_record(connection, "", answer);
+            return Ok(());
+        }
+        // senpi router `find_session` (senpi#6429): which session file of this host carries a durable id. Like
+        // `move_session` it is a session-less host command that is not an `RpcCommand` variant, so it is answered
+        // here, before the typed parse that would call it unknown. The hosted rows are the live sessions (workers
+        // included) and the folder searched is this host's own agent directory.
+        if value["type"] == "find_session" {
+            let hosted = self.list_rows(true).await;
+            let answer = crate::host_session_find::find_session(
+                Some(self.options.agent_dir.as_path()),
+                &hosted,
+                &value,
+            )
+            .await;
             self.respond_record(connection, "", answer);
             return Ok(());
         }
@@ -5688,6 +5705,46 @@ mod handoff_tests {
         assert_eq!(parked["sessionPath"], canonical.as_str());
         assert!(!core.has_session(&session_id).await);
     }
+    // senpi session-router-routing.ts `find_session` (senpi#6429): the router answers a durable-id lookup from its own
+    // agent directory, with no session involved, refuses a request without the id, and advertises the capability.
+    #[tokio::test]
+    async fn find_session_answers_from_the_hosts_agent_directory_and_is_advertised() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let folder = temp.path().join("sessions").join("--work--");
+        std::fs::create_dir_all(&folder).unwrap();
+        let id = "0197f6e4-4cf9-7f44-a2d8-f8f7f49ee9e5";
+        let file = folder.join(format!("2026-11-11T00-00-00-000Z_{id}.jsonl"));
+        let header = serde_json::json!({"type":"session","id":id,"cwd":"/work"});
+        std::fs::write(&file, format!("{header}\n")).unwrap();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"f","type":"find_session","durableSessionId":id}).to_string(),
+        )
+        .await
+        .unwrap();
+        let found = reply_to(&mut client, "f").await;
+        let file_text = file.to_string_lossy().into_owned();
+        assert_eq!(found["success"], true);
+        assert_eq!(found["data"]["found"]["sessionPath"], file_text.as_str());
+        assert_eq!(found["data"]["found"]["cwd"], "/work");
+        assert_eq!(found["data"]["found"]["open"], false);
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"g","type":"find_session"}).to_string(),
+        )
+        .await
+        .unwrap();
+        let refused = reply_to(&mut client, "g").await;
+        assert_eq!(refused["success"], false);
+        assert_eq!(refused["errorCode"], "invalid_argument");
+        assert!(
+            core.advertised_capabilities()
+                .iter()
+                .any(|capability| capability == "find_session")
+        );
+    }
     #[test]
     fn open_child_sessions_count_rows_naming_the_session_as_parent_or_root() {
         let rows = [
@@ -6499,7 +6556,8 @@ async fn run_socket_host(
             }
         };
         Some(std::sync::Arc::new(
-            crate::socket_transport::ensure_socket_secret(std::path::Path::new(&secret_file))?
+            crate::socket_transport::ensure_socket_secret(std::path::Path::new(&secret_file))
+                .await?
                 .to_vec(),
         ))
     };

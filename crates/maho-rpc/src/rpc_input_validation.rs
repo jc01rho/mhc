@@ -183,13 +183,22 @@ fn pending_inputs_error(command: &Value) -> Option<&'static str> {
         "knownClientMessageIds must be an array of at most 64 non-empty strings of at most 256 characters.",
     )
 }
-/// senpi rpc-input-validation.ts `unload_session`: `children` is `refuse`/`detach`, the flags are booleans.
+/// senpi rpc-input-validation.ts `unload_session`: `children` is `refuse`/`detach`, `deliveries` is `refuse`, the flags
+/// are booleans.
 fn unload_session_error(command: &Value) -> Option<&'static str> {
     if command
         .get("children")
         .is_some_and(|children| children != "refuse" && children != "detach")
     {
         return Some("children must be \"refuse\" or \"detach\".");
+    }
+    if command
+        .get("deliveries")
+        .is_some_and(|deliveries| deliveries != "refuse")
+    {
+        return Some(
+            "deliveries must be \"refuse\"; omit it to hand unwritten deliveries back on an interrupt.",
+        );
     }
     [
         ("interrupt", "interrupt must be a boolean."),
@@ -447,6 +456,19 @@ mod tests {
             check(json!({"type":"unload_session","clearQueue":"yes"})),
             Some("clearQueue must be a boolean.")
         );
+        // senpi#7004: `deliveries` has the one value `refuse`.
+        assert_eq!(
+            check(json!({"type":"unload_session","deliveries":"refuse","interrupt":true})),
+            None
+        );
+        for deliveries in [json!("drop"), json!(true), json!(null)] {
+            assert_eq!(
+                check(json!({"type":"unload_session","deliveries":deliveries})),
+                Some(
+                    "deliveries must be \"refuse\"; omit it to hand unwritten deliveries back on an interrupt."
+                )
+            );
+        }
     }
     // senpi rpc-input-validation.ts: queuedId, text, expectedRevision, effectId, sessionPath and
     // knownClientMessageIds are refused before anything is read (rpc-queued-input-edit, rpc-pending-inputs tests).

@@ -622,6 +622,11 @@ pub enum RpcCommandBody {
         children: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
+        /// `"refuse"` (senpi#7004): a busy session holding admitted deliveries not yet written is refused
+        /// `work_pending` with their ids in `pending.deliveries`, with or without `interrupt`, and nothing is
+        /// interrupted. Capability `unload_refuse_deliveries`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        deliveries: Option<String>,
     },
     /// Subscribes this connection to `session_status` records (senpi `subscribe_sessions`). Every field stays raw
     /// (read off the request) so a malformed one is refused with `invalid_subscription` naming it.
