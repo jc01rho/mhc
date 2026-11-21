@@ -251,6 +251,7 @@ where
         super::completion_validation::CompletionValidation::Valid {
             tip_sha,
             changed_paths,
+            link_repairs,
             ..
         } => {
             let mut outside_allowed = false;
@@ -258,7 +259,12 @@ where
                 ref allowed_paths, ..
             } = mode
                 && let Some(allowed) = allowed_paths
-                && changed_paths.iter().any(|p| !allowed.contains(p))
+                && !super::completion_validation::paths_outside_target(
+                    &changed_paths,
+                    &link_repairs,
+                    allowed,
+                )
+                .is_empty()
             {
                 outside_allowed = true;
                 status = ReflectionOutcome::Failed;
