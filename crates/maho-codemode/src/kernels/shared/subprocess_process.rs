@@ -7,6 +7,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::mpsc;
 
+/// Win32 `CREATE_NO_WINDOW`.
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessError {
     #[error("Kernel process error: {0}")]
@@ -41,6 +45,8 @@ pub struct SubprocessProcess {
     crash_cause: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
     readers: Vec<tokio::task::JoinHandle<()>>,
     retiring: bool,
+    /// The kernel process's spawn record for its session (senpi#6978), released when the process goes.
+    attestation: Option<maho_tools::session_spawn_attestation::SessionSpawnAttestation>,
 }
 
 impl SubprocessProcess {
@@ -71,6 +77,9 @@ impl SubprocessProcess {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        // senpi#3965 (senpi#6279): kernel children can be console-subsystem exes on Windows.
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
         let mut child = command.spawn()?;
         let group_pid = child.id();
         let mut input = child
@@ -162,7 +171,17 @@ impl SubprocessProcess {
             crash_cause,
             readers: vec![stdout_task, stderr_task, writer_task],
             retiring: false,
+            attestation: None,
         })
+    }
+
+    /// senpi `attestKernelChild`: records this kernel process for the session it runs for.
+    pub fn attest_session(
+        &mut self,
+        session_env: Option<&crate::kernels::session_env::SessionEnvironment>,
+    ) {
+        self.attestation =
+            super::session_spawn_attestation::attest_kernel_spawn(session_env, self.child.id());
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -335,6 +354,9 @@ impl Drop for SubprocessProcess {
     fn drop(&mut self) {
         for task in &self.readers {
             task.abort();
+        }
+        if let Some(attestation) = self.attestation.take() {
+            attestation.release();
         }
         // Dropping a crashed kernel must not leave its descendants alive.
         #[cfg(unix)]

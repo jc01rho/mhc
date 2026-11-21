@@ -8,12 +8,16 @@ fn tools() -> Vec<EvalSchemaToolInfo> {
             description: Some("Run steps.".into()),
             parameters: Some(json!({"type":"object", "required":["steps"]})),
             kernel_prelude: None,
+            exposure: None,
+            eval_only: false,
         },
         EvalSchemaToolInfo {
             name: "grep".into(),
             description: None,
             parameters: None,
             kernel_prelude: None,
+            exposure: None,
+            eval_only: false,
         },
     ]
 }

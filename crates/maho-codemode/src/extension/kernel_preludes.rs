@@ -54,11 +54,14 @@ pub fn project_kernel_prelude(
     }
 }
 
+/// Kernel globals of the tools a cell can reach right now (active, or eval-exposed and withheld from the
+/// model; senpi#6276).
 pub fn active_kernel_preludes(
     active_tools: &[String],
     all_tools: &[EvalSchemaToolInfo],
 ) -> Vec<KernelPrelude> {
-    let active_set: HashSet<&str> = active_tools.iter().map(|s| s.as_str()).collect();
+    let reachable = super::reachable_tools::reachable_tool_names(active_tools, all_tools);
+    let active_set: HashSet<&str> = reachable.iter().map(|s| s.as_str()).collect();
     all_tools
         .iter()
         .filter_map(|tool| {
@@ -148,18 +151,24 @@ mod tests {
                 description: None,
                 parameters: None,
                 kernel_prelude: Some(p1.clone()),
+                exposure: None,
+                eval_only: false,
             },
             EvalSchemaToolInfo {
                 name: "t2".into(),
                 description: None,
                 parameters: None,
                 kernel_prelude: Some(p2.clone()),
+                exposure: None,
+                eval_only: false,
             },
             EvalSchemaToolInfo {
                 name: "t3".into(),
                 description: None,
                 parameters: None,
                 kernel_prelude: None,
+                exposure: None,
+                eval_only: false,
             },
         ];
         let active = vec!["t1".into()];

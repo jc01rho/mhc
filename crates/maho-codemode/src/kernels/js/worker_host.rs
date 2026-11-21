@@ -90,6 +90,13 @@ pub fn crashed_result(cell_id: &str, error: &ProcessError, duration_ms: f64) -> 
 }
 
 impl WorkerHost {
+    /// Attests the kernel process to the session it runs for (senpi#6978).
+    pub fn attest_session(
+        &mut self,
+        session_env: Option<&crate::kernels::session_env::SessionEnvironment>,
+    ) {
+        self.process.attest_session(session_env);
+    }
     pub(crate) fn from_process(process: SubprocessProcess) -> Self {
         Self {
             mode: JavaScriptKernelMode::Process,

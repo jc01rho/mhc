@@ -3981,6 +3981,9 @@ pub struct ToolInfo {
     pub search_group: Option<String>,
     pub allow_lazy_activation: bool,
     pub kernel_prelude: Option<maho_tools::KernelPrelude>,
+    /// True while the session routes the tool through `eval` only (senpi#6886): it is withheld from the model's
+    /// direct tool list and reached as `tool.<name>(...)` inside a cell. False when nothing withholds it.
+    pub eval_only: bool,
 }
 pub fn normalize_tool_exposure(tool: &ToolDefinition, source_info: SourceInfo) -> ToolInfo {
     let exposure = tool.exposure.unwrap_or(ToolExposure::Direct);
@@ -4001,6 +4004,7 @@ pub fn normalize_tool_exposure(tool: &ToolDefinition, source_info: SourceInfo) -
         search_group: tool.search_group.clone(),
         allow_lazy_activation: tool.allow_lazy_activation != Some(false),
         kernel_prelude: tool.kernel_prelude.clone(),
+        eval_only: false,
     }
 }
 #[derive(Clone, Debug, Default)]

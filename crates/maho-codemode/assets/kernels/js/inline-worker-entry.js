@@ -1,3 +1,4 @@
+import "./power-throttling-startup.js";
 import { parentPort, workerData } from "node:worker_threads";
 import { createWorkerCore } from "./worker-core.js";
 

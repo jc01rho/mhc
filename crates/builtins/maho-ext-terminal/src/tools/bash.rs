@@ -267,6 +267,23 @@ pub async fn execute_configured_bash_with_launch(
         }
         (id, runtime.subscribe_exit(), runtime.pid())
     };
+    // spawn.ts (senpi#6978): the command's pid is attested to the session it runs for, released on exit.
+    let attestation = match (pid, call.context) {
+        (Some(pid), Some(context)) => {
+            maho_tools::session_spawn_attestation::attest_session_spawn_in_store(
+                context.session_manager().session_id(),
+                pid,
+            )
+        }
+        _ => None,
+    };
+    if let Some(attestation) = attestation {
+        let exited = exit.clone();
+        tokio::spawn(async move {
+            let _ = wait_exit(exited).await;
+            attestation.release();
+        });
+    }
     let spawned_at = tokio::time::Instant::now();
     let mut cleanup = ForegroundSessionGuard {
         manager: manager.clone(),

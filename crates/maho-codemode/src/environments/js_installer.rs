@@ -281,6 +281,9 @@ pub async fn run_js_install(input: JsInstall<'_>) -> Result<(), EnvironmentError
         .kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
+    // senpi#3965 (senpi#6279): npm/pnpm is a console-subsystem exe on Windows.
+    #[cfg(windows)]
+    command.creation_flags(crate::kernels::shared::subprocess_process::CREATE_NO_WINDOW);
     let mut child = command.spawn().map_err(|error| EnvironmentError {
         code: "environment_installer_unavailable",
         message: without_host_paths(&error.to_string(), &input),

@@ -30,6 +30,8 @@ pub struct BashExecOptions {
     pub signal: AbortSignal,
     pub timeout: Option<f64>,
     pub env: BTreeMap<String, String>,
+    /// The session the command runs for; a local host attests the spawned shell to it (senpi#6972).
+    pub session_id: Option<String>,
 }
 pub struct BashExit {
     pub exit_code: Option<i32>,
@@ -137,6 +139,12 @@ impl BashOperations for LocalShellOperations {
                     .await;
                 });
             }
+            let attestation = match (child.id(), options.session_id.as_deref()) {
+                (Some(pid), Some(session_id)) => {
+                    crate::session_spawn_attestation::attest_session_spawn_in_store(session_id, pid)
+                }
+                _ => None,
+            };
             let pid = child.id().and_then(|pid| i32::try_from(pid).ok());
             if let Some(pid) = pid {
                 track_detached_child_pid(pid);
@@ -204,10 +212,16 @@ impl BashOperations for LocalShellOperations {
             if let Some(pid) = pid {
                 if exit.is_some() || matches!(child.try_wait(), Ok(Some(_))) {
                     note_detached_child_exited(pid);
+                    if let Some(attestation) = attestation {
+                        attestation.release();
+                    }
                 } else {
                     tokio::spawn(async move {
                         let _exit_status = child.wait().await;
                         note_detached_child_exited(pid);
+                        if let Some(attestation) = attestation {
+                            attestation.release();
+                        }
                     });
                 }
             }
@@ -538,6 +552,10 @@ pub fn create_shell_tool_definition(
                 data_changed.notify_one();
                 Ok(())
             });
+            let session_id = call
+                .context
+                .filter(|_| options.expose_session_environment.unwrap_or(true))
+                .map(|context| context.session_manager().session_id().to_owned());
             let operation = ops.exec(
                 &context.command,
                 &context.cwd,
@@ -547,6 +565,7 @@ pub fn create_shell_tool_definition(
                     signal: call.signal,
                     timeout: input.timeout,
                     env: context.env,
+                    session_id,
                 },
             );
             tokio::pin!(operation);
@@ -927,6 +946,7 @@ mod shell_lifecycle_tests {
                     signal: AbortSignal::default(),
                     timeout: None,
                     env: std::env::vars().collect(),
+                    session_id: None,
                 },
             ),
         )

@@ -292,6 +292,7 @@ async fn exec_local(
                 signal: AbortSignal::default(),
                 timeout: None,
                 env,
+                session_id: None,
             },
         )
         .await;

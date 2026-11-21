@@ -20,8 +20,21 @@ pub fn is_tool_available(
 ) -> Result<bool, ExtensionFailure> {
     match active_tools {
         Some(tools) => Ok(tools.iter().any(|tool| tool == name)),
-        None => Ok(api.get_active_tools()?.iter().any(|tool| tool == name)),
+        None => Ok(reachable_tools_of(api)?.iter().any(|tool| tool == name)),
     }
+}
+
+/// senpi `reachableToolNames(pi)` (senpi#6276): the active tools plus the eval-exposed ones. The registry is
+/// read best-effort, as upstream's `registeredTools`: an unreadable one adds nothing.
+pub fn reachable_tools_of(api: &ExtensionApi) -> Result<Vec<String>, ExtensionFailure> {
+    let active = api.get_active_tools()?;
+    let all = api
+        .get_all_tools()
+        .unwrap_or_default()
+        .into_iter()
+        .map(crate::bridges::schema_bridge::EvalSchemaToolInfo::from)
+        .collect::<Vec<_>>();
+    Ok(super::reachable_tools::reachable_tool_names(&active, &all))
 }
 
 pub fn enabled_languages_from(
@@ -201,7 +214,7 @@ pub fn runtime_host_from_api(
     context: &dyn ToolContext,
     complete: crate::bridge::http_server::BridgeCompletionHandler,
 ) -> Result<RuntimeHostOptions, ExtensionFailure> {
-    let active_tools = api.get_active_tools()?;
+    let active_tools = reachable_tools_of(&api)?;
     let executor = std::sync::Arc::new(RuntimeExecuteTool {
         api: api.clone(),
         active_tools: active_tools.clone(),
@@ -211,12 +224,7 @@ pub fn runtime_host_from_api(
             .map(|tools| {
                 tools
                     .into_iter()
-                    .map(|tool| crate::bridges::schema_bridge::EvalSchemaToolInfo {
-                        name: tool.name,
-                        description: Some(tool.description),
-                        parameters: Some(tool.parameters),
-                        kernel_prelude: tool.kernel_prelude,
-                    })
+                    .map(crate::bridges::schema_bridge::EvalSchemaToolInfo::from)
                     .collect()
             })
             .map_err(|error| error.to_string())

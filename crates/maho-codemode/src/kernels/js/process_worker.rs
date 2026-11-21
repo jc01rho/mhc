@@ -37,6 +37,7 @@ pub async fn spawn_process_worker(
         &env,
         Some(token.clone()),
     )?;
+    process.attest_session(options.session_env);
     process.send_token(&token).await?;
     Ok(WorkerHost::from_process(process))
 }

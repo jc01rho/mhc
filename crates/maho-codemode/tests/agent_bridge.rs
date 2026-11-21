@@ -190,6 +190,8 @@ async fn advertised_isolation_and_progress_forwarded() {
         description: None,
         parameters: Some(json!({"properties":{"isolated":{}}})),
         kernel_prelude: None,
+        exposure: None,
+        eval_only: false,
     }];
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);

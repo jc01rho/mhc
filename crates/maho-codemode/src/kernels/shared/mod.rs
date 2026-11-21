@@ -3,6 +3,7 @@ pub mod kernel_death;
 pub mod kernel_memory;
 pub mod kernel_prelude_plan;
 pub mod runtime_asset;
+pub mod session_spawn_attestation;
 pub mod subprocess_contract;
 pub mod subprocess_process;
 pub mod subprocess_queue;

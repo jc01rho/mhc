@@ -6,6 +6,7 @@ pub mod idle_parking_kernel;
 pub mod kernel_preludes;
 pub mod kernel_registration;
 pub mod kernel_registry;
+pub mod reachable_tools;
 pub mod runtime_factory;
 pub mod runtime_info;
 pub mod session_cwd;
