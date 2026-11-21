@@ -12,6 +12,7 @@ pub enum StartCauseClass {
     HostRefused,
     TransportLost,
     CredentialsMissing,
+    ChainNotHeld,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub struct StartCause {
     pub timed_out_command: Option<String>,
     pub cause_code: Option<String>,
     pub provider: Option<String>,
+    pub designated_models: Option<Vec<String>>,
 }
 
 /// `RPC_RESPONSE_TIMEOUT_PREFIX` (`runners/rpc-host/reattach.ts`).
@@ -50,7 +52,17 @@ fn class(cause_class: StartCauseClass) -> StartCause {
         timed_out_command: None,
         cause_code: None,
         provider: None,
+        designated_models: None,
     }
+}
+
+/// `MODEL_SELECTOR_SHAPE`: a designated model is named exactly as its selector; anything else is dropped.
+pub fn is_model_selector(selector: &str) -> bool {
+    static SHAPE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^[A-Za-z0-9][\w.-]{0,63}/[\w.:/@+-]{1,160}$")
+            .expect("model selector shape")
+    });
+    SHAPE.is_match(selector)
 }
 
 /// `classifyStartCause` for the stdio RPC client's error.
@@ -148,6 +160,19 @@ pub fn describe_start_cause(cause: &StartCause, operation: StartOperation) -> St
                 "{provider} has no usable credentials ({code}); sign in to {provider} or add its API key"
             )
         }
+        StartCauseClass::ChainNotHeld => {
+            let chain = cause
+                .designated_models
+                .as_ref()
+                .map_or_else(String::new, |models| format!(" ({})", models.join(" -> ")));
+            let code = cause.cause_code.as_deref().map_or_else(
+                || "chain_not_held".to_string(),
+                |code| format!("chain_not_held: {code}"),
+            );
+            format!(
+                "the engine could not hold its designated model chain{chain} ({code}), and a child never runs outside its designated models"
+            )
+        }
     }
 }
 
@@ -202,5 +227,27 @@ mod tests {
             Some(StartCauseClass::TransportLost)
         );
         assert_eq!(classify_start_message(None, "boom"), None);
+    }
+}
+
+#[cfg(test)]
+mod chain_not_held_tests {
+    use super::*;
+
+    // start-failure-cause.ts `chain_not_held` (omo #12759): only shape-checked selectors are named.
+    #[test]
+    fn a_chain_the_engine_did_not_hold_names_every_designated_model() {
+        let cause = crate::runners::designated_chain_error::chain_not_held_cause(
+            crate::runners::designated_chain_error::DesignatedChainNotHeldReason::Unsupported,
+            &[
+                "anthropic/claude-opus-5-5".to_string(),
+                "bad selector".to_string(),
+                "openai/gpt-5.6-sol:high".to_string(),
+            ],
+        );
+        assert_eq!(
+            describe_start_cause(&cause, StartOperation::Prompt),
+            "the engine could not hold its designated model chain (anthropic/claude-opus-5-5 -> openai/gpt-5.6-sol:high) (chain_not_held: unsupported), and a child never runs outside its designated models"
+        );
     }
 }

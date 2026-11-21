@@ -49,6 +49,10 @@ pub trait OutcomeTrackerPorts: Send + Sync {
     fn release_slot(&self, task_id: &str, model: &str, epoch: i64);
     fn settle_waiters(&self, task_id: &str);
     fn try_runtime_fallback(&self, input: &ErrorOutcomeInput) -> bool;
+    /// `task.parent_model_fallback: false`: a spent designated chain fails typed (omo #12010).
+    fn designated_chain_only(&self) -> bool {
+        false
+    }
     /// Merges (or retains) an isolated child's clone. Called BEFORE the terminal transition is
     /// written, so every result builder reads one record that already carries merge_result.
     fn settle_isolation(&self, task_id: &str, merge: bool);
@@ -368,12 +372,43 @@ fn settle_error_outcome(
     ports.release_slot(&input.task_id, &input.model, input.epoch);
     settle_isolation_for(ports, &input.task_id, false);
     let owned = ports.try_load(&input.task_id);
+    let (error_message, failure_kind) = match owned.as_ref() {
+        Some(record) if ports.designated_chain_only() => {
+            crate::manager::model_refusals::terminal_failure_fields(
+                record,
+                &input.failure.message,
+                is_model_turn_failure(input),
+            )
+        }
+        _ => (
+            crate::manager::credential_failure::terminal_failure_message(
+                owned.as_ref(),
+                &input.failure.message,
+            ),
+            None,
+        ),
+    };
+    // The typed kind lands before the terminal write, so a reader that sees the failure sees its kind.
+    if let Some(kind) = failure_kind
+        && let Err(error) = ports.store().mutate(&input.task_id, |fresh: &TaskRecord| {
+            if fresh.status.is_terminal() {
+                return fresh.clone();
+            }
+            TaskRecord {
+                failure_kind: Some(kind.to_string()),
+                ..fresh.clone()
+            }
+        })
+    {
+        log_failure(
+            "senpi-task manager failure kind persistence failed",
+            &input.task_id,
+            &error,
+        );
+    }
     let transition = TaskTransition::Fail {
         timestamp: ports.now_iso(),
-        error_message: crate::manager::credential_failure::terminal_failure_message(
-            owned.as_ref(),
-            &input.failure.message,
-        ),
+        error_message,
         killed: input.killed,
         run_stats: input.run_stats.clone(),
     };
@@ -385,6 +420,16 @@ fn settle_error_outcome(
         );
     }
     ports.settle_waiters(&input.task_id);
+}
+
+/// `isModelTurnFailure`: the model itself failed the turn, not a kill or a host/session failure.
+fn is_model_turn_failure(input: &ErrorOutcomeInput) -> bool {
+    !input.killed
+        && matches!(
+            input.failure.kind,
+            crate::runners::RunnerFailureKind::ChildTurnFailed
+                | crate::runners::RunnerFailureKind::ChildPromptFailed
+        )
 }
 
 /// Settle an isolated child's clone before the terminal record is written. A non-isolated child is

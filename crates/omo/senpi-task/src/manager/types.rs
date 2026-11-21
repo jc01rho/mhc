@@ -424,6 +424,9 @@ pub struct TaskManagerOptions {
     pub isolation: Option<Arc<dyn IsolationRuntime>>,
     /// The isolation settings block (port of OmoTaskSettings.isolation).
     pub isolation_settings: IsolationSettings,
+    /// omo.json `task.parent_model_fallback` (fork policy gate for omo #12010/#12761): `true` keeps
+    /// the parent-model rung; `false` holds a child to its designated chain only.
+    pub parent_model_fallback: bool,
 }
 
 impl TaskManagerOptions {
@@ -459,6 +462,7 @@ impl TaskManagerOptions {
             record_saver: None,
             isolation: None,
             isolation_settings: IsolationSettings::default(),
+            parent_model_fallback: true,
         }
     }
 }

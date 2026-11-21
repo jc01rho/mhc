@@ -305,6 +305,40 @@ pub const PARENT_MODEL_FALLBACK_REASONS: [ParentModelFallbackReason; 5] = [
     ParentModelFallbackReason::Error,
 ];
 
+/// `MODEL_REFUSAL_REASONS` (`state/record-types.ts`).
+pub const MODEL_REFUSAL_REASONS: [ModelRefusalReason; 5] = [
+    ModelRefusalReason::UsageLimit,
+    ModelRefusalReason::NotSignedIn,
+    ModelRefusalReason::Unavailable,
+    ModelRefusalReason::Refused,
+    ModelRefusalReason::Error,
+];
+
+/// Why a designated model could not serve the task (`ModelRefusalReason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRefusalReason {
+    UsageLimit,
+    NotSignedIn,
+    Unavailable,
+    Refused,
+    Error,
+}
+
+/// One designated model that could not serve the task (`ModelRefusal`). A child under the
+/// designated-chain-only policy never leaves its chain, so when the chain runs out these entries are
+/// what its failure lists: the provider's first error line and any reset time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelRefusal {
+    pub model: String,
+    pub reason: ModelRefusalReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets: Option<String>,
+    pub at: String,
+}
+
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 /// Writes integral floats the way `JSON.stringify` does (`118`, not `118.0`).
@@ -605,6 +639,10 @@ pub struct TaskRecord {
     pub parent_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_model_fallback: Option<ParentModelFallback>,
+    /// Each designated model that refused this task, in the order the chain was walked. Written only
+    /// under the designated-chain-only policy (`task.parent_model_fallback: false`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_refusals: Option<Vec<ModelRefusal>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_closing_child: Option<FallbackClosingChild>,
     #[serde(skip_serializing_if = "Option::is_none")]

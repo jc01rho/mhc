@@ -856,8 +856,10 @@ impl Extension for Task {
                         build(&spec)
                     }));
                 }
-                let process = super::task_runners::authenticated_rpc_options(native, weak.clone());
                 let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
+                // omo.json `task.parent_model_fallback: false` holds process children to their designated chain (omo #12006).
+                native.designated_chain_only = config["task"]["parent_model_fallback"].as_bool() == Some(false);
+                let process = super::task_runners::authenticated_rpc_options(native, weak.clone());
                 // pin `engine-runners.ts:62`: the in-process cap derives from the resolved `task.max_depth` (default 1, as `engine.rs`).
                 let max_depth = config["task"]["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1);
                 let mut runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
