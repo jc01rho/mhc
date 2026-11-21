@@ -26,6 +26,7 @@ use super::error::EngineResult;
 use super::journal::{
     CycleRecord, CycleStage, RenderRecord, SyncJournal, WireItem, from_base64, to_base64,
 };
+use super::landing::{Landing, prepare_landing, through_symlink};
 use super::legacy_cycle::adopt_legacy_renders;
 use crate::fs::resilient;
 use crate::journal::sync_journal_directory;
@@ -42,7 +43,9 @@ pub struct Applied {
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> EngineResult<()> {
     for name in resilient::read_dir_names(dir)? {
         let path = dir.join(&name);
-        let meta = resilient::metadata(&path)?;
+        // Never followed: a symlinked directory may point outside the root, and a FIFO or other
+        // non-regular leaf would block the read that captures it (#12158).
+        let meta = resilient::symlink_metadata(&path)?;
         if meta.is_dir() {
             if dir == root && name == ".git" {
                 continue;
@@ -73,6 +76,18 @@ fn read_working(root: &Path, key: &str) -> EngineResult<Option<String>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Whether capture may read `key`'s working file: no symlink on its path and no non-regular leaf.
+fn capturable(root: &Path, key: &str) -> EngineResult<bool> {
+    if through_symlink(root, key)? {
+        return Ok(false);
+    }
+    Ok(match resilient::symlink_metadata(&root.join(key)) {
+        Ok(leaf) => leaf.file_type().is_file(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error.into()),
+    })
 }
 
 fn text_hash(text: Option<&str>) -> String {
@@ -127,6 +142,13 @@ pub fn capture(
     let mut captured: Vec<WireItem> = Vec::new();
     let mut texts: BTreeMap<String, Option<String>> = BTreeMap::new();
     for key in keys {
+        if !capturable(root, &key)? {
+            deps.log_line(&format!(
+                "sync.item.rejected side=capture len={} rule=non-regular-file",
+                key.len()
+            ));
+            continue;
+        }
         let text = read_working(root, &key)?;
         let Some(ops) = deps.store.capture(&key, text.as_deref())? else {
             continue;
@@ -297,8 +319,22 @@ pub fn advance(deps: &EngineDeps, journal: &SyncJournal, start: CycleRecord) -> 
         // PERF-DIVERGENCE(omo sync engine): upstream re-lists and re-parses every render record per key to find the next seq; this port reads the max seq once and increments it locally. Records are append-only under the sync lock, so the seq values are identical.
         let mut next_seq = prior_renders.iter().map(|r| r.seq).max().unwrap_or(0) + 1;
         let latest = latest_by_key(prior_renders);
-        for key in &cycle.keys {
-            let working = read_working(&root, key)?;
+        for key in cycle.keys.clone() {
+            let key = &key;
+            // Decided before any render record exists for the key, so a key this device cannot
+            // hold is dropped from the cycle (durably) instead of failing it on every resume.
+            let working = match prepare_landing(&root, Some(key.as_str()))? {
+                Landing::Ready { working, .. } => working,
+                Landing::Refused(rule) => {
+                    cycle.keys.retain(|k| k != key);
+                    journal.update_state(|s| s.cycle = Some(cycle.clone()))?;
+                    deps.log_line(&format!(
+                        "sync.item.rejected side=render len={} rule={rule}",
+                        key.len()
+                    ));
+                    continue;
+                }
+            };
             let frontier = deps.store.version(key)?;
             // Invariant 6: this (key, frontier) already rendered, landed and untouched.
             if let Some(prior) = latest.get(key)
