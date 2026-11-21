@@ -852,13 +852,16 @@ mod tests {
         }
     }
 
-    async fn send_with_store(store: FixedStore) -> Vec<(String, NotificationType)> {
+    async fn send_with_store(
+        env: &BTreeMap<String, String>,
+        store: FixedStore,
+    ) -> Vec<(String, NotificationType)> {
         let ui = ScriptedUi::new(&[Some("it broke")], &[Some(CHOICE_SEND)]);
         run_feedback_command(
             FeedbackKind::Bug,
             "",
             &ui,
-            &BTreeMap::new(),
+            env,
             Some(Arc::new(store)),
             || async { Ok(sample_draft()) },
             |_| async {
@@ -873,19 +876,42 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// A service origin, so a stored sign-in is even read (local mode has none to use).
+    fn intake_env() -> BTreeMap<String, String> {
+        BTreeMap::from([(
+            "OMO_SERVICE_API_URL".to_string(),
+            "https://api.omo.dev".to_string(),
+        )])
+    }
+
     #[tokio::test]
     async fn an_expired_stored_sign_in_warns_before_the_anonymous_send() {
         let expired = json!({"accessToken": "t", "accessTokenExpiresAt": "2000-01-01T00:00:00Z"});
-        let notices = send_with_store(FixedStore(Ok(Some(expired)))).await;
+        let notices = send_with_store(&intake_env(), FixedStore(Ok(Some(expired)))).await;
         assert_eq!(
             notices[0],
             (SIGNED_OUT_SEND.to_string(), NotificationType::Warning)
         );
     }
 
+    /// Local mode (no origin configured): no sign-in is consulted and the report is not sent.
+    #[tokio::test]
+    async fn local_mode_sends_nothing_and_never_warns_about_a_sign_in() {
+        let expired = json!({"accessToken": "t", "accessTokenExpiresAt": "2000-01-01T00:00:00Z"});
+        let notices = send_with_store(&BTreeMap::new(), FixedStore(Ok(Some(expired)))).await;
+        assert_eq!(
+            notices,
+            [(
+                "Thanks. Your report was sent (rep_1).".to_string(),
+                NotificationType::Info
+            )]
+        );
+    }
+
     #[tokio::test]
     async fn a_sign_in_error_from_the_store_sends_without_the_fallback_warning() {
-        let notices = send_with_store(FixedStore(Err("keyring locked".into()))).await;
+        let notices =
+            send_with_store(&intake_env(), FixedStore(Err("keyring locked".into()))).await;
         assert_eq!(
             notices,
             [(
