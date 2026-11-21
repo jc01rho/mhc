@@ -8,13 +8,18 @@ use std::sync::Arc;
 #[derive(Default)]
 pub struct IdentitySandbox {
     built: Option<crate::sandbox::SandboxTransform>,
+    /// A bwrap probe can degrade one spawn and not the next, so the state is reported per spawn,
+    /// but only when it changes: a run of degraded spawns logs once (omo #12378).
+    reported_warning: Option<String>,
 }
+pub const SANDBOX_RESTORED_MESSAGE: &str = "memory reflection sandbox restored";
 pub use maho_omo_agent_home::resolve_agent_home::AGENT_DIR_ENV_NAMES;
 pub struct IdentitySandboxInput<'a> {
     pub identity: &'a MemoryIdentityContext,
     pub policy: crate::sandbox::SandboxPolicy,
     pub agent_dir: &'a std::path::Path,
     pub platform: &'a str,
+    pub probe: Option<&'a dyn Fn(&str) -> crate::sandbox_bwrap_probe::SandboxUsability>,
 }
 impl IdentitySandbox {
     pub fn apply(
@@ -29,8 +34,9 @@ impl IdentitySandbox {
             policy,
             agent_dir,
             platform,
+            probe,
         } = input;
-        if self.built.is_none() {
+        if self.built.as_ref().is_none_or(|built| built.probe_degraded) {
             let mut writes = vec![
                 identity.identity_paths.reflection_sessions.clone(),
                 identity.identity_paths.reflection.clone(),
@@ -50,25 +56,27 @@ impl IdentitySandbox {
                     command: &args.command,
                     env: &args.env,
                     platform,
+                    probe,
                 },
                 which,
             )
             .map_err(|error| error.to_string())?;
-            if let Some(warning) = &transform.warning {
-                warn(warning);
-            }
             self.built = Some(transform);
         }
-        let transformed = self
-            .built
-            .as_ref()
-            .ok_or("Missing identity sandbox")?
-            .apply(crate::sandbox_contracts::SandboxSpawnArgs {
-                command: args.command,
-                args: args.args,
-                cwd: args.cwd,
-                env: args.env,
-            });
+        let built = self.built.as_ref().ok_or("Missing identity sandbox")?;
+        if built.warning != self.reported_warning {
+            match &built.warning {
+                Some(warning) => warn(warning),
+                None => warn(SANDBOX_RESTORED_MESSAGE),
+            }
+            self.reported_warning = built.warning.clone();
+        }
+        let transformed = built.apply(crate::sandbox_contracts::SandboxSpawnArgs {
+            command: args.command,
+            args: args.args,
+            cwd: args.cwd,
+            env: args.env,
+        });
         args.command = transformed.command;
         args.args = transformed.args;
         args.cwd = transformed.cwd;
@@ -677,6 +685,7 @@ mod tests {
                     policy: crate::sandbox::SandboxPolicy::Off,
                     agent_dir: std::path::Path::new("/granted/agent"),
                     platform: "linux",
+                    probe: None,
                 },
                 args,
                 &|_| None,
@@ -689,6 +698,122 @@ mod tests {
                 Some("/granted/agent")
             );
         }
+    }
+
+    #[cfg(unix)]
+    fn reflection_spawn_args(
+        root: &std::path::Path,
+    ) -> crate::worker::spawn_types::ReflectionSpawnArgs {
+        crate::worker::spawn_types::ReflectionSpawnArgs {
+            memory_root: None,
+            max_concurrent_runs: None,
+            command: "/bin/sh".into(),
+            args: vec![],
+            cwd: root.into(),
+            env: std::collections::BTreeMap::new(),
+            run_id: Some("run".into()),
+            parent_session_file: None,
+            attempt: 1,
+            hard_deadline_at: 0.0,
+            category: "quick".into(),
+            conversation_ids: vec![],
+            model: "fixture/model".into(),
+            thinking: None,
+            load_extensions: None,
+            next_attempt: None,
+            kind: None,
+            trigger: None,
+            origin: None,
+            merge_policy: None,
+            target_doc: None,
+            system_token_budget: None,
+            system_token_target: None,
+            worktree: None,
+            paths: crate::worker::spawn_types::ReflectionSpawnPaths {
+                session_dir: root.into(),
+                worktree: root.into(),
+                git_common_dir: root.into(),
+                transcript: root.into(),
+                persona: root.into(),
+                prompt: root.into(),
+                skills_usage: None,
+                memory_usage: None,
+                dream_state: None,
+                dream_policy: None,
+                system_tokens: None,
+                audit: None,
+                dream_target: None,
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_degraded_bwrap_probe_is_rechecked_per_spawn_and_reported_only_on_change() {
+        use crate::sandbox_bwrap_probe::SandboxUsability;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+        let agent_dir = root.path().join("agent-home");
+        for dir in [
+            &paths.worktrees,
+            &paths.repo,
+            &paths.reflection,
+            &paths.reflection_sessions,
+            &agent_dir,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let context = MemoryIdentityContext::new(
+            "agent".into(),
+            paths,
+            crate::binding::MemorySessionBinding {
+                identity: "agent".into(),
+                repo_path_hash: "hash".into(),
+                bound_at: 0.0,
+            },
+        );
+        let probes = AtomicUsize::new(0);
+        let probe = |_: &str| {
+            if probes.fetch_add(1, Ordering::SeqCst) == 0 {
+                SandboxUsability::Unusable {
+                    reason: "smoke test timed out after 3000ms".into(),
+                }
+            } else {
+                SandboxUsability::Usable
+            }
+        };
+        let mut sandbox = IdentitySandbox::default();
+        let mut reports: Vec<String> = Vec::new();
+        let mut commands = Vec::new();
+
+        for _ in 0..3 {
+            let result = sandbox
+                .apply(
+                    IdentitySandboxInput {
+                        identity: &context,
+                        policy: crate::sandbox::SandboxPolicy::Auto,
+                        agent_dir: &agent_dir,
+                        platform: "linux",
+                        probe: Some(&probe),
+                    },
+                    reflection_spawn_args(root.path()),
+                    &|_| Some("/usr/bin/bwrap".into()),
+                    |message| reports.push(message.to_string()),
+                )
+                .unwrap();
+            commands.push(result.command);
+        }
+
+        assert_eq!(commands, ["/bin/sh", "/usr/bin/bwrap", "/usr/bin/bwrap"]);
+        assert_eq!(
+            reports,
+            [
+                "reflection sandbox unavailable on linux: bwrap cannot create a sandbox: smoke test timed out after 3000ms; running unsandboxed because policy is auto",
+                SANDBOX_RESTORED_MESSAGE,
+            ]
+        );
+        assert_eq!(probes.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
