@@ -5,6 +5,7 @@ mod fakes;
 mod http_driver;
 mod install_sh_other_installs;
 mod install_sh_preamble;
+mod install_sh_root_guard;
 mod metadata;
 mod routes;
 mod wrangler;
