@@ -286,7 +286,7 @@ fn controls_reach_the_thread_through_its_own_endpoint() {
         json!({ "thread": REVIEWER }),
     );
     assert_eq!(interrupted["kind"], "ok", "{interrupted}");
-    assert_eq!(interrupted["interrupted"], true);
+    assert_eq!(interrupted["interrupted"], json!(true));
     assert_eq!(interrupted["turn_id"], "t-4");
     assert_eq!(interrupted["background"]["status"], "stopped");
     let switched = run(
@@ -327,7 +327,12 @@ fn an_auto_send_to_a_running_session_steers_the_turn_its_runtime_reports() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = store(&dir);
     let engine = GatewayEngine::new(GatewayEngineOptions {
-        sender_provenance: None,
+        sender_provenance: Some(Arc::new(|| Provenance {
+            workspace: "unclassified".into(),
+            project: "test".into(),
+            lane: None,
+            session: None,
+        })),
         store: store.clone(),
         endpoints: GatewayEndpointPort::inert(),
         resolve: Arc::new(|_, _| {
