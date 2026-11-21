@@ -960,6 +960,8 @@ pub struct SessionManager {
     label_timestamps_by_id: HashMap<String, String>,
     leaf_id: Option<String>,
     session_name_cache: Option<String>,
+    archived_cache: bool,
+    settled_cache: crate::session_settled::SessionSettled,
     usage_totals: UsageTotals,
     ownership: Arc<Mutex<SessionOwnership>>,
     writer_token: Arc<SessionWriterToken>,
@@ -1083,6 +1085,8 @@ impl SessionManager {
             label_timestamps_by_id: HashMap::new(),
             leaf_id: None,
             session_name_cache: None,
+            archived_cache: false,
+            settled_cache: crate::session_settled::NOT_SETTLED,
             usage_totals: UsageTotals::default(),
             ownership,
             writer_token,
@@ -1764,6 +1768,8 @@ impl SessionManager {
         self.label_timestamps_by_id.clear();
         self.leaf_id = None;
         self.session_name_cache = None;
+        self.archived_cache = false;
+        self.settled_cache = crate::session_settled::NOT_SETTLED;
         self.usage_totals = UsageTotals::default();
         self.flushed = false;
         timestamp
@@ -1772,6 +1778,8 @@ impl SessionManager {
     fn build_index(&mut self) {
         if !self.mirror_trimmed {
             self.verbatim_from_count = 0;
+            self.archived_cache = false;
+            self.settled_cache = crate::session_settled::NOT_SETTLED;
         }
         self.history_generation += 1;
         self.by_id.clear();
@@ -1793,6 +1801,9 @@ impl SessionManager {
             self.by_id.insert(id.clone(), order);
             self.leaf_id = Some(id.clone());
             self.accumulate_usage(entry);
+            if !self.mirror_trimmed {
+                self.note_session_flags(entry);
+            }
             if entry_type(entry) == "session_info" {
                 // A name of 1 KiB or more is a resident-store token at this point; caching the token
                 // would show it as the session title and, through the label path below, persist it.
@@ -1832,6 +1843,15 @@ impl SessionManager {
         // A trimmed mirror cannot replace the full-history count.
         if !self.mirror_trimmed {
             self.full_entry_count = full_entry_count;
+        }
+    }
+
+    fn note_session_flags(&mut self, entry: &Value) {
+        if let Some(archived) = crate::session_archived::archived_flag_of(entry, &self.session_id) {
+            self.archived_cache = archived;
+        }
+        if let Some(settled) = crate::session_settled::settled_state_of(entry, &self.session_id) {
+            self.settled_cache = settled;
         }
     }
 
@@ -2050,6 +2070,7 @@ impl SessionManager {
         }
         self.full_entry_count += 1;
         self.accumulate_usage(&entry);
+        self.note_session_flags(&entry);
         if entry_type(&entry) == "session_info" {
             self.session_name_cache = entry
                 .get("name")
@@ -3173,6 +3194,30 @@ impl SessionManager {
 
     pub fn session_name(&self) -> Option<&str> {
         self.session_name_cache.as_deref()
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived_cache
+    }
+
+    pub fn set_archived(&mut self, archived: bool) -> Value {
+        crate::session_archived::set_session_archived(self, archived)
+    }
+
+    pub fn get_settled(&self) -> crate::session_settled::SessionSettled {
+        self.settled_cache.clone()
+    }
+
+    pub fn set_settled(&mut self, state: &crate::session_settled::SessionSettled) -> Value {
+        crate::session_settled::set_session_settled(self, state)
+    }
+
+    pub fn operating_state(&self, held: bool) -> crate::session_settled::SessionOperatingState {
+        crate::session_settled::resolve_session_operating_state(
+            self.archived_cache,
+            self.settled_cache.settled,
+            held,
+        )
     }
 
     pub fn fork_provenance(&self) -> Option<maho_ext_api::ForkProvenance> {

@@ -192,6 +192,29 @@ fn is_authenticated(
         })
 }
 
+pub fn is_retryable_summary_attempt(error: &SummaryGenerationError) -> bool {
+    match error {
+        SummaryGenerationError::Request(response) => {
+            !response
+                .error_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("senpi:no-turn-retry:"))
+                && matches!(
+                    summary_request_failure(response),
+                    crate::deterministic_fallback::SummaryFailure::Request {
+                        transient: true,
+                        refused: false,
+                        truncated: false
+                    }
+                )
+        }
+        SummaryGenerationError::Stream(
+            crate::speculative_summary::SummaryStreamError::Provider(error),
+        ) => maho_ai::utils::retry::is_retryable_error_message(&error.to_string()),
+        _ => false,
+    }
+}
+
 /// The summary-failure class senpi's `classifyRequiredCompactionFallbackFailure` keys on.
 pub fn summary_failure(
     error: &SummaryGenerationError,
@@ -464,26 +487,7 @@ async fn run_extension_compaction_with_body(
                         retry_started.elapsed().as_secs_f64() * 1000.,
                         Some(attempt_ms),
                     )
-                    && match error {
-                        SummaryGenerationError::Request(response) => {
-                            !response
-                                .error_message
-                                .as_deref()
-                                .is_some_and(|message| message.starts_with("senpi:no-turn-retry:"))
-                                && matches!(
-                                    summary_request_failure(response),
-                                    crate::deterministic_fallback::SummaryFailure::Request {
-                                        transient: true,
-                                        refused: false,
-                                        truncated: false
-                                    }
-                                )
-                        }
-                        SummaryGenerationError::Stream(summary::SummaryStreamError::Provider(
-                            error,
-                        )) => maho_ai::utils::retry::is_retryable_error_message(&error.to_string()),
-                        _ => false,
-                    }
+                    && is_retryable_summary_attempt(error)
             },
             Some(&crate::summarization_retry::DEFAULT_SUMMARIZATION_RETRY_POLICY),
             signal,

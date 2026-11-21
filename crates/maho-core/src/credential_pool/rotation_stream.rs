@@ -11,6 +11,7 @@ use crate::credential_pool::failover::{RunSlot, SlotLeaseRef};
 use crate::credential_pool::slots::{CredentialSlotSource, PooledCredential, rendezvous_order};
 use crate::credential_pool::state_store::{
     BlockReason, CredentialSlotRepository, CredentialSlotState, acquire_half_open_lease,
+    applicable_stored_state,
 };
 use crate::resolve_config_value::{get_config_value_env_var_names_of, resolve_config_value_of};
 use maho_ai::utils::config_reference_error::ConfigReferenceError;
@@ -67,8 +68,10 @@ pub struct RotationSlot {
     /// Env-lane key material for the attempt; never serialized or persisted.
     pub env_key: Option<String>,
     pub env_var_name: Option<String>,
-    /// Stored-lane material revision binding sidecar health to the current credential.
+    /// Stored-lane account revision binding sidecar health to the account.
     pub stored_revision: Option<String>,
+    /// Stored-lane material revision binding rejected-token blocks to exact material.
+    pub material_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -208,8 +211,8 @@ pub async fn list_rotation_slots(
         let mut slots = Vec::new();
         // A slot of the other kind cannot project, so a session must never be handed it (senpi#3486).
         for slot in slots_of_own_kind(credential) {
-            let stored_revision = repository
-                .stored_credential_revision(
+            let revisions = repository
+                .stored_slot_revisions(
                     &provider_id,
                     &slot.name,
                     &crate::credential_pool::state_store::CredentialMaterial {
@@ -219,11 +222,10 @@ pub async fn list_rotation_slots(
                     },
                 )
                 .await?;
+            let stored_revision = revisions.account.clone();
+            let material_revision = revisions.material.clone();
             let persisted = state.get(&slot.name);
-            // A block belongs to the material that earned it; a re-login starts clean.
-            let applicable = persisted.filter(|state| {
-                state.credential_revision.as_deref() == Some(stored_revision.as_str())
-            });
+            let applicable = applicable_stored_state(persisted, &revisions);
             let base = RotationSlot {
                 slot: RunSlot {
                     name: slot.name.clone(),
@@ -233,7 +235,8 @@ pub async fn list_rotation_slots(
                 lane: RotationLane::Stored,
                 env_key: None,
                 env_var_name: None,
-                stored_revision: Some(stored_revision.clone()),
+                stored_revision: Some(stored_revision),
+                material_revision: Some(material_revision),
             };
             let expired = applicable
                 .and_then(|state| state.blocked_until)
@@ -253,9 +256,7 @@ pub async fn list_rotation_slots(
                     continue;
                 }
                 let leased = repository.list_slots(&provider_id, "stored").await?;
-                let leased_state = leased.get(&slot.name).filter(|state| {
-                    state.credential_revision.as_deref() == Some(stored_revision.as_str())
-                });
+                let leased_state = applicable_stored_state(leased.get(&slot.name), &revisions);
                 slots.push(overlay_state(base, leased_state));
                 continue;
             }
@@ -337,6 +338,7 @@ async fn list_env_rotation_slots(
             env_key: Some(slot.key.clone()),
             env_var_name: Some(slot.env_var_name.clone()),
             stored_revision: None,
+            material_revision: None,
         };
         slots.push(overlay_state(base, applicable.as_ref()));
     }
@@ -605,6 +607,10 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
                     .env_credential_revision(name, key)
                     .await?,
             ),
+            _ if matches!(block, CredentialBlock::AuthError) => rotation
+                .material_revision
+                .clone()
+                .or(rotation.stored_revision.clone()),
             _ => rotation.stored_revision.clone(),
         };
         let policy = self.sources.policy.clone();
@@ -638,6 +644,7 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
             return Ok(());
         };
         let now = now_ms();
+        let account_revision = rotation.stored_revision.clone();
         self.sources
             .repository
             .mutate_slot_state(
@@ -646,6 +653,9 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
                 &slot.name,
                 |current| {
                     current.map(|current| CredentialSlotState {
+                        credential_revision: account_revision
+                            .clone()
+                            .or_else(|| current.credential_revision.clone()),
                         last_success_at: Some(now),
                         lease: None,
                         blocked_until: None,
@@ -1131,6 +1141,7 @@ mod tests {
                 env_key: None,
                 env_var_name: None,
                 stored_revision: None,
+                material_revision: None,
             })
             .collect();
         let picked = select_rotation_slot(&slots, "session", true).expect("slot");

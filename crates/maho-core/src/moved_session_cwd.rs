@@ -1,9 +1,59 @@
 //! Port of senpi `core/moved-session-cwd.ts` (senpi#2990).
 use crate::paths::{PathInputOptions, resolve_path};
+use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::io::BufRead;
+use std::path::Path;
 
 fn resolved(path: &str) -> String {
     resolve_path(path, path, &PathInputOptions::default())
+}
+
+fn is_recorded_absolute_cwd(cwd: &str) -> bool {
+    if Path::new(cwd).is_absolute() || cwd.starts_with('/') || cwd.starts_with("\\\\") {
+        return true;
+    }
+    let bytes = cwd.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+pub fn recorded_reopen_cwd(recorded_cwd: Option<&str>) -> Option<String> {
+    let cwd = recorded_cwd.map(str::trim).filter(|cwd| !cwd.is_empty())?;
+    is_recorded_absolute_cwd(cwd).then(|| cwd.to_owned())
+}
+
+pub fn read_recorded_reopen_cwd_from_header_line(first_line: &str) -> Option<String> {
+    let header: Value = serde_json::from_str(first_line.trim()).ok()?;
+    if header.get("type").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+    recorded_reopen_cwd(header.get("cwd").and_then(Value::as_str))
+}
+
+pub fn read_recorded_reopen_cwd_from_file(session_file: &Path) -> Option<String> {
+    let file = std::fs::File::open(session_file).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut first_line = String::new();
+    let bytes = reader.read_line(&mut first_line).ok()?;
+    if bytes == 0 {
+        return None;
+    }
+    read_recorded_reopen_cwd_from_header_line(&first_line)
+}
+
+pub fn reopen_session_open_request(session_path: &str, recorded_cwd: Option<&str>) -> Value {
+    match recorded_reopen_cwd(recorded_cwd) {
+        Some(cwd) => json!({
+            "sessionPath": session_path,
+            "cwd": cwd,
+        }),
+        None => json!({
+            "sessionPath": session_path,
+        }),
+    }
 }
 
 /// Whether a session's recorded cwd is `resolved_cwd`, as recorded or where the OmO desktop moved it.

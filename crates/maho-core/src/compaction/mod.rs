@@ -18,21 +18,23 @@ pub use branch_summarization::{
     create_branch_compaction_preparation, get_message_from_entry, prepare_branch_entries,
 };
 pub use compaction::{
-    BASE64_RUN_RE, CacheFriendlySummaryOptions, CompactionDetails, CompactionPreparation,
-    CompactionResult, ContextUsageEstimate, CutPointResult, ESTIMATED_IMAGE_CHARS,
-    MAX_SCALED_RESERVE_TOKENS, MEDIA_COMPACTION_BUDGET_BYTES, RESERVE_WINDOW_FRACTION,
-    SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT, SOURCE_CONTEXT_UPDATE_SUMMARIZATION_PROMPT,
-    SUMMARIZATION_PROMPT, SummarizationRequest, SummarizationStreamFn, SummaryRequestOptions,
-    SummaryTransformContext, SummaryWithUsage, TURN_PREFIX_SUMMARIZATION_PROMPT,
-    UPDATE_SUMMARIZATION_INSTRUCTIONS, build_summarization_context, cache_friendly_context_fits,
-    calculate_context_tokens, combine_usage, compact, complete_summarization,
+    BASE64_RUN_RE, CJK_CHAR_WEIGHT, CacheFriendlySummaryOptions, CompactionDetails,
+    CompactionPreparation, CompactionResult, ContextUsageEstimate, CutPointResult,
+    ESTIMATED_IMAGE_CHARS, MAX_SCALED_RESERVE_TOKENS, MEDIA_COMPACTION_BUDGET_BYTES,
+    RESERVE_WINDOW_FRACTION, SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT,
+    SOURCE_CONTEXT_UPDATE_SUMMARIZATION_PROMPT, SUMMARIZATION_PROMPT, SummarizationRequest,
+    SummarizationStreamFn, SummaryRequestOptions, SummaryTransformContext, SummaryWithUsage,
+    TURN_PREFIX_SUMMARIZATION_PROMPT, UPDATE_SUMMARIZATION_INSTRUCTIONS,
+    build_summarization_context, cache_friendly_context_fits, calculate_context_tokens,
+    cjk_extra_chars, combine_usage, compact, complete_summarization,
     context_messages_for_compaction_entry, create_summarization_options, estimate_context_tokens,
-    estimate_messages_media_bytes, estimate_tokens, find_cut_point, find_turn_start_index,
-    find_valid_cut_points, generate_summary, generate_summary_with_usage, get_assistant_usage,
-    get_last_assistant_usage, get_message_from_entry_for_compaction, get_summarization_failure,
-    is_cut_point_message, is_turn_start_message, prepare_compaction,
-    resolve_effective_reserve_tokens, resolve_reserve_tokens, resolve_threshold_context_tokens,
-    should_compact, should_compact_with_media, update_summarization_prompt, weighted_chars,
+    estimate_cut_point_tokens, estimate_messages_media_bytes, estimate_tokens, find_cut_point,
+    find_turn_start_index, find_valid_cut_points, generate_summary, generate_summary_with_usage,
+    get_assistant_usage, get_last_assistant_usage, get_message_from_entry_for_compaction,
+    get_summarization_failure, is_cjk_codepoint, is_cut_point_message, is_turn_start_message,
+    prepare_compaction, resolve_effective_reserve_tokens, resolve_reserve_tokens,
+    resolve_threshold_context_tokens, should_compact, should_compact_with_media,
+    update_summarization_prompt, weighted_chars,
 };
 pub use ideal_settings::{IdealCompactionSettings, default_ideal_compaction_settings};
 pub use lifecycle::{
@@ -54,7 +56,7 @@ pub use utils::{
     FileOperations, SUMMARIZATION_SYSTEM_PROMPT, TOOL_RESULT_MAX_CHARS, compute_file_lists,
     content_text_for_summary, create_file_ops, extract_file_ops_from_message,
     extract_patched_paths, format_file_operations, normalize_patch_text, serialize_conversation,
-    strip_heredoc, truncate_for_summary,
+    strip_heredoc, truncate_for_summary, truncate_utf8_at_char_boundary,
 };
 pub use warm_anchor::{
     WarmAnchorSnapshot, create_warm_anchor_snapshot, is_warm_summary_anchor_valid,
