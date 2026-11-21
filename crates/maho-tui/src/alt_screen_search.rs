@@ -301,6 +301,7 @@ impl AltScreenSearchComponent {
             placeholder_style: Some(std::rc::Rc::new(|text: &str| {
                 format!("\x1b[2m{text}\x1b[22m")
             })),
+            ..InputOptions::default()
         });
         input.set_focused(false);
         Self {

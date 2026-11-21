@@ -577,8 +577,8 @@ impl Component for Input {
         let available_width = available_width as usize;
 
         if self.secret {
-            let total_graphemes = graphemes(&self.value).len();
-            let cursor_grapheme = graphemes(&self.value[..self.cursor]).len();
+            let total_graphemes = graphemes(&self.value).count();
+            let cursor_grapheme = graphemes(&self.value[..self.cursor]).count();
             let start = cursor_grapheme.saturating_sub(available_width.saturating_sub(1));
             self.rendered_start_column = start;
             let shown_count = total_graphemes.saturating_sub(start).min(available_width);
@@ -587,7 +587,7 @@ impl Component for Input {
             let marker = if self.focused { CURSOR_MARKER } else { "" };
             let at_cursor = if offset < shown.len() { "*" } else { " " };
             let before = &shown[..offset.min(shown.len())];
-            let after = if offset + 1 <= shown.len() {
+            let after = if offset < shown.len() {
                 &shown[offset + 1..]
             } else {
                 ""

@@ -41,6 +41,7 @@ fn supports_a_custom_prompt_and_styled_placeholder() {
         prompt: Some(String::new()),
         placeholder: Some("Find transcript".to_string()),
         placeholder_style: Some(Rc::new(|text: &str| format!("\x1b[2m{text}\x1b[22m"))),
+        ..InputOptions::default()
     });
     let empty = input.render(20).remove(0);
     assert!(empty.contains("\x1b[2m"));
