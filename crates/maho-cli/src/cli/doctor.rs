@@ -1,4 +1,5 @@
-//! Read-only native diagnostics for configuration, trust, task categories, and package integrity.
+//! Read-only native diagnostics for configuration, trust, task categories, package integrity,
+//! and the per-identity memory runtime size.
 
 use std::{
     cell::Cell,
@@ -12,6 +13,8 @@ use memory_core::reflection::{
     format_stale_lock_fix_lines, reclaim_dead_owner_locks, run_stale_lock_reaper,
     sweep_host_identities, sweep_identity_orphan_worktrees,
 };
+
+use crate::cli::doctor_memory_runtime::doctor_memory_runtime_lines;
 
 const DEFAULT_CATEGORIES: &[&str] = &[
     "architect",
@@ -308,6 +311,7 @@ pub fn doctor_lines(cwd: &Path, env: &BTreeMap<String, String>, agent_dir: &str)
     let mut lines = config_lines(&loaded, env);
     lines.extend(trust_lines(cwd, env, agent_dir));
     lines.extend(category_lines(&loaded.config, agent_dir));
+    lines.extend(doctor_memory_runtime_lines(cwd, env, &loaded.config));
     lines
 }
 
