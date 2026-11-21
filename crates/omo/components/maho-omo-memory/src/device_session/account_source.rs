@@ -8,7 +8,6 @@ use memory_core::sync::keyring_port::DeviceKeyMaterial;
 use serde_json::Value;
 use std::sync::Arc;
 
-pub const DEFAULT_SERVICE_API: &str = "https://api.omo.dev";
 pub type AccountFuture<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
 pub trait CredentialStore: Send + Sync {
@@ -84,9 +83,12 @@ pub fn create_cli_account_source(
     env: &std::collections::BTreeMap<String, String>,
     store: Option<Arc<dyn CredentialStore>>,
 ) -> Result<DeviceAccountSource, String> {
-    let configured = api
-        .or_else(|| env.get("OMO_SERVICE_API_URL").map(String::as_str))
-        .unwrap_or(DEFAULT_SERVICE_API);
+    // No configured origin means no memory-sync service at all: this device stays local-only and
+    // reports itself signed out without one network packet.
+    let Some(configured) = api.or_else(|| env.get("OMO_SERVICE_API_URL").map(String::as_str))
+    else {
+        return Ok(Arc::new(|| Box::pin(async { Ok(None) })));
+    };
     let parsed =
         url::Url::parse(configured).map_err(|error| format!("OMO_SERVICE_API_URL: {error}"))?;
     let loopback = parsed.scheme() == "http"
@@ -227,6 +229,20 @@ async fn access_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn no_configured_origin_stays_local_only_without_any_request() {
+        let source = create_cli_account_source(
+            None,
+            &Default::default(),
+            Some(Arc::new(UnavailableCredentialStore)),
+        )
+        .expect("local-only mode needs no configuration");
+        assert!(
+            source().await.expect("no request to fail").is_none(),
+            "without a service origin this device is signed out and never contacts a hosted service"
+        );
+    }
     #[tokio::test]
     async fn signed_out_store_does_not_read_account() {
         let source = create_cli_account_source(
