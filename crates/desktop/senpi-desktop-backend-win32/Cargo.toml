@@ -29,9 +29,10 @@ uiautomation = "=0.25.1"
 windows-sys = { version = "=0.61.2", features = [
     "Wdk_Storage_FileSystem",
     "Win32_Foundation",
-    "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
+    "Win32_System_LibraryLoader",
     "Win32_System_Power",
     "Win32_System_Registry",
     "Win32_System_Threading",
@@ -45,9 +46,15 @@ xcap = { version = "=0.9.6", default-features = false }
 # Host tests exercise native INPUT recovery; Windows probes also register a class.
 [dev-dependencies]
 windows-sys = { version = "=0.61.2", features = [
+    "Wdk_Storage_FileSystem",
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
     "Win32_System_LibraryLoader",
-    "Win32_UI_HiDpi",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

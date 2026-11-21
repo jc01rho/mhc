@@ -28,6 +28,6 @@ pub use session::{
     ComputerSessionSnapshot, ComputerTextDisplay,
 };
 pub use wire::{
-    AuditCode, AuditEvent, DesktopCapabilities, EngineLog, LogLevel, StopPathKind, StopPathStatus,
-    UnknownAuditValue, UNKNOWN_AUDIT_VALUE,
+    AuditCode, AuditEvent, DesktopCapabilities, EngineLog, EpochChanged, EpochReason, LogLevel,
+    StopPathKind, StopPathStatus, UnknownAuditValue, UNKNOWN_AUDIT_VALUE,
 };

@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 [target.'cfg(target_os = "linux")'.dependencies]
 atspi = { version = "=0.30.0", features = ["tokio", "zbus"] }
 senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core" }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["io-util", "net", "process", "rt-multi-thread", "time"] }
 zbus = { version = "=5.19.0", default-features = false, features = [
     "async-io",
     "blocking-api",

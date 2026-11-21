@@ -81,7 +81,7 @@ fn connected(shot: Shot, regions: Vec<EisRegion>) -> Scaled {
 
 fn desktop_frame(backend: &mut WaylandBackend) -> FrameGeometry {
     backend
-        .capture(&Target::Desktop, &CaptureCaps::default())
+        .capture(&Target::Desktop, &CaptureCaps::default(), &[])
         .expect("portal screenshot")
         .1
 }
@@ -234,7 +234,7 @@ fn live_frame(layout: EisRegion) -> (u32, u32, FrameGeometry) {
         .prepare_input(&Target::Desktop, "qa input")
         .expect("libei connected");
     let (image, frame) = backend
-        .capture(&Target::Desktop, &CaptureCaps::default())
+        .capture(&Target::Desktop, &CaptureCaps::default(), &[])
         .expect("portal screenshot");
     (image.width(), image.height(), frame)
 }

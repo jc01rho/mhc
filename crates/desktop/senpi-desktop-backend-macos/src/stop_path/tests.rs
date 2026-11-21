@@ -143,22 +143,18 @@ fn the_callback_re_enables_on_both_disable_notices_and_reads_only_key_downs() {
 fn the_chord_latches_a_hotkey_stop() {
     let (shared, _clock) = shared(DEFAULT_STOP_CHORD);
     shared.key_down(ESCAPE, CONTROL | OPTION | COMMAND);
-    // The stop is committed by the stop worker: wait for its signal.
     let mut control = shared.control.lock();
-    let signalled = !shared
-        .changed
-        .wait_while_for(
-            &mut control,
-            |control| control.stops == 0,
-            Duration::from_secs(5),
-        )
-        .timed_out();
-    assert!(signalled, "the stop worker never committed the stop");
+    shared.changed.wait_while_for(
+        &mut control,
+        |control| control.stops == 0,
+        Duration::from_secs(5),
+    );
     assert_eq!(control.stops, 1);
     drop(control);
     let status = shared.supervisor.status();
     assert!(status.suspended);
     assert_eq!(status.stopped_by, Some(StopSource::Hotkey));
+    assert_eq!(shared.control.lock().stops, 1);
 }
 
 #[test]

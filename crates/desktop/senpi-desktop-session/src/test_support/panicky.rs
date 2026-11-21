@@ -7,11 +7,12 @@ use std::sync::Arc;
 use image::RgbaImage;
 use parking_lot::Mutex;
 use senpi_desktop_backend_fake::{FakeBackend, FakeMethod};
-use senpi_desktop_core::ax::AxBackend;
-use senpi_desktop_core::backend::{Backend, DeliveryMode, PointerEvent};
+use senpi_desktop_core::ax::{AxBackend, AxHandle};
+use senpi_desktop_core::backend::{Backend, DeliveryMode, ElementDelivery, PointerEvent};
 use senpi_desktop_core::error::{CoreResult, DesktopError, PermissionDeniedData, TccPermission};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::keys::KeyName;
+use senpi_desktop_core::menus::MenuItem;
 use senpi_desktop_core::types::{
     CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, FrontWindow,
     Target,
@@ -42,9 +43,35 @@ impl Watches {
     }
 }
 
+/// One edit to every `windows()` reply once a pointer call has run: a
+/// window that closes or resizes after input was sent. Clones share the slot.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AfterPointer(Arc<Mutex<(Option<WindowsEdit>, bool)>>);
+
+type WindowsEdit = fn(&mut Vec<DesktopWindow>);
+
+impl AfterPointer {
+    pub(crate) fn edit_windows(&self, edit: WindowsEdit) {
+        *self.0.lock() = (Some(edit), false);
+    }
+
+    fn pointed(&self) {
+        self.0.lock().1 = true;
+    }
+
+    fn apply(&self, windows: &mut Vec<DesktopWindow>) {
+        if let (Some(edit), true) = *self.0.lock() {
+            edit(windows);
+        }
+    }
+}
+
 pub(crate) struct PanickyFake {
     pub(crate) inner: FakeBackend,
     pub(crate) panics: Panics,
+    pub(crate) after_pointer: AfterPointer,
+    pub(crate) awake: super::AwakeHolds,
+    pub(crate) screen: super::FakeScreen,
     pub(crate) watches: Watches,
 }
 
@@ -66,18 +93,28 @@ impl Backend for PanickyFake {
     fn capabilities(&mut self) -> DesktopCapabilities {
         self.inner.capabilities()
     }
+    fn hit_at(
+        &mut self,
+        x: f64,
+        y: f64,
+    ) -> CoreResult<Option<senpi_desktop_core::frame::PointHit>> {
+        self.inner.hit_at(x, y)
+    }
     fn displays(&mut self) -> CoreResult<Vec<DesktopDisplay>> {
         self.inner.displays()
     }
     fn windows(&mut self) -> CoreResult<Vec<DesktopWindow>> {
-        self.inner.windows()
+        let mut windows = self.inner.windows()?;
+        self.after_pointer.apply(&mut windows);
+        Ok(windows)
     }
     fn capture(
         &mut self,
         target: &Target,
         caps: &CaptureCaps,
+        exclude_window_titles: &[String],
     ) -> CoreResult<(RgbaImage, FrameGeometry)> {
-        self.inner.capture(target, caps)
+        self.inner.capture(target, caps, exclude_window_titles)
     }
     fn pointer(
         &mut self,
@@ -86,7 +123,9 @@ impl Backend for PanickyFake {
         frame: &FrameGeometry,
         mode: DeliveryMode,
     ) -> CoreResult<()> {
-        self.inner.pointer(target, ev, frame, mode)
+        self.inner.pointer(target, ev, frame, mode)?;
+        self.after_pointer.pointed();
+        Ok(())
     }
     fn type_text(&mut self, target: &Target, text: &str, mode: DeliveryMode) -> CoreResult<()> {
         self.inner.type_text(target, text, mode)
@@ -108,6 +147,17 @@ impl Backend for PanickyFake {
         self.inner
             .type_text_interruptible(target, text, mode, check_stop, delivered)
     }
+    fn ax_type_text(
+        &mut self,
+        h: &AxHandle,
+        text: &str,
+        mode: DeliveryMode,
+        check_stop: &dyn Fn() -> CoreResult<()>,
+        delivered: &mut dyn FnMut(),
+    ) -> CoreResult<ElementDelivery> {
+        self.inner
+            .ax_type_text(h, text, mode, check_stop, delivered)
+    }
     fn key_chord(
         &mut self,
         target: &Target,
@@ -118,6 +168,36 @@ impl Backend for PanickyFake {
     }
     fn raise_window(&mut self, id: &str) -> CoreResult<()> {
         self.inner.raise_window(id)
+    }
+    fn hold_keys(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        mode: DeliveryMode,
+        control: &senpi_desktop_core::holds::HoldControl<'_>,
+    ) -> CoreResult<()> {
+        self.inner.hold_keys(target, keys, mode, control)
+    }
+    fn hold_mouse(
+        &mut self,
+        target: &Target,
+        hold: &senpi_desktop_core::holds::MouseHold<'_>,
+        mode: DeliveryMode,
+        control: &senpi_desktop_core::holds::HoldControl<'_>,
+    ) -> CoreResult<()> {
+        self.inner.hold_mouse(target, hold, mode, control)
+    }
+    fn menu_items(&mut self, window: &DesktopWindow, path: &[String]) -> CoreResult<Vec<MenuItem>> {
+        self.inner.menu_items(window, path)
+    }
+    fn menu_select(
+        &mut self,
+        window: &DesktopWindow,
+        path: &[String],
+        delivery: DeliveryMode,
+        check_stop: &dyn Fn() -> CoreResult<()>,
+    ) -> CoreResult<()> {
+        self.inner.menu_select(window, path, delivery, check_stop)
     }
     fn ax(&mut self) -> Option<&mut dyn AxBackend> {
         self.inner.ax()
@@ -147,8 +227,19 @@ impl Backend for PanickyFake {
     fn screen_locked(&mut self) -> CoreResult<bool> {
         self.inner.screen_locked()
     }
+    fn hold_display_awake(&mut self) -> Option<senpi_desktop_core::backend::DisplayAwakeHold> {
+        Some(self.awake.hold())
+    }
+    fn screen_probe(&self) -> Option<Arc<dyn senpi_desktop_core::backend::ScreenProbe>> {
+        Some(Arc::new(self.screen.clone()))
+    }
     fn watch_user_input(&mut self) {
         self.watches.0.fetch_add(1, Ordering::SeqCst);
         self.inner.watch_user_input();
+    }
+    fn user_input_feed(
+        &mut self,
+    ) -> Option<Arc<dyn senpi_desktop_core::user_input::UserInputFeed>> {
+        self.inner.user_input_feed()
     }
 }

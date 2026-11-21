@@ -5468,6 +5468,116 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-omo-computer-backend-atspi"
+version = "0.0.0"
+dependencies = [
+ "maho-omo-computer-core",
+]
+
+[[package]]
+name = "maho-omo-computer-backend-fake"
+version = "0.0.0"
+dependencies = [
+ "maho-omo-computer-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "maho-omo-computer-backend-macos"
+version = "0.0.0"
+dependencies = [
+ "maho-omo-computer-core",
+ "maho-omo-computer-safety",
+]
+
+[[package]]
+name = "maho-omo-computer-backend-wayland"
+version = "0.0.0"
+dependencies = [
+ "maho-omo-computer-backend-atspi",
+ "maho-omo-computer-core",
+ "maho-omo-computer-safety",
+]
+
+[[package]]
+name = "maho-omo-computer-backend-win32"
+version = "0.0.0"
+dependencies = [
+ "maho-omo-computer-core",
+ "maho-omo-computer-safety",
+]
+
+[[package]]
+name = "maho-omo-computer-backend-x11"
+version = "0.0.0"
+dependencies = [
+ "maho-omo-computer-backend-atspi",
+ "maho-omo-computer-core",
+ "maho-omo-computer-safety",
+]
+
+[[package]]
+name = "maho-omo-computer-core"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "maho-omo-computer-engine"
+version = "0.0.0"
+dependencies = [
+ "maho-omo-computer-backend-atspi",
+ "maho-omo-computer-backend-fake",
+ "maho-omo-computer-backend-macos",
+ "maho-omo-computer-backend-wayland",
+ "maho-omo-computer-backend-win32",
+ "maho-omo-computer-backend-x11",
+ "maho-omo-computer-core",
+ "maho-omo-computer-session",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "maho-omo-computer-safety"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "maho-omo-computer-backend-fake",
+ "maho-omo-computer-core",
+ "maho-omo-computer-session",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "maho-omo-computer-session"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "maho-omo-computer-backend-fake",
+ "maho-omo-computer-core",
+ "maho-omo-computer-safety",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "maho-omo-computer-use"
 version = "0.0.0"
 dependencies = [
@@ -6055,6 +6165,7 @@ dependencies = [
 name = "maho-senpi-desktop-backend-macos"
 version = "0.0.0"
 dependencies = [
+ "block2",
  "core-graphics",
  "foreign-types",
  "image 0.25.10",
@@ -6067,7 +6178,10 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation",
+ "objc2-screen-capture-kit",
  "parking_lot",
+ "serde",
+ "serde_json",
  "tempfile",
  "xcap",
 ]
@@ -6085,6 +6199,8 @@ dependencies = [
  "maho-senpi-desktop-safety",
  "parking_lot",
  "reis",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "xkeysym",
@@ -6140,6 +6256,7 @@ name = "maho-senpi-desktop-engine"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "core-graphics",
  "libc",
  "maho-senpi-desktop-backend-fake",
  "maho-senpi-desktop-backend-macos",
@@ -6149,6 +6266,8 @@ dependencies = [
  "maho-senpi-desktop-core",
  "maho-senpi-desktop-safety",
  "maho-senpi-desktop-session",
+ "maho-senpi-desktop-xpc",
+ "objc2-app-kit",
  "parking_lot",
  "schemars",
  "serde",
@@ -6206,10 +6325,12 @@ dependencies = [
 name = "maho-senpi-desktop-safety"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "maho-senpi-desktop-backend-fake",
  "maho-senpi-desktop-core",
  "parking_lot",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -6231,6 +6352,7 @@ version = "0.0.0"
 dependencies = [
  "flume",
  "image 0.25.10",
+ "libc",
  "maho-senpi-desktop-backend-fake",
  "maho-senpi-desktop-backend-macos",
  "maho-senpi-desktop-backend-wayland",
@@ -6246,6 +6368,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "ulid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6264,6 +6387,26 @@ dependencies = [
  "maho-tools",
  "schemars",
  "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "maho-senpi-desktop-xpc"
+version = "0.0.0"
+dependencies = [
+ "block2",
+ "flume",
+ "libc",
+ "maho-senpi-desktop-backend-fake",
+ "maho-senpi-desktop-core",
+ "maho-senpi-desktop-safety",
+ "maho-senpi-desktop-session",
+ "objc2-core-foundation",
+ "parking_lot",
  "serde_json",
  "sha2",
  "tempfile",
@@ -7287,6 +7430,20 @@ checksum = "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f"
 dependencies = [
  "bitflags 2.13.1",
  "objc2",
+ "objc2-foundation",
+]
+
+[[package]]
+name = "objc2-screen-capture-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
+dependencies = [
+ "block2",
+ "libc",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
 ]
 

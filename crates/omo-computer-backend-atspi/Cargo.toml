@@ -1,0 +1,15 @@
+[package]
+name = "maho-omo-computer-backend-atspi"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "omo_computer_backend_atspi"
+crate-type = ["rlib"]
+
+[dependencies]
+omo-computer-core = { package = "maho-omo-computer-core", path = "../omo-computer-core" }
+
+[lints.rust]
+unsafe_code = "forbid"

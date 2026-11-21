@@ -178,7 +178,7 @@ pub fn parse_format(pod: &[u8]) -> Option<Negotiated> {
                 dims = Some((word(body, 0)?, word(body, 4)?))
             }
             (FORMAT_MEDIA_TYPE, (TYPE_ID, body)) if word(body, 0)? != MEDIA_TYPE_VIDEO => {
-                return None;
+                return None
             }
             _ => {}
         }

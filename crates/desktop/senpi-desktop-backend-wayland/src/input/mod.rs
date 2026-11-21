@@ -3,6 +3,7 @@
 //! announces. Emission lives in `libei.rs`.
 
 mod burst;
+mod holds;
 mod keymap;
 mod libei;
 mod lifecycle;
@@ -76,7 +77,7 @@ impl Libei {
             Err(err) => {
                 return Err(DesktopError::permission_denied(format!(
                     "LIBEI_SOCKET: {err}"
-                )));
+                )))
             }
         };
         let (_connection, events) = runtime

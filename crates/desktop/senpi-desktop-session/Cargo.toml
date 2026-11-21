@@ -22,12 +22,15 @@ parking_lot = "=0.12.5"
 senpi-desktop-backend-fake = { package = "maho-senpi-desktop-backend-fake", path = "../senpi-desktop-backend-fake" }
 senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core" }
 senpi-desktop-safety = { package = "maho-senpi-desktop-safety", path = "../senpi-desktop-safety" }
-serde.workspace = true
-serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["io-util", "net", "process", "rt-multi-thread", "time"] }
 ulid = "=3.0.0"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 senpi-desktop-backend-macos = { package = "maho-senpi-desktop-backend-macos", path = "../senpi-desktop-backend-macos" }
@@ -38,10 +41,24 @@ senpi-desktop-backend-x11 = { package = "maho-senpi-desktop-backend-x11", path =
 
 [target.'cfg(target_os = "windows")'.dependencies]
 senpi-desktop-backend-win32 = { package = "maho-senpi-desktop-backend-win32", path = "../senpi-desktop-backend-win32" }
+windows-sys = { version = "=0.61.2", features = [
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
+senpi-desktop-safety = { package = "maho-senpi-desktop-safety", path = "../senpi-desktop-safety", features = ["test-support"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "time"] }
 
 [[test]]
 name = "integration"

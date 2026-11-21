@@ -258,7 +258,9 @@ pub async fn probe_computer_use_engine(
                         };
                     }
                 } else if id == Some(2) {
-                    if let Ok(c) = serde_json::from_value::<DesktopCapabilities>(res.clone()) {
+                    // Upstream `CapabilitiesSchema`: `cursorOverlay` defaults to `false` for an engine
+                    // from before the cursor overlay.
+                    if let Some(c) = senpi_desktop_service::parse_capabilities(res) {
                         caps_opt = Some(c);
                     } else {
                         return EngineProbeResult::Err {

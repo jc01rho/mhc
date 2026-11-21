@@ -13,6 +13,8 @@ use serde_json::Value;
 pub struct HelloHandshake {
     pub abi: String,
     pub protocol_version: String,
+    /// `[]` when the engine predates the list (absent or `null`).
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,12 +38,33 @@ fn optional_field(value: &Value, key: &str, kind: fn(&Value) -> bool) -> bool {
         .is_none_or(|field| field.is_null() || kind(field))
 }
 
+/// `value` with `cursorOverlay` set to `false` when an engine from before the cursor overlay
+/// omits it (upstream `cursorOverlay ?? false`).
+fn with_cursor_overlay(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(object) = value.as_object_mut()
+        && object.get("cursorOverlay").is_none_or(Value::is_null)
+    {
+        object.insert("cursorOverlay".to_owned(), Value::Bool(false));
+    }
+    value
+}
+
 pub fn is_desktop_capabilities(value: &Value) -> bool {
     // Optional so this host still opens an engine from before or after their release (macOS
     // shared-screen parity); checked here as well because the core struct may not carry them.
-    optional_field(value, "interventionWatch", Value::is_string)
+    optional_field(value, "cursorOverlay", Value::is_boolean)
+        && optional_field(value, "interventionWatch", Value::is_string)
         && optional_field(value, "displayAsleep", Value::is_boolean)
-        && serde_json::from_value::<DesktopCapabilities>(value.clone()).is_ok()
+        && serde_json::from_value::<DesktopCapabilities>(with_cursor_overlay(value)).is_ok()
+}
+
+/// A shape-checked `capabilities` payload; an omitted `cursorOverlay` reads as `false`.
+pub fn parse_capabilities(value: &Value) -> Option<DesktopCapabilities> {
+    if !is_desktop_capabilities(value) {
+        return None;
+    }
+    serde_json::from_value::<DesktopCapabilities>(with_cursor_overlay(value)).ok()
 }
 
 /// An `audit` payload, or `None` when it is malformed. An action or code this host does not know
@@ -76,20 +99,25 @@ pub fn parse_hello(value: &Value) -> Option<HelloHandshake> {
     let obj = value.as_object()?;
     let abi = obj.get("abi")?.as_str()?.to_string();
     let protocol_version = obj.get("protocolVersion")?.as_str()?.to_string();
+    let features = match obj.get("features") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()?,
+        Some(_) => return None,
+    };
     Some(HelloHandshake {
         abi,
         protocol_version,
+        features,
     })
 }
 
 pub fn parse_session_opened(value: &Value) -> Option<SessionOpened> {
     let obj = value.as_object()?;
     let resume_token = obj.get("resumeToken")?.as_str()?.to_string();
-    let caps_val = obj.get("capabilities")?;
-    if !is_desktop_capabilities(caps_val) {
-        return None;
-    }
-    let capabilities = serde_json::from_value::<DesktopCapabilities>(caps_val.clone()).ok()?;
+    let capabilities = parse_capabilities(obj.get("capabilities")?)?;
     Some(SessionOpened {
         capabilities,
         resume_token,
@@ -112,10 +140,12 @@ pub fn parse_error_data(value: &Value) -> Option<JsonRpcErrorData> {
             .get("hint")
             .and_then(|h| h.as_str().map(|s| s.to_string()));
         let permission = obj.get("permission").and_then(parse_permission);
+        let reason = obj.get("reason").and_then(Value::as_str).map(str::to_owned);
         return Some(JsonRpcErrorData::Engine(EngineErrorData {
             code,
             hint,
             permission,
+            reason,
         }));
     }
     if let Some(reason_val) = obj.get("reason")

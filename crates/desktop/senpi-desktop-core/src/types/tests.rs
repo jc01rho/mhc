@@ -20,6 +20,7 @@ fn unavailable_capabilities_serialize_the_frozen_camel_case_field_set() {
             "input",
             "ax",
             "backgroundWindowInput",
+            "cursorOverlay",
             "deliveryModes",
             "capturePermission",
             "inputPermission",
@@ -30,7 +31,59 @@ fn unavailable_capabilities_serialize_the_frozen_camel_case_field_set() {
             "stopReason",
             "integrityLevel",
             "screenLocked",
+            "displayAsleep",
         ]
+    );
+}
+
+#[test]
+fn capabilities_from_an_engine_without_display_asleep_read_it_as_awake() {
+    // Given an older engine's capabilities, which have no displayAsleep.
+    let mut value = serde_json::to_value(DesktopCapabilities::unavailable()).unwrap();
+    value.as_object_mut().unwrap().remove("displayAsleep");
+    // When
+    let capabilities: DesktopCapabilities = serde_json::from_value(value).unwrap();
+    // Then
+    assert!(!capabilities.display_asleep);
+}
+
+#[test]
+fn only_capture_input_and_timeout_failures_name_the_lock_or_sleep_state() {
+    use crate::error::{DesktopError, ErrorCode};
+    let asleep = ScreenState {
+        locked: false,
+        display_asleep: true,
+    };
+    let both = ScreenState {
+        locked: true,
+        display_asleep: true,
+    };
+    let explained =
+        |state: ScreenState, code| state.explain(DesktopError::new(code, "failed")).message;
+    assert_eq!(
+        explained(asleep, ErrorCode::CaptureFailed),
+        "failed (the display is asleep)"
+    );
+    assert_eq!(
+        explained(asleep, ErrorCode::InputFailed),
+        "failed (the display is asleep)"
+    );
+    assert_eq!(
+        explained(both, ErrorCode::Timeout),
+        "failed (the screen is locked and the display is asleep)"
+    );
+    let locked = ScreenState {
+        locked: true,
+        display_asleep: false,
+    };
+    assert_eq!(
+        explained(locked, ErrorCode::InputFailed),
+        "failed (the screen is locked)"
+    );
+    assert_eq!(explained(asleep, ErrorCode::WindowNotFound), "failed");
+    assert_eq!(
+        explained(ScreenState::default(), ErrorCode::CaptureFailed),
+        "failed"
     );
 }
 
@@ -61,6 +114,9 @@ fn the_intervention_watch_is_reported_as_on_off_or_not_started_only_when_a_backe
 fn ax_node_reference_is_named_ref_on_the_wire() {
     // Given
     let node = AxNode {
+        evidence: None,
+        subtree_truncated: false,
+        secure: false,
         ref_: "e1".into(),
         role: "button".into(),
         native_role: "AXButton".into(),
@@ -109,8 +165,16 @@ fn session_options_missing_fields_take_documented_defaults() {
     assert!(options.allow_host_relay_only_stop);
     assert_eq!(options.capture_caps.max_width, Some(1280));
     assert_eq!(options.capture_caps.max_bytes, DEFAULT_CAPTURE_MAX_BYTES);
+    assert!(options.show_cursor);
     assert_eq!(options.screenshot_gc, ScreenshotGc::default());
     assert_eq!((options.audit_path, options.artifact_dir), (None, None));
+}
+
+#[test]
+fn session_options_preserve_explicit_cursor_off() {
+    let options: DesktopSessionOptions =
+        serde_json::from_value(json!({"showCursor": false})).unwrap();
+    assert!(!options.show_cursor);
 }
 
 #[test]

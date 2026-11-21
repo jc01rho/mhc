@@ -1,9 +1,4 @@
 //! The hook-to-worker handoff, independent of Win32 registration.
-//!
-//! mhc base: the stop is a `RegisterHotKey` `WM_HOTKEY` drained on the
-//! listener thread (no `WH_KEYBOARD_LL` hook yet), so the listener requests
-//! and completes in the same drain; the split still commits each requested
-//! generation exactly once.
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use senpi_desktop_safety::{StopSource, Supervisor};
@@ -29,12 +24,16 @@ impl PendingStop {
 #[cfg(test)]
 mod tests {
     use super::PendingStop;
-    use senpi_desktop_safety::{MonotonicClock, Supervisor};
+    use crate::stop_path::{
+        chord::{Hotkey, DEFAULT_STOP_CHORD},
+        physical::{KeyEvent, Outcome, PhysicalChord},
+    };
+    use senpi_desktop_safety::{Chord, MonotonicClock, Supervisor};
     use std::sync::{Arc, Mutex};
 
     #[test]
     fn one_physical_hook_chord_commits_exactly_one_stop_generation() {
-        // Given: the callback/worker handoff over an authority supervisor.
+        // Given: the real hook's chord decoder and callback/worker handoff.
         let generations = Arc::new(Mutex::new(Vec::new()));
         let committed = Arc::clone(&generations);
         let supervisor =
@@ -42,15 +41,26 @@ mod tests {
                 committed.lock().unwrap().push(generation)
             });
         let pending = PendingStop::default();
+        let hotkey = Hotkey::parse(&Chord::parse(DEFAULT_STOP_CHORD).unwrap()).unwrap();
+        let mut chord = PhysicalChord::new(hotkey);
 
-        // When: one chord press reaches the listener.
-        pending.request(&supervisor);
+        // When: one physical chord, including trigger auto-repeat, reaches the hook.
+        for vk in [0xA2, 0xA4, 0xA0, 0x1B, 0x1B] {
+            if chord.key(KeyEvent {
+                vk,
+                down: true,
+                injected: false,
+            }) == Outcome::Stop
+            {
+                pending.request(&supervisor);
+            }
+        }
         assert!(supervisor.is_suspended());
         assert!(supervisor.stop_pending());
         assert!(generations.lock().unwrap().is_empty());
         assert!(pending.complete(&supervisor));
 
-        // Then: the worker covers the press's generation, not a second request.
+        // Then: the worker covers the hook's generation, not a second request.
         assert_eq!(*generations.lock().unwrap(), [1]);
         assert!(!supervisor.stop_pending());
         assert!(!pending.complete(&supervisor));

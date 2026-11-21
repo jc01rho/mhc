@@ -7,6 +7,8 @@
 //! AppKit) only.
 
 mod authentication;
+mod focus_records;
+mod partial;
 mod psn;
 mod spi;
 
@@ -20,12 +22,14 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
+pub(crate) use self::focus_records::post_key_records;
+pub(crate) use self::partial::{mark_sent, reporting_partial};
 use self::psn::{
     front_process, post_focus_record, process_psn, FocusMarker, ProcessSerialNumber,
     SET_FRONT_NO_WINDOWS,
 };
 use self::spi::required;
-pub(crate) use self::spi::{front_pid, is_available};
+pub(crate) use self::spi::{capture_spi, front_pid, is_available};
 
 /// Ensures the required background SPI resolved; the error names the missing
 /// SkyLight symbols.
@@ -85,6 +89,7 @@ pub(crate) fn post_routed(pid: libc::pid_t, event: &CGEvent) -> CoreResult<()> {
     // SAFETY: `event` remains retained for the synchronous post and
     // `post_to_pid` was atomically resolved with its exact ABI.
     unsafe { (spi.post_to_pid)(pid, event_ptr(event)) };
+    mark_sent();
     Ok(())
 }
 
@@ -96,6 +101,7 @@ pub(crate) fn post_dual(pid: libc::pid_t, event: &CGEvent) -> CoreResult<()> {
     // SAFETY: `event` remains retained for both posts and `post_to_pid` was
     // atomically resolved with its exact ABI.
     unsafe { (spi.post_to_pid)(pid, event_ptr(event)) };
+    mark_sent();
     // SAFETY: `event` remains retained for the synchronous public
     // CoreGraphics post to the same process.
     unsafe { CGEventPostToPid(pid, event.as_ptr()) };
@@ -111,6 +117,7 @@ pub(crate) fn post_keyboard(pid: libc::pid_t, event: &CGEvent) -> CoreResult<()>
     // SAFETY: `event` remains retained and the exact symbol is part of the
     // required atomic probe.
     unsafe { (spi.post_to_pid)(pid, event_ptr(event)) };
+    mark_sent();
     Ok(())
 }
 

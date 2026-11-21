@@ -110,7 +110,7 @@ impl Screencapture {
             Err(error) => {
                 return Err(fatal(format!(
                     "failed to start macOS screen capture: {error}"
-                )));
+                )))
             }
         };
         let deadline = Instant::now() + self.deadline;

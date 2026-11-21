@@ -11,8 +11,8 @@ fn fail_next_fails_exactly_the_next_capture() {
     let mut backend = common::fixture_backend();
     backend.fail_next(FakeMethod::Capture, ErrorCode::CaptureFailed);
     // When
-    let first = backend.capture(&Target::Desktop, &CaptureCaps::default());
-    let second = backend.capture(&Target::Desktop, &CaptureCaps::default());
+    let first = backend.capture(&Target::Desktop, &CaptureCaps::default(), &[]);
+    let second = backend.capture(&Target::Desktop, &CaptureCaps::default(), &[]);
     // Then
     assert_eq!(first.expect_err("injected").code, ErrorCode::CaptureFailed);
     assert!(second.is_ok());
@@ -38,7 +38,7 @@ fn faults_handle_reaches_a_boxed_backend() {
 fn desktop_capture_is_a_solid_image_of_the_display_composite() {
     let mut backend = common::fixture_backend();
     let (image, frame) = backend
-        .capture(&Target::Desktop, &CaptureCaps::default())
+        .capture(&Target::Desktop, &CaptureCaps::default(), &[])
         .expect("capture");
     assert_eq!((image.width(), image.height()), (1920 + 2880, 1800));
     assert_eq!(image.get_pixel(0, 0).0, [32, 96, 160, 255]);
@@ -54,7 +54,7 @@ fn desktop_capture_is_a_solid_image_of_the_display_composite() {
 fn window_capture_is_one_pixel_per_logical_point() {
     let mut backend = common::fixture_backend();
     let (image, _) = backend
-        .capture(&Target::Window("101".into()), &CaptureCaps::default())
+        .capture(&Target::Window("101".into()), &CaptureCaps::default(), &[])
         .expect("capture");
     assert_eq!((image.width(), image.height()), (800, 600));
 }
@@ -71,7 +71,7 @@ fn scripted_resize_invalidates_the_previous_window_frame() {
     let mut backend = FakeBackend::new(scenario);
     let target = Target::Window("101".into());
     let (_, frame) = backend
-        .capture(&target, &CaptureCaps::default())
+        .capture(&target, &CaptureCaps::default(), &[])
         .expect("capture");
     // When
     let current = backend.windows().expect("windows");
@@ -89,7 +89,7 @@ fn capture_unavailable_scenario_fails_capture() {
         FakeScenario::from_json(r#"{"capabilities":{"capture":false}}"#).expect("parses");
     let mut backend = FakeBackend::new(scenario);
     let err = backend
-        .capture(&Target::Desktop, &CaptureCaps::default())
+        .capture(&Target::Desktop, &CaptureCaps::default(), &[])
         .expect_err("no capture");
     assert_eq!(err.code, ErrorCode::CaptureFailed);
 }
@@ -98,7 +98,7 @@ fn capture_unavailable_scenario_fails_capture() {
 fn capture_of_an_unknown_window_is_window_not_found() {
     let mut backend = common::fixture_backend();
     let err = backend
-        .capture(&Target::Window("404".into()), &CaptureCaps::default())
+        .capture(&Target::Window("404".into()), &CaptureCaps::default(), &[])
         .expect_err("unknown window");
     assert_eq!(err.code, ErrorCode::WindowNotFound);
 }
@@ -109,7 +109,7 @@ fn oversized_composite_fails_before_allocating() {
         "scale":1.0,"pixelX":0,"pixelY":0,"pixelWidth":20000,"pixelHeight":20000,"isPrimary":true}]}"#;
     let mut backend = FakeBackend::new(FakeScenario::from_json(json).expect("parses"));
     let err = backend
-        .capture(&Target::Desktop, &CaptureCaps::default())
+        .capture(&Target::Desktop, &CaptureCaps::default(), &[])
         .expect_err("too big");
     assert_eq!(err.code, ErrorCode::CaptureFailed);
 }

@@ -11,6 +11,7 @@ impl Supervisor {
             let state = |id| paths.get(&id).copied().unwrap_or_default();
             (state(StopPathId::Global), state(StopPathId::HostRelay))
         };
+        let (global, global_failure) = self.deafness.apply(global, *self.global_failure.lock());
         let (stop_path, heartbeat_fresh) = if global.fresh_at(now_ms) {
             (ActiveStopPath::Global, true)
         } else if relay.fresh_at(now_ms) {
@@ -33,13 +34,13 @@ impl Supervisor {
             heartbeat_fresh,
             stop_path,
             stopped_by,
-            global_failure: *self.global_failure.lock(),
+            global_failure,
         }
     }
 
     /// Whether side-effecting input may fire right now under `policy`.
     #[must_use]
     pub fn input_allowed(&self, policy: &StopPolicy) -> bool {
-        self.status().input_allowed(policy)
+        !self.is_suspended() && self.status().input_allowed(policy)
     }
 }

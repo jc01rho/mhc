@@ -26,6 +26,7 @@ fn display(scale: f64) -> DesktopDisplay {
 }
 fn window(x: i32, y: i32) -> DesktopWindow {
     DesktopWindow {
+        identity: None,
         id: "7".into(),
         title: "T".into(),
         app: "A".into(),
@@ -35,6 +36,7 @@ fn window(x: i32, y: i32) -> DesktopWindow {
         width: 400,
         height: 300,
         focused: false,
+        is_on_screen: None,
         elevated: None,
     }
 }
@@ -66,7 +68,7 @@ fn cap_scaling_adjusts_geometry() {
         max_height: Some(400),
         ..CaptureCaps::default()
     };
-    let image = apply_capture_caps(&image, &mut f, &caps).unwrap();
+    let image = apply_capture_caps(image, &mut f, &caps).unwrap();
     assert_eq!((image.width(), image.height()), (400, 300));
     assert_eq!(f.map_point(200.0, 100.0, None).unwrap(), (300.0, 150.0));
 }
@@ -78,7 +80,7 @@ fn uncapped_composite_over_max_composite_pixels_is_capture_failed() {
     let image = RgbaImage::new(20_000, 20_000);
     let mut geometry = FrameGeometry::identity_global();
     // When: no caps shrink it.
-    let error = apply_capture_caps(&image, &mut geometry, &CaptureCaps::default()).unwrap_err();
+    let error = apply_capture_caps(image, &mut geometry, &CaptureCaps::default()).unwrap_err();
     // Then
     assert_eq!(error.code, ErrorCode::CaptureFailed);
 }
@@ -121,4 +123,37 @@ fn pixels_only_frame_refuses_coordinate_input_and_hit_tests() {
         .unwrap_err()
         .message
         .contains("outside the last capture frame"));
+}
+
+#[test]
+fn a_window_frame_keeps_its_owner_follows_a_move_and_names_a_resize() {
+    // Given
+    let identity = crate::types::WindowIdentity {
+        window_number: "7".into(),
+        pid: 42,
+        process_start: Some(1_700_000_000),
+    };
+    let captured = DesktopWindow {
+        identity: Some(identity.clone()),
+        ..window(100, 50)
+    };
+    let frame = FrameGeometry::for_window(&captured, captured.width, captured.height);
+    let moved = window(300, 80);
+    let resized = DesktopWindow {
+        width: captured.width + 1,
+        ..moved.clone()
+    };
+    // When
+    let mapped = frame.map_point(10.0, 10.0, Some(&moved)).unwrap();
+    let refused = frame.map_point(10.0, 10.0, Some(&resized)).unwrap_err();
+    let outside = frame.map_point(-1.0, 10.0, Some(&moved)).unwrap_err();
+    // Then
+    assert_eq!(frame.identity(), Some(&identity));
+    assert_eq!(mapped, (310.0, 90.0));
+    let reason = |error: crate::error::DesktopError| error.report.and_then(|report| report.reason);
+    assert_eq!(refused.code, ErrorCode::InvalidCoordinateFrame);
+    assert_eq!(reason(refused).as_deref(), Some("resized"));
+    assert_eq!(reason(outside).as_deref(), Some("out_of_bounds"));
+    assert!(frame.check_size(&moved).is_ok());
+    assert!(frame.check_size(&resized).is_err());
 }

@@ -78,6 +78,7 @@ fn test_engine_error_code_mapping() {
             code: ErrorCode::PermissionDenied,
             hint: None,
             permission: None,
+            reason: None,
         })),
     }));
     assert_eq!(engine_error_code(&rpc_err), "PermissionDenied");

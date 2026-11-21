@@ -15,17 +15,26 @@ pub const ENGINE_METHODS: &[&str] = &[
     "engine.hello",
     "session.open",
     "session.close",
+    "control.grant",
+    "control.revoke",
+    "control.state",
     "capabilities",
     "displays",
     "windows",
     "capture",
+    "captureRegion",
+    "observe",
     "click",
     "moveMouse",
     "drag",
     "scroll",
     "typeText",
     "keyChord",
+    "holdKeys",
+    "holdMouse",
     "raiseWindow",
+    "menus.items",
+    "menus.select",
     "clipboard.read",
     "clipboard.write",
     "ax.snapshot",
@@ -40,6 +49,7 @@ pub const ENGINE_METHODS: &[&str] = &[
     "ax.setValue",
     "ax.focus",
     "ax.click",
+    "ax.typeText",
     "stopPath.start",
     "stopPath.status",
     "stopPath.heartbeat",
@@ -50,7 +60,8 @@ pub const ENGINE_METHODS: &[&str] = &[
 ];
 
 /// Every server-to-client notification, by wire name.
-pub const ENGINE_NOTIFICATIONS: &[&str] = &["audit", "stopPath.changed", "engine.log"];
+pub const ENGINE_NOTIFICATIONS: &[&str] =
+    &["audit", "stopPath.changed", "engine.log", "epoch.changed"];
 
 /// The frozen desktop error vocabulary mirrored from core `ErrorCode`.
 pub const ERROR_CODES: &[&str] = &[
@@ -82,4 +93,7 @@ pub const ERROR_CODES: &[&str] = &[
     "AxUnconfirmed",
     "SpaceUnsupported",
     "SpaceMoveDenied",
+    "AmbiguousTarget",
+    "CaptureConsentRequired",
+    "ProtectedProcess",
 ];

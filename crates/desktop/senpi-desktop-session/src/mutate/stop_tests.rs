@@ -20,9 +20,9 @@ use senpi_desktop_safety::{
 use serde_json::json;
 
 use super::{Mutation, INPUT_TRANSACTION};
-use crate::request::{Op, Response};
+use crate::request::Op;
 use crate::test_support::{
-    delivery, foreground_click_mutation, harness, op_names, two_windows, Harness,
+    delivery, foreground_click_mutation, grant_control, harness, op_names, two_windows, Harness,
 };
 use crate::worker::Worker;
 
@@ -46,6 +46,7 @@ fn press(worker: &mut Worker, keys: &[&str]) -> CoreResult<()> {
 
 fn chord_op(keys: &[&str], mode: &str) -> Op {
     Op::KeyChord(KeyChordParams {
+        force: false,
         target: "101".to_owned(),
         keys: keys.iter().map(|key| (*key).to_owned()).collect(),
         opts: delivery(mode),
@@ -139,7 +140,7 @@ fn keypress_admission_race_preserves_suspension_before_the_first_key() {
 }
 
 #[test]
-fn non_key_actions_preserve_liveness_and_cancellation_semantics() {
+fn a_dying_stop_path_stops_typing_before_cancellation_is_reported() {
     for cancelled in [false, true] {
         // Given: the stop path dies once the transaction has passed the gate
         // and captured the front window.
@@ -159,14 +160,14 @@ fn non_key_actions_preserve_liveness_and_cancellation_semantics() {
         });
         // When
         let reply = harness.worker.process(op, &probe);
-        // Then: only cancellation stops typing; a dying stop path does not.
-        let expected = if cancelled {
-            Err(ErrorCode::Cancelled)
-        } else {
-            Ok(Response::Unit)
-        };
-        assert_eq!(reply.map_err(|error| error.code), expected);
-        assert_eq!(op_names(&harness).contains(&"type"), !cancelled);
+        // Then: gajae typed the whole text as one op, so its parity test let a
+        // dying stop path through; typing here is per character, and no
+        // character may follow a stop path that stopped authorizing input.
+        assert_eq!(
+            reply.map_err(|error| error.code),
+            Err(ErrorCode::StopPathUnavailable)
+        );
+        assert!(!op_names(&harness).contains(&"type"));
     }
 }
 
@@ -174,6 +175,7 @@ fn non_key_actions_preserve_liveness_and_cancellation_semantics() {
 fn cancelled_before_transaction_admission_does_not_capture_or_restore() {
     // Given
     let mut harness = harness(&two_windows());
+    harness.process(grant_control("one")).expect("grants");
     // When
     let result = harness
         .worker
@@ -192,6 +194,7 @@ fn mutex_admission_observes_cancellation_without_capturing_cursor() {
     // Given: another transaction holds the lock; the waiter cancels on its
     // third look.
     let mut harness = harness(&two_windows());
+    harness.process(grant_control("one")).expect("grants");
     let polls = Cell::new(0_u32);
     let cancel_on_third_poll = || {
         polls.set(polls.get() + 1);
@@ -240,6 +243,7 @@ fn cancellation_after_capture_sends_no_input_and_restores_once() {
     for (mode, expected) in cases {
         // Given: the waiter gives up once the front window was captured.
         let mut harness: Harness = harness(&two_windows());
+        harness.process(grant_control("one")).expect("grants");
         let sink = harness.sink.clone();
         let captured = || sink.ops().contains(&SinkOp::QueryFrontWindow);
         // When

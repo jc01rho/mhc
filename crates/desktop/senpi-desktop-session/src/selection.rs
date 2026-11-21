@@ -85,6 +85,9 @@ fn platform_backend(options: &DesktopSessionOptions) -> CoreResult<Box<dyn Backe
         MacosCanaryMode::Session => CanaryMode::Session,
         MacosCanaryMode::Off => CanaryMode::Off,
     });
+    backend.set_show_cursor(options.show_cursor);
+    Backend::set_key_priming(&mut backend, options.macos_key_priming);
+    Backend::set_report_mode(&mut backend, options.report_mode);
     Ok(Box::new(backend))
 }
 
