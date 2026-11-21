@@ -37,6 +37,8 @@ pub fn omo_category_config_object_spec() -> ObjectSpec {
             optional("is_unstable_agent", boolean()),
             optional("disable", boolean()),
             optional("warn_unavailable", boolean()),
+            // mhc policy gate for omo#12239: only the builtin architect reads it.
+            optional("allow_edits", boolean()),
         ],
         strict: true,
         preprocess: Some(normalize_legacy_model_fields as PreprocessFn),

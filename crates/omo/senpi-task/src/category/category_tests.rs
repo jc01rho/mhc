@@ -523,6 +523,69 @@ fn anthropic_architect_description_prescribes_refusal_recovery() {
     assert!(architect().description.contains("reasoning yourself"));
 }
 
+/// omo#12239 behind mhc's policy gate: `allow_edits: true` ships the implementing, broad-debugging
+/// architect; without it the advisory-only consultant ships, and a user text still wins.
+#[test]
+fn architect_allow_edits_switches_the_shipped_wording_and_the_default_stays_advisory() {
+    let models = registry(vec![model("anthropic", "claude-fable-5")]);
+    let advisory = expect_resolved(resolve("architect", json!({}), &models));
+    assert_eq!(
+        advisory.spec.prompt_append.as_deref(),
+        Some(prompts::ARCHITECT_PROMPT_APPEND)
+    );
+    assert_eq!(
+        advisory.description.as_deref(),
+        Some(prompts::ARCHITECT_DESCRIPTION)
+    );
+
+    let implementing = expect_resolved(resolve(
+        "architect",
+        json!({ "categories": { "architect": { "allow_edits": true } } }),
+        &models,
+    ));
+    assert_eq!(
+        implementing.spec.prompt_append.as_deref(),
+        Some(prompts::ARCHITECT_IMPLEMENT_PROMPT_APPEND)
+    );
+    assert_eq!(
+        implementing.description.as_deref(),
+        Some(prompts::ARCHITECT_IMPLEMENT_DESCRIPTION)
+    );
+
+    let custom = expect_resolved(resolve(
+        "architect",
+        json!({ "categories": { "architect": {
+            "allow_edits": true, "description": "Custom lane", "prompt_append": "fixture-overlay"
+        } } }),
+        &models,
+    ));
+    assert_eq!(custom.description.as_deref(), Some("Custom lane"));
+    assert_eq!(
+        custom.spec.prompt_append,
+        Some(format!(
+            "{}\n\nfixture-overlay",
+            prompts::ARCHITECT_IMPLEMENT_PROMPT_APPEND
+        ))
+    );
+}
+
+#[test]
+fn architect_allow_edits_is_ignored_by_every_other_category() {
+    let models = registry(vec![model("anthropic", "claude-opus-4-7")]);
+    let config = json!({ "categories": { "ultrabrain": {
+        "model": "anthropic/claude-opus-4-7", "allow_edits": true
+    } } });
+    let resolved = expect_resolved(resolve("ultrabrain", config, &models));
+    assert_ne!(
+        resolved.spec.prompt_append.as_deref(),
+        Some(prompts::ARCHITECT_IMPLEMENT_PROMPT_APPEND)
+    );
+    assert_ne!(
+        resolved.description.as_deref(),
+        Some(prompts::ARCHITECT_IMPLEMENT_DESCRIPTION)
+    );
+}
+
 #[test]
 fn anthropic_architect_requires_fable_at_xhigh() {
     assert_eq!(

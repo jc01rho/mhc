@@ -62,6 +62,23 @@ fn given_disabled_category_when_listed_then_it_is_omitted() {
 }
 
 #[test]
+fn given_architect_allow_edits_when_listed_then_the_implementing_description_is_advertised() {
+    let describe = |config: serde_json::Value| {
+        list_task_categories(&config)
+            .into_iter()
+            .find(|entry| entry.name == "architect")
+            .and_then(|entry| entry.description)
+            .expect("architect listed with a description")
+    };
+
+    let advisory = describe(json!({ "categories": {} }));
+    let implementing = describe(json!({ "categories": { "architect": { "allow_edits": true } } }));
+
+    assert!(advisory.contains("propose designs rather than implement"));
+    assert!(implementing.contains("Implements the change when the task needs it"));
+}
+
+#[test]
 fn given_loaded_agent_definitions_when_listed_then_names_and_descriptions_surface_disabled_excluded()
  {
     let mut plan_reviewer = AgentDefinition::named("plan-reviewer");

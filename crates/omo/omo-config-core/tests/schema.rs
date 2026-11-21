@@ -105,6 +105,16 @@ fn category_preserves_a_boolean_warn_unavailable_override() {
 }
 
 #[test]
+fn category_preserves_the_allow_edits_policy_gate() {
+    let node = omo_config_core::omo_category_config_schema();
+    assert!(parsed(&node, json!({})).get("allow_edits").is_none());
+    let value = parsed(&node, json!({ "allow_edits": true }));
+    assert_eq!(value["allow_edits"], json!(true));
+    let reported = issues(&node, json!({ "allow_edits": "yes" }));
+    assert!(issue_paths(&reported).join(",").contains("allow_edits"));
+}
+
+#[test]
 fn category_rejects_a_non_boolean_warn_unavailable_at_the_field_path() {
     let node = omo_config_core::omo_category_config_schema();
     let reported = issues(&node, json!({ "warn_unavailable": "nope" }));

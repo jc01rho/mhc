@@ -96,6 +96,10 @@ pub fn list_task_categories(config: &Value) -> Vec<TaskCategoryInfo> {
             .and_then(|config| config.get("description"))
             .and_then(Value::as_str)
             .map(str::to_string)
+            .or_else(|| {
+                crate::category::architect_edits::description(&name, user_config)
+                    .map(str::to_string)
+            })
             .or_else(|| builtin_description(&name));
         let annotated = if user_config.is_none() {
             with_gate_annotation(&name, description)
