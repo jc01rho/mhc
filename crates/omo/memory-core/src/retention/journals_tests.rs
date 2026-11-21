@@ -92,8 +92,12 @@ fn a_fully_reflected_journal_idle_past_retention_loses_only_its_transcript_and_i
     assert_eq!(state["reflected_completed_steps"], 1);
     assert!(state.get("reflected_through_byte_offset").is_none());
 
+    let wall_clock_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after the epoch")
+        .as_millis() as u64;
     let sweep =
-        sweep_empty_transcript_journals(&paths.transcripts, (NOW + 60_000) as u64, 0, &|_| false)
+        sweep_empty_transcript_journals(&paths.transcripts, wall_clock_ms + 60_000, 0, &|_| false)
             .expect("sweep");
     assert!(sweep.removed.is_empty());
     assert_eq!(sweep.kept[&EmptyJournalKeepReason::StateContent], 1);

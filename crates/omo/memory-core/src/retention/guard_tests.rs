@@ -50,7 +50,14 @@ fn mint(paths: &MemoryIdentityPaths, run_id: &str, high_water: u64) {
 fn a_pass_that_recorded_high_water_forty_keeps_forty_one_recorded_by_a_mint() {
     let id = identity();
     let paths = &id.paths;
-    reflection_run(paths, "reflection-run-1", RunShape::default());
+    reflection_run(
+        paths,
+        "reflection-run-1",
+        RunShape {
+            finished_at: Some(days_ago(10.0)),
+            ..RunShape::default()
+        },
+    );
     reflection_run(
         paths,
         "reflection-run-40",
@@ -110,7 +117,14 @@ fn a_pass_that_recorded_high_water_forty_keeps_forty_one_recorded_by_a_mint() {
 fn a_mint_holding_the_scheduler_lock_keeps_every_reflection_store_as_scheduler_busy() {
     let id = identity();
     let paths = &id.paths;
-    reflection_run(paths, "reflection-run-1", RunShape::default());
+    reflection_run(
+        paths,
+        "reflection-run-1",
+        RunShape {
+            finished_at: Some(days_ago(10.0)),
+            ..RunShape::default()
+        },
+    );
     reflection_run(
         paths,
         "reflection-run-5",

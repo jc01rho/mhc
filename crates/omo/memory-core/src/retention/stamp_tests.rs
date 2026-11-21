@@ -15,6 +15,7 @@ fn cursor(store: &str, last_name: Option<&str>) -> RetentionCursor {
 fn a_store_cursor_round_trips_through_the_runtime_stamp_file() {
     let id = identity();
     let runtime = &id.paths.runtime;
+    std::fs::create_dir_all(runtime).expect("runtime dir");
     let points = RetentionResumePoints {
         cursor: Some(cursor("journals", Some("s-05"))),
         ..RetentionResumePoints::default()
@@ -34,6 +35,7 @@ fn a_store_cursor_round_trips_through_the_runtime_stamp_file() {
 fn a_cursor_without_a_last_name_round_trips_as_a_store_only_resume_point() {
     let id = identity();
     let runtime = &id.paths.runtime;
+    std::fs::create_dir_all(runtime).expect("runtime dir");
     let points = RetentionResumePoints {
         cursor: Some(cursor("runs", None)),
         ..RetentionResumePoints::default()
@@ -52,6 +54,7 @@ fn a_cursor_without_a_last_name_round_trips_as_a_store_only_resume_point() {
 fn clearing_the_cursor_removes_the_file_and_leaves_nothing_pending() {
     let id = identity();
     let runtime = &id.paths.runtime;
+    std::fs::create_dir_all(runtime).expect("runtime dir");
     let points = RetentionResumePoints {
         cursor: Some(cursor("journals", Some("s-05"))),
         ..RetentionResumePoints::default()
@@ -87,6 +90,7 @@ fn an_unreadable_stamp_file_reads_as_no_resume_point() {
 fn a_cap_resume_point_round_trips_and_a_stalled_one_is_not_pending() {
     let id = identity();
     let runtime = &id.paths.runtime;
+    std::fs::create_dir_all(runtime).expect("runtime dir");
     let cap = RuntimeCapCursor {
         tier: "sidecars".to_string(),
         clock: NOW,
