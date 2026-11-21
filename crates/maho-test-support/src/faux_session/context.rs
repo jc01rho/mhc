@@ -81,6 +81,39 @@ impl ModelRegistry for Registry {
 struct HeadlessUi;
 
 impl ExtensionUi for HeadlessUi {
+    fn supports_secret_input(&self) -> bool {
+        true
+    }
+    fn input_secret<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        opts: ExtensionUiDialogOptions,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        Option<String>,
+                        maho_ext_api::secret_input::SecretInputUnavailableError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            if opts.signal.as_ref().is_some_and(AbortSignal::is_aborted) {
+                return Ok(None);
+            }
+            if opts.secret {
+                return Err(
+                    maho_ext_api::secret_input::SecretInputUnavailableError::new(
+                        maho_ext_api::secret_input::SecretInputUnavailableReason::Headless,
+                    ),
+                );
+            }
+            Ok(None)
+        })
+    }
     fn select<'a>(
         &'a self,
         _: &'a str,

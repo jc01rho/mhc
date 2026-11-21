@@ -67,6 +67,8 @@ mod runtime35_transfer;
 mod runtime35_viewport;
 #[path = "runtime35_widget_clock.rs"]
 mod runtime35_widget_clock;
+#[path = "secret_input.rs"]
+mod secret_input;
 #[cfg(unix)]
 #[path = "session_control_endpoint.rs"]
 mod session_control_endpoint;

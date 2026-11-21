@@ -6,8 +6,45 @@ use std::sync::Arc;
 
 struct DialogUi {
     answer: Option<String>,
+    supports_secret: bool,
+    recorded_secret: std::sync::Mutex<Vec<bool>>,
+    refuse_secret: bool,
 }
 impl ExtensionUi for DialogUi {
+    fn supports_secret_input(&self) -> bool {
+        self.supports_secret
+    }
+    fn input_secret<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        opts: ExtensionUiDialogOptions,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        Option<String>,
+                        maho_ext_api::secret_input::SecretInputUnavailableError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        self.recorded_secret.lock().expect("lock").push(opts.secret);
+        let refuse = self.refuse_secret;
+        let answer = self.answer.clone();
+        Box::pin(async move {
+            if refuse {
+                Err(
+                    maho_ext_api::secret_input::SecretInputUnavailableError::new(
+                        maho_ext_api::secret_input::SecretInputUnavailableReason::ClientUnsupported,
+                    ),
+                )
+            } else {
+                Ok(answer)
+            }
+        })
+    }
     fn select<'a>(
         &'a self,
         _: &'a str,
@@ -28,8 +65,9 @@ impl ExtensionUi for DialogUi {
         &'a self,
         _: &'a str,
         _: Option<&'a str>,
-        _: ExtensionUiDialogOptions,
+        opts: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, Option<String>> {
+        self.recorded_secret.lock().expect("lock").push(opts.secret);
         Box::pin(async { self.answer.clone() })
     }
     fn notify(&self, _: &str, _: NotificationType) {
@@ -74,6 +112,9 @@ fn interaction(answer: Option<&str>, provider: Option<&str>) -> ExtensionLoginIn
     ExtensionLoginInteraction::new(
         Arc::new(DialogUi {
             answer: answer.map(str::to_owned),
+            supports_secret: false,
+            recorded_secret: Default::default(),
+            refuse_secret: false,
         }),
         ExtensionMode::Rpc,
         "Test".into(),
@@ -137,4 +178,66 @@ fn reissuing_provider_login_cancels_previous_only() {
     assert!(previous.signal().expect("signal").aborted());
     assert!(!unrelated.signal().expect("signal").aborted());
     assert!(!current.signal().expect("signal").aborted());
+}
+
+#[tokio::test]
+async fn secret_prompt_uses_secret_option_only_when_ui_supports_it() {
+    for supported in [false, true] {
+        let ui = Arc::new(DialogUi {
+            answer: Some("synthetic".into()),
+            supports_secret: supported,
+            recorded_secret: Default::default(),
+            refuse_secret: false,
+        });
+        let login = ExtensionLoginInteraction::new(
+            ui.clone(),
+            ExtensionMode::Rpc,
+            "Test".into(),
+            None,
+            Arc::new(|_| panic!("unexpected browser")),
+        );
+        let answer = login
+            .prompt(AuthPrompt {
+                kind: AuthPromptKind::Secret {
+                    message: "Credential".into(),
+                    placeholder: Some("hint".into()),
+                },
+                signal: None,
+            })
+            .await
+            .expect("answer");
+        assert_eq!(answer, "synthetic");
+        assert_eq!(
+            ui.recorded_secret.lock().expect("lock").as_slice(),
+            &[supported]
+        );
+    }
+
+    let refusing_ui = Arc::new(DialogUi {
+        answer: None,
+        supports_secret: true,
+        recorded_secret: Default::default(),
+        refuse_secret: true,
+    });
+    let login = ExtensionLoginInteraction::new(
+        refusing_ui,
+        ExtensionMode::Rpc,
+        "Test".into(),
+        None,
+        Arc::new(|_| panic!("unexpected browser")),
+    );
+    let err = login
+        .prompt(AuthPrompt {
+            kind: AuthPromptKind::Secret {
+                message: "Credential".into(),
+                placeholder: None,
+            },
+            signal: None,
+        })
+        .await
+        .expect_err("refusal");
+    assert!(
+        err.to_string()
+            .contains("use the TUI or the host's settings route")
+    );
 }

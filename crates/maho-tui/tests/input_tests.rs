@@ -705,3 +705,103 @@ fn cursor_movement_starts_new_undo_unit() {
     input.handle_input("\x1b[45;5u"); // Ctrl+- (undo)
     assert_eq!(input.get_value(), "");
 }
+
+#[test]
+fn preserves_ordinary_input_state_and_callbacks_across_container_rebuilds() {
+    use maho_tui::tui::Container;
+
+    for use_clear in [true, false] {
+        let mut container = Container::new();
+        let input = Rc::new(RefCell::new(Input::new(InputOptions::default())));
+        let escaped = Rc::new(RefCell::new(0usize));
+        let submitted = Rc::new(RefCell::new(None::<String>));
+        {
+            let mut guard = input.borrow_mut();
+            let escaped_ref = Rc::clone(&escaped);
+            guard.on_escape = Some(Box::new(move || *escaped_ref.borrow_mut() += 1));
+            let submitted_ref = Rc::clone(&submitted);
+            guard.on_submit = Some(Box::new(move |value| {
+                *submitted_ref.borrow_mut() = Some(value.to_string());
+            }));
+            guard.handle_input("abc");
+            guard.handle_input("\x1b[D");
+            guard.handle_input("\x0b");
+        }
+        let child: Rc<RefCell<dyn Component>> = input.clone();
+        container.add_child(Rc::clone(&child));
+        if use_clear {
+            container.clear();
+        } else {
+            container.remove_child(&child);
+        }
+        container.add_child(Rc::clone(&child));
+
+        {
+            let mut guard = input.borrow_mut();
+            assert_eq!(guard.get_value(), "ab");
+            guard.handle_input("\x1b");
+            assert_eq!(*escaped.borrow(), 1);
+            guard.handle_input("\x1f");
+            assert_eq!(guard.get_value(), "abc");
+            guard.handle_input("X");
+            assert_eq!(guard.get_value(), "abXc");
+            guard.handle_input("\x19");
+            assert_eq!(guard.get_value(), "abXcc");
+            guard.handle_input("\r");
+            assert_eq!(submitted.borrow().as_deref(), Some("abXcc"));
+        }
+    }
+}
+
+#[test]
+fn scrubs_secret_editing_state_and_callbacks_on_container_dispose_and_masks_display() {
+    use maho_tui::tui::Container;
+
+    let mut container = Container::new();
+    let invalid_calls = Rc::new(RefCell::new(0usize));
+    let invalid_ref = Rc::clone(&invalid_calls);
+    let callback_calls = Rc::new(RefCell::new(0usize));
+    let escape_ref = Rc::clone(&callback_calls);
+    let submit_ref = Rc::clone(&callback_calls);
+
+    let input = Rc::new(RefCell::new(Input::new(InputOptions {
+        secret: true,
+        on_invalid_input: Some(Rc::new(move || *invalid_ref.borrow_mut() += 1)),
+        ..Default::default()
+    })));
+    {
+        let mut guard = input.borrow_mut();
+        guard.on_escape = Some(Box::new(move || *escape_ref.borrow_mut() += 1));
+        guard.on_submit = Some(Box::new(move |_| *submit_ref.borrow_mut() += 1));
+        guard.handle_input("synthetic-secret");
+        let rendered = strip_terminal_sequences(&guard.render(40).join("\n"));
+        assert!(!rendered.contains("synthetic-secret"));
+        assert!(rendered.contains("****************"));
+
+        guard.handle_input("\x1b[200~bad\nline\x1b[201~");
+        assert!(*invalid_calls.borrow() >= 1);
+        assert_eq!(guard.get_value(), "synthetic-secret");
+
+        guard.handle_input("\x01");
+        guard.handle_input("\x0b");
+        guard.handle_input("private");
+        guard.handle_input("\x1b[200~unfinished");
+    }
+
+    container.add_child(input.clone());
+    container.dispose();
+
+    let mut guard = input.borrow_mut();
+    assert_eq!(guard.get_value(), "");
+    guard.handle_input("\x1f");
+    guard.handle_input("\x19");
+    guard.handle_input("\x1b[201~");
+    assert_eq!(guard.get_value(), "");
+    guard.handle_input("\x1b");
+    guard.handle_input("\r");
+    assert_eq!(*callback_calls.borrow(), 0);
+    guard.handle_input("x");
+    guard.handle_input("\x1b[D");
+    guard.handle_input("y");
+    assert_eq!(guard.get_value(), "yx");
+}

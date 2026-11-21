@@ -962,6 +962,7 @@ pub struct InteractiveMode {
     pub extension_ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
     ui_requests: tokio::sync::mpsc::UnboundedReceiver<crate::interactive_extension_ui::UiRequest>,
     ui_dialog: Option<Box<dyn Component>>,
+    secret_input_active: bool,
     /// senpi `CountdownTimer` of the mounted extension dialog: the next 1 s deadline and its tick.
     dialog_countdown: Option<(f64, Box<dyn FnMut() -> bool>)>,
     login_dialog: Option<crate::components::login_dialog::LoginDialogComponent>,
@@ -3120,6 +3121,7 @@ impl InteractiveMode {
             extension_ui,
             ui_requests,
             ui_dialog: None,
+            secret_input_active: false,
             login_dialog: None,
             ui_reply: Rc::new(RefCell::new(None)),
             header_container: Container::new(),
@@ -5524,6 +5526,9 @@ impl InteractiveMode {
     /// senpi's extension `onTerminalInput` listeners (`ui.addInputListener`), which run for all
     /// input before focus delivery whichever component is focused.
     pub fn filter_terminal_input(&self, data: &str) -> Option<String> {
+        if self.secret_input_active {
+            return Some(data.to_owned());
+        }
         let listeners = self
             .extension_ui
             .terminal_input
@@ -12034,6 +12039,9 @@ impl InteractiveMode {
                 self.login_dialog = None;
                 self.pending_auth_prompt = None;
                 self.pending_auth_select = None;
+                if self.secret_input_active {
+                    self.clear_ui_dialog();
+                }
                 match result {
                     Ok(()) => {
                         self.complete_provider_authentication(
@@ -12208,6 +12216,51 @@ impl InteractiveMode {
                 ));
                 self.pending_auth_select = Some((answer, reply));
             }
+            AuthPromptKind::Secret { message, .. } => {
+                let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
+                let (close, receiver) = tokio::sync::oneshot::channel();
+                self.clear_ui_dialog();
+                self.local_dialog_reply = Some(receiver);
+                *self.ui_reply.borrow_mut() = Some(close);
+                let submit_tx = Rc::new(RefCell::new(Some(answer_tx)));
+                let cancel_tx = submit_tx.clone();
+                let submit_closed = self.ui_reply.clone();
+                let cancel_closed = self.ui_reply.clone();
+                let component = Rc::new(RefCell::new(
+                    crate::components::extension_input::ExtensionInputComponent::new(
+                        &self.theme,
+                        &message,
+                        Box::new(move |value| {
+                            if let Some(tx) = submit_tx.borrow_mut().take() {
+                                let _ = tx.send(value.to_owned());
+                            }
+                            submit_closed.borrow_mut().take();
+                        }),
+                        Box::new(move || {
+                            cancel_tx.borrow_mut().take();
+                            cancel_closed.borrow_mut().take();
+                        }),
+                        crate::components::extension_input::ExtensionInputOptions {
+                            has_tui: true,
+                            secret: true,
+                            ..Default::default()
+                        },
+                    ),
+                ));
+                maho_tui::tui::Focusable::set_focused(&mut *component.borrow_mut(), true);
+                self.secret_input_active = true;
+                let countdown = Rc::downgrade(&component);
+                self.mount_counting_dialog(
+                    Box::new(SharedDialog(component)),
+                    Box::new(move || {
+                        countdown
+                            .upgrade()
+                            .map(|component| component.borrow_mut().tick())
+                            .is_some()
+                    }),
+                );
+                self.pending_auth_prompt = Some((answer_rx, reply));
+            }
             kind => {
                 let Some(dialog) = self.login_dialog.as_mut() else {
                     let _ = reply.send(Err(crate::login_outcome::LOGIN_CANCELLED_NOTICE.into()));
@@ -12220,13 +12273,9 @@ impl InteractiveMode {
                     AuthPromptKind::Text {
                         message,
                         placeholder,
-                    }
-                    | AuthPromptKind::Secret {
-                        message,
-                        placeholder,
                     } => dialog.show_prompt(&message, placeholder.as_deref()),
-                    AuthPromptKind::Select { .. } => {
-                        unreachable!("select prompts are handled above")
+                    AuthPromptKind::Select { .. } | AuthPromptKind::Secret { .. } => {
+                        unreachable!("select and secret prompts are handled above")
                     }
                 };
                 self.pending_auth_prompt = Some((receiver, reply));
@@ -12394,6 +12443,20 @@ impl InteractiveMode {
                 ));
             })),
         }
+    }
+
+    fn clear_ui_dialog(&mut self) {
+        self.secret_input_active = false;
+        self.dialog_countdown = None;
+        self.ui_reply.borrow_mut().take();
+        if let Some(mut dialog) = self.ui_dialog.take() {
+            dialog.dispose();
+        }
+        self.local_dialog_reply = None;
+    }
+
+    pub fn hide_extension_input(&mut self) {
+        self.clear_ui_dialog();
     }
 
     /// Mount an extension dialog whose countdown `tick` the mode drives once per second.
@@ -12783,10 +12846,7 @@ impl InteractiveMode {
             .as_ref()
             .is_some_and(tokio::sync::oneshot::Sender::is_closed);
         if closed {
-            self.ui_reply.borrow_mut().take();
-            if let Some(mut dialog) = self.ui_dialog.take() {
-                dialog.dispose();
-            }
+            self.clear_ui_dialog();
         }
         let result = self.custom_ui_result.borrow_mut().take();
         if let Some(result) = result {
@@ -12817,6 +12877,9 @@ impl InteractiveMode {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|key, _| HOST_STATUS_KEYS.contains(&key.as_str()));
         use crate::interactive_extension_ui::UiRequest;
+        if self.secret_input_active {
+            self.clear_ui_dialog();
+        }
         self.handle_ui_request(UiRequest::SideColumn(None));
         self.footer = None;
         self.set_extension_header(None);
@@ -13503,7 +13566,11 @@ impl InteractiveMode {
                 timeout_ms,
                 reply,
                 private,
+                secret,
             } => {
+                if self.secret_input_active {
+                    self.clear_ui_dialog();
+                }
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone();
                 let cancelled = self.ui_reply.clone();
@@ -13529,10 +13596,15 @@ impl InteractiveMode {
                         crate::components::extension_input::ExtensionInputOptions {
                             has_tui: true,
                             timeout_ms,
+                            secret,
                             ..Default::default()
                         },
                     ),
                 ));
+                if secret {
+                    maho_tui::tui::Focusable::set_focused(&mut *component.borrow_mut(), true);
+                    self.secret_input_active = true;
+                }
                 let countdown = Rc::downgrade(&component);
                 self.mount_counting_dialog(
                     Box::new(SharedDialog(component)),
@@ -14636,8 +14708,8 @@ impl InteractiveMode {
                 break;
             }
             if self.ui_reply.borrow().is_none() {
-                self.ui_dialog = None;
-                self.dialog_countdown = None;
+                self.clear_ui_dialog();
+                break;
             }
         }
         if let Some(widget) = &mut self.async_question_widget {
@@ -15409,6 +15481,7 @@ impl Component for InteractiveMode {
         self.editor.invalidate();
     }
     fn dispose(&mut self) {
+        self.clear_ui_dialog();
         if let Some(detach) = self.detach_mcp_grant_presentation.take() {
             detach();
         }
@@ -15730,8 +15803,7 @@ impl InteractiveMode {
                 self.terminal_request = Some(TerminalRequest::ExternalEditor);
             }
             if self.ui_reply.borrow().is_none() && self.custom_ui_reply.is_none() {
-                self.ui_dialog = None;
-                self.local_dialog_reply = None;
+                self.clear_ui_dialog();
             }
             self.drain_auth_ui_events();
             return;

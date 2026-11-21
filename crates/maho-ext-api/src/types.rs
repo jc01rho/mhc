@@ -1898,6 +1898,8 @@ impl WidgetPlacement {
 }
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionUiDialogOptions {
+    /// Collect a single-line secret without transcript, history, or replay exposure (senpi#5120).
+    pub secret: bool,
     /// Private local dialog: emits no generic blocked event or pending marker. Not an RPC field.
     pub ephemeral: bool,
     pub signal: Option<AbortSignal>,
@@ -1911,6 +1913,8 @@ pub struct ExtensionUiDialogOptions {
     /// actually on screen (senpi keys the callback by the dialog options object). Not an RPC field.
     pub presented: Option<DialogPresentedKey>,
 }
+/// Guarded input options alias matching senpi's `ExtensionUIInputOptions`.
+pub type ExtensionUiInputOptions = ExtensionUiDialogOptions;
 /// Identity of one dialog's options for the private MCP form presented mark.
 #[derive(Clone)]
 pub struct DialogPresentedKey(pub Arc<dyn std::any::Any + Send + Sync>);
@@ -2229,6 +2233,36 @@ pub struct CustomUiOptions {
     pub overlay_options: Option<JsonValue>,
 }
 pub trait ExtensionUi: Send + Sync {
+    /// Optional capability: host implements private secret collection and typed refusal (`secretInput`).
+    fn supports_secret_input(&self) -> bool {
+        false
+    }
+    /// Collect a private single-line secret or fail closed with [`crate::secret_input::SecretInputUnavailableError`].
+    fn input_secret<'a>(
+        &'a self,
+        title: &'a str,
+        placeholder: Option<&'a str>,
+        opts: ExtensionUiDialogOptions,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Option<String>,
+                        crate::secret_input::SecretInputUnavailableError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        if opts.secret && !self.supports_secret_input() {
+            return Box::pin(async {
+                Err(crate::secret_input::SecretInputUnavailableError::new(
+                    crate::secret_input::SecretInputUnavailableReason::ClientUnsupported,
+                ))
+            });
+        }
+        Box::pin(async move { Ok(self.input(title, placeholder, opts).await) })
+    }
     /// Optional footer capability; unsupported engines must not trigger a tree scan.
     fn supports_subagent_cost(&self) -> bool {
         false

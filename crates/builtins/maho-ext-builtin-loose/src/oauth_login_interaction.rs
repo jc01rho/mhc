@@ -140,10 +140,6 @@ impl AuthInteraction for ExtensionLoginInteraction {
                     message,
                     placeholder,
                 }
-                | AuthPromptKind::Secret {
-                    message,
-                    placeholder,
-                }
                 | AuthPromptKind::ManualCode {
                     message,
                     placeholder,
@@ -151,6 +147,22 @@ impl AuthInteraction for ExtensionLoginInteraction {
                     self.ui
                         .input(&message, placeholder.as_deref(), options)
                         .await
+                }
+                AuthPromptKind::Secret {
+                    message,
+                    placeholder,
+                } => {
+                    if self.ui.supports_secret_input() {
+                        let mut secret_options = options;
+                        secret_options.secret = true;
+                        self.ui
+                            .input_secret(&message, placeholder.as_deref(), secret_options)
+                            .await?
+                    } else {
+                        self.ui
+                            .input(&message, placeholder.as_deref(), options)
+                            .await
+                    }
                 }
             };
             if signal.aborted() {
