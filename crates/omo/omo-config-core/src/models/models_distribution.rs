@@ -60,6 +60,15 @@ pub struct ModelDistributor {
     cursors: Mutex<HashMap<String, usize>>,
 }
 
+// Identity, not cursor contents: two handles are equal only when they share one planner's cursors.
+impl PartialEq for ModelDistributor {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl Eq for ModelDistributor {}
+
 impl ModelDistributor {
     pub fn new() -> Self {
         Self::default()

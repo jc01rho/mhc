@@ -23,3 +23,7 @@ pub(crate) use resolver::{
 #[cfg(test)]
 #[path = "category_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "distribution_tests.rs"]
+mod distribution_tests;

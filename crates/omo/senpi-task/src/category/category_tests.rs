@@ -360,6 +360,7 @@ fn resolve_reaches_system_default() {
     let models = registry(vec![model("local", "system-default")]);
     let options = ResolveCategoryOptions {
         system_default_model: Some("local/system-default".into()),
+        ..ResolveCategoryOptions::default()
     };
     let resolved =
         expect_resolved(resolve_category("quick", &json!({}), &models, &options).expect("resolve"));

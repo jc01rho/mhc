@@ -1,5 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
+use omo_config_core::{MODELS_DISTRIBUTION_ROUND_ROBIN, ModelDistributor};
 use serde_json::{Map, Value};
 
 use super::builtins::{
@@ -24,6 +26,9 @@ use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolveCategoryOptions {
     pub system_default_model: Option<String>,
+    /// The spawn planner's distributor (omo #11905). Reads leave it unset, so introspection never
+    /// advances a round-robin rotation.
+    pub distribute_models: Option<Arc<ModelDistributor>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,6 +341,27 @@ fn prompt_append_for_category(
     }
 }
 
+/// `{ ...merged, models: distributeModels("category:<name>", merged.models, merged.models_distribution) }`.
+fn distribute_category_models(
+    config: Value,
+    category_name: &str,
+    distributor: Option<&ModelDistributor>,
+) -> Value {
+    let (Some(distributor), Some(models)) =
+        (distributor, config.get("models").and_then(Value::as_array))
+    else {
+        return config;
+    };
+    let distributed = distributor.distribute(
+        &format!("category:{category_name}"),
+        models,
+        config.get("models_distribution").and_then(Value::as_str),
+    );
+    let mut config = config;
+    config["models"] = Value::Array(distributed);
+    config
+}
+
 fn merge_config(builtin: Option<Value>, user: Option<&Value>) -> Value {
     let mut merged = builtin
         .and_then(|builtin| builtin.as_object().cloned())
@@ -396,9 +422,13 @@ pub fn resolve_category(
         });
     }
     let builtin_model = builtin.map(|definition| definition.config.model.to_string());
-    let config = merge_config(
-        builtin.map(|definition| definition.config.to_value()),
-        user_config,
+    let config = distribute_category_models(
+        merge_config(
+            builtin.map(|definition| definition.config.to_value()),
+            user_config,
+        ),
+        category_name,
+        options.distribute_models.as_deref(),
     );
     let unavailable = |attempted_model: Option<String>,
                        available_models: &[String],
@@ -574,7 +604,14 @@ pub fn resolve_category(
         })
     });
     let mut candidates = category_model_candidates(&config);
-    candidates.extend(chain_candidates);
+    // A round-robin canonical chain already wraps through every configured model; builtin rungs
+    // would let a rotated start fall outside the configured chain.
+    let round_robin_chain = canonical_chain.is_some()
+        && config.get("models_distribution").and_then(Value::as_str)
+            == Some(MODELS_DISTRIBUTION_ROUND_ROBIN);
+    if !round_robin_chain {
+        candidates.extend(chain_candidates);
+    }
     let runtime_chain = build_runtime_model_chain(&BuildModelChainOptions {
         candidates,
         selected_model: &selection.selected_model,
