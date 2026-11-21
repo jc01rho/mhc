@@ -330,3 +330,7 @@ fn remove(path: &Path, warn: Option<WarnFn<'_>>) -> bool {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sidecars_tests.rs"]
+mod tests;

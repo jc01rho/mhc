@@ -139,3 +139,7 @@ pub fn clear_retention_cursor(runtime_dir: &Path) -> io::Result<()> {
         _ => Ok(()),
     }
 }
+
+#[cfg(test)]
+#[path = "stamp_tests.rs"]
+mod tests;

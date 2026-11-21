@@ -268,3 +268,7 @@ pub fn remove_tombstone(path: &Path, warn: Option<WarnFn<'_>>) -> bool {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "reflection_runs_tests.rs"]
+mod tests;

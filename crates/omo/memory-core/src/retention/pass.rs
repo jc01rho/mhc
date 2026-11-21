@@ -344,3 +344,7 @@ pub fn summarize_runtime_retention(report: &RuntimeRetentionReport) -> Retention
         }),
     }
 }
+
+#[cfg(test)]
+#[path = "pass_tests.rs"]
+mod tests;
