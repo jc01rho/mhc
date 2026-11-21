@@ -87,6 +87,16 @@ fn builtin_kimi_fallback_entries_use_kimi_k3_instead_of_retired_k2_ids() {
 }
 
 #[test]
+fn builtin_fallback_chains_route_to_no_claude_fable_model() {
+    let fable: Vec<_> = all_entries()
+        .into_iter()
+        .filter(|entry| entry.model.contains("fable"))
+        .collect();
+
+    assert_eq!(fable, Vec::<&FallbackEntry>::new());
+}
+
+#[test]
 fn builtin_fallback_chains_contain_no_gpt_5_5_entries() {
     let retired: Vec<_> = all_entries()
         .into_iter()

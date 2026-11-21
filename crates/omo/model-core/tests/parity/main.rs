@@ -8,6 +8,7 @@ mod context_overflow;
 mod fable_55_launch;
 mod fable_55_recognition;
 mod gpt_5_6_copilot_resolution;
+mod gpt_6_2;
 mod luna_deepseek_chain_policy;
 mod model_availability;
 mod model_capabilities;

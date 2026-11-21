@@ -17,6 +17,8 @@ fn keeps_luna_fast_aligned_with_its_bundled_canonical_model() {
         "gpt-6-sol-fast",
         "gpt-6.1-sol",
         "gpt-6.1-sol-fast",
+        "gpt-6.2-astra",
+        "gpt-6.2-sol",
         "kimi-k3.1-pro",
     ] {
         let issues =

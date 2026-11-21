@@ -4,8 +4,6 @@ use std::sync::LazyLock;
 
 use indexmap::IndexMap;
 
-use crate::fable_55_launch::FABLE_55_LAUNCH_ID;
-use crate::fable_55_launch::launch_rungs;
 use crate::model_requirement_types::FallbackEntry;
 use crate::model_requirement_types::ModelRequirement;
 
@@ -29,21 +27,11 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
             (
                 "visual-engineering",
                 ModelRequirement {
-                    fallback_chain: launch_rungs(vec![
+                    fallback_chain: vec![
                         entry(
                             &["google", "google-vertex", "opencode"],
                             "gemini-4-argon",
                             Some("low"),
-                        ),
-                        entry(
-                            &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            FABLE_55_LAUNCH_ID,
-                            Some("max"),
-                        ),
-                        entry(
-                            &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            "claude-fable-5-1",
-                            Some("max"),
                         ),
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
@@ -56,7 +44,7 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                             Some("max"),
                         ),
                         entry(&["opencode"], "kimi-k3", Some("max")),
-                    ]),
+                    ],
                     ..ModelRequirement::default()
                 },
             ),
@@ -64,12 +52,24 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                 "ultrabrain",
                 ModelRequirement {
                     fallback_chain: vec![
+                        // Each GPT-6.2 rung keeps GPT-6 Astra right behind it, so a registry without 6.2
+                        // resolves what it did before; Copilot does not serve 6.2 and keeps its GPT-6 Astra rung.
+                        entry(
+                            &["openai", "chatgpt-subscription"],
+                            "gpt-6.2-astra",
+                            Some("max"),
+                        ),
                         entry(
                             &["openai", "chatgpt-subscription"],
                             "gpt-6-astra",
                             Some("max"),
                         ),
                         entry(&["github-copilot"], "gpt-6-astra", Some("max")),
+                        entry(
+                            &["openai", "chatgpt-subscription", "opencode"],
+                            "gpt-6.2-astra",
+                            Some("max"),
+                        ),
                         entry(
                             &["openai", "chatgpt-subscription", "opencode"],
                             "gpt-6-astra",
@@ -94,6 +94,19 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                 "deep-low",
                 ModelRequirement {
                     fallback_chain: vec![
+                        // GPT-6.2 Sol leads at the same medium effort on the OpenAI lanes (plain, then the Fast
+                        // tier), then GPT-6.1 Sol for a registry without 6.2. GPT-5.6 Sol stays behind them so
+                        // Copilot, OpenCode Zen and a registry without either still resolve the lane.
+                        entry(
+                            &["openai", "chatgpt-subscription"],
+                            "gpt-6.2-sol",
+                            Some("medium"),
+                        ),
+                        entry(
+                            &["openai", "chatgpt-subscription"],
+                            "gpt-6.2-sol-fast",
+                            Some("medium"),
+                        ),
                         entry(
                             &["openai", "chatgpt-subscription"],
                             "gpt-6.1-sol",
@@ -126,33 +139,30 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
             (
                 "deep-high",
                 ModelRequirement {
-                    fallback_chain: vec![entry(
-                        &[
-                            "openai",
-                            "chatgpt-subscription",
-                            "github-copilot",
-                            "opencode",
-                        ],
-                        "gpt-6-astra",
-                        Some("high"),
-                    )],
+                    fallback_chain: vec![
+                        entry(
+                            &["openai", "chatgpt-subscription", "opencode"],
+                            "gpt-6.2-astra",
+                            Some("high"),
+                        ),
+                        entry(
+                            &[
+                                "openai",
+                                "chatgpt-subscription",
+                                "github-copilot",
+                                "opencode",
+                            ],
+                            "gpt-6-astra",
+                            Some("high"),
+                        ),
+                    ],
                     ..ModelRequirement::default()
                 },
             ),
             (
                 "artistry",
                 ModelRequirement {
-                    fallback_chain: launch_rungs(vec![
-                        entry(
-                            &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            FABLE_55_LAUNCH_ID,
-                            Some("max"),
-                        ),
-                        entry(
-                            &["anthropic", "anthropic-api", "github-copilot", "opencode"],
-                            "claude-fable-5-1",
-                            Some("max"),
-                        ),
+                    fallback_chain: vec![
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                             "claude-opus-5-5",
@@ -164,7 +174,7 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                             Some("max"),
                         ),
                         entry(&["opencode"], "kimi-k3", Some("max")),
-                    ]),
+                    ],
                     ..ModelRequirement::default()
                 },
             ),
@@ -217,6 +227,14 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                             Some("xhigh"),
                         ),
                         entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("high")),
+                        // GPT-6.2 Sol is the current GPT default, served only by the OpenAI lanes; GPT-6.1 Sol and
+                        // then GPT-5.6 Sol stay behind it so Copilot, OpenCode Zen and an older registry still
+                        // resolve the lane.
+                        entry(
+                            &["openai", "chatgpt-subscription"],
+                            "gpt-6.2-sol",
+                            Some("medium"),
+                        ),
                         entry(
                             &["openai", "chatgpt-subscription"],
                             "gpt-6.1-sol",
@@ -342,9 +360,9 @@ mod tests {
     }
 
     #[test]
-    fn unspecified_low_places_glm_before_both_sol_fallbacks() {
+    fn unspecified_low_places_glm_before_the_sol_fallbacks() {
         let chain = &CATEGORY_MODEL_REQUIREMENTS["unspecified-low"].fallback_chain;
-        assert_eq!(chain.len(), 10);
+        assert_eq!(chain.len(), 11);
         assert_eq!(
             chain[3],
             entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("high"))
@@ -353,12 +371,20 @@ mod tests {
             chain[4],
             entry(
                 &["openai", "chatgpt-subscription"],
-                "gpt-6.1-sol",
+                "gpt-6.2-sol",
                 Some("medium")
             )
         );
         assert_eq!(
             chain[5],
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.1-sol",
+                Some("medium")
+            )
+        );
+        assert_eq!(
+            chain[6],
             entry(
                 &[
                     "openai",

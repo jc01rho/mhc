@@ -159,6 +159,8 @@ fn normalizes_openai_gpt_5_6_fast_service_tier_aliases() {
         ("gpt-6-astra-fast", "gpt-6-astra"),
         ("gpt-6-sol-fast", "gpt-6-sol"),
         ("gpt-6.1-sol-fast", "gpt-6.1-sol"),
+        ("gpt-6.2-astra-fast", "gpt-6.2-astra"),
+        ("gpt-6.2-sol-fast", "gpt-6.2-sol"),
         ("gpt-6-luna-fast", "gpt-6-luna"),
     ] {
         assert_eq!(

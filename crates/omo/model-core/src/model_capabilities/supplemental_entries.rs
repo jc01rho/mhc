@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 
 use indexmap::IndexMap;
 
+use super::gpt_6_2_entries::GPT_6_2_MODEL_CAPABILITIES;
 use super::types::ModelCapabilitiesSnapshotEntry;
 use super::types::SnapshotLimit;
 use super::types::SnapshotModalities;
@@ -16,7 +17,8 @@ fn strings(values: &[&str]) -> Option<Vec<String>> {
 pub static SUPPLEMENTAL_MODEL_CAPABILITIES: LazyLock<
     IndexMap<String, ModelCapabilitiesSnapshotEntry>,
 > = LazyLock::new(|| {
-    IndexMap::from([
+    let mut entries = GPT_6_2_MODEL_CAPABILITIES.clone();
+    entries.extend([
         (FABLE_55_LAUNCH.id.clone(), FABLE_55_LAUNCH.clone()),
         (
             "kimi-k3".to_string(),
@@ -609,5 +611,6 @@ pub static SUPPLEMENTAL_MODEL_CAPABILITIES: LazyLock<
                 }),
             },
         ),
-    ])
+    ]);
+    entries
 });
