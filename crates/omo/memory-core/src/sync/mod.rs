@@ -4,6 +4,7 @@ pub mod account;
 pub mod canonical_json;
 pub mod canonical_json_serialize;
 pub mod canonical_json_types;
+pub mod contract_version;
 pub mod crypto;
 pub mod engine;
 pub mod genesis;
