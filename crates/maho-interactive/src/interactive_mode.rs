@@ -862,7 +862,11 @@ pub struct InteractiveModeOptions {
     /// this crate does not depend on maho-ext-mcp. Called per extension binding under
     /// `mcp_presenter_enforcement`.
     pub local_mcp_presenter: Option<LocalMcpPresenterFactory>,
+    pub resolve_account_pin: Option<AccountPinResolver>,
 }
+
+/// Resolves the active Anthropic subscription account pin (`session_id`, `cwd`) for the footer.
+pub type AccountPinResolver = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 
 /// Builds a binding's private-forms presenter: `(ui, session_id, lifetime, admit)`. `admit` runs once
 /// per presenter action.
@@ -1125,6 +1129,9 @@ pub struct InteractiveMode {
     /// no human admission.
     mcp_presenter_enforcement: bool,
     local_mcp_presenter: Option<LocalMcpPresenterFactory>,
+    resolve_account_pin: Option<AccountPinResolver>,
+    account_dirty: Arc<std::sync::atomic::AtomicBool>,
+    unsubscribe_provider_account_events: Option<Box<dyn FnOnce() + Send + Sync>>,
     /// The private form whose selector is mounted but not yet painted; marked presented at the next render.
     pending_mcp_form_presented: Option<maho_ext_api::DialogPresentedKey>,
     unsubscribe_security_notices: Option<Box<dyn FnOnce() + Send + 'static>>,
@@ -1402,6 +1409,15 @@ impl InteractiveMode {
     /// footer sources and UI intervals are polled, and a running time-driven element (working row,
     /// spinners, reveal pacing, dialogs, animations, transcript warm-up) repaints every frame.
     pub fn take_frame_rebuild(&mut self, now_ms: f64) -> bool {
+        if self
+            .account_dirty
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.frame_dirty = true;
+            if let Some(footer) = &mut self.footer {
+                footer.invalidate();
+            }
+        }
         if self.poll_footer_sources(now_ms) {
             self.frame_dirty = true;
         }
@@ -3002,6 +3018,13 @@ impl InteractiveMode {
                 ui.reset_before_session_invalidate();
             }
         })));
+        let account_dirty = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let account_flag = Arc::clone(&account_dirty);
+        let unsubscribe_provider_account_events = Some(
+            maho_core::subscribe_provider_account_events(Arc::new(move |_| {
+                account_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            })),
+        );
         Self {
             side_column_widget_bounds: None,
             side_column: None,
@@ -3009,6 +3032,9 @@ impl InteractiveMode {
             mcp_mrtr_presentation_lifetime: std::sync::Mutex::new(None),
             mcp_presenter_enforcement: options.mcp_presenter_enforcement,
             local_mcp_presenter: options.local_mcp_presenter,
+            resolve_account_pin: options.resolve_account_pin,
+            account_dirty,
+            unsubscribe_provider_account_events,
             pending_mcp_form_presented: None,
             unsubscribe_security_notices: None,
             lifecycle_status: crate::lifecycle_status::LifecycleStatus::new(),
@@ -3397,6 +3423,12 @@ impl InteractiveMode {
         self.with_remote_state(|state| state.cwd.clone())
             .flatten()
             .unwrap_or_else(|| self.session.cwd())
+    }
+
+    fn host_session_id(&self) -> String {
+        self.with_remote_state(|state| state.session_id.clone())
+            .flatten()
+            .unwrap_or_else(|| self.session.session_id())
     }
 
     fn host_model(&self) -> maho_ai::model::Model {
@@ -14227,6 +14259,34 @@ impl InteractiveMode {
             *self.footer_subscription_cache.borrow_mut() = Some((subscription_key, value));
             value
         });
+        let account_suffix = {
+            let session_id = self.host_session_id();
+            let cwd = self.host_cwd();
+            let pinned_account = if model.provider == "anthropic-subscription" {
+                self.resolve_account_pin
+                    .as_ref()
+                    .and_then(|resolve| resolve(&session_id, &cwd))
+            } else {
+                None
+            };
+            let pooled = self
+                .session
+                .model_registry()
+                .auth_storage
+                .get(&model.provider)
+                .and_then(|value| {
+                    serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value)
+                        .ok()
+                });
+            crate::components::footer::account_footer_suffix_with(
+                pooled.as_ref(),
+                &session_id,
+                crate::components::footer::AccountFooterOptions {
+                    pinned_account: pinned_account.as_deref(),
+                    now_ms: None,
+                },
+            )
+        };
         crate::components::footer::FooterSnapshot {
             cwd: self.host_cwd(),
             home: std::env::var("HOME").ok(),
@@ -14249,6 +14309,7 @@ impl InteractiveMode {
             thinking_level: Some(self.host_thinking_level().as_str().into()),
             subscription,
             provider_count: self.footer_data.available_provider_count(),
+            account_suffix,
             pending_model_id: self.host_pending_model_switch().map(|pending| pending.id),
             ..Default::default()
         }
@@ -15531,6 +15592,9 @@ impl Component for InteractiveMode {
         // senpi `shutdown`: the MRTR presentation lifetime ends with the terminal.
         self.end_mcp_mrtr_presentation();
         if let Some(unsubscribe) = self.unsubscribe_security_notices.take() {
+            unsubscribe();
+        }
+        if let Some(unsubscribe) = self.unsubscribe_provider_account_events.take() {
             unsubscribe();
         }
         // senpi `dispose`: retire the lifecycle subscription and clear its status without a frame.

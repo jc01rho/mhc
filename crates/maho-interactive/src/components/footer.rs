@@ -781,38 +781,162 @@ impl FooterComponent {
     }
 }
 
-pub fn account_footer_suffix(
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AccountFooterOptions<'a> {
+    pub pinned_account: Option<&'a str>,
+    pub now_ms: Option<f64>,
+}
+
+fn footer_account_label(slot: &maho_ai::auth::pool::slots::CredentialSlot) -> String {
+    truncate_to_width(
+        &maho_ai::auth::pool::slots::account_label(&slot.name, slot.display_name.as_deref()),
+        24,
+        "…",
+        false,
+    )
+}
+
+fn format_blocked_until(until_ms: f64) -> String {
+    let millis = if until_ms.is_finite() {
+        until_ms.round() as i64
+    } else {
+        0
+    };
+    match chrono::DateTime::from_timestamp_millis(millis) {
+        Some(dt) => dt.with_timezone(&chrono::Local).format("%H:%M").to_string(),
+        None => "00:00".to_owned(),
+    }
+}
+
+fn blocked_until_of(
+    credential: Option<&maho_ai::auth::pool::slots::PooledCredential>,
+    slot: &maho_ai::auth::pool::slots::CredentialSlot,
+) -> Option<f64> {
+    slot.extra
+        .get("blockedUntil")
+        .and_then(serde_json::Value::as_f64)
+        .or_else(|| {
+            credential
+                .and_then(|c| c.extra.get("slotState"))
+                .and_then(|states| states.get(&slot.name))
+                .and_then(|state| state.get("blockedUntil"))
+                .and_then(serde_json::Value::as_f64)
+        })
+}
+
+fn slot_hrw_hash(session_id: &str, name: &str) -> u64 {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{session_id}\0{name}").as_bytes());
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(bytes)
+}
+
+fn apply_account_order(
+    order: Option<&[String]>,
+    ranked: Vec<maho_ai::auth::pool::slots::CredentialSlot>,
+) -> Vec<maho_ai::auth::pool::slots::CredentialSlot> {
+    let Some(order) = order else {
+        return ranked;
+    };
+    let mut out = Vec::with_capacity(ranked.len());
+    let mut used = std::collections::HashSet::new();
+    for name in order {
+        if let Some(slot) = ranked.iter().find(|slot| &slot.name == name)
+            && used.insert(slot.name.clone())
+        {
+            out.push(slot.clone());
+        }
+    }
+    for slot in ranked {
+        if used.insert(slot.name.clone()) {
+            out.push(slot);
+        }
+    }
+    out
+}
+
+pub fn account_footer_suffix_with(
     credential: Option<&maho_ai::auth::pool::slots::PooledCredential>,
     session_id: &str,
+    options: AccountFooterOptions<'_>,
 ) -> String {
-    use maho_ai::auth::pool::slots::account_label;
-    use sha2::{Digest, Sha256};
     let slots = credential.map_or_else(Vec::new, maho_ai::auth::pool::kinds::slots_of_own_kind);
     if slots.len() < 2 {
         return String::new();
     }
-    let winner = credential
-        .and_then(|c| c.pinned.as_ref())
-        .and_then(|p| slots.iter().find(|s| &s.name == p))
-        .or_else(|| {
-            slots.iter().max_by_key(|s| {
-                let digest = Sha256::digest(format!("{session_id}\0{}", s.name).as_bytes());
-                let mut bytes = [0; 8];
-                bytes.copy_from_slice(&digest[..8]);
-                u64::from_be_bytes(bytes)
-            })
+    let now = options.now_ms.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |duration| duration.as_millis() as f64)
+    });
+    let is_blocked = |slot: &maho_ai::auth::pool::slots::CredentialSlot| {
+        blocked_until_of(credential, slot).is_some_and(|until| until > now)
+    };
+    let mut ranked = slots.clone();
+    ranked.sort_by(|a, b| {
+        slot_hrw_hash(session_id, &b.name).cmp(&slot_hrw_hash(session_id, &a.name))
+    });
+    let order: Option<Vec<String>> = credential
+        .and_then(|c| c.extra.get("order"))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
         });
-    winner.map_or_else(String::new, |s| {
-        format!(
-            "@{}",
-            truncate_to_width(
-                &account_label(&s.name, s.display_name.as_deref()),
-                24,
-                "…",
-                false
-            )
-        )
-    })
+    let ranked = apply_account_order(order.as_deref(), ranked);
+    let pinned_name = options
+        .pinned_account
+        .or_else(|| credential.and_then(|c| c.pinned.as_deref()));
+    let pinned_slot = pinned_name.and_then(|name| slots.iter().find(|slot| slot.name == name));
+    if let Some(pinned) = pinned_slot {
+        if !is_blocked(pinned) {
+            return format!("@{}", footer_account_label(pinned));
+        }
+        let until = blocked_until_of(credential, pinned).unwrap_or(0.0);
+        if let Some(serving) = ranked
+            .iter()
+            .find(|slot| slot.name != pinned.name && !is_blocked(slot))
+        {
+            return format!(
+                "@{} ({} blocked until {})",
+                footer_account_label(serving),
+                footer_account_label(pinned),
+                format_blocked_until(until)
+            );
+        }
+        return format!(
+            "@{} (blocked until {})",
+            footer_account_label(pinned),
+            format_blocked_until(until)
+        );
+    }
+    let Some(winner) = ranked
+        .iter()
+        .find(|slot| !is_blocked(slot))
+        .or_else(|| ranked.first())
+    else {
+        return String::new();
+    };
+    if is_blocked(winner) {
+        let until = blocked_until_of(credential, winner).unwrap_or(0.0);
+        return format!(
+            "@{} (blocked until {})",
+            footer_account_label(winner),
+            format_blocked_until(until)
+        );
+    }
+    format!("@{}", footer_account_label(winner))
+}
+
+pub fn account_footer_suffix(
+    credential: Option<&maho_ai::auth::pool::slots::PooledCredential>,
+    session_id: &str,
+) -> String {
+    account_footer_suffix_with(credential, session_id, AccountFooterOptions::default())
 }
 
 #[cfg(test)]

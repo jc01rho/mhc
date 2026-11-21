@@ -43,6 +43,8 @@ mod footer_pending_model_switch;
 mod foundation;
 #[path = "grok_mermaid_edges.rs"]
 mod grok_mermaid_edges;
+#[path = "issue_5983_footer_serving_account.rs"]
+mod issue_5983_footer_serving_account;
 #[path = "mermaid_golden.rs"]
 mod mermaid_golden;
 #[path = "mermaid_transformer.rs"]
