@@ -45,13 +45,6 @@ pub struct HostCommandInfo {
     pub source_info_path: Option<String>,
 }
 
-/// Upstream `BundledSkillProvenance` (`#12544` review): whether a bundled skill is shadowed by a
-/// user or project skill of the same name in the host's loaded command listing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BundledSkillProvenance {
-    pub shadowed: bool,
-}
-
 /// Upstream `pi.getCommands?.()` reached through the runtime the component captured at
 /// registration: the native `ExtensionContext` exposes no command registry, the runtime does.
 pub fn host_commands_from_runtime(runtime: ExtensionRuntime) -> HostCommands {
@@ -129,32 +122,6 @@ pub fn is_opt_in_skill_enabled(name: &str, env: &BTreeMap<String, String>) -> bo
     }
     list_env_contains(env, ENABLED_SKILLS_ENV, name)
         || list_env_contains(env, MAHO_ENABLED_SKILLS_ENV, name)
-}
-
-/// Which file the session's skills listing resolves for `name`, compared with the bundled copy at
-/// `builtin_path` (`#12544` review).
-pub fn resolve_bundled_skill_provenance(
-    commands: Option<&[HostCommandInfo]>,
-    name: &str,
-    builtin_path: &Path,
-) -> BundledSkillProvenance {
-    let command = format!("skill:{name}");
-    let owner_path = commands
-        .and_then(|commands| {
-            commands
-                .iter()
-                .find(|entry| entry.source == "skill" && entry.name == command)
-        })
-        .and_then(|entry| entry.source_info_path.as_deref());
-    match owner_path {
-        None => BundledSkillProvenance { shadowed: false },
-        Some(owner_path)
-            if canonical_path(Path::new(owner_path)) == canonical_path(builtin_path) =>
-        {
-            BundledSkillProvenance { shadowed: false }
-        }
-        Some(_) => BundledSkillProvenance { shadowed: true },
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
