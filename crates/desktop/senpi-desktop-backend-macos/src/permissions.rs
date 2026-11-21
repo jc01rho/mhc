@@ -118,9 +118,7 @@ fn denial_with_identity(
         (true, false) => format!(
             "System Settings > Privacy & Security > {pane} could not be opened automatically; open it"
         ),
-        (false, true) => {
-            format!("In System Settings > Privacy & Security > {pane}, opened earlier")
-        }
+        (false, true) => format!("In System Settings > Privacy & Security > {pane}, opened earlier"),
         (false, false) => format!("Open System Settings > Privacy & Security > {pane}"),
     };
     let message = format!(

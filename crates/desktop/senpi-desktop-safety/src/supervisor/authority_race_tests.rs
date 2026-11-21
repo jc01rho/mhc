@@ -30,6 +30,7 @@ fn newer_callback_refuses_input_before_worker_commit() {
     resume.send(()).unwrap();
     let activated = activation.join().unwrap();
     let refused_before_commit = supervisor.is_suspended();
+    let hold_refused_before_commit = supervisor.hold_signal().check(&supervisor).is_err();
     let status_before_commit = supervisor.status();
     let mut backend = backend();
     let input_before_commit = input(&supervisor, &mut backend);
@@ -40,6 +41,7 @@ fn newer_callback_refuses_input_before_worker_commit() {
         refused_before_commit,
         "activation reopened input after callback returned"
     );
+    assert!(hold_refused_before_commit);
     assert_eq!(activated, Err(AuthorityResetError::StaleStop));
     assert!(status_before_commit.suspended);
     assert_eq!(input_before_commit, Err(GateError::Suspended));

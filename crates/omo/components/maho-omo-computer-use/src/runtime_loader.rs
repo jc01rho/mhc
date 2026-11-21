@@ -1,6 +1,7 @@
 use futures::future::BoxFuture;
 use maho_ext_api::{ExecuteToolOptions, ExtensionFailure, ExtensionRuntime};
 use senpi_desktop_core::error::PermissionDeniedData;
+use senpi_desktop_service::FullAccessReader;
 use senpi_desktop_service::child::ChildFactory;
 use senpi_desktop_tool::cua_definition::COMPUTER_ACTIONS_TOOL_NAME;
 use senpi_desktop_tool::settings::ComputerSettings;
@@ -92,6 +93,7 @@ enum LoaderState {
 pub struct ComputerRuntimeLoader {
     options: ComputerRuntimeLoaderOptions,
     state: Arc<std::sync::Mutex<LoaderState>>,
+    full_access: std::sync::OnceLock<FullAccessReader>,
 }
 
 impl ComputerRuntimeLoader {
@@ -99,7 +101,13 @@ impl ComputerRuntimeLoader {
         Self {
             options,
             state: Arc::new(std::sync::Mutex::new(LoaderState::Unstarted)),
+            full_access: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The session's full-access decision every runtime this loader starts binds to its desktop service.
+    pub fn set_full_access(&self, reader: FullAccessReader) {
+        let _ = self.full_access.set(reader);
     }
 
     pub fn options(&self) -> &ComputerRuntimeLoaderOptions {
@@ -213,6 +221,12 @@ impl ComputerRuntimeLoader {
 
         match runtime_res {
             Ok(runtime) => {
+                if let Some(reader) = self.full_access.get() {
+                    runtime
+                        .service
+                        .service()
+                        .set_full_access(Arc::clone(reader));
+                }
                 let host = Arc::clone(&self.options.host);
                 let cua_adapter = self.options.settings.cua_adapter;
                 let computer_tools = if cua_adapter {

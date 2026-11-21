@@ -51,6 +51,7 @@ fn ax_window(app: &str, pid: i32, title: &str) -> Option<DesktopWindow> {
         let bounds = ax::element::bounds(&window)?;
         let id = ax::element::window_id(&window)?;
         return Some(DesktopWindow {
+            identity: None,
             id: id.to_string(),
             title: title.to_string(),
             app: app.to_string(),
@@ -60,6 +61,7 @@ fn ax_window(app: &str, pid: i32, title: &str) -> Option<DesktopWindow> {
             width: bounds.width as u32,
             height: bounds.height as u32,
             focused: false,
+            is_on_screen: None,
             elevated: None,
         });
     }
@@ -166,6 +168,7 @@ pub(super) fn close_focused_window(pid: i32) {
         return;
     };
     let window = DesktopWindow {
+        identity: None,
         id: id.to_string(),
         title: String::new(),
         app: "Terminal".to_string(),
@@ -175,6 +178,7 @@ pub(super) fn close_focused_window(pid: i32) {
         width: 0,
         height: 0,
         focused: false,
+        is_on_screen: None,
         elevated: None,
     };
     let _ = crate::ax::close_window(&window);

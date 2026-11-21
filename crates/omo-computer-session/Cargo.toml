@@ -1,0 +1,44 @@
+[package]
+name = "maho-omo-computer-session"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "omo_computer_session"
+crate-type = ["rlib"]
+
+[dependencies]
+omo-computer-core = { package = "maho-omo-computer-core", path = "../omo-computer-core" }
+omo-computer-safety = { package = "maho-omo-computer-safety", path = "../omo-computer-safety" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+sha2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+omo-computer-backend-fake = { package = "maho-omo-computer-backend-fake", path = "../omo-computer-backend-fake" }
+tempfile.workspace = true
+
+# Imported from oh-my-openagent (MIT). FFI modules allow unsafe locally (`#![allow(unsafe_code)]`)
+# and every unsafe block carries a SAFETY comment.
+[lints.rust]
+unsafe_code = "deny"

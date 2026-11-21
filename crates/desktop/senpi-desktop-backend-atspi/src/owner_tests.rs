@@ -45,6 +45,7 @@ const TODO_RECT: Extents = Extents {
 
 fn xid(id: &str, title: &str, pid: u32, rect: Extents) -> DesktopWindow {
     DesktopWindow {
+        identity: None,
         id: id.to_string(),
         title: title.to_string(),
         app: "gedit".to_string(),
@@ -54,6 +55,7 @@ fn xid(id: &str, title: &str, pid: u32, rect: Extents) -> DesktopWindow {
         width: rect.width.unsigned_abs(),
         height: rect.height.unsigned_abs(),
         focused: false,
+        is_on_screen: None,
         elevated: None,
     }
 }

@@ -25,21 +25,24 @@ impl Worker {
     }
 }
 
-/// Whether `op` reads or acts on an app: anything aimed at a window or an
-/// accessibility element. Desktop- and display-wide requests, listings and
-/// the clipboard name no app.
-///
-/// mhc base: upstream also lists observe, region capture, holds, menus and
-/// control requests; those ops do not exist here yet.
+/// Whether `op` reads or acts on an app: anything aimed at a window, an
+/// accessibility element, or a menu. Desktop- and display-wide requests,
+/// listings, the clipboard and control requests name no app.
 pub(crate) fn reads_or_acts_on_an_app(op: &Op) -> bool {
     match op {
         Op::Capture(params) => names_a_window(&params.target),
+        Op::Observe(params) => names_a_window(&params.target),
+        Op::CaptureRegion(params) => names_a_window(&params.target),
         Op::Click(params) | Op::MoveMouse(params) => names_a_window(&params.target),
         Op::Drag(params) => names_a_window(&params.target),
         Op::Scroll(params) => names_a_window(&params.target),
         Op::TypeText(params) => names_a_window(&params.target),
         Op::KeyChord(params) => names_a_window(&params.target),
+        Op::HoldKeys(params) => names_a_window(&params.target),
+        Op::HoldMouse(params) => names_a_window(&params.target),
         Op::RaiseWindow(_)
+        | Op::MenuItems(_)
+        | Op::MenusSelect(_)
         | Op::AxSnapshot(_)
         | Op::AxQuery(_)
         | Op::AxElementAt(_)
@@ -51,8 +54,15 @@ pub(crate) fn reads_or_acts_on_an_app(op: &Op) -> bool {
         | Op::AxPerform(_)
         | Op::AxSetValue(_)
         | Op::AxFocus(_)
-        | Op::AxClick(_) => true,
-        Op::Displays | Op::Windows | Op::ClipboardRead | Op::ClipboardWrite(_) => false,
+        | Op::AxClick(_)
+        | Op::AxTypeText(_) => true,
+        Op::Displays
+        | Op::Windows
+        | Op::ClipboardRead
+        | Op::ClipboardWrite(_)
+        | Op::ControlGrant(_)
+        | Op::ControlRevoke
+        | Op::ControlState => false,
     }
 }
 

@@ -7,6 +7,8 @@ pub mod ax;
 pub mod capture;
 #[path = "input.rs"]
 pub mod input;
+#[path = "menus.rs"]
+pub mod menus;
 #[path = "scenario.rs"]
 pub mod scenario;
 

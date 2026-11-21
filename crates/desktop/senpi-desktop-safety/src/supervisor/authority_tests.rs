@@ -5,10 +5,9 @@ use std::sync::atomic::Ordering;
 
 #[test]
 fn initial_authority_is_suspended_and_only_exact_activation_allows_input() {
-    // Given: initial recovery enrollment, a live stop path, and old work
-    // (mhc base: no hold signals yet, so the stale-hold check is the epoch).
+    // Given: initial recovery enrollment, a live stop path, and old held work.
     let supervisor = supervisor(|_| {});
-    let epoch_before = supervisor.stop_epoch();
+    let held = supervisor.hold_signal();
     let current = proof(&supervisor);
     let duplicate = proof(&supervisor);
     let mut backend = backend();
@@ -19,7 +18,7 @@ fn initial_authority_is_suspended_and_only_exact_activation_allows_input() {
     // Then: fresh input succeeds, old holds and duplicate activation do not.
     input(&supervisor, &mut backend).unwrap();
     assert_eq!(backend.sink().ops().len(), 1);
-    assert!(supervisor.stop_epoch() > epoch_before);
+    assert!(held.check(&supervisor).is_err());
     let epoch = supervisor.stop_epoch();
     assert_eq!(
         supervisor.activate_authority(duplicate),

@@ -1,0 +1,26 @@
+[package]
+name = "maho-omo-computer-core"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "omo_computer_core"
+crate-type = ["rlib"]
+
+[dependencies]
+schemars = "=1.2.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+sha2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+syn = { version = "=2.0.117", features = ["full", "visit"] }
+
+# Imported from oh-my-openagent (MIT). FFI modules allow unsafe locally (`#![allow(unsafe_code)]`)
+# and every unsafe block carries a SAFETY comment.
+[lints.rust]
+unsafe_code = "deny"

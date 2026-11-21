@@ -39,7 +39,7 @@ fn backend() -> WaylandBackend {
 
 fn capture(backend: &mut WaylandBackend) -> Result<(u32, u32), DesktopError> {
     backend
-        .capture(&Target::Desktop, &CaptureCaps::default())
+        .capture(&Target::Desktop, &CaptureCaps::default(), &[])
         .map(|(image, _)| image.dimensions())
 }
 
@@ -91,7 +91,7 @@ fn a_portal_screenshot_arrives_as_rgba_and_its_file_is_removed() {
 
     // When
     let (image, frame) = backend
-        .capture(&Target::Desktop, &CaptureCaps::default())
+        .capture(&Target::Desktop, &CaptureCaps::default(), &[])
         .expect("portal screenshot");
 
     // Then: the PNG decoded to RGBA non-interactively, and the frame refuses
@@ -157,12 +157,14 @@ fn a_refused_screenshot_is_permission_denied_and_never_reported_as_capture() {
 #[test]
 fn a_window_target_without_screencast_is_refused_because_the_screenshot_portal_has_no_window_capture(
 ) {
-    let _env = env_lock();
-    portal(Shot::Absent);
     let mut backend = backend_without_services();
 
     let error = backend
-        .capture(&Target::Window("w1".to_owned()), &CaptureCaps::default())
+        .capture(
+            &Target::Window("w1".to_owned()),
+            &CaptureCaps::default(),
+            &[],
+        )
         .expect_err("no window capture");
 
     assert_eq!(error.code, ErrorCode::CaptureFailed);

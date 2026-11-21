@@ -53,6 +53,10 @@ fn open(engine: &mut Engine) {
 fn foreground_click(engine: &mut Engine) -> Value {
     make_stop_path_live(engine);
     capture(engine, WINDOW);
+    engine.invoke(
+        "control.grant",
+        json!({"reason": "restore failure cases", "confirmationId": "confirm-1"}),
+    );
     let opts = json!({"deliveryMode": "foreground"});
     engine.invoke(
         "click",
@@ -80,11 +84,6 @@ fn window_click(engine: &mut Engine) -> Value {
 fn list_windows(engine: &mut Engine) -> Value {
     open(engine);
     engine.invoke("windows", json!({}))
-}
-
-fn open_capture(engine: &mut Engine) -> Value {
-    open(engine);
-    engine.invoke("capture", json!({"target": WINDOW}))
 }
 
 const SHORT_DEADLINE: &[(&str, &str)] = &[("SENPI_DESKTOP_OPERATION_TIMEOUT_MS", "500")];
@@ -148,7 +147,7 @@ fn cases() -> Vec<Case> {
         }),
         case("InvalidCoordinateFrame", json!({}), |e| {
             make_stop_path_live(e);
-            click(e, "desktop")
+            click(e, WINDOW)
         }),
         case("StaleRef", json!({}), |e| {
             open(e);
@@ -228,22 +227,22 @@ fn cases() -> Vec<Case> {
             fail_next("front_window"),
             foreground_click,
         ),
-        // mhc has no control grant or capture-state refusal yet, so these
-        // three codes reach the wire through the fake's scripted failure.
-        case(
-            "InputBusy",
-            fail_next_with("click", "InputBusy"),
-            window_click,
-        ),
-        case(
-            "ControlRequired",
-            fail_next_with("click", "ControlRequired"),
-            window_click,
-        ),
+        case("ControlRequired", json!({}), |e| {
+            make_stop_path_live(e);
+            capture(e, WINDOW);
+            let opts = json!({"deliveryMode": "foreground"});
+            e.invoke(
+                "click",
+                json!({"target": WINDOW, "x": 10.0, "y": 10.0, "opts": opts}),
+            )
+        }),
         case(
             "CaptureUnavailable",
-            fail_next_with("capture", "CaptureUnavailable"),
-            open_capture,
+            json!({"fail_next": [{"method": "capture", "code": "CaptureUnavailable", "reason": "minimized"}]}),
+            |e| {
+                open(e);
+                e.invoke("capture", json!({"target": WINDOW}))
+            },
         ),
         case(
             "UserIntervened",
@@ -269,6 +268,21 @@ fn cases() -> Vec<Case> {
             fail_next_with("windows", "SpaceMoveDenied"),
             list_windows,
         ),
+        case(
+            "AmbiguousTarget",
+            fail_next_with("windows", "AmbiguousTarget"),
+            list_windows,
+        ),
+        case(
+            "CaptureConsentRequired",
+            fail_next_with("windows", "CaptureConsentRequired"),
+            list_windows,
+        ),
+        case(
+            "ProtectedProcess",
+            fail_next_with("windows", "ProtectedProcess"),
+            list_windows,
+        ),
     ]
 }
 
@@ -279,6 +293,16 @@ fn spawn(case: Case) -> thread::JoinHandle<Value> {
         let mut engine = headless(scenario.backend(), case.env);
         (case.drive)(&mut engine)
     })
+}
+
+/// Every code driven over the wire. `InputBusy` is not among them: one engine
+/// process holds one session, so a second session's grant cannot be driven
+/// here; the session crate drives it with two sessions sharing one slot.
+fn driven_codes() -> Vec<String> {
+    cases()
+        .into_iter()
+        .map(|case| case.code.to_owned())
+        .collect()
 }
 
 #[test]
@@ -315,10 +339,8 @@ fn every_error_code_reaches_the_wire_with_its_numeric_code() {
 #[test]
 fn the_code_table_drives_every_error_code_declared_in_error_rs() {
     let mut declared = declared_codes();
-    let mut driven: Vec<String> = cases()
-        .into_iter()
-        .map(|case| case.code.to_owned())
-        .collect();
+    declared.retain(|code| code != "InputBusy");
+    let mut driven = driven_codes();
     declared.sort();
     driven.sort();
     assert_eq!(driven, declared);

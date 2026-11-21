@@ -1,6 +1,7 @@
 pub mod engine_probe;
 pub mod engine_source;
 pub mod engine_status;
+pub mod full_access;
 pub mod index;
 pub mod installed_engine;
 pub mod permission_events;

@@ -57,6 +57,16 @@ def fail(req_id, code, message):
 held = []
 cancellable = set()
 
+# `gated` mode: the engine's control-grant admission (#10788) for input on the desktop or a display.
+GLOBAL_INPUT = {"click", "moveMouse", "drag", "scroll", "typeText", "keyChord", "holdKeys", "holdMouse"}
+granted = False
+grants = 0
+revokes = 0
+refusals = 0
+
+def is_global_target(target):
+    return isinstance(target, str) and (target.lower() == "desktop" or target.startswith("display:"))
+
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -93,6 +103,19 @@ for line in sys.stdin:
             suspended = False
             send({"method": "stopPath.changed", "params": get_status()})
             reply(req_id, get_status())
+    elif mode == "gated" and method == "control.grant":
+        granted = True
+        grants += 1
+        reply(req_id, {"granted": True})
+    elif mode == "gated" and method == "control.revoke":
+        granted = False
+        revokes += 1
+        reply(req_id, {"granted": False})
+    elif mode == "gated" and method == "fake.state":
+        reply(req_id, {"granted": granted, "grants": grants, "revokes": revokes, "refusals": refusals})
+    elif mode == "gated" and method in GLOBAL_INPUT and not granted and is_global_target(params.get("target")):
+        refusals += 1
+        fail(req_id, "ControlRequired", "input on the desktop or a display needs the control grant")
     elif method == "$/cancel":
         target_id = params.get("id")
         if target_id in cancellable:

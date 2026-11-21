@@ -2,7 +2,7 @@
 //! once, by the session thread in submission order, or by the connection
 //! (`$/cancel`).
 
-use senpi_desktop_core::methods::Method;
+use senpi_desktop_core::methods::{Effect, Method};
 use senpi_desktop_core::protocol::{MethodRejection, RequestId};
 use senpi_desktop_core::protocol_params::{
     AdvanceClockParams, CancelParams, EmptyParams, StopPathResumeParams, StopPathStartParams,
@@ -37,7 +37,20 @@ impl Engine {
     }
 
     fn route_method(&self, method: Method, params: Value) -> Result<Route, Failure> {
-        let op = |op| Ok(Route::Session(SessionCall::Op(op)));
+        let op = |op| {
+            let widens_input = match method.spec().effect {
+                Effect::Read => false,
+                Effect::Exec => method != Method::ControlRevoke,
+            };
+            // Only pending stops bypass a potentially stuck worker. Committed
+            // stops keep normal session dispatch and its refusal audit.
+            if widens_input && self.stop_paths().supervisor().stop_pending() {
+                return Err(Failure::Engine(
+                    senpi_desktop_safety::GateError::Suspended.into(),
+                ));
+            }
+            Ok(Route::Session(SessionCall::Op(op)))
+        };
         match method {
             Method::EngineHello => {
                 parse::<EmptyParams>(params)?;
@@ -54,6 +67,11 @@ impl Engine {
                 parse::<EmptyParams>(params)?;
                 Ok(Route::Session(SessionCall::Close))
             }
+            Method::ControlGrant => op(Op::ControlGrant(parse(params)?)),
+            Method::ControlRevoke => {
+                parse::<EmptyParams>(params).and_then(|_| op(Op::ControlRevoke))
+            }
+            Method::ControlState => parse::<EmptyParams>(params).and_then(|_| op(Op::ControlState)),
             Method::Capabilities => {
                 parse::<EmptyParams>(params)?;
                 Ok(Route::Immediate(to_result(self.capabilities())))
@@ -61,12 +79,36 @@ impl Engine {
             Method::Displays => parse::<EmptyParams>(params).and_then(|_| op(Op::Displays)),
             Method::Windows => parse::<EmptyParams>(params).and_then(|_| op(Op::Windows)),
             Method::Capture => op(Op::Capture(parse(params)?)),
-            Method::Click => op(Op::Click(parse(params)?)),
-            Method::MoveMouse => op(Op::MoveMouse(parse(params)?)),
-            Method::Drag => op(Op::Drag(parse(params)?)),
-            Method::Scroll => op(Op::Scroll(parse(params)?)),
+            Method::CaptureRegion => op(Op::CaptureRegion(parse(params)?)),
+            Method::Observe => op(Op::Observe(parse(params)?)),
+            Method::Click => {
+                let params: senpi_desktop_core::protocol_params::PointParams = parse(params)?;
+                framed_consume(params.opts.as_ref(), params.frame_id.as_deref())?;
+                op(Op::Click(params))
+            }
+            Method::MoveMouse => {
+                let params: senpi_desktop_core::protocol_params::PointParams = parse(params)?;
+                framed_consume(params.opts.as_ref(), params.frame_id.as_deref())?;
+                op(Op::MoveMouse(params))
+            }
+            Method::Drag => {
+                let params: senpi_desktop_core::protocol_params::DragParams = parse(params)?;
+                framed_consume(params.opts.as_ref(), params.frame_id.as_deref())?;
+                op(Op::Drag(params))
+            }
+            Method::Scroll => {
+                let params: senpi_desktop_core::protocol_params::ScrollParams = parse(params)?;
+                framed_consume(params.opts.as_ref(), params.frame_id.as_deref())?;
+                op(Op::Scroll(params))
+            }
             Method::TypeText => op(Op::TypeText(parse(params)?)),
             Method::KeyChord => op(Op::KeyChord(parse(params)?)),
+            Method::HoldKeys => op(Op::HoldKeys(parse(params)?)),
+            Method::HoldMouse => {
+                let params: senpi_desktop_core::protocol_params::HoldMouseParams = parse(params)?;
+                framed_consume(params.opts.as_ref(), params.frame_id.as_deref())?;
+                op(Op::HoldMouse(params))
+            }
             Method::RaiseWindow => op(Op::RaiseWindow(parse(params)?)),
             Method::AxSnapshot => op(Op::AxSnapshot(parse(params)?)),
             Method::AxQuery => op(Op::AxQuery(parse(params)?)),
@@ -80,6 +122,7 @@ impl Engine {
             Method::AxSetValue => op(Op::AxSetValue(parse(params)?)),
             Method::AxFocus => op(Op::AxFocus(parse(params)?)),
             Method::AxClick => op(Op::AxClick(parse(params)?)),
+            Method::AxTypeText => op(Op::AxTypeText(parse(params)?)),
             Method::StopPathStatus => {
                 parse::<EmptyParams>(params)?;
                 Ok(Route::Immediate(to_result(self.stop_paths().status())))
@@ -102,6 +145,13 @@ impl Engine {
             }
             Method::StopPathResume => {
                 let token = parse::<StopPathResumeParams>(params)?.token;
+                if self.shared_agent() {
+                    return Err(Failure::Engine(
+                        senpi_desktop_core::error::DesktopError::permission_denied(
+                            "a connection cannot clear the shared agent stop latch",
+                        ),
+                    ));
+                }
                 let resumed = self.stop_paths().resume(&token).map_err(Failure::Engine);
                 Ok(self.stop_path_changed(resumed.and_then(to_result)))
             }
@@ -109,6 +159,8 @@ impl Engine {
                 parse::<EmptyParams>(params).and_then(|_| op(Op::ClipboardRead))
             }
             Method::ClipboardWrite => op(Op::ClipboardWrite(parse(params)?)),
+            Method::MenusItems => op(Op::MenuItems(parse(params)?)),
+            Method::MenusSelect => op(Op::MenusSelect(parse(params)?)),
             Method::Cancel => Ok(Route::Cancel(parse::<CancelParams>(params)?.id)),
             Method::TestAdvanceClock => {
                 let Some(clock) = self.fake_clock() else {
@@ -119,6 +171,20 @@ impl Engine {
             }
         }
     }
+}
+
+/// `consume: true` names the frame it consumes: without `frameId` the
+/// request is malformed (`-32602`), whatever the session would map it to.
+fn framed_consume(
+    options: Option<&senpi_desktop_core::types::PointerOptions>,
+    frame_id: Option<&str>,
+) -> Result<(), Failure> {
+    if options.is_some_and(|options| options.consume) && frame_id.is_none() {
+        return Err(Failure::InvalidParams(
+            "invalid params: consume needs the frameId of the frame it consumes".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Absent params mean `{}`.

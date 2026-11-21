@@ -46,7 +46,7 @@ pub(crate) fn lay_out<T>(
     }
     if displays.is_empty() {
         return Err(match selector {
-            DisplaySelector::All => {
+            DisplaySelector::Active | DisplaySelector::All => {
                 DesktopError::capture_failed("Win32 reported no active displays")
             }
             DisplaySelector::Id(id) => {

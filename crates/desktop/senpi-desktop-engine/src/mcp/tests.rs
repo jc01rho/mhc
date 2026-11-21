@@ -68,6 +68,7 @@ fn tools_are_the_public_methods_plus_stop_and_never_resume_or_host_controls() {
         "desktop_click",
         "desktop_stop",
         "desktop_stopPath_status",
+        "desktop_control_state",
     ] {
         assert!(
             names.contains(&present.to_owned()),
@@ -79,6 +80,8 @@ fn tools_are_the_public_methods_plus_stop_and_never_resume_or_host_controls() {
         "desktop_stopPath_start",
         "desktop_session_open",
         "desktop_stopPath_heartbeat",
+        "desktop_control_grant",
+        "desktop_control_revoke",
     ] {
         assert!(
             !names.contains(&absent.to_owned()),

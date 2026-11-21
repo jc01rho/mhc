@@ -66,7 +66,7 @@ impl<X: FnMut(&Value) -> io::Result<Value>> Server<X> {
                 return Some(failure_line(
                     None,
                     Failure::Parse(format!("parse error: {error}")),
-                ));
+                ))
             }
         };
         let method = message.get("method").and_then(Value::as_str);
@@ -83,7 +83,7 @@ impl<X: FnMut(&Value) -> io::Result<Value>> Server<X> {
             Err(error) => {
                 return Some(
                     json!({ "jsonrpc": "2.0", "id": request_id, "error": error }).to_string(),
-                );
+                )
             }
         };
         let outcome = match method {

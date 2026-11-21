@@ -21,11 +21,12 @@ impl<S: InputServer> X11Input<S> {
     pub(super) fn pointer_send_event(
         &mut self,
         top: Window,
+        id: &str,
         event: &PointerEvent,
     ) -> CoreResult<()> {
         let (x, y) = first_point(event)?;
         let (root_x, root_y) = point(x, y)?;
-        let window = self.server.target_at(top, root_x, root_y)?;
+        let window = self.background_event_window(top, id, event_kind(event), root_x, root_y)?;
         let route = Route::Window(window);
         match event {
             PointerEvent::Click {
@@ -129,7 +130,7 @@ fn first_point(event: &PointerEvent) -> CoreResult<(f64, f64)> {
 }
 
 /// The `state` bit of a held pointer button, carried by its release.
-fn button_mask(detail: u8) -> u16 {
+pub(super) fn button_mask(detail: u8) -> u16 {
     let mask = match detail {
         1 => KeyButMask::BUTTON1,
         2 => KeyButMask::BUTTON2,

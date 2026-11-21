@@ -159,7 +159,8 @@ impl NotificationHub {
                     )));
                 }
             },
-            "engine.log" => {}
+            // `engine.log` and `epoch.changed` have no host consumer yet.
+            "engine.log" | "epoch.changed" => {}
             _ => {
                 self.emit_error(Arc::new(DesktopNotificationError::new(
                     method,

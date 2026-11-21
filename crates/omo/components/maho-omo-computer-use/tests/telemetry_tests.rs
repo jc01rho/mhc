@@ -48,6 +48,7 @@ fn test_given_unavailable_os_capabilities_when_inspected_then_capture_input_ax_e
         input: false,
         ax: false,
         background_window_input: false,
+        cursor_overlay: false,
         delivery_modes: vec![],
         capture_permission: "denied".to_string(),
         input_permission: "denied".to_string(),
@@ -58,7 +59,10 @@ fn test_given_unavailable_os_capabilities_when_inspected_then_capture_input_ax_e
         stop_reason: None,
         integrity_level: None,
         screen_locked: false,
+        display_asleep: false,
+        legacy_capture: false,
         intervention_watch: None,
+        window_input: None,
     };
 
     telem.os_permissions("sess-os-perm", &caps);

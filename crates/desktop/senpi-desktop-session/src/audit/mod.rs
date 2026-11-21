@@ -48,6 +48,30 @@ pub(crate) fn audit_event(
         text_delivered: mutation.text.map(|_| mutation.text_delivered.get()),
         text_sha256: mutation.text.map(text_sha256_prefix),
         keys: mutation.keys.map(<[String]>::to_vec),
+        id: None,
+    }
+}
+
+/// The audit of a `control.grant` / `control.revoke`: no backend action ran,
+/// and the reason is hashed exactly like typed text, never logged.
+pub(crate) fn control_audit(
+    action: Method,
+    reason: Option<&str>,
+    code: Option<ErrorCode>,
+) -> AuditEvent {
+    AuditEvent {
+        action,
+        target: "control".to_owned(),
+        delivery: "control".to_owned(),
+        frame_id: None,
+        code,
+        duration_ms: 0,
+        focus_restored: None,
+        text_length: reason.map(|text| u32::try_from(text.chars().count()).unwrap_or(u32::MAX)),
+        text_delivered: None,
+        text_sha256: reason.map(text_sha256_prefix),
+        keys: None,
+        id: None,
     }
 }
 

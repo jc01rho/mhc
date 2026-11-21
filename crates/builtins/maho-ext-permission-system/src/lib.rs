@@ -44,6 +44,7 @@ struct SessionPolicy {
     initial_approved: usize,
 }
 type PolicyState = Arc<Mutex<Option<SessionPolicy>>>;
+type PresetRetirement = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 fn home_dir() -> Result<String, ExtensionFailure> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -238,9 +239,13 @@ impl Extension for PermissionSystem {
         let bus = api.events.clone();
         let start_authorizer = Arc::clone(&dispatch_authorizer);
         let start_retirement = Arc::clone(&retirement);
+        // senpi registerPermissionPresetReader: other components read the preset in force for the session.
+        let preset_retirement: PresetRetirement = Arc::new(Mutex::new(None));
+        let start_preset_retirement = Arc::clone(&preset_retirement);
         api.on(EventKind::SessionStart,Arc::new(move|_,ctx|{
             let state=Arc::clone(&start_state);let runtime=runtime.clone();let bus=bus.clone();
             let authorizer=Arc::clone(&start_authorizer);let retirement=Arc::clone(&start_retirement);
+            let preset_retirement=Arc::clone(&start_preset_retirement);
             Box::pin(async move{
                 let home=home_dir()?;
                 let manager=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&home,ctx.is_project_trusted());
@@ -250,6 +255,10 @@ impl Extension for PermissionSystem {
                 };
                 let resolved=settings::resolve_permission_config(&manager,&cli,&home,preset).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                 let preset_bound=resolved.preset==types::PermissionPresetName::Auto;let rules=resolved.rules;
+                let preset_in_force=resolved.preset;
+                let retire_preset=preset_registry::register_permission_preset_reader(ctx.session_manager.session_id(),Arc::new(move||Some(preset_in_force)));
+                let previous_preset=preset_retirement.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(Box::new(retire_preset));
+                if let Some(previous)=previous_preset{previous();}
                 let approved=storage::load_approved(&ctx.agent_dir,&ctx.cwd);
                 let initial_approved=approved.len();let actions=runtime.session_actions()?;let active=actions.get_active_tools()?;
                 let disabled=config::disabled(&active,&rules);actions.set_active_tools(active.into_iter().filter(|name|!disabled.contains(name)).collect())?;

@@ -57,6 +57,7 @@ impl Supervisor {
             committed_through: AtomicU64::new(0),
             commit: Arc::new(commit),
         }));
+        supervisor.bounded_release.store(true, Ordering::SeqCst);
         supervisor.published.store(true, Ordering::SeqCst);
         supervisor
     }

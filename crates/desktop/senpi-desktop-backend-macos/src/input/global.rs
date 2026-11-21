@@ -13,7 +13,8 @@ use senpi_desktop_core::backend::PointerEvent;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
 use super::cgevent::{
-    button_types, click_group_id, modifier_flags, mouse_event, point, quartz_wheel, scroll_event,
+    button_types, click_group_id, is_press, modifier_flags, mouse_event, point, quartz_wheel,
+    scroll_event,
 };
 use super::held::{ButtonRoute, Held, HeldButton};
 
@@ -21,7 +22,17 @@ pub(super) fn pointer(
     source: &CGEventSource,
     held: &mut Held,
     event: PointerEvent,
+    overlay: &crate::overlay::Overlay,
 ) -> CoreResult<()> {
+    let start = match &event {
+        PointerEvent::Click { x, y, .. }
+        | PointerEvent::Move { x, y }
+        | PointerEvent::Scroll { x, y, .. } => Some((*x, *y)),
+        PointerEvent::Drag { path, .. } => path.first().copied(),
+    };
+    if let Some((x, y)) = start {
+        overlay.target(x, y);
+    }
     match event {
         PointerEvent::Click {
             x,
@@ -115,6 +126,7 @@ pub(super) fn pointer(
             post_global_mouse(source, down, cg_button, start_x, start_y, 1, number, flags)?;
             for &(x, y) in &path[1..] {
                 thread::sleep(Duration::from_millis(16));
+                overlay.target(x, y);
                 post_global_mouse(source, dragged, cg_button, x, y, 1, number, flags)?;
             }
             thread::sleep(Duration::from_millis(50));
@@ -150,7 +162,7 @@ pub(super) fn pointer(
     clippy::too_many_arguments,
     reason = "the parameters are the native CGEvent fields posted together"
 )]
-fn post_global_mouse(
+pub(super) fn post_global_mouse(
     source: &CGEventSource,
     event_type: CGEventType,
     button: CGMouseButton,
@@ -160,6 +172,9 @@ fn post_global_mouse(
     button_number: i64,
     flags: CGEventFlags,
 ) -> CoreResult<()> {
+    if is_press(event_type) {
+        senpi_desktop_core::intervention::check_press()?;
+    }
     let location = point(x, y)?;
     let event = mouse_event(source, event_type, location, button)?;
     event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_state);
