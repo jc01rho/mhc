@@ -189,11 +189,29 @@ fn create_switch_mode() -> (InteractiveMode, tempfile::TempDir, Arc<AgentSession
     .expect("faux provider");
 
     let initial_model = provider.get_model(Some("million")).expect("million");
+    let mut seed2 = faux_assistant_message(
+        "still working",
+        FauxAssistantMessageOptions {
+            timestamp: Some(1),
+            ..Default::default()
+        },
+    );
+    seed2.usage.input = 350_000;
+    seed2.usage.total_tokens = 351_000;
     provider.set_responses(vec![
+        faux_assistant_message(
+            "seeded",
+            FauxAssistantMessageOptions {
+                timestamp: Some(0),
+                ..Default::default()
+            },
+        )
+        .into(),
+        seed2.into(),
         faux_assistant_message(
             "compact summary",
             FauxAssistantMessageOptions {
-                timestamp: Some(0),
+                timestamp: Some(2),
                 ..Default::default()
             },
         )
@@ -201,7 +219,7 @@ fn create_switch_mode() -> (InteractiveMode, tempfile::TempDir, Arc<AgentSession
         faux_assistant_message(
             "answered on target model",
             FauxAssistantMessageOptions {
-                timestamp: Some(1),
+                timestamp: Some(3),
                 ..Default::default()
             },
         )
@@ -267,30 +285,21 @@ fn create_switch_mode() -> (InteractiveMode, tempfile::TempDir, Arc<AgentSession
     (mode, dir, session)
 }
 
-fn seed_live_context(session: &AgentSession) {
-    let primary = session.model();
-    for text in ["large live context ".repeat(30_000), "continue".to_owned()] {
-        session.with_session_manager_mut(|manager| {
-            manager.append_message(
-                serde_json::json!({"role":"user","content":[{"type":"text","text":text}],"timestamp":1}),
-            )
-        });
-        let mut response = faux_assistant_message("still working", Default::default());
-        response.provider = primary.provider.clone();
-        response.model = primary.id.clone();
-        response.usage.input = 320_000;
-        response.usage.total_tokens = 321_000;
-        session.with_session_manager_mut(|manager| {
-            manager.append_message(serde_json::to_value(response).expect("assistant"))
-        });
-    }
-    session.rebuild_session_context().expect("context");
+async fn seed_live_context(session: &AgentSession) {
+    session
+        .prompt(&"large live context ".repeat(75_000), Default::default())
+        .await
+        .expect("seed large turn");
+    session
+        .prompt("second message", Default::default())
+        .await
+        .expect("seed second turn");
 }
 
 #[tokio::test]
 async fn interactive_mode_footer_shows_held_switch_and_clears_after_compaction_or_supersede() {
     let (mut mode, _dir, session) = create_switch_mode();
-    seed_live_context(&session);
+    seed_live_context(&session).await;
     let target = session.model_registry().find("faux", "372k").expect("372k");
     let roomy = session.model_registry().find("faux", "900k").expect("900k");
 
