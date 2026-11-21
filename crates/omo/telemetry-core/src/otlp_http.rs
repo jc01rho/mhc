@@ -107,6 +107,16 @@ pub enum PostOutcome {
 
 pub type AttemptGateFn = Arc<dyn Fn() -> AttemptGate + Send + Sync>;
 pub type RandomFn = Arc<dyn Fn() -> f64 + Send + Sync>;
+pub type NotBeforeReadFn = Arc<dyn Fn() -> i64 + Send + Sync>;
+pub type NotBeforeDeferFn = Arc<dyn Fn(i64) + Send + Sync>;
+
+/// A per-install "do not send before" time, in epoch milliseconds, shared by every process of the
+/// install (see `otlp_spool_not_before`).
+#[derive(Clone)]
+pub struct NotBefore {
+    pub read: NotBeforeReadFn,
+    pub defer: NotBeforeDeferFn,
+}
 
 pub struct PostDeps {
     pub fetch: OtlpFetch,
@@ -118,11 +128,30 @@ pub struct PostDeps {
     pub request_timeout_ms: u64,
     /// Runs right before every attempt, the first included.
     pub before_attempt: Option<AttemptGateFn>,
+    /// Waited out before every attempt and pushed forward after a 429, so one install's processes
+    /// back off together.
+    pub not_before: Option<NotBefore>,
 }
 
 enum Attempt {
     Done(PostOutcome),
-    Retry(Option<u64>),
+    Retry {
+        retry_after: Option<u64>,
+        throttled: bool,
+    },
+}
+
+impl Attempt {
+    fn retry(retry_after: Option<u64>) -> Self {
+        Self::Retry {
+            retry_after,
+            throttled: false,
+        }
+    }
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
 }
 
 pub fn parse_retry_after(value: Option<&str>, now_ms: i64) -> Option<u64> {
@@ -185,7 +214,7 @@ async fn exchange(deps: &PostDeps, signal: Signal, body: &[u8]) -> Attempt {
         headers.push(("content-encoding".to_string(), "gzip".to_string()));
         match gzip(body) {
             Ok(payload) => payload,
-            Err(_) => return Attempt::Retry(None),
+            Err(_) => return Attempt::retry(None),
         }
     } else {
         body.to_vec()
@@ -204,7 +233,7 @@ async fn exchange(deps: &PostDeps, signal: Signal, body: &[u8]) -> Attempt {
             return if deps.abort.is_aborted() {
                 Attempt::Done(PostOutcome::Aborted)
             } else {
-                Attempt::Retry(None)
+                Attempt::retry(None)
             };
         }
     };
@@ -219,10 +248,10 @@ async fn exchange(deps: &PostDeps, signal: Signal, body: &[u8]) -> Attempt {
         });
     }
     if RETRYABLE.contains(&response.status) {
-        return Attempt::Retry(parse_retry_after(
-            response.retry_after.as_deref(),
-            chrono::Utc::now().timestamp_millis(),
-        ));
+        return Attempt::Retry {
+            retry_after: parse_retry_after(response.retry_after.as_deref(), now_ms()),
+            throttled: response.status == 429,
+        };
     }
     Attempt::Done(PostOutcome::RetryLater)
 }
@@ -240,7 +269,7 @@ async fn attempt(deps: &PostDeps, signal: Signal, body: &[u8]) -> Attempt {
             if deps.abort.is_aborted() {
                 Attempt::Done(PostOutcome::Aborted)
             } else {
-                Attempt::Retry(None)
+                Attempt::retry(None)
             }
         }
     }
@@ -248,13 +277,34 @@ async fn attempt(deps: &PostDeps, signal: Signal, body: &[u8]) -> Attempt {
 
 /// One file = one request. 429/502/503/504, network errors and timed-out requests are retried after
 /// 1, 2, 4, 8 and 16 s plus up to 20% jitter (Retry-After wins, capped at 60 s); 400/401/413 are never
-/// retried; a 2xx, including one carrying partial_success, settles the batch.
+/// retried; a 2xx, including one carrying partial_success, settles the batch. A 429 also pushes the
+/// install's shared not-before forward, and every attempt first waits that time out.
 pub async fn post_with_retry(deps: &PostDeps, signal: Signal, body: &[u8]) -> PostOutcome {
     if body.len() > MAX_BODY_BYTES {
         return PostOutcome::Rejected { status: 413 };
     }
     let mut index = 0usize;
+    let mut slept_until = 0i64;
     loop {
+        if deps.abort.is_aborted() {
+            return PostOutcome::Aborted;
+        }
+        let shared = deps
+            .not_before
+            .as_ref()
+            .map_or(0, |not_before| (not_before.read)());
+        let wait = if shared > slept_until {
+            shared - now_ms()
+        } else {
+            0
+        };
+        if wait > 0 {
+            (deps.sleep)(
+                wait.unsigned_abs().min(MAX_RETRY_AFTER_MS),
+                deps.abort.clone(),
+            )
+            .await;
+        }
         if deps.abort.is_aborted() {
             return PostOutcome::Aborted;
         }
@@ -269,12 +319,19 @@ pub async fn post_with_retry(deps: &PostDeps, signal: Signal, body: &[u8]) -> Po
         }
         match attempt(deps, signal, body).await {
             Attempt::Done(outcome) => return outcome,
-            Attempt::Retry(retry_after) => {
+            Attempt::Retry {
+                retry_after,
+                throttled,
+            } => {
                 let Some(backoff) = BACKOFF_MS.get(index).copied() else {
                     return PostOutcome::RetryLater;
                 };
                 let delay = retry_after
                     .unwrap_or_else(|| backoff + ((deps.random)() * backoff as f64 * 0.2) as u64);
+                slept_until = now_ms().saturating_add_unsigned(delay);
+                if throttled && let Some(not_before) = &deps.not_before {
+                    (not_before.defer)(slept_until);
+                }
                 (deps.sleep)(delay, deps.abort.clone()).await;
                 index += 1;
             }
