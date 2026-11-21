@@ -6,9 +6,28 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use super::context::{LifecycleContext, LifecycleDeps, resolve_context};
 use super::errors::LifecycleError;
+use super::host_session::{HostSessionCancelPort, HostSessionCancelSink, HostSessionEnd};
 use super::port::DestroyCause;
 use super::types::{AdmissionResult, CleanupResult, ReconcileResult, SuspendInput, SuspendSummary};
 use crate::manager::AbortSignal;
+
+struct LifecycleHostSessionCancel {
+    context: LifecycleContext,
+}
+
+impl HostSessionCancelPort for LifecycleHostSessionCancel {
+    fn end(&self, record: &crate::state::TaskRecord) -> HostSessionEnd {
+        super::host_session_end::end_host_session_child(&self.context, record)
+    }
+
+    fn drive(&self, record: crate::state::TaskRecord, sink: Arc<dyn HostSessionCancelSink>) {
+        super::host_session_cancel_driver::drive_host_session_cancel(
+            self.context.clone(),
+            record,
+            sink,
+        );
+    }
+}
 
 /// Startup generations per parent session (`None` is the unscoped sweep): shutdown bumps both
 /// the parent's and the unscoped generation, which permanently invalidates passes in flight.
@@ -69,6 +88,14 @@ impl TaskLifecycle {
         cause: DestroyCause,
     ) -> Result<(), LifecycleError> {
         super::destroy::destroy_resident_task(&self.context, task_id, cause, None)
+    }
+
+    /// A cancel of a daemon-hosted child this process holds no handle for (omo#11765): its confirmed
+    /// end, and its retry driver.
+    pub fn host_session_cancel(&self) -> Arc<dyn HostSessionCancelPort> {
+        Arc::new(LifecycleHostSessionCancel {
+            context: self.context.clone(),
+        })
     }
 
     pub fn admit_resident(

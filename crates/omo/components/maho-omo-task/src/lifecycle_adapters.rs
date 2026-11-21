@@ -1,8 +1,11 @@
 use senpi_task::{
     host::HostError,
-    lifecycle::{AdmissionResult, DestroyCause, LifecycleError, TaskLifecycle},
+    lifecycle::{
+        AdmissionResult, DestroyCause, HostSessionCancelPort, LifecycleError, TaskLifecycle,
+    },
     manager::types::SpawnAdmission,
 };
+use std::sync::Arc;
 pub struct TaskLifecycleDestruction(pub TaskLifecycle);
 impl senpi_task::steering::DestructionPort for TaskLifecycleDestruction {
     fn destroy_resident_task(&self, id: &str, cause: DestroyCause) -> Result<(), HostError> {
@@ -11,6 +14,9 @@ impl senpi_task::steering::DestructionPort for TaskLifecycleDestruction {
             .map_err(|error| HostError {
                 message: error.to_string(),
             })
+    }
+    fn host_session_cancel(&self) -> Option<Arc<dyn HostSessionCancelPort>> {
+        Some(self.0.host_session_cancel())
     }
 }
 impl senpi_task::team::runtime_types::TeamMemberDestructionPort for TaskLifecycleDestruction {

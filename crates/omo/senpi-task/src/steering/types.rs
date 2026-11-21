@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::host::HostError;
-use crate::lifecycle::DestroyCause;
+use crate::lifecycle::{DestroyCause, HostSessionCancelPort};
 use crate::manager::ManagedChildHandle;
 use crate::state::{DeliverAs, TaskRecord, TaskRunStats, TaskStatus};
 use crate::store::{StoreError, TaskRecordStore};
@@ -11,6 +11,11 @@ use crate::store::{StoreError, TaskRecordStore};
 /// Destruction is delegated exclusively to lifecycle's single-writer port.
 pub trait DestructionPort: Send + Sync {
     fn destroy_resident_task(&self, task_id: &str, cause: DestroyCause) -> Result<(), HostError>;
+    /// Ends a daemon-hosted child this process holds no handle for, and re-drives it; `None` leaves
+    /// such a cancel pending on its record (omo#11765).
+    fn host_session_cancel(&self) -> Option<Arc<dyn HostSessionCancelPort>> {
+        None
+    }
 }
 
 pub type RunStatsSnapshotFn = dyn Fn(&str) -> Option<TaskRunStats> + Send + Sync;

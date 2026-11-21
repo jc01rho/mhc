@@ -190,6 +190,24 @@ impl DagRecovery {
         resume_paused_runs(&self.context, parent_session_id, fork_source_session_id)
     }
 
+    /// `installPausedRuns` (#12122): claims and installs like [`Self::resume_paused_runs_from`],
+    /// but returns once every claimed run's scheduler is installed (`dag.run.resumed` journaled)
+    /// instead of when the run finishes. `adopt` owns each installed run from then on; the outcome
+    /// carries the record as claimed and no reused outputs.
+    pub fn install_paused_runs(
+        &self,
+        parent_session_id: &str,
+        adopt: &mut dyn FnMut(InstalledDagRun),
+        fork_source_session_id: Option<&str>,
+    ) -> Vec<DagRecoveryOutcome> {
+        install_paused_runs(
+            &self.context,
+            parent_session_id,
+            adopt,
+            fork_source_session_id,
+        )
+    }
+
     pub fn install_resumed_run(
         &self,
         run_id: &DagRunId,
@@ -318,6 +336,81 @@ fn resume_paused_runs(
     parent_session_id: &str,
     fork_source: Option<&str>,
 ) -> Vec<DagRecoveryOutcome> {
+    visit_paused_runs(
+        context,
+        parent_session_id,
+        fork_source,
+        &mut |claimed, foreign| {
+            let mut outcome = resume_claimed_run(context, claimed);
+            if foreign
+                && let DagRecoveryOutcome::Resumed {
+                    run_id,
+                    record,
+                    reused_outputs,
+                } = outcome
+            {
+                outcome = DagRecoveryOutcome::Adopted {
+                    run_id,
+                    record,
+                    reused_outputs,
+                };
+            }
+            outcome
+        },
+    )
+}
+
+// Session start must not wait for a recovered run to FINISH: each claimed run is handed to `adopt`
+// as soon as its scheduler is installed (`dag.run.resumed` journaled) and keeps running there.
+fn install_paused_runs(
+    context: &RecoveryContext,
+    parent_session_id: &str,
+    adopt: &mut dyn FnMut(InstalledDagRun),
+    fork_source: Option<&str>,
+) -> Vec<DagRecoveryOutcome> {
+    visit_paused_runs(
+        context,
+        parent_session_id,
+        fork_source,
+        &mut |claimed, foreign| {
+            let run_id = claimed.record.run_id.clone();
+            let record = Box::new(claimed.record.clone());
+            match install_resumed_run(context, claimed) {
+                Ok(installed) => {
+                    adopt(installed);
+                    if foreign {
+                        DagRecoveryOutcome::Adopted {
+                            run_id,
+                            record,
+                            reused_outputs: HashMap::new(),
+                        }
+                    } else {
+                        DagRecoveryOutcome::Resumed {
+                            run_id,
+                            record,
+                            reused_outputs: HashMap::new(),
+                        }
+                    }
+                }
+                Err(_) => {
+                    release_lease(context, &run_id);
+                    DagRecoveryOutcome::Skipped {
+                        run_id,
+                        reason: DagRecoverySkipReason::NotPaused,
+                        holder_pid: None,
+                    }
+                }
+            }
+        },
+    )
+}
+
+fn visit_paused_runs(
+    context: &RecoveryContext,
+    parent_session_id: &str,
+    fork_source: Option<&str>,
+    recover: &mut dyn FnMut(RecoverableRecord, bool) -> DagRecoveryOutcome,
+) -> Vec<DagRecoveryOutcome> {
     let mut outcomes = Vec::new();
     for observed in list_run_records(&context.store) {
         if observed
@@ -348,23 +441,7 @@ fn resume_paused_runs(
             }
             ClaimedRun::Skipped(DagRecoverySkipReason::LiveLease, _) => {}
             ClaimedRun::Skipped(_, _) => {}
-            ClaimedRun::Claimed(claimed) => {
-                let mut outcome = resume_claimed_run(context, *claimed);
-                if foreign
-                    && let DagRecoveryOutcome::Resumed {
-                        run_id,
-                        record,
-                        reused_outputs,
-                    } = outcome
-                {
-                    outcome = DagRecoveryOutcome::Adopted {
-                        run_id,
-                        record,
-                        reused_outputs,
-                    };
-                }
-                outcomes.push(outcome);
-            }
+            ClaimedRun::Claimed(claimed) => outcomes.push(recover(*claimed, foreign)),
         }
     }
     outcomes

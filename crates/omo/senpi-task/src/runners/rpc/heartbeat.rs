@@ -4,8 +4,20 @@
 //! consecutive misses declare the child unresponsive. The timing decisions live in
 //! [`HeartbeatMachine`] so the thread driver in `rpc/handle.rs` stays a thin clock.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 pub const HEARTBEAT_DEADLINE_MS: i64 = 10_000;
-const UNRESPONSIVE_AFTER: u32 = 3;
+pub const HEARTBEAT_MISSES_BEFORE_UNRESPONSIVE: u32 = 3;
+
+/// Request ids of liveness probes, so a reader of the wire can tell a probe from a request that
+/// carries work (#10993: a cold-revive stall is counted from the last work request, not a probe).
+pub const HEARTBEAT_REQUEST_ID_PREFIX: &str = "senpi-task_heartbeat_";
+static HEARTBEAT_REQUESTS: AtomicU64 = AtomicU64::new(0);
+
+pub fn heartbeat_request_id() -> String {
+    let request = HEARTBEAT_REQUESTS.fetch_add(1, Ordering::Relaxed) + 1;
+    format!("{HEARTBEAT_REQUEST_ID_PREFIX}{request}")
+}
 
 pub fn unresponsive_message(task_id: &str) -> String {
     format!(
@@ -77,7 +89,7 @@ impl HeartbeatMachine {
 
     fn fail(&mut self) -> MissVerdict {
         self.failures += 1;
-        if self.failures >= UNRESPONSIVE_AFTER {
+        if self.failures >= HEARTBEAT_MISSES_BEFORE_UNRESPONSIVE {
             self.stopped = true;
             return MissVerdict::Unresponsive;
         }
@@ -114,6 +126,15 @@ mod tests {
         assert_eq!(machine.miss(quiet), MissVerdict::Missed);
         assert_eq!(machine.miss(quiet + 10_000), MissVerdict::Missed);
         assert_eq!(machine.miss(quiet + 20_000), MissVerdict::Unresponsive);
+    }
+
+    #[test]
+    fn heartbeat_probe_ids_carry_the_probe_prefix_and_never_repeat() {
+        let first = heartbeat_request_id();
+        let second = heartbeat_request_id();
+        assert!(first.starts_with(HEARTBEAT_REQUEST_ID_PREFIX));
+        assert!(second.starts_with(HEARTBEAT_REQUEST_ID_PREFIX));
+        assert_ne!(first, second);
     }
 
     #[test]

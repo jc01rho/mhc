@@ -55,6 +55,15 @@ impl Timers {
     }
 }
 type Events = Arc<Mutex<Vec<(String, Value)>>>;
+fn named(events: &Events, name: &str) -> Vec<Value> {
+    events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter(|(event, _)| event == name)
+        .map(|(_, value)| value.clone())
+        .collect()
+}
 fn fixture() -> (
     Arc<maho_omo_task::dag_rpc_bridge::DagRpcBridge>,
     Arc<Timers>,
@@ -91,7 +100,7 @@ fn ledger_dedupes_sequences_per_run() {
     bridge.forward(&json!({"runId":"run","seq":1}));
     bridge.forward(&json!({"runId":"run","seq":1}));
     bridge.forward(&json!({"runId":"run","seq":0}));
-    assert_eq!(events.lock().unwrap().len(), 1);
+    assert_eq!(named(&events, "omo.dag.event").len(), 1);
 }
 #[test]
 fn sync_subscribes_new_run_once_and_detach_releases_listener() {
@@ -199,10 +208,9 @@ fn telemetry_coalesces_latest_per_node() {
     bridge.publish_activity(json!({"runId":"run","nodeId":"a","activity":"first"}));
     bridge.publish_activity(json!({"runId":"run","nodeId":"a","activity":"last"}));
     timers.fire(150);
-    let events = events.lock().unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].0, "omo.dag.activity");
-    assert_eq!(events[0].1["activity"], "last");
+    let activity = named(&events, "omo.dag.activity");
+    assert_eq!(activity.len(), 1);
+    assert_eq!(activity[0]["activity"], "last");
 }
 #[test]
 fn snapshot_fingerprint_suppresses_duplicate_flush() {
@@ -219,10 +227,10 @@ fn heartbeat_reports_last_delivered_sequence() {
     bridge.attach();
     bridge.forward(&json!({"runId":"run","seq":4}));
     timers.fire(15000);
-    let events = events.lock().unwrap();
-    assert_eq!(events[1].0, "omo.dag.heartbeat");
-    assert_eq!(events[1].1["runs"][0]["headSeq"], 4);
-    assert_eq!(events[1].1["at"], "1970-01-01T00:00:00.000Z");
+    let heartbeats = named(&events, "omo.dag.heartbeat");
+    assert_eq!(heartbeats.len(), 1);
+    assert_eq!(heartbeats[0]["runs"][0]["headSeq"], 4);
+    assert_eq!(heartbeats[0]["at"], "1970-01-01T00:00:00.000Z");
 }
 #[test]
 fn detach_clears_all_timers_and_pending_activity() {
@@ -233,7 +241,9 @@ fn detach_clears_all_timers_and_pending_activity() {
     assert_eq!(timers.count(), 0);
     timers.fire(150);
     bridge.forward(&json!({"runId":"run","seq":1}));
-    assert!(events.lock().unwrap().is_empty());
+    // Only the snapshot the attach owed the client went out.
+    assert_eq!(events.lock().unwrap().len(), 1);
+    assert_eq!(named(&events, "omo.dag.updated").len(), 1);
 }
 #[test]
 fn reattach_resets_snapshot_fingerprint() {
@@ -261,7 +271,8 @@ fn detached_activity_does_not_schedule_or_emit() {
     bridge.publish_activity(json!({"runId":"run","nodeId":"a","activity":"late"}));
     timers.fire(150);
     assert_eq!(timers.count(), 0);
-    assert!(events.lock().expect("events").is_empty());
+    assert!(named(&events, "omo.dag.activity").is_empty());
+    assert_eq!(events.lock().expect("events").len(), 1);
 }
 #[test]
 fn snapshot_burst_coalesces_without_absorbing_ledger_deltas() {
@@ -272,12 +283,46 @@ fn snapshot_burst_coalesces_without_absorbing_ledger_deltas() {
     assert_eq!(timers.count(), 2);
     bridge.forward(&json!({"runId":"run","seq":1,"type":"dag.run.started"}));
     timers.fire(50);
+    // The attach already published this snapshot, so the coalesced flush of the unchanged store
+    // adds no duplicate, and the ledger delta still went out on its own channel.
     let events = events.lock().expect("events");
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0].0, "omo.dag.event");
-    assert_eq!(events[1].0, "omo.dag.updated");
-    assert!(events[1].1.get("seq").is_none());
-    assert!(events[1].1.get("type").is_none());
+    assert_eq!(events[0].0, "omo.dag.updated");
+    assert_eq!(events[1].0, "omo.dag.event");
+    assert!(events[0].1.get("seq").is_none());
+    assert!(events[0].1.get("type").is_none());
+}
+/// #12113: the attach is the point a session's first turn waits on, so the snapshot it owes the
+/// client is already on the wire when `attach()` returns, not on a debounce timer after it.
+#[test]
+fn attach_emits_the_current_snapshot_before_any_timer_fires() {
+    let (bridge, _, events) = fixture();
+    bridge.attach();
+    let updates = named(&events, "omo.dag.updated");
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["parent_session_id"], "parent");
+}
+#[test]
+fn resend_restates_an_unchanged_snapshot_exactly_once() {
+    let (bridge, timers, events) = fixture();
+    bridge.attach();
+    timers.fire(50);
+    bridge.resend();
+    timers.fire(50);
+    let updates = named(&events, "omo.dag.updated");
+    assert_eq!(updates.len(), 2);
+    assert_eq!(updates[1], updates[0]);
+}
+#[test]
+fn resend_while_detached_emits_nothing() {
+    let (bridge, timers, events) = fixture();
+    bridge.resend();
+    timers.fire(50);
+    assert!(named(&events, "omo.dag.updated").is_empty());
+    bridge.attach();
+    bridge.detach();
+    bridge.resend();
+    assert_eq!(named(&events, "omo.dag.updated").len(), 1);
 }
 #[test]
 fn missing_parent_session_suppresses_snapshot_channel() {
@@ -363,13 +408,13 @@ fn activity_preserves_first_insertion_order_when_updated() {
         bridge.publish_activity(json!({"runId":"run","nodeId":node,"activity":activity}));
     }
     timers.fire(150);
-    let events = events.lock().expect("events lock");
+    let activity = named(&events, "omo.dag.activity");
     assert_eq!(
-        events
+        activity
             .iter()
-            .map(|(_, value)| value["nodeId"].as_str().expect("node"))
+            .map(|value| value["nodeId"].as_str().expect("node"))
             .collect::<Vec<_>>(),
         ["z", "a"]
     );
-    assert_eq!(events[0].1["activity"], "last");
+    assert_eq!(activity[0]["activity"], "last");
 }

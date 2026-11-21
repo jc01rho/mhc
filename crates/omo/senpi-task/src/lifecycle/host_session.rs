@@ -238,6 +238,61 @@ impl HostEndpointPort for NoHostEndpoint {
     fn notice(&self, _reason: HostEndpointNotice, _socket: &str) {}
 }
 
+/// Read-only view of the endpoint's daemon state a cancel needs once the serving generation does not
+/// list a child (omo#11765): whether the generation the record names still exists, and whether a
+/// drain parked the session for its successor. An unreadable answer is `true`, the conservative one:
+/// it never proves an end.
+pub trait HostGenerationView: Send + Sync {
+    fn generation_present(&self, host_session: &HostSessionIdentity) -> bool;
+    fn parked_entry_present(&self, host_session: &HostSessionIdentity) -> bool;
+}
+
+/// How a daemon-hosted child's end was confirmed; `NotListed` is the reading of a lifecycle with no
+/// generation view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSessionEndVia {
+    CloseSession,
+    GenerationExited,
+    NotListed,
+}
+
+impl HostSessionEndVia {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CloseSession => "close_session",
+            Self::GenerationExited => "generation_exited",
+            Self::NotListed => "not_listed",
+        }
+    }
+}
+
+/// The TS `pending` end collapses natively: the close is synchronous (`host_session_close.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSessionEnd {
+    Ended(HostSessionEndVia),
+    NotEnded(&'static str),
+}
+
+impl HostSessionEnd {
+    pub fn is_ended(self) -> bool {
+        matches!(self, Self::Ended(_))
+    }
+}
+
+/// What a cancel driver reports back to its steering owner: the confirmed end, and the one
+/// settlement of its stop.
+pub trait HostSessionCancelSink: Send + Sync {
+    fn ended(&self);
+    fn settle(&self);
+}
+
+/// A cancel of a daemon-hosted child this process holds no handle for (omo#11765): its confirmed end,
+/// and the driver that keeps trying when the first pass did not end it.
+pub trait HostSessionCancelPort: Send + Sync {
+    fn end(&self, record: &TaskRecord) -> HostSessionEnd;
+    fn drive(&self, record: TaskRecord, sink: Arc<dyn HostSessionCancelSink>);
+}
+
 /// The two bounded waits the daemon path owns (TS HostSessionRetryPolicy). The TS `wait` promise is
 /// the caller's concern natively; the policy carries the millisecond budgets.
 #[derive(Debug, Clone, PartialEq, Eq)]

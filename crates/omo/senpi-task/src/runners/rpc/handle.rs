@@ -21,7 +21,8 @@ use crate::runners::input_effects::{
 use crate::runners::rpc::errors::RpcCommandError;
 use crate::runners::rpc::exit_mapping::classify_child_exit;
 use crate::runners::rpc::heartbeat::{
-    HEARTBEAT_DEADLINE_MS, HeartbeatMachine, MissVerdict, unresponsive_message,
+    HEARTBEAT_DEADLINE_MS, HeartbeatMachine, MissVerdict, heartbeat_request_id,
+    unresponsive_message,
 };
 use crate::runners::rpc::native_run_pause::RpcRunPause;
 use crate::runners::rpc::protocol_client::{RpcClientError, RpcClientPort};
@@ -753,7 +754,9 @@ fn spawn_heartbeat(
             let (answer_tx, answer_rx) = std::sync::mpsc::channel();
             let probe_client = Arc::clone(&client);
             thread::spawn(move || {
-                let _ = answer_tx.send(probe_client.send(json!({ "type": "get_state" })));
+                let _ = answer_tx.send(
+                    probe_client.send(json!({ "type": "get_state", "id": heartbeat_request_id() })),
+                );
             });
             let mut missed = false;
             let mut wait = deadline;

@@ -75,6 +75,8 @@ pub fn build_task_tool_description(input: &DescriptionInput<'_>) -> String {
             .iter()
             .map(|entry| (entry.name.as_str(), entry.description.as_deref())),
     );
+    // Rules first, catalogue last: Claude Code cuts an MCP tool description at 4096 chars (#14291),
+    // so on the Claude subscription path only the head of this text reaches the model.
     format!(
         r#"Spawn one child task or fan out a batch.
 
@@ -84,15 +86,15 @@ Choose exactly one input form:
 
 Each spawn MUST provide EITHER category OR subagent_type after inheritance. DO NOT provide both.
 
-- category routes through Sisyphus-Junior. Available categories:
-{category_list}
-- subagent_type invokes a loaded agent directly. Available agents: {agent_names}{gated_line}{momus_notice}
-
 Blank provider padding is normalized automatically; do not add filler values.
 load_skills prepends named skills. run_in_background=true returns task ids for parallel work; false waits for results.
 name is an optional stable handle. model is an explicit override for subagent_type spawns ONLY.
 NEVER combine model with category: a category-routed task always takes its model from omo.json (categories.<name>.models), so passing both fails with invalid_arguments.
 task_send continues an existing child; task always spawns.
-Prompts MUST be in English."#
+Prompts MUST be in English.
+
+- subagent_type invokes a loaded agent directly. Available agents: {agent_names}{gated_line}{momus_notice}
+- category routes through Sisyphus-Junior. Available categories:
+{category_list}"#
     )
 }

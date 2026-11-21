@@ -1,0 +1,19 @@
+[package]
+name = "maho-omo-call-budget"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "call_budget"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
+
+[lints]
+workspace = true

@@ -75,6 +75,33 @@ impl DagRpcBridge {
             .unwrap_or_else(PoisonError::into_inner)
             .attached = true;
         self.sync();
+        // The attach is what a session's first turn waits on, so the snapshot it owes the client
+        // is emitted before it returns, not one debounce window later (#12113).
+        self.publish_snapshot_now();
+    }
+    /// `resend` (#12113): a client reattached to the retained session, so restate the current
+    /// snapshot even when nothing changed since the last emission.
+    pub fn resend(&self) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if !state.attached {
+                return;
+            }
+            state.fingerprint = None;
+        }
+        self.publish_snapshot_now();
+    }
+    fn publish_snapshot_now(&self) {
+        let pending = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot_flush
+            .take();
+        if let Some(handle) = pending {
+            self.deps.timers.clear(handle);
+        }
+        self.flush_snapshot();
     }
     pub fn forward(&self, event: &Value) {
         let Some(run) = event.get("runId").and_then(Value::as_str) else {

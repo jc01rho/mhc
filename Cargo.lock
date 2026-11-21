@@ -5422,6 +5422,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-omo-call-budget"
+version = "0.0.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "maho-omo-claim-receipt"
 version = "0.0.0"
 dependencies = [

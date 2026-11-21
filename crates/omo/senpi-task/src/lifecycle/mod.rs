@@ -10,8 +10,10 @@ pub mod destroy;
 pub mod errors;
 pub mod host_endpoint_reach;
 pub mod host_session;
+pub mod host_session_cancel_driver;
 pub mod host_session_close;
 pub mod host_session_default;
+pub mod host_session_end;
 pub mod host_session_record;
 pub mod host_session_revive;
 pub mod live_parent_recovery;
@@ -37,10 +39,11 @@ pub use create::{TaskLifecycle, create_task_lifecycle};
 pub use errors::{AgentLimitReached, LifecycleError, ResidentSummary};
 pub use host_session::{
     DEFAULT_HOST_SESSION_RETRY_POLICY, HostDrainingHold, HostEndpointEnsure, HostEndpointNotice,
-    HostEndpointPort, HostSessionLiveness, HostSessionProbe, HostSessionProbePorts,
-    HostSessionRetryPolicy, NoHostEndpoint, canonical_session_path, create_host_session_probe,
-    default_host_session_retry_policy, host_session_identity, host_session_resume_path,
-    is_host_session_record, read_host_draining_hold,
+    HostEndpointPort, HostGenerationView, HostSessionCancelPort, HostSessionCancelSink,
+    HostSessionEnd, HostSessionEndVia, HostSessionLiveness, HostSessionProbe,
+    HostSessionProbePorts, HostSessionRetryPolicy, NoHostEndpoint, canonical_session_path,
+    create_host_session_probe, default_host_session_retry_policy, host_session_identity,
+    host_session_resume_path, is_host_session_record, read_host_draining_hold,
 };
 pub use host_session_close::{
     HostSessionCloseError, HostSessionCloseOutcome, HostSessionCloseRequest, HostSessionCloser,
@@ -49,6 +52,7 @@ pub use host_session_close::{
 pub use host_session_default::{
     HostTransport, NoHostTransport, default_host_session_closer, default_host_session_probe,
 };
+pub use host_session_end::{HostSessionEnds, clear_host_session_end, end_host_session_child};
 pub use host_session_revive::{
     BeforeAttemptFn, DEFERRED_HOST_REASONS, HostSessionParkOptions, HostSessionParkOutcome,
     park_host_session_on_daemon_loss, retry_deferred_host_session, retry_deferred_host_sessions,
