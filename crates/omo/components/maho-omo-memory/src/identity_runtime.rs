@@ -367,6 +367,13 @@ impl crate::worker::runner_types::ReflectionReservationPort for ReflectionReserv
         ReflectionReservationStore::complete_with_options(self, run, outcome, options)
             .map_err(|error| error.to_string())
     }
+    fn promote_pending(
+        &self,
+        wait_timeout_ms: Option<u64>,
+    ) -> Result<Option<memory_core::reflection::ReservedRun>, String> {
+        ReflectionReservationStore::promote_pending(self, wait_timeout_ms)
+            .map_err(|error| error.to_string())
+    }
 }
 #[cfg(test)]
 mod tests {

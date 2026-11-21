@@ -16,6 +16,7 @@ Commands:
                                  Get, inspect or end the shared RPC daemon (one JSON line per call)
   mhc auth <command>            Print credentials or check provider readiness
   mhc doctor                    Run diagnostics on configuration, trust, and resources
+  mhc doctor --fix [--dry-run]  Release stale reflection locks and dead-owner runtime locks (omo build only)
   mhc import-omo [--from <dir>] [--force]
                                  Import config, auth, and sessions from OmO agent directory
   mhc ulw-loop <command>        Manage ulw-loop goals, criteria, and evidence

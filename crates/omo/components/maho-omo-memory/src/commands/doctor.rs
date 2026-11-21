@@ -4,6 +4,10 @@
 use std::sync::Arc;
 
 use maho_ext_api::ExtensionApi;
+use memory_core::reflection::{
+    StaleLockReaperOptions, format_stale_lock_fix_lines, reclaim_dead_owner_locks,
+    run_stale_lock_reaper,
+};
 
 use super::doctor_checks::{
     CheckLevel, DoctorCheck, check_abandoned_runs, check_disk, check_frontmatter, check_locks,
@@ -66,20 +70,97 @@ fn check_facts(deps: &MemoryCommandDeps, identity: &MemoryCommandIdentity) -> Op
     })
 }
 
+const DOCTOR_USAGE: &str = "usage: /doctor [--json] [--fix [--dry-run]]";
+
+struct DoctorArgs {
+    json: bool,
+    fix: bool,
+    dry_run: bool,
+}
+
+fn parse_doctor_args(args: &str) -> Result<DoctorArgs, String> {
+    let mut parsed = DoctorArgs {
+        json: false,
+        fix: false,
+        dry_run: false,
+    };
+    for token in args.split_whitespace() {
+        match token {
+            "--json" => parsed.json = true,
+            "--fix" => parsed.fix = true,
+            "--dry-run" => parsed.dry_run = true,
+            flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
+            _ => return Err(DOCTOR_USAGE.to_owned()),
+        }
+    }
+    if parsed.dry_run && !parsed.fix {
+        return Err(DOCTOR_USAGE.to_owned());
+    }
+    Ok(parsed)
+}
+
+/// `/doctor --fix`: the shared stale-lock reaper (omo #12517) for this session's identity, with the
+/// minimal settle `mhc doctor --fix` uses, then the dead-owner runtime lock sweep.
+fn reflection_lock_fix_lines(identity: &MemoryCommandIdentity, dry_run: bool) -> Vec<String> {
+    let mut options = StaleLockReaperOptions::new(&identity.identity_paths.runtime);
+    options.dry_run = dry_run;
+    match run_stale_lock_reaper(&options) {
+        Ok(report) => {
+            let locks =
+                (!dry_run).then(|| reclaim_dead_owner_locks(&identity.identity_paths.locks));
+            let lines = format_stale_lock_fix_lines(&identity.identity, &report, locks.as_ref());
+            if lines.is_empty() {
+                vec!["no stale reflection lock to release".to_owned()]
+            } else {
+                lines
+            }
+        }
+        Err(error) => vec![format!(
+            "FAIL {} reflection lock fix failed: {error}",
+            identity.identity
+        )],
+    }
+}
+
 pub async fn handle_doctor(
     deps: &MemoryCommandDeps,
     ctx: &CommandContext,
     args: &str,
 ) -> CommandResponse {
-    let parsed_json = args.contains("--json");
+    let parsed = match parse_doctor_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return respond(ctx, error, NotifyLevel::Error),
+    };
+    let parsed_json = parsed.json;
     let identity = match require_identity(deps, ctx) {
         Ok(identity) => identity,
         Err(error) => return respond(ctx, error, NotifyLevel::Error),
     };
+    // The fix writes reflection run state: a memory-write-denied session runs every read-only
+    // check but never the fix or the skill frontmatter repair (`crate::write_policy`).
+    let write_denied = ctx
+        .session_id
+        .as_deref()
+        .and_then(|session| (deps.resolve_context)(session))
+        .is_some_and(|context| context.memory_write_denied);
+    let mut extra: Vec<String> = Vec::new();
+    if parsed.fix {
+        if write_denied {
+            extra.push(format!(
+                "[info] fix skipped; {}",
+                crate::write_policy::memory_write_denied_message("reflection lock fix")
+            ));
+        } else {
+            extra.extend(
+                reflection_lock_fix_lines(&identity, parsed.dry_run)
+                    .into_iter()
+                    .map(|line| format!("[fix] {line}")),
+            );
+        }
+    }
 
     let repository = check_repository(&identity);
     let mut checks = vec![repository];
-    let mut extra: Vec<String> = Vec::new();
     let mut receipts_summary: Option<super::doctor_receipts::ReceiptSummaries> = None;
     let mut quarantined_runs: Vec<super::doctor_receipts::QuarantinedRun> = Vec::new();
 
@@ -145,13 +226,6 @@ pub async fn handle_doctor(
             checks.push(facts);
         }
 
-        // The skill frontmatter repair writes into the memory repository: a memory-write-denied
-        // session runs every read-only check but never the repair (`crate::write_policy`).
-        let write_denied = ctx
-            .session_id
-            .as_deref()
-            .and_then(|session| (deps.resolve_context)(session))
-            .is_some_and(|context| context.memory_write_denied);
         if write_denied {
             extra.push(format!(
                 "[info] skills: frontmatter repair skipped; {}",
@@ -658,5 +732,100 @@ mod tests {
 
         assert!(response.text.contains("not bound"));
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
+    }
+
+    fn write_dead_launcher_lock(identity: &MemoryCommandIdentity) -> std::path::PathBuf {
+        let reflection = &identity.identity_paths.reflection;
+        std::fs::create_dir_all(reflection).expect("reflection dir");
+        let lock = reflection.join("active.lock");
+        std::fs::write(
+            &lock,
+            serde_json::json!({
+                "runId": "reflection-run-1",
+                "request": {"trigger": "manual", "conversationIds": [], "snapshots": []},
+                "reservedAt": "2020-01-01T00:00:00.000Z",
+                "launcherPid": 2_000_000_000u32,
+                "launcherHostname": memory_core::support::host::hostname(),
+                "launcherProcessStart": null,
+            })
+            .to_string(),
+        )
+        .expect("active.lock");
+        lock
+    }
+
+    #[tokio::test]
+    async fn given_a_launcher_that_died_before_its_run_started_when_doctor_fix_runs_then_the_lock_is_released()
+     {
+        let (_root, identity, fake) = harness(true);
+        let lock = write_dead_launcher_lock(&identity);
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let response = handle_doctor(&fake.deps, &context.ctx, "--fix").await;
+
+        assert!(
+            response.text.contains(&format!(
+                "[fix] FIXED {} active.lock run reflection-run-1 (launch-interrupted)",
+                identity.identity
+            )),
+            "{}",
+            response.text
+        );
+        assert!(!lock.exists());
+        assert!(
+            identity
+                .identity_paths
+                .reflection
+                .join("runs/reflection-run-1/abandoned.json")
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn given_a_dead_launchers_lock_when_doctor_fix_dry_run_runs_then_it_previews_and_changes_nothing()
+     {
+        let (_root, identity, fake) = harness(true);
+        let lock = write_dead_launcher_lock(&identity);
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let response = handle_doctor(&fake.deps, &context.ctx, "--fix --dry-run").await;
+
+        assert!(
+            response.text.contains(&format!(
+                "[fix] WOULD FIX {} active.lock run reflection-run-1 (launch-interrupted)",
+                identity.identity
+            )),
+            "{}",
+            response.text
+        );
+        assert!(lock.exists());
+        assert!(!identity.identity_paths.reflection.join("runs").exists());
+    }
+
+    #[tokio::test]
+    async fn given_no_stale_lock_when_doctor_fix_runs_then_it_says_nothing_needed_releasing() {
+        let (_root, _identity, fake) = harness(true);
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let response = handle_doctor(&fake.deps, &context.ctx, "--fix").await;
+
+        assert!(
+            response
+                .text
+                .contains("[fix] no stale reflection lock to release")
+        );
+    }
+
+    #[tokio::test]
+    async fn given_a_flag_doctor_does_not_know_or_a_dry_run_without_fix_then_it_refuses_with_the_usage()
+     {
+        let (_root, _identity, fake) = harness(true);
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let unknown = handle_doctor(&fake.deps, &context.ctx, "--repair").await;
+        let lone_dry_run = handle_doctor(&fake.deps, &context.ctx, "--dry-run").await;
+
+        assert_eq!(unknown.text, "unknown flag --repair");
+        assert_eq!(lone_dry_run.text, DOCTOR_USAGE);
     }
 }
