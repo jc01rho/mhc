@@ -106,42 +106,14 @@ fn list_env_contains(env: &BTreeMap<String, String>, key: &str, skill_name: &str
     })
 }
 
-fn layer_enables_skill(data: &serde_json::Value, skill_name: &str) -> bool {
-    if data
-        .get("enabled_skills")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|items| items.iter().any(|v| v.as_str() == Some(skill_name)))
-    {
-        return true;
-    }
-    if let Some(skills_obj) = data.get("skills").and_then(serde_json::Value::as_object) {
-        if skills_obj
-            .get("enable")
-            .or_else(|| skills_obj.get("enabled"))
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|items| items.iter().any(|v| v.as_str() == Some(skill_name)))
-        {
-            return true;
-        }
-        if let Some(entry) = skills_obj.get(skill_name) {
-            if entry.as_bool() == Some(true)
-                || entry.get("enabled").and_then(serde_json::Value::as_bool) == Some(true)
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Whether a bundled skill is enabled by default or explicitly opted in (POL-03).
 ///
 /// Skills outside [`DEFAULT_OPT_IN_SKILLS`] are always enabled unless listed in `disabled_skills`.
-/// An opt-in skill such as `eval-integrity` (#7593) is off by default and turns on when enabled by
-/// environment (`OMO_ENABLE_EVAL_INTEGRITY=1`, `MAHO_ENABLE_EVAL_INTEGRITY=1`, `OMO_ENABLED_SKILLS`,
-/// `MAHO_ENABLED_SKILLS`) or by an `omo.jsonc` layer (`enabled_skills: ["eval-integrity"]` or
-/// `skills.eval-integrity.enabled = true`).
-pub fn is_opt_in_skill_enabled(name: &str, cwd: &Path, env: &BTreeMap<String, String>) -> bool {
+/// An opt-in skill such as `eval-integrity` (#7593) is off by default and turns on only through the
+/// environment: `OMO_ENABLE_EVAL_INTEGRITY` / `MAHO_ENABLE_EVAL_INTEGRITY` for that skill, or the
+/// shared `OMO_ENABLED_SKILLS` / `MAHO_ENABLED_SKILLS` list for any of them. A config key cannot do
+/// it, because `omo.jsonc` accepts no skill-enablement key and strips unknown keys.
+pub fn is_opt_in_skill_enabled(name: &str, env: &BTreeMap<String, String>) -> bool {
     if !DEFAULT_OPT_IN_SKILLS.contains(&name) {
         return true;
     }
@@ -155,20 +127,8 @@ pub fn is_opt_in_skill_enabled(name: &str, cwd: &Path, env: &BTreeMap<String, St
     {
         return true;
     }
-    if list_env_contains(env, ENABLED_SKILLS_ENV, name)
+    list_env_contains(env, ENABLED_SKILLS_ENV, name)
         || list_env_contains(env, MAHO_ENABLED_SKILLS_ENV, name)
-    {
-        return true;
-    }
-    let loaded = load_omo_config(&LoadOmoConfigOptions {
-        cwd: Some(cwd.to_string_lossy().into_owned()),
-        env: Some(env.clone()),
-        ..Default::default()
-    });
-    loaded
-        .layers
-        .iter()
-        .any(|layer| layer_enables_skill(&layer.config, name))
 }
 
 /// Which file the session's skills listing resolves for `name`, compared with the bundled copy at
@@ -261,7 +221,7 @@ pub fn resolve_bundled_skill_provenance(
 /// earlier pass is not a rival. `disabled_skills` hides the skill exactly as it hides a bundled one.
 pub fn resolve_contributed_skill(options: ResolveContributedSkillOptions<'_>) -> ContributedSkill {
     if read_disabled_skills(&options.cwd, options.env).contains(options.name)
-        || !is_opt_in_skill_enabled(options.name, &options.cwd, options.env)
+        || !is_opt_in_skill_enabled(options.name, options.env)
     {
         return ContributedSkill::Disabled;
     }

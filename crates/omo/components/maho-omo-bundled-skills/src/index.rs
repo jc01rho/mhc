@@ -125,7 +125,7 @@ fn collect_skill_paths(
             hidden.push(name);
             continue;
         }
-        if !is_opt_in_skill_enabled(&name, cwd, env) {
+        if !is_opt_in_skill_enabled(&name, env) {
             continue;
         }
         skill_paths.push(ResourceDiscoverEntry {

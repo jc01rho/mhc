@@ -142,13 +142,9 @@ async fn eval_integrity_is_off_by_default_and_enabled_when_opted_in() {
     let root = skills_root();
 
     let default_env = support::env_for_home(&home);
-    assert!(!is_opt_in_skill_enabled(
-        "eval-integrity",
-        &home,
-        &default_env
-    ));
-    assert!(is_opt_in_skill_enabled("hyperplan", &home, &default_env));
-    assert!(is_opt_in_skill_enabled("omo-relay", &home, &default_env));
+    assert!(!is_opt_in_skill_enabled("eval-integrity", &default_env));
+    assert!(is_opt_in_skill_enabled("hyperplan", &default_env));
+    assert!(is_opt_in_skill_enabled("omo-relay", &default_env));
 
     let mut runner_default = ExtensionRunner::from_static(
         vec![Box::new(BundledSkillsComponent::new(
@@ -187,11 +183,7 @@ async fn eval_integrity_is_off_by_default_and_enabled_when_opted_in() {
 
     let mut opt_in_env = default_env.clone();
     opt_in_env.insert(ENABLE_EVAL_INTEGRITY_ENV.to_owned(), "1".to_owned());
-    assert!(is_opt_in_skill_enabled(
-        "eval-integrity",
-        &home,
-        &opt_in_env
-    ));
+    assert!(is_opt_in_skill_enabled("eval-integrity", &opt_in_env));
 
     let mut runner_opt_in = ExtensionRunner::from_static(
         vec![Box::new(BundledSkillsComponent::new(
@@ -214,17 +206,16 @@ async fn eval_integrity_is_off_by_default_and_enabled_when_opted_in() {
             .any(|e| e.path.contains("eval-integrity/SKILL.md"))
     );
 
-    std::fs::create_dir_all(home.join(".omo")).expect("config dir");
-    std::fs::write(
-        home.join(".omo/omo.jsonc"),
-        r#"{"enabled_skills":["eval-integrity"]}"#,
-    )
-    .expect("write config");
-    assert!(is_opt_in_skill_enabled(
-        "eval-integrity",
-        &home,
-        &default_env
-    ));
+    assert_eq!(
+        resolve_contributed_skill(ResolveContributedSkillOptions {
+            commands: None,
+            name: "eval-integrity",
+            path: root.join("eval-integrity/SKILL.md"),
+            cwd: home.clone(),
+            env: &default_env,
+        }),
+        ContributedSkill::Disabled
+    );
     let eval_path = root.join("eval-integrity/SKILL.md");
     assert_eq!(
         resolve_contributed_skill(ResolveContributedSkillOptions {
@@ -232,7 +223,7 @@ async fn eval_integrity_is_off_by_default_and_enabled_when_opted_in() {
             name: "eval-integrity",
             path: eval_path.clone(),
             cwd: home.clone(),
-            env: &default_env,
+            env: &opt_in_env,
         }),
         ContributedSkill::Contributed { path: eval_path }
     );
