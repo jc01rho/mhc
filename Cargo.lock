@@ -6339,6 +6339,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-sync-server"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "futures",
+ "maho-memory-core",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-task"
 version = "0.0.0"
 dependencies = [

@@ -27,6 +27,7 @@ members = [
     "crates/maho-process-env",
     "crates/maho-test-support",
     "crates/maho-support",
+    "crates/maho-sync-server",
     "crates/maho-config",
     "crates/maho-model-select",
     "crates/maho-comment-checker",
