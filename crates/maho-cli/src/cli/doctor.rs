@@ -14,6 +14,10 @@ use memory_core::reflection::{
     sweep_host_identities, sweep_identity_orphan_worktrees,
 };
 
+use memory_core::retention::{
+    ForeignMemoryRuntimeSettings, RetentionHostSweepStepOptions, create_retention_host_sweep_step,
+};
+
 use crate::cli::doctor_memory_runtime::doctor_memory_runtime_lines;
 
 const DEFAULT_CATEGORIES: &[&str] = &[
@@ -356,6 +360,18 @@ fn orphan_lines(identity: &str, report: &IdentityOrphanSweepReport, dry_run: boo
     lines
 }
 
+/// `memory.runtime` from the GLOBAL omo config only: the sweep visits identities this process does
+/// not host, so another project's layer never decides what is deleted for them.
+fn global_memory_runtime_settings() -> Option<ForeignMemoryRuntimeSettings> {
+    let env = env_map();
+    let home = env.get("HOME").or_else(|| env.get("USERPROFILE"))?;
+    let loaded = loaded_config(Path::new(home), &env);
+    loaded
+        .config
+        .get("memory")
+        .map(ForeignMemoryRuntimeSettings::from_json)
+}
+
 /// `mhc doctor --fix`: one host-wide sweep over every identity that has a `runtime/` (repo or not),
 /// resuming at the persisted cursor. Each step is one closure in `steps`; the reaper and the
 /// dead-owner lock sweep come first, then the git-backed orphan worktree sweep, which skips an
@@ -406,7 +422,30 @@ pub fn reflection_lock_fix(options: &ReflectionLockFixOptions<'_>) -> Reflection
             }
         }
     };
-    let steps: Vec<HostSweepStep<'_>> = vec![Box::new(reap), Box::new(orphans)];
+    let retention_settings = global_memory_runtime_settings();
+    let retention_now: &dyn Fn() -> i64 = &|| {
+        options
+            .probe
+            .now
+            .map_or_else(memory_core::support::time::now_millis, |clock| {
+                clock() as i64
+            })
+    };
+    let mut retention_step = create_retention_host_sweep_step(RetentionHostSweepStepOptions {
+        settings: retention_settings,
+        now: Some(retention_now),
+        dry_run,
+        ..RetentionHostSweepStepOptions::default()
+    });
+    let retention = |identity: &HostSweepIdentity| -> Result<Vec<String>, String> {
+        let lines = retention_step(identity)?;
+        if lines.iter().any(|line| line.starts_with("FAIL ")) {
+            failed.set(true);
+        }
+        Ok(lines)
+    };
+    let steps: Vec<HostSweepStep<'_>> =
+        vec![Box::new(reap), Box::new(orphans), Box::new(retention)];
     let mut sweep = HostSweepOptions::new(options.memory_root);
     sweep.steps = steps;
     sweep.dry_run = dry_run;
