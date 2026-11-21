@@ -17,6 +17,8 @@ mod factory;
 mod faux_session;
 #[path = "formatter.rs"]
 mod formatter;
+#[path = "hephaestus_gpt62.rs"]
+mod hephaestus_gpt62;
 #[path = "hooks.rs"]
 mod hooks;
 #[path = "matcher.rs"]
