@@ -16,6 +16,7 @@ pub mod provenance;
 pub use provenance::*;
 pub mod recall;
 pub mod receipts;
+pub mod retention;
 pub mod reflection;
 pub mod reminders;
 pub mod search;

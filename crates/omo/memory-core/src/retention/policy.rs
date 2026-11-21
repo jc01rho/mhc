@@ -205,6 +205,51 @@ impl<'a> RetentionContext<'a> {
         }
     }
 
+    /// The same context with the pass budget attached; the result lives as long as the borrow.
+    pub fn with_budget<'b>(&self, budget: &'b PassBudget<'b>) -> RetentionContext<'b>
+    where
+        'a: 'b,
+    {
+        RetentionContext {
+            paths: self.paths,
+            policy: self.policy,
+            now: self.now,
+            is_live_session: self.is_live_session,
+            reflection_enabled: self.reflection_enabled,
+            cancel: self.cancel,
+            warn: self.warn,
+            before_claim_rename: self.before_claim_rename,
+            budget: Some(budget),
+            before_journal_claim: self.before_journal_claim,
+            before_tombstone_delete: self.before_tombstone_delete,
+        }
+    }
+
+    /// The same context with another clock, another policy, or both; the result lives as long as
+    /// the borrow.
+    pub fn with_policy_and_now<'b>(
+        &self,
+        policy: RuntimeRetentionPolicy,
+        now: &'b dyn Fn() -> i64,
+    ) -> RetentionContext<'b>
+    where
+        'a: 'b,
+    {
+        RetentionContext {
+            paths: self.paths,
+            policy,
+            now,
+            is_live_session: self.is_live_session,
+            reflection_enabled: self.reflection_enabled,
+            cancel: self.cancel,
+            warn: self.warn,
+            before_claim_rename: self.before_claim_rename,
+            budget: self.budget,
+            before_journal_claim: self.before_journal_claim,
+            before_tombstone_delete: self.before_tombstone_delete,
+        }
+    }
+
     pub fn now_ms(&self) -> i64 {
         (self.now)()
     }
