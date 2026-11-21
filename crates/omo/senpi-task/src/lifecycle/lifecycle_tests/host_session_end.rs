@@ -141,7 +141,7 @@ fn opens(fixture: &Fixture) -> usize {
 #[test]
 fn a_confirmed_close_is_the_end_and_answers_again_until_the_destruction_clears_it() {
     let fixture = fixture(HostSessionLiveness::Live, None, &[true], |_| {});
-    let record = seed(&fixture, "st_hse00001");
+    let record = seed(&fixture, "st_0000e001");
 
     let first = end_host_session_child(&fixture.context, &record);
     let again = end_host_session_child(&fixture.context, &record);
@@ -163,7 +163,7 @@ fn a_confirmed_close_is_the_end_and_answers_again_until_the_destruction_clears_i
 #[test]
 fn a_refused_close_is_not_an_end_and_the_next_pass_asks_again() {
     let fixture = fixture(HostSessionLiveness::Live, None, &[false, true], |_| {});
-    let record = seed(&fixture, "st_hse00002");
+    let record = seed(&fixture, "st_0000e002");
 
     assert_eq!(
         end_host_session_child(&fixture.context, &record),
@@ -187,7 +187,7 @@ fn not_listed_is_not_an_end_while_the_records_generation_still_runs() {
         &[],
         |_| {},
     );
-    let record = seed(&fixture, "st_hse00003");
+    let record = seed(&fixture, "st_0000e003");
 
     assert_eq!(
         end_host_session_child(&fixture.context, &record),
@@ -207,7 +207,7 @@ fn a_session_parked_for_the_successor_is_closed_there() {
         &[true],
         |_| {},
     );
-    let record = seed(&fixture, "st_hse00004");
+    let record = seed(&fixture, "st_0000e004");
 
     assert_eq!(
         end_host_session_child(&fixture.context, &record),
@@ -227,7 +227,7 @@ fn a_gone_generation_with_no_parked_entry_proves_the_end_and_records_it() {
         &[],
         |_| {},
     );
-    let record = seed(&fixture, "st_hse00005");
+    let record = seed(&fixture, "st_0000e005");
 
     assert_eq!(
         end_host_session_child(&fixture.context, &record),
@@ -247,11 +247,14 @@ fn held_closer(
     release: Receiver<()>,
     opens: Arc<Mutex<usize>>,
 ) -> HostSessionCloser {
+    let entered = Mutex::new(entered);
     let release = Mutex::new(release);
     Arc::new(
         move |_request: &HostSessionCloseRequest| -> Result<(), HostSessionCloseError> {
             *lock(&opens) += 1;
-            entered.send(()).expect("the test watches every close");
+            lock(&entered)
+                .send(())
+                .expect("the test watches every close");
             lock(&release)
                 .recv_timeout(WAIT)
                 .expect("the test releases the held close");
@@ -269,7 +272,7 @@ fn an_earlier_runs_end_in_flight_is_never_joined_or_doubled_by_a_later_run() {
     let fixture = fixture(HostSessionLiveness::Live, None, &[], |deps| {
         deps.host_session_close = Some(closer);
     });
-    let run_n = seed(&fixture, "st_hse00006");
+    let run_n = seed(&fixture, "st_0000e006");
     let mut run_n1 = run_n.clone();
     run_n1.notification.run_epoch += 1;
     let context = fixture.context.clone();
@@ -297,7 +300,7 @@ fn every_entrant_of_one_run_gets_the_pass_in_flight() {
     let fixture = fixture(HostSessionLiveness::Live, None, &[], |deps| {
         deps.host_session_close = Some(closer);
     });
-    let record = seed(&fixture, "st_hse00007");
+    let record = seed(&fixture, "st_0000e007");
     let first_context = fixture.context.clone();
     let first_record = record.clone();
     let first = std::thread::spawn(move || end_host_session_child(&first_context, &first_record));
@@ -317,14 +320,18 @@ fn every_entrant_of_one_run_gets_the_pass_in_flight() {
     assert_eq!(*lock(&held_opens), 1);
 }
 
-struct Sink(Sender<&'static str>);
+struct Sink(Mutex<Sender<&'static str>>);
 
 impl HostSessionCancelSink for Sink {
     fn ended(&self) {
-        self.0.send("ended").expect("the test watches the sink");
+        lock(&self.0)
+            .send("ended")
+            .expect("the test watches the sink");
     }
     fn settle(&self) {
-        self.0.send("settled").expect("the test watches the sink");
+        lock(&self.0)
+            .send("settled")
+            .expect("the test watches the sink");
     }
 }
 
@@ -352,7 +359,7 @@ fn the_cancel_driver_finishes_the_cancel_on_the_pass_that_confirms_the_end() {
         &[false, false, true],
         instant_retries,
     );
-    let record = seed(&fixture, "st_hse00008");
+    let record = seed(&fixture, "st_0000e008");
     assert_eq!(
         end_host_session_child(&fixture.context, &record),
         HostSessionEnd::NotEnded("close_refused")
@@ -368,7 +375,7 @@ fn the_cancel_driver_finishes_the_cancel_on_the_pass_that_confirms_the_end() {
 #[test]
 fn the_cancel_driver_only_settles_once_the_task_moved_to_another_run() {
     let fixture = fixture(HostSessionLiveness::Live, None, &[false], instant_retries);
-    let record = seed(&fixture, "st_hse00009");
+    let record = seed(&fixture, "st_0000e009");
     assert_eq!(
         end_host_session_child(&fixture.context, &record),
         HostSessionEnd::NotEnded("close_refused")
