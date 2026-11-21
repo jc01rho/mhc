@@ -184,6 +184,16 @@ fn run() -> Result<(), String> {
         output(&record)?;
         std::process::exit(code);
     }
+    // senpi cli.ts `dispatchSessionOfPidCommand`: a metadata command answered right after the agent
+    // directory one, before settings, migrations, extensions or hosts.
+    if let Some((record, code)) = maho_cli::cli::session_of_pid::session_of_pid_command_output(
+        &argv,
+        &startup_env,
+        &maho_core::config::home_dir(),
+    ) {
+        output(&record)?;
+        std::process::exit(code);
+    }
     maho_process_env::apply(
         &startup_env,
         &maho_cli::cli::setup::startup_process_env(&argv, &startup_env),
