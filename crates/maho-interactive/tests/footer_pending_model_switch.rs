@@ -86,13 +86,13 @@ fn keeps_full_held_target_when_width_allows_with_session_name() {
 
 #[test]
 fn elides_held_target_and_keeps_context_meter_at_narrow_and_eighty_columns() {
-    for width in [NARROW, EIGHTY] {
+    for (width, expected_model) in [(NARROW, "claude-opus-5-5"), (EIGHTY, "opus-5-5")] {
         let mut snapshot = base_snapshot(Some(LONG_TARGET));
         snapshot.session_name = Some("a-session-name-that-costs-width".into());
         let plain = strip_terminal_sequences(&render_footer_top(width, snapshot));
         assert!(
             plain.contains(&format!(
-                "claude-opus-5-5 medium → {ELIDED_TARGET} (after compact)"
+                "{expected_model} medium → {ELIDED_TARGET} (after compact)"
             )),
             "width={width}: {plain}"
         );
@@ -119,7 +119,7 @@ fn keeps_short_held_target_whole_without_elision() {
         base_snapshot(Some("mock-small")),
     ));
     assert!(
-        plain.contains("claude-opus-5-5 medium → mock-small (after compact)"),
+        plain.contains("opus-5-5 medium → mock-small (after compact)"),
         "{plain}"
     );
     assert!(plain.contains("ctx 12%"), "{plain}");
