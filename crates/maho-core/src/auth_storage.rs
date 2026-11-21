@@ -1655,13 +1655,16 @@ impl AuthStorage {
                 .to_string_lossy()
                 .into_owned();
             let after = self.get(provider_id);
-            crate::credential_pool::state_store::retire_login_slot_health(
-                &state_path,
-                provider_id,
-                before.as_ref(),
-                after.as_ref(),
-            )
-            .await;
+            let retire: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> =
+                Box::pin(
+                    crate::credential_pool::state_store::retire_login_slot_health(
+                        &state_path,
+                        provider_id,
+                        before.as_ref(),
+                        after.as_ref(),
+                    ),
+                );
+            retire.await;
         }
         Ok(())
     }
