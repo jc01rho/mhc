@@ -9,8 +9,12 @@ mod loader;
 mod migration;
 #[path = "models.rs"]
 mod models;
+#[path = "models_distribution.rs"]
+mod models_distribution;
 #[path = "schema.rs"]
 mod schema;
+#[path = "schema_5179.rs"]
+mod schema_5179;
 #[path = "schema_json.rs"]
 mod schema_json;
 #[path = "writer.rs"]

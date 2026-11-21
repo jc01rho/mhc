@@ -721,6 +721,14 @@ fn full_memory_defaults() -> Value {
             "query_expansion": false,
         },
         "project_scope": { "nudge": true, "recall": true },
+        "runtime": {
+            "retention_days": 7,
+            "abandoned_journal_days": 14,
+            "completions_days": 30,
+            "pass_budget_ms": 60000,
+            "discard_unreflected_journals": false,
+            "max_bytes": 2_u64 * 1024 * 1024 * 1024,
+        },
         "compile_warn_tokens": 30000,
         "agents": {},
     })
@@ -775,6 +783,14 @@ fn memory_settings_preserve_a_fully_specified_block() {
             "query_expansion": false,
         },
         "project_scope": { "nudge": false, "recall": false },
+        "runtime": {
+            "retention_days": 10,
+            "abandoned_journal_days": 21,
+            "completions_days": 45,
+            "pass_budget_ms": 30000,
+            "discard_unreflected_journals": true,
+            "max_bytes": 1024 * 1024 * 1024,
+        },
         "compile_warn_tokens": 50000,
         "agents": {
             "backend-lead": { "enabled": true, "reflection": { "trigger": { "step_count": 10 }, "category": "quick" } }
@@ -1286,6 +1302,11 @@ fn computer_settings_round_trip_every_key() {
         "screenshot_gc": { "enabled": true, "stale_ms": 0, "scan_interval_ms": 60_000 },
         "engine_path": "/opt/engine",
         "cua_adapter": true,
+        "showCursor": false,
+        "run_sandbox": "quickjs",
+        "intervention": "continue",
+        "macos_key_priming": "on",
+        "trace": true,
     });
     assert_eq!(
         parsed(
@@ -1331,6 +1352,11 @@ fn computer_harness_support_is_native_only() {
         "computer.screenshot_gc",
         "computer.engine_path",
         "computer.cua_adapter",
+        "computer.showCursor",
+        "computer.run_sandbox",
+        "computer.intervention",
+        "computer.macos_key_priming",
+        "computer.trace",
     ] {
         let supported = omo_config_core::computer_setting_harness_support(setting_path);
         assert_eq!(

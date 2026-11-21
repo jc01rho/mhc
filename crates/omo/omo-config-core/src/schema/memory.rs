@@ -114,6 +114,17 @@ fn default_empty_object() -> Value {
     json!({})
 }
 
+fn default_runtime() -> Value {
+    json!({
+        "retention_days": 7,
+        "abandoned_journal_days": 14,
+        "completions_days": 30,
+        "pass_budget_ms": 60000,
+        "discard_unreflected_journals": false,
+        "max_bytes": OMO_MEMORY_RUNTIME_DEFAULT_MAX_BYTES,
+    })
+}
+
 fn optional_field(key: &'static str, node: Node) -> Field {
     optional(key, node)
 }
@@ -378,6 +389,38 @@ pub fn omo_memory_projection_layer_schema() -> Node {
     ])
 }
 
+// Runtime retention (omo #10144, #12479, #12532): windows in days for the per-identity runtime/
+// stores, the per-pass time budget, and the per-identity size cap (`max_bytes`, `0` = unbounded).
+// `discard_unreflected_journals` gates every deletion of transcript input reflection never folded
+// into memory; it ships off because the loss is irreversible.
+pub const OMO_MEMORY_RUNTIME_DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+pub fn omo_memory_runtime_schema() -> Node {
+    strict_object(vec![
+        defaulted("retention_days", integer().with_min(1.0), || json!(7)),
+        defaulted("abandoned_journal_days", integer().with_min(1.0), || {
+            json!(14)
+        }),
+        defaulted("completions_days", integer().with_min(1.0), || json!(30)),
+        defaulted("pass_budget_ms", integer().with_min(1.0), || json!(60000)),
+        defaulted("discard_unreflected_journals", boolean(), || json!(false)),
+        defaulted("max_bytes", nonnegative_integer(), || {
+            json!(OMO_MEMORY_RUNTIME_DEFAULT_MAX_BYTES)
+        }),
+    ])
+}
+
+pub fn omo_memory_runtime_layer_schema() -> Node {
+    strict_object(vec![
+        optional("retention_days", integer().with_min(1.0)),
+        optional("abandoned_journal_days", integer().with_min(1.0)),
+        optional("completions_days", integer().with_min(1.0)),
+        optional("pass_budget_ms", integer().with_min(1.0)),
+        optional("discard_unreflected_journals", boolean()),
+        optional("max_bytes", nonnegative_integer()),
+    ])
+}
+
 pub fn omo_memory_agent_overrides_schema() -> Node {
     strict_object(vec![
         optional("projection", omo_memory_projection_layer_schema()),
@@ -394,6 +437,7 @@ pub fn omo_memory_agent_overrides_schema() -> Node {
         optional_field("sync", omo_memory_sync_layer_schema()),
         optional_field("search", omo_memory_search_layer_schema()),
         optional_field("recall", omo_memory_recall_layer_schema()),
+        optional("runtime", omo_memory_runtime_layer_schema()),
         optional_field("compile_warn_tokens", positive_integer()),
     ])
 }
@@ -446,6 +490,7 @@ pub fn omo_memory_settings_schema() -> Node {
             omo_memory_project_scope_schema(),
             default_project_scope,
         ),
+        defaulted("runtime", omo_memory_runtime_schema(), default_runtime),
         defaulted(
             "compile_warn_tokens",
             positive_integer(),
@@ -477,6 +522,7 @@ pub fn omo_memory_settings_layer_schema() -> Node {
         optional_field("search", omo_memory_search_layer_schema()),
         optional_field("recall", omo_memory_recall_layer_schema()),
         optional("project_scope", omo_memory_project_scope_layer_schema()),
+        optional("runtime", omo_memory_runtime_layer_schema()),
         optional_field("compile_warn_tokens", positive_integer()),
         optional_field("agents", record(omo_memory_agent_overrides_schema())),
     ])
