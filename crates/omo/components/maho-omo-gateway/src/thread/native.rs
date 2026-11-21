@@ -82,7 +82,17 @@ impl Extension for NativeThreadComponent {
                         Default::default(),
                         runtime,
                     );
-                    for tool in component.tools.into_iter().filter(|tool| {
+                    // With a device service on this device, thread_send reaches <device>/<session>.
+                    let reach_devices = super::remote::device_service_available();
+                    let tools = if reach_devices {
+                        super::remote::with_remote_thread_tools(
+                            component.tools,
+                            Arc::new(super::remote::DeviceServicePort::for_process()),
+                        )
+                    } else {
+                        component.tools
+                    };
+                    for tool in tools.into_iter().filter(|tool| {
                         matches!(
                             tool.name.as_str(),
                             "thread_report"
@@ -90,7 +100,7 @@ impl Extension for NativeThreadComponent {
                                 | "thread_bindings"
                                 | "thread_outbox"
                                 | "thread_outbox_ack"
-                        )
+                        ) || (reach_devices && tool.name == "thread_send")
                     }) {
                         let execute = tool.execute;
                         session_api.try_register_tool(ToolDefinition::new(

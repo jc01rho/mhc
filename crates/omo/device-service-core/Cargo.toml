@@ -1,0 +1,37 @@
+[package]
+name = "maho-device-service-core"
+description = "Native port of omo packages/device-service-core: the local API v1 client (framing, mutual HMAC proof, state-dir access check, requests and events), the device service state dir, and the cold-wake session host unit (written 0644 under any umask)."
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+autotests = false
+
+[lib]
+name = "device_service_core"
+path = "src/lib.rs"
+
+[dependencies]
+base64.workspace = true
+dirs.workspace = true
+getrandom = "=0.4.2"
+hmac = "=0.12.1"
+regex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.6", features = ["fs", "process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

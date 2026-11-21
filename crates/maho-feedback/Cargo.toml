@@ -9,6 +9,7 @@ license = "MIT"
 [dependencies]
 maho-ext-api = { path = "../maho-ext-api" }
 maho-config = { path = "../maho-config" }
+maho-service-endpoints = { path = "../maho-service-endpoints" }
 serde_json.workspace = true
 jiff.workspace = true
 regex.workspace = true

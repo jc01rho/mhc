@@ -35,6 +35,7 @@ pub mod provenance_resolver;
 pub mod read_ops;
 pub mod reader;
 pub mod relay;
+pub mod remote;
 pub mod result;
 pub mod schema;
 pub mod sdk;

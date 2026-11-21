@@ -188,6 +188,17 @@ pub struct SubmitOptions {
     pub idempotency_key: Option<String>,
 }
 
+/// The report intake origin, or empty in local mode (no origin configured, or one the endpoint guard
+/// refuses): reports are then saved locally and nothing is sent.
+// SAFETY-DIVERGENCE(packages/omo-senpi/src/components/feedback/index.ts): upstream defaults the intake to https://api.omo.dev; mhc saves the report locally unless MAHO_SERVICE_API_URL or OMO_SERVICE_API_URL names an origin.
+pub fn feedback_service_origin(env: &BTreeMap<String, String>) -> String {
+    maho_service_endpoints::resolve_service_api(None, |key| env.get(key).cloned())
+        .ok()
+        .flatten()
+        .map(|origin| origin.origin)
+        .unwrap_or_default()
+}
+
 pub fn feedback_uploads_disabled(env: &BTreeMap<String, String>) -> bool {
     env.get("OMO_DISABLE_FEEDBACK").is_some_and(|value| {
         !["", "0", "false", "no", "off"].contains(&value.trim().to_lowercase().as_str())
@@ -426,7 +437,7 @@ pub async fn submit_report(options: SubmitOptions) -> SubmitResult {
         return SubmitResult::Refused(FeedbackSubmitRefusal::Unavailable);
     };
 
-    if feedback_uploads_disabled(&options.env) {
+    if feedback_uploads_disabled(&options.env) || options.api_origin.trim().is_empty() {
         let saved = feedback_dir(&options.state_dir).and_then(|dir| {
             let path = dir.join(format!("report-{}.json", options.draft.draft_id));
             private_write(&path, &json_body).map(|()| path)
@@ -458,6 +469,9 @@ pub async fn submit_report(options: SubmitOptions) -> SubmitResult {
     ));
     if let Some(token) = &options.access_token {
         headers.push(("authorization".to_string(), format!("Bearer {token}")));
+    }
+    if maho_service_endpoints::refuse_if_local_only("feedback.submit").is_err() {
+        return SubmitResult::Refused(FeedbackSubmitRefusal::Unavailable);
     }
     let request = TransportRequest {
         url: format!("{}/v1/reports", options.api_origin.trim_end_matches('/')),

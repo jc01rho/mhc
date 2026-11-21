@@ -1,0 +1,18 @@
+[package]
+name = "maho-service-endpoints"
+description = "Where mhc reaches a hosted service, if anywhere: the service endpoint resolver (explicit setting, MAHO_SERVICE_API_URL, OMO_SERVICE_API_URL, else local mode), the endpoint guard (HTTPS, plain HTTP only to loopback or tailnet hosts) and the process-wide local-only mark that refuses network calls."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+autotests = false
+
+[dependencies]
+url.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
