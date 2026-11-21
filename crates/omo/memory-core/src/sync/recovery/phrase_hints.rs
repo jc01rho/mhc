@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::ports::RecoveryTransport;
 use super::salt_inputs::MAX_RECOVERY_KEYS;
-use crate::sync::RecoveryError;
+use crate::sync::recovery::RecoveryError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhraseRecoveryHint {
