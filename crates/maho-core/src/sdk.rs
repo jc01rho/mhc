@@ -273,6 +273,13 @@ pub async fn create_agent_session(
         SettingsManager::create(&cwd, &agent_dir, &crate::config::home_dir(), true)
     });
     runtime.set_settings_manager(&settings);
+    // senpi#6820 (credential-proxy builtin): credentials named in the user's global settings are withheld from
+    // every agent child and served through the loopback proxy; withheld even when the proxy cannot start.
+    let credential_proxy_settings = settings.get_global().get("credentialProxy").cloned();
+    crate::credential_proxy::runtime::activate_engine_credential_proxy(
+        credential_proxy_settings.as_ref(),
+    )
+    .await;
     let mut manager = options
         .session_manager
         .take()

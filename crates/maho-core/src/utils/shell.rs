@@ -2,10 +2,11 @@
 
 use std::collections::BTreeMap;
 
-/// `getShellEnv()`: the process environment (including extension `process.env` writes) with the
-/// agent bin dir prepended to PATH.
+/// `getShellEnv()`: the process environment (including extension `process.env` writes) with declared
+/// credentials withheld (senpi#6820) and the agent bin dir prepended to PATH.
 pub fn get_shell_env() -> BTreeMap<String, String> {
-    let mut env = maho_ext_api::process_env::vars();
+    let mut env: BTreeMap<String, String> =
+        maho_tools::credential_proxy_holds::with_credential_proxy(maho_ext_api::process_env::vars());
     let key = env
         .keys()
         .find(|key| key.eq_ignore_ascii_case("path"))

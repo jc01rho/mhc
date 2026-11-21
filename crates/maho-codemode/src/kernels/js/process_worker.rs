@@ -17,9 +17,9 @@ pub async fn spawn_process_worker(
         None => require_codemode_runtime_asset(None, Path::new("kernels/js/process-entry.js"))
             .map_err(|error| ProcessError::Startup(error.to_string()))?,
     };
-    let mut env = maho_ext_api::process_env::vars()
-        .into_iter()
-        .collect::<std::collections::HashMap<_, _>>();
+    // senpi#6820: the kernel and its children get the bash tool's view of declared credentials.
+    let mut env: std::collections::HashMap<String, String> =
+        maho_tools::credential_proxy_holds::with_credential_proxy(maho_ext_api::process_env::vars());
     env.insert(
         "SENPI_CODEMODE_PROCESS_POOL_WIDTH".into(),
         options.parallel_pool_width.to_string(),

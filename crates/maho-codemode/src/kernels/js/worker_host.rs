@@ -130,10 +130,12 @@ impl WorkerHost {
             cwd.to_string_lossy().into_owned(),
             parallel_pool_width.to_string(),
         ];
-        // A senpi worker thread inherits the host `process.env`, extension writes included.
-        let mut env = maho_ext_api::process_env::vars()
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
+        // A senpi worker thread inherits the host `process.env`, extension writes included; declared credentials are
+        // withheld from it and its children (senpi#6820).
+        let mut env: std::collections::HashMap<String, String> =
+            maho_tools::credential_proxy_holds::with_credential_proxy(
+                maho_ext_api::process_env::vars(),
+            );
         scrub_host_env(&mut env, env_passthrough);
         let process = SubprocessProcess::spawn("bun", &args, cwd, &env)?;
         Ok(Self { mode, process })
