@@ -36,7 +36,7 @@ fn the_registration_order_is_the_full_upstream_list() {
         let components = omo_components(slot("task"), slot("memory"), &options);
         let names: Vec<&str> = components.iter().map(|component| component.name).collect();
         assert_eq!(names, omo_component_names());
-        assert_eq!(names.len(), 33);
+        assert_eq!(names.len(), 34);
         assert!(!names.contains(&"native-badge"));
         assert_eq!(names[6], "onboarding-scan");
         assert_eq!(names[7], "side-panel");
@@ -56,6 +56,7 @@ fn the_registration_order_is_the_full_upstream_list() {
         assert_eq!(names[30], "memory");
         assert_eq!(names[31], "gateway");
         assert_eq!(names[32], "config-watch");
+        assert_eq!(names[33], "remote");
         // index.test.ts: the production list registers the guard once (#14023).
         assert_eq!(
             names
@@ -91,7 +92,7 @@ fn every_registered_component_has_a_distinct_name() {
     let mut names: Vec<&str> = components.iter().map(|component| component.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 33);
+    assert_eq!(names.len(), 34);
 }
 
 /// `documented-commands.test.ts` case 3: bare skills must be rewritten before other input handlers.

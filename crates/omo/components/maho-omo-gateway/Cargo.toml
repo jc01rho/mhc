@@ -8,6 +8,7 @@ autotests = false
 
 [dependencies]
 maho-ext-api = { path = "../../../maho-ext-api" }
+maho-device-service-core = { path = "../../device-service-core" }
 maho-omo-agent-home = { path = "../maho-omo-agent-home" }
 maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
 maho-omo-config-core = { path = "../../omo-config-core" }

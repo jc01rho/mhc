@@ -8,7 +8,6 @@ use memory_core::sync::keyring_port::DeviceKeyMaterial;
 use serde_json::Value;
 use std::sync::Arc;
 
-pub const DEFAULT_SERVICE_API: &str = "https://api.omo.dev";
 pub type AccountFuture<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
 pub trait CredentialStore: Send + Sync {
@@ -84,25 +83,17 @@ pub fn create_cli_account_source(
     env: &std::collections::BTreeMap<String, String>,
     store: Option<Arc<dyn CredentialStore>>,
 ) -> Result<DeviceAccountSource, String> {
-    let configured = api
-        .or_else(|| env.get("OMO_SERVICE_API_URL").map(String::as_str))
-        .unwrap_or(DEFAULT_SERVICE_API);
-    let parsed =
-        url::Url::parse(configured).map_err(|error| format!("OMO_SERVICE_API_URL: {error}"))?;
-    let loopback = parsed.scheme() == "http"
-        && parsed.host_str() == Some("127.0.0.1")
-        && parsed.port().is_some();
-    if (parsed.scheme() != "https" && !loopback)
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.host_str().is_none()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-        || parsed.path() != "/"
-    {
-        return Err("OMO_SERVICE_API_URL: expected an HTTPS service origin".into());
-    }
-    let api = parsed.origin().ascii_serialization();
+    // SAFETY-DIVERGENCE(packages/omo-senpi/src/components/memory/device-session/account-source.ts): upstream defaults the account API to https://api.omo.dev; mhc resolves it through maho-service-endpoints and is local mode (no signed-in device, no request) when none is configured.
+    let resolved = maho_service_endpoints::resolve_service_api(api, |key| env.get(key).cloned())
+        .map_err(|error| error.to_string())?;
+    let Some(resolved) = resolved else {
+        let local: DeviceAccountSource =
+            Arc::new(|| -> AccountFuture<'static, Option<Arc<DeviceAccount>>> {
+                Box::pin(async { Ok(None) })
+            });
+        return Ok(local);
+    };
+    let api = resolved.origin;
     let store =
         store.unwrap_or_else(|| super::credential_store::OsCredentialStore::for_origin(&api));
     let client = reqwest::Client::new();
@@ -142,6 +133,8 @@ async fn resolve_account(
                 signing_private_pkcs8: decode("signingPrivateKey")?,
                 sealing_private_pkcs8: decode("sealingPrivateKey")?,
             };
+            maho_service_endpoints::refuse_if_local_only("memory.account")
+                .map_err(|refused| refused.to_string())?;
             let token = access_token(&api, &client, store.as_ref()).await?;
             let account_id = account_id_of(&api, &token, &client).await?;
             let device_id = credentials["device"]["id"]
@@ -236,6 +229,19 @@ mod tests {
         )
         .unwrap();
         assert!(source().await.unwrap().is_none());
+    }
+    #[tokio::test]
+    async fn no_service_origin_is_local_mode_and_reads_nothing() {
+        // PendingStore fails every read: a local-mode source must not touch the store at all.
+        let source =
+            create_cli_account_source(None, &Default::default(), Some(Arc::new(PendingStore)))
+                .unwrap();
+        assert!(source().await.unwrap().is_none());
+        let lan = std::collections::BTreeMap::from([(
+            "OMO_SERVICE_API_URL".to_owned(),
+            "http://192.168.0.7".to_owned(),
+        )]);
+        assert!(create_cli_account_source(None, &lan, None).is_err());
     }
     #[test]
     fn service_origin_rejects_paths_credentials_and_plain_http() {

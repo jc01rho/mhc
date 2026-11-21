@@ -104,7 +104,10 @@ impl Fixture {
         Self {
             _dir: dir,
             agent_dir,
-            env: Arc::new(Mutex::new(BTreeMap::new())),
+            env: Arc::new(Mutex::new(BTreeMap::from([(
+                "OMO_SERVICE_API_URL".to_owned(),
+                "https://intake.test".to_owned(),
+            )]))),
             now: Arc::new(Mutex::new(ts("2025-06-07T22:30:00Z"))),
             intake: Arc::new(FakeIntake::default()),
             config: Arc::new(Mutex::new(json!({"theme": "dark"}))),
@@ -955,6 +958,46 @@ fn t13_uploads_off_saves_a_private_local_report() {
     let draft = fx.reports().prepare_json(&json!({"sessionId": null}));
     assert_eq!(draft["destination"], "intake");
     assert_eq!(Destination::Intake.as_str(), "intake");
+}
+
+#[test]
+fn t13_no_intake_origin_is_local_mode_and_sends_nothing() {
+    for configured in [None, Some(""), Some("http://192.168.1.20")] {
+        let fx = Fixture::new();
+        match configured {
+            None => {
+                fx.env.lock().expect("lock").remove("OMO_SERVICE_API_URL");
+            }
+            Some(value) => fx.set_env("OMO_SERVICE_API_URL", value),
+        }
+        let reports = fx.reports();
+        let draft = reports.prepare_json(&json!({"sessionId": null}));
+        assert_eq!(draft["destination"], "local", "{configured:?}");
+        let draft_id = draft["draftId"].as_str().expect("id").to_owned();
+        fx.intake.respond(201, r#"{"id":"never"}"#);
+        let result = block_on(
+            reports.submit_json(&json!({"draftId": draft_id, "kind": "bug", "description": "d"})),
+        );
+        assert_eq!(result["kind"], "saved", "{configured:?}");
+        assert!(fx.intake.requests().is_empty(), "{configured:?}");
+    }
+
+    let fx = Fixture::new();
+    fx.env.lock().expect("lock").remove("OMO_SERVICE_API_URL");
+    fx.set_env("MAHO_SERVICE_API_URL", "https://maho-intake.test/");
+    let reports = fx.reports();
+    let draft = reports.prepare_json(&json!({"sessionId": null}));
+    assert_eq!(draft["destination"], "intake");
+    fx.intake.respond(201, r#"{"id":"rep_maho"}"#);
+    let draft_id = draft["draftId"].as_str().expect("id").to_owned();
+    let result = block_on(
+        reports.submit_json(&json!({"draftId": draft_id, "kind": "bug", "description": "d"})),
+    );
+    assert_eq!(result, json!({"kind": "sent", "reportId": "rep_maho"}));
+    assert_eq!(
+        fx.intake.requests()[0].url,
+        "https://maho-intake.test/v1/reports"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

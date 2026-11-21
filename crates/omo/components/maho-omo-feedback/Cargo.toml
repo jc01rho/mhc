@@ -19,6 +19,7 @@ maho-omo-config-core = { path = "../../omo-config-core" }
 maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
 maho-omo-memory = { path = "../maho-omo-memory" }
 maho-omo-telemetry = { path = "../maho-omo-telemetry" }
+maho-service-endpoints = { path = "../../../maho-service-endpoints" }
 maho-telemetry-core = { path = "../../telemetry-core" }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-tls"] }

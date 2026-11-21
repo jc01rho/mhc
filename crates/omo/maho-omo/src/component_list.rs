@@ -407,6 +407,12 @@ pub fn omo_components(
             watch.register(api);
         },
     ));
+    components.push(component(
+        "remote",
+        maho_omo_remote::RemoteCommandComponent {
+            version: env!("CARGO_PKG_VERSION").into(),
+        },
+    ));
     components
 }
 
@@ -466,6 +472,7 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "memory",
         "gateway",
         "config-watch",
+        "remote",
     ]
     .to_vec()
 }

@@ -3684,6 +3684,7 @@ dependencies = [
  "maho-omo-idle-injection",
  "maho-omo-lsp",
  "maho-omo-memory",
+ "maho-omo-remote",
  "maho-omo-task",
  "maho-omo-telemetry",
  "maho-onboarding",
@@ -3882,6 +3883,23 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "maho-device-service-core"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "dirs",
+ "getrandom 0.4.2",
+ "hmac",
+ "regex",
+ "rustix 1.1.6",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -4990,6 +5008,7 @@ dependencies = [
  "jiff",
  "maho-config",
  "maho-ext-api",
+ "maho-service-endpoints",
  "regex",
  "reqwest 0.12.28",
  "serde_json",
@@ -5352,6 +5371,7 @@ dependencies = [
  "maho-omo-model-profile",
  "maho-omo-onboarding",
  "maho-omo-question-gates",
+ "maho-omo-remote",
  "maho-omo-side-panel",
  "maho-omo-skill-commands",
  "maho-omo-skill-pointers",
@@ -5726,6 +5746,7 @@ dependencies = [
  "maho-omo-config-resolution",
  "maho-omo-memory",
  "maho-omo-telemetry",
+ "maho-service-endpoints",
  "maho-telemetry-core",
  "regex",
  "reqwest 0.12.28",
@@ -5755,6 +5776,7 @@ name = "maho-omo-gateway"
 version = "0.0.0"
 dependencies = [
  "futures",
+ "maho-device-service-core",
  "maho-ext-api",
  "maho-omo-agent-home",
  "maho-omo-config-core",
@@ -5854,6 +5876,7 @@ dependencies = [
  "maho-omo-config-core",
  "maho-rpc",
  "maho-senpi-task",
+ "maho-service-endpoints",
  "maho-test-support",
  "maho-tools",
  "maho-tui",
@@ -5929,6 +5952,21 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-ask-user",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "maho-omo-remote"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-device-service-core",
+ "maho-ext-api",
+ "maho-rpc",
+ "maho-service-endpoints",
+ "mhc-relayd",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -6482,6 +6520,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-service-endpoints"
+version = "0.0.0"
+dependencies = [
+ "url",
+]
+
+[[package]]
 name = "maho-side-panel"
 version = "0.0.0"
 dependencies = [
@@ -6600,6 +6645,7 @@ dependencies = [
  "hex",
  "iana-time-zone",
  "libc",
+ "maho-service-endpoints",
  "maho-utils",
  "pretty_assertions",
  "reqwest 0.12.28",
@@ -6879,6 +6925,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mhc-relayd"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "gethostname",
+ "maho-device-service-core",
+ "maho-service-endpoints",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

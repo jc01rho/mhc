@@ -90,7 +90,16 @@ fn root_metadata_output(argv: &[String], grok: bool) -> Result<Option<String>, S
     if argv.first().is_some_and(|arg| {
         matches!(
             arg.as_str(),
-            "install" | "remove" | "uninstall" | "update" | "list" | "config"
+            "install"
+                | "remove"
+                | "uninstall"
+                | "update"
+                | "list"
+                | "config"
+                | "remote"
+                | "login"
+                | "whoami"
+                | "logout"
         )
     }) {
         return Ok(None);
@@ -1030,6 +1039,11 @@ fn register_ultrawork_keywords() {
 /// names none of them.
 #[cfg(feature = "omo")]
 fn run_omo_entry(argv: &[String]) -> Option<Result<(), String>> {
+    if let Some(verb) = argv.first().map(String::as_str)
+        && matches!(verb, "remote" | "login" | "whoami" | "logout")
+    {
+        return Some(run_remote_entry(verb, &argv[1..]));
+    }
     if argv.first().is_some_and(|arg| arg == "ulw-loop") {
         let code = ulw_loop_core::cli::main_cli(argv);
         if code != 0 {
@@ -1064,6 +1078,38 @@ fn run_omo_entry(argv: &[String]) -> Option<Result<(), String>> {
     None
 }
 
+/// `mhc remote ...` and `mhc login|whoami|logout` (omo `remote-cli.ts`, `account-cli.ts`): the device
+/// service's local API. The local-only remote verbs mark the process before anything runs (omo#13440).
+#[cfg(feature = "omo")]
+fn run_remote_entry(verb: &str, args: &[String]) -> Result<(), String> {
+    if verb == "remote"
+        && args
+            .first()
+            .is_some_and(|first| maho_omo_remote::verbs::is_local_only_verb(first))
+    {
+        maho_omo_remote::mark_local_only_process();
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let context = maho_omo_remote::RemoteContext::for_process(
+        std::path::PathBuf::from(maho_core::config::get_agent_dir()),
+        option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+    );
+    let code = runtime.block_on(async {
+        if verb == "remote" {
+            maho_omo_remote::run_remote(&context, args).await
+        } else {
+            maho_omo_remote::run_account_command(&context, verb, args).await
+        }
+    });
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
 /// The MIT profile (no `omo` feature) links none of the omo entries; asking for one prints why and
 /// exits non-zero instead of falling through to an interactive session.
 #[cfg(not(feature = "omo"))]
@@ -1072,6 +1118,8 @@ fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
     let name = match entry {
         "ulw-loop" => "mhc ulw-loop",
         "senpi-install" => "mhc senpi-install",
+        "remote" => "mhc remote",
+        "login" | "whoami" | "logout" => "mhc login, whoami and logout",
         "--memory-supervisor" | "--child-bootstrap" => "the memory supervisor",
         _ => return None,
     };

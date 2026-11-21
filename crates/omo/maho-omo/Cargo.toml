@@ -45,6 +45,7 @@ maho-omo-computer-use = { path = "../components/maho-omo-computer-use" }
 maho-omo-claude-code = { path = "../components/maho-omo-claude-code" }
 maho-omo-x-search = { path = "../components/maho-omo-x-search" }
 maho-omo-gateway = { path = "../components/maho-omo-gateway" }
+maho-omo-remote = { path = "../components/maho-omo-remote" }
 maho-omo-config-watch = { path = "../components/maho-omo-config-watch" }
 maho-omo-fallback-architect = { path = "../components/maho-omo-fallback-architect" }
 maho-omo-init-deep-advisor = { path = "../components/maho-omo-init-deep-advisor" }

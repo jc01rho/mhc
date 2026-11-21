@@ -232,7 +232,9 @@ impl FeedbackCore {
                 &client_identity_lines(input, redact),
             ),
             redact,
-            destination: if feedback_uploads_disabled(&config.env) {
+            destination: if feedback_uploads_disabled(&config.env)
+                || (config.api_origin)().trim().is_empty()
+            {
                 FeedbackDestination::Local
             } else {
                 FeedbackDestination::Intake
@@ -362,7 +364,7 @@ pub async fn cli_access_token(
     env: &BTreeMap<String, String>,
     store: Option<Arc<dyn CredentialStore>>,
 ) -> (Option<String>, bool) {
-    if crate::submit::feedback_uploads_disabled(env) {
+    if crate::submit::feedback_uploads_disabled(env) || api.trim().is_empty() {
         return (None, false);
     }
     let store = store.unwrap_or_else(|| OsCredentialStore::for_origin(api));
@@ -450,10 +452,8 @@ pub async fn run_feedback_command<P, PF, S, SF>(
             _ => return,
         }
     }
-    let api = env
-        .get("OMO_SERVICE_API_URL")
-        .map_or("https://api.omo.dev", String::as_str);
-    let (token, fell_back) = cli_access_token(api, env, credential_store).await;
+    let api = crate::submit::feedback_service_origin(env);
+    let (token, fell_back) = cli_access_token(&api, env, credential_store).await;
     if fell_back {
         ui.notify(SIGNED_OUT_SEND, NotificationType::Warning);
     }
