@@ -30,6 +30,11 @@ pub enum McpTransportSpec {
         url: url::Url,
         headers: BTreeMap<String, String>,
     },
+    /// Legacy HTTP+SSE (protocol 2024-11-05): a GET event stream and the POST endpoint it announces.
+    Sse {
+        url: url::Url,
+        headers: BTreeMap<String, String>,
+    },
 }
 type Reply = oneshot::Sender<Result<Value, McpError>>;
 pub struct McpClient {
@@ -240,8 +245,16 @@ enum ClientTransport {
         headers: BTreeMap<String, String>,
         session: tokio::sync::RwLock<Option<String>>,
     },
+    /// Legacy HTTP+SSE: `stream` reads the GET event stream and fills `endpoint`.
+    Sse {
+        client: reqwest::Client,
+        url: url::Url,
+        headers: BTreeMap<String, String>,
+        endpoint: tokio::sync::watch::Sender<crate::transport_sse::SseEndpoint>,
+        stream: Mutex<Option<JoinHandle<()>>>,
+    },
 }
-fn take_sse_line(
+pub(crate) fn take_sse_line(
     buffer: &mut Vec<u8>,
     skip_lf: &mut bool,
     first_line: &mut bool,
@@ -273,6 +286,103 @@ fn failure(server: &str, kind: McpErrorKind, message: impl Into<String>, phase: 
     error.server_name = Some(server.into());
     error.phase = Some(phase.into());
     error
+}
+/// One `message` event of a legacy SSE stream: a reply settles its request; server requests and
+/// notifications go to the notification channel, as the stdio reader routes them.
+fn route_legacy_sse_message(
+    server: &str,
+    data: &str,
+    pending: &Mutex<BTreeMap<u64, Reply>>,
+    notifications: &broadcast::Sender<Value>,
+) {
+    let value = match serde_json::from_str::<Value>(data) {
+        Ok(value) => value,
+        Err(error) => {
+            maho_ext_api::diagnostic(&format!("MCP {server} SSE message parse failed: {error}"));
+            return;
+        }
+    };
+    let reply_id = match value.get("method") {
+        Some(_) => None,
+        None => value.get("id").and_then(Value::as_u64),
+    };
+    let Some(id) = reply_id else {
+        if value.get("method").is_some() {
+            let _ = notifications.send(value);
+        }
+        return;
+    };
+    let Some(sender) = pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&id)
+    else {
+        return;
+    };
+    let result = match value.get("error") {
+        Some(error) => {
+            let mut failure = failure(
+                server,
+                McpErrorKind::Protocol,
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("MCP protocol error"),
+                "request",
+            );
+            failure.cause = Some(Box::new(error.clone()));
+            Err(failure)
+        }
+        None => Ok(value.get("result").cloned().unwrap_or(Value::Null)),
+    };
+    let _ = sender.send(result);
+}
+/// Settles a legacy SSE client when its stream task ends for any reason, abort on close included:
+/// the endpoint fails, pending requests fail, and the client reads as closed.
+struct SseStreamEnd {
+    server: String,
+    pending: Arc<Mutex<BTreeMap<u64, Reply>>>,
+    closed: tokio::sync::watch::Sender<bool>,
+    endpoint: tokio::sync::watch::Sender<crate::transport_sse::SseEndpoint>,
+}
+impl SseStreamEnd {
+    fn fail(&self, error: McpError) {
+        self.endpoint
+            .send_replace(crate::transport_sse::SseEndpoint::Failed(error));
+    }
+}
+impl Drop for SseStreamEnd {
+    fn drop(&mut self) {
+        use crate::transport_sse::SseEndpoint;
+        let server = &self.server;
+        self.endpoint.send_if_modified(|state| {
+            let message = match state {
+                SseEndpoint::Pending => {
+                    "SSE stream closed before the server announced its endpoint"
+                }
+                // The SDK client reports a lost connection as not connected; the skill manager
+                // reconnects on exactly that error.
+                SseEndpoint::Ready(_) => "Not connected",
+                SseEndpoint::Failed(_) => return false,
+            };
+            *state = SseEndpoint::Failed(failure(server, McpErrorKind::Connect, message, "close"));
+            true
+        });
+        for (_, sender) in std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ) {
+            let _ = sender.send(Err(failure(
+                server,
+                McpErrorKind::Connect,
+                format!("MCP server {server} transport closed"),
+                "close",
+            )));
+        }
+        self.closed.send_replace(true);
+    }
 }
 impl McpClient {
     pub async fn materialize_stdio(
@@ -557,38 +667,64 @@ impl McpClient {
                 let client = reqwest::Client::builder()
                     .build()
                     .map_err(|e| failure(server, McpErrorKind::Connect, e.to_string(), "create"))?;
-                let (notifications, _) = broadcast::channel(256);
-                let (closed, _) = tokio::sync::watch::channel(false);
-                Ok(Arc::new_cyclic(|this| Self {
-                    server: server.into(),
-                    io: ClientTransport::Http {
+                Ok(Self::remote(
+                    server,
+                    ClientTransport::Http {
                         client,
                         url: url.clone(),
                         headers: headers.clone(),
                         session: tokio::sync::RwLock::new(None),
                     },
-                    pending: Arc::new(Mutex::new(BTreeMap::new())),
-                    next_id: AtomicU64::new(1),
-                    notifications,
-                    closed,
-                    root_pid: None,
-                    server_capabilities: tokio::sync::RwLock::new(Value::Null),
-                    server_info: tokio::sync::RwLock::new(Value::Null),
-                    instructions: tokio::sync::RwLock::new(None),
-                    protocol_version: std::sync::RwLock::new(None),
-                    auth: tokio::sync::RwLock::new(None),
-                    auth_challenge_handler: tokio::sync::RwLock::new(None),
-                    http_stream: Mutex::new(None),
-                    resource_subscriptions: tokio::sync::Mutex::new(Default::default()),
-                    protocol: Default::default(),
-                    legacy_operations: Mutex::default(),
-                    modern: Arc::default(),
-                    probe: Arc::default(),
-                    local_initialize: Mutex::new(None),
-                    this: this.clone(),
-                }))
+                ))
+            }
+            McpTransportSpec::Sse { url, headers } => {
+                // Same-origin redirects only, so a redirect cannot carry the configured headers or
+                // the bearer to another host.
+                let client = crate::modern::transport::within_origin_client()
+                    .map_err(|e| failure(server, McpErrorKind::Connect, e.to_string(), "create"))?;
+                Ok(Self::remote(
+                    server,
+                    ClientTransport::Sse {
+                        client,
+                        url: url.clone(),
+                        headers: headers.clone(),
+                        endpoint: tokio::sync::watch::channel(
+                            crate::transport_sse::SseEndpoint::Pending,
+                        )
+                        .0,
+                        stream: Mutex::new(None),
+                    },
+                ))
             }
         }
+    }
+    /// A client over a network transport: no child process, nothing negotiated yet.
+    fn remote(server: &str, io: ClientTransport) -> Arc<Self> {
+        let (notifications, _) = broadcast::channel(256);
+        let (closed, _) = tokio::sync::watch::channel(false);
+        Arc::new_cyclic(|this| Self {
+            server: server.into(),
+            io,
+            pending: Arc::new(Mutex::new(BTreeMap::new())),
+            next_id: AtomicU64::new(1),
+            notifications,
+            closed,
+            root_pid: None,
+            server_capabilities: tokio::sync::RwLock::new(Value::Null),
+            server_info: tokio::sync::RwLock::new(Value::Null),
+            instructions: tokio::sync::RwLock::new(None),
+            protocol_version: std::sync::RwLock::new(None),
+            auth: tokio::sync::RwLock::new(None),
+            auth_challenge_handler: tokio::sync::RwLock::new(None),
+            http_stream: Mutex::new(None),
+            resource_subscriptions: tokio::sync::Mutex::new(Default::default()),
+            protocol: Default::default(),
+            legacy_operations: Mutex::default(),
+            modern: Arc::default(),
+            probe: Arc::default(),
+            local_initialize: Mutex::new(None),
+            this: this.clone(),
+        })
     }
     /// Every request: once negotiation selects modern (or private forms are enforced) it runs the MRTR engine
     /// without a request origin, exactly like upstream's patched `client.request`.
@@ -864,9 +1000,13 @@ impl McpClient {
         self.write_line(value).await
     }
     async fn write_line(&self, value: &Value) -> Result<(), McpError> {
-        let ClientTransport::Stdio { input, .. } = &self.io else {
-            self.http_send(value).await?;
-            return Ok(());
+        let input = match &self.io {
+            ClientTransport::Stdio { input, .. } => input,
+            ClientTransport::Sse { .. } => return self.sse_post(value).await,
+            ClientTransport::Http { .. } => {
+                self.http_send(value).await?;
+                return Ok(());
+            }
         };
         let mut text = value.to_string();
         text.push('\n');
@@ -895,6 +1035,211 @@ impl McpClient {
                 "request",
             )
         })
+    }
+    /// Legacy SSE (omo #11591): open the GET event stream once. It starts with the first send, after
+    /// the caller installed its auth, like the SDK transport's `start()` inside `connect()`.
+    fn start_sse_stream(&self) {
+        let ClientTransport::Sse {
+            endpoint, stream, ..
+        } = &self.io
+        else {
+            return;
+        };
+        let mut stream = stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if stream.is_some() {
+            return;
+        }
+        let end = SseStreamEnd {
+            server: self.server.clone(),
+            pending: self.pending.clone(),
+            closed: self.closed.clone(),
+            endpoint: endpoint.clone(),
+        };
+        let notifications = self.notifications.clone();
+        let weak = self.this.clone();
+        *stream = Some(tokio::spawn(async move {
+            let Some(owner) = weak.upgrade() else {
+                return;
+            };
+            let ClientTransport::Sse {
+                client,
+                url,
+                headers,
+                ..
+            } = &owner.io
+            else {
+                return;
+            };
+            let stream_url = url.clone();
+            let mut request = client
+                .get(url.clone())
+                .header("accept", "text/event-stream");
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let request = match owner.sse_authorize(request).await {
+                Ok(request) => request,
+                Err(error) => return end.fail(error),
+            };
+            drop(owner);
+            let mut response = match request.send().await {
+                Ok(response) if response.status().is_success() => response,
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let www = response
+                        .headers()
+                        .get("www-authenticate")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
+                    if let Some(owner) = weak.upgrade() {
+                        end.fail(owner.http_status_error(status, www.as_deref()));
+                    }
+                    return;
+                }
+                Err(error) => {
+                    return end.fail(failure(
+                        &end.server,
+                        McpErrorKind::Connect,
+                        net_text(&error),
+                        "connect",
+                    ));
+                }
+            };
+            let mut decoder = crate::transport_sse::SseDecoder::default();
+            while let Ok(Some(chunk)) = response.chunk().await {
+                for event in decoder.push(&chunk) {
+                    match event.event.as_str() {
+                        "endpoint" => {
+                            match crate::transport_sse::resolve_sse_endpoint(
+                                &stream_url,
+                                &event.data,
+                            ) {
+                                Ok(target) => {
+                                    end.endpoint.send_replace(
+                                        crate::transport_sse::SseEndpoint::Ready(target),
+                                    );
+                                }
+                                Err(message) => {
+                                    return end.fail(failure(
+                                        &end.server,
+                                        McpErrorKind::Connect,
+                                        message,
+                                        "connect",
+                                    ));
+                                }
+                            }
+                        }
+                        "message" => route_legacy_sse_message(
+                            &end.server,
+                            &event.data,
+                            &end.pending,
+                            &notifications,
+                        ),
+                        _ => {}
+                    }
+                }
+            }
+        }));
+    }
+    /// The bearer the SDK transport sends on its GET and on every POST.
+    async fn sse_authorize(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, McpError> {
+        let Some(refresh) = self.auth.read().await.clone() else {
+            return Ok(request);
+        };
+        let tokens = refresh.ensure_fresh().await.map_err(|error| {
+            let terminal = crate::needs_auth::is_oauth_needs_auth_error(&error);
+            let mut result = failure(
+                &self.server,
+                if terminal {
+                    McpErrorKind::Auth
+                } else {
+                    McpErrorKind::Connect
+                },
+                error.to_string(),
+                "request",
+            );
+            result.retriable = !terminal;
+            result
+        })?;
+        let tokens = tokens.ok_or_else(|| {
+            failure(
+                &self.server,
+                McpErrorKind::Auth,
+                format!("MCP server {} requires authorization", self.server),
+                "request",
+            )
+        })?;
+        Ok(request.bearer_auth(tokens.access_token))
+    }
+    /// Legacy SSE: POST one JSON-RPC message to the announced endpoint; its reply, if any, arrives
+    /// on the stream. The wait for the endpoint is bounded by the caller's request timeout.
+    async fn sse_post(&self, value: &Value) -> Result<(), McpError> {
+        use crate::transport_sse::SseEndpoint;
+        let ClientTransport::Sse {
+            client,
+            headers,
+            endpoint,
+            ..
+        } = &self.io
+        else {
+            return Err(failure(
+                &self.server,
+                McpErrorKind::Protocol,
+                "not SSE",
+                "request",
+            ));
+        };
+        self.start_sse_stream();
+        let mut announced = endpoint.subscribe();
+        let state = match announced
+            .wait_for(|state| !matches!(state, SseEndpoint::Pending))
+            .await
+        {
+            Ok(state) => state.clone(),
+            Err(_) => SseEndpoint::Failed(failure(
+                &self.server,
+                McpErrorKind::Connect,
+                "Not connected",
+                "request",
+            )),
+        };
+        let target = match state {
+            SseEndpoint::Ready(target) => target,
+            SseEndpoint::Failed(error) => return Err(error),
+            SseEndpoint::Pending => {
+                return Err(failure(
+                    &self.server,
+                    McpErrorKind::Connect,
+                    "Not connected",
+                    "request",
+                ));
+            }
+        };
+        let mut request = self.with_protocol_version(client.post(target)).json(value);
+        for (name, header) in headers {
+            request = request.header(name, header);
+        }
+        let response = self
+            .sse_authorize(request)
+            .await?
+            .send()
+            .await
+            .map_err(|e| failure(&self.server, McpErrorKind::Connect, net_text(&e), "request"))?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+        let status = response.status().as_u16();
+        let www = response
+            .headers()
+            .get("www-authenticate")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Err(self.http_status_error(status, www.as_deref()))
     }
     fn with_protocol_version(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match self
@@ -1521,6 +1866,15 @@ impl McpClient {
         {
             task.abort();
         }
+        if let ClientTransport::Sse { stream, .. } = &self.io
+            && let Some(task) = stream
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        {
+            // Dropping the response ends the GET; the stream's end guard fails what is still pending.
+            task.abort();
+        }
         let ClientTransport::Stdio { input, child, .. } = &self.io else {
             if let ClientTransport::Http {
                 client,
@@ -1589,6 +1943,14 @@ impl Drop for McpClient {
         if let ClientTransport::Stdio { reader, stderr, .. } = &self.io {
             reader.abort();
             stderr.abort();
+        }
+        if let ClientTransport::Sse { stream, .. } = &self.io
+            && let Some(task) = stream
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        {
+            task.abort();
         }
     }
 }

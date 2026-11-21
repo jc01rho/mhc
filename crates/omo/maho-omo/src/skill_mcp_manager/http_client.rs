@@ -23,7 +23,13 @@ pub async fn create_http_client(
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
-    let spec = maho_ext_mcp::transport_sdk::McpTransportSpec::Http { url, headers };
+    // omo #11591: an explicit `type: "sse"` server speaks the legacy HTTP+SSE transport (GET
+    // event stream plus the POST endpoint it announces), not Streamable HTTP.
+    let spec = if config["type"] == "sse" {
+        maho_ext_mcp::transport_sdk::McpTransportSpec::Sse { url, headers }
+    } else {
+        maho_ext_mcp::transport_sdk::McpTransportSpec::Http { url, headers }
+    };
     let logger = maho_ext_mcp::log::McpLogger::new(
         &info.server_name,
         &std::env::temp_dir().join("omo-mcp-logs"),

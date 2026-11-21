@@ -41,7 +41,7 @@ pub const TASK_SEND_DESCRIPTION: &str = concat!(
     " ",
     "To retire a member: send {type:'shutdown_request'}, then after it wraps up {type:'shutdown_response', approve:true}.",
     " ",
-    "Addressing: a child task id/name goes to the live session; a team member name goes to the durable mailbox; '*' broadcasts to every member (lead-only). Plain-text bodies are capped by the team payload limit (default 32 KB); split larger payloads or send a file path.",
+    "Addressing: a child task id/name goes to the live session; a team member name goes to the durable mailbox; '*' broadcasts to every member (lead-only). Messages to team members and '*' are capped by the team payload limit (default 32 KB; split larger payloads or send a file path); messages to a child task have no such cap.",
     " ",
     "Cross-session: a child owned by another session is refused unless you pass all_scope=true.",
     " ",

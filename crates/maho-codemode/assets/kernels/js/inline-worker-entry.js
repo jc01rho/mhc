@@ -3,6 +3,10 @@ import { createWorkerCore } from "./worker-core.js";
 
 if (!parentPort) throw new Error("JS kernel inline fallback worker missing parentPort");
 
+// Bound before any cell runs, so a cell-level process.exit guard (omo js-kernel-guard) cannot block
+// the worker's own shutdown.
+const exit = process.exit.bind(process);
+
 const transport = {
 	send(message) {
 		parentPort.postMessage(message);
@@ -13,7 +17,7 @@ const transport = {
 	},
 	close() {
 		parentPort.close();
-		setTimeout(() => process.exit(0), 0);
+		setTimeout(() => exit(0), 0);
 	},
 };
 

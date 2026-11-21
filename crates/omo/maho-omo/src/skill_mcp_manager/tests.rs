@@ -1262,3 +1262,187 @@ async fn a_call_carrying_an_abort_signal_still_times_out_at_the_configured_timeo
     assert!(error.contains("timed out"), "{error}");
     assert_ne!(error, SKILL_MCP_ABORTED_MESSAGE);
 }
+
+// legacy-sse-transport.test.ts (#11591): a legacy HTTP+SSE server (protocol 2024-11-05). GET /sse
+// opens the event stream and announces the POST endpoint; replies travel the stream. Like the
+// servers in #9050 it answers anything else, a Streamable HTTP POST included, with 405.
+type LegacySseRequests = Arc<std::sync::Mutex<Vec<(String, Option<String>, Option<String>)>>>;
+
+async fn start_legacy_sse_server() -> (std::net::SocketAddr, LegacySseRequests) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address");
+    let received: LegacySseRequests = Arc::default();
+    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let events_rx = Arc::new(tokio::sync::Mutex::new(Some(events_rx)));
+    let record = received.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let (record, events_tx, events_rx) =
+                (record.clone(), events_tx.clone(), events_rx.clone());
+            tokio::spawn(async move {
+                let mut bytes = Vec::new();
+                let header_end = loop {
+                    let mut chunk = [0u8; 1024];
+                    let Ok(read) = stream.read(&mut chunk).await else {
+                        return;
+                    };
+                    if read == 0 {
+                        return;
+                    }
+                    bytes.extend_from_slice(&chunk[..read]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break end + 4;
+                    }
+                };
+                let head = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
+                let header = |name: &str| {
+                    head.lines().skip(1).find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.trim()
+                            .eq_ignore_ascii_case(name)
+                            .then(|| value.trim().to_owned())
+                    })
+                };
+                let skill_header = header("x-skill-header");
+                let version = header("mcp-protocol-version");
+                let length = header("content-length")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let mut request_line = head.split_whitespace();
+                let method = request_line.next().unwrap_or_default().to_owned();
+                let path = request_line.next().unwrap_or_default().to_owned();
+                if method == "GET" && path == "/sse" {
+                    record.lock().expect("requests").push((
+                        "GET /sse".into(),
+                        skill_header,
+                        version,
+                    ));
+                    let Some(mut events) = events_rx.lock().await.take() else {
+                        return;
+                    };
+                    let open = "event: endpoint\ndata: /messages?sessionId=legacy\n\n";
+                    let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{open}\r\n", open.len()).as_bytes()).await;
+                    while let Some(event) = events.recv().await {
+                        let chunk = format!("{:x}\r\n{event}\r\n", event.len());
+                        if stream.write_all(chunk.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    return;
+                }
+                while bytes.len() < header_end + length {
+                    let mut chunk = [0u8; 1024];
+                    match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(read) => bytes.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                if method != "POST" || !path.starts_with("/messages") {
+                    record.lock().expect("requests").push((
+                        format!("{method} {path}"),
+                        skill_header,
+                        version,
+                    ));
+                    let _ = stream.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                    return;
+                }
+                let message: serde_json::Value =
+                    serde_json::from_slice(&bytes[header_end..header_end + length])
+                        .expect("message JSON");
+                record.lock().expect("requests").push((
+                    format!(
+                        "{} /messages",
+                        message["method"].as_str().unwrap_or_default()
+                    ),
+                    skill_header,
+                    version,
+                ));
+                if message.get("id").is_some() {
+                    let reply = match message["method"].as_str() {
+                        Some("initialize") => {
+                            json!({"jsonrpc":"2.0","id":message["id"],"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"legacy-sse","version":"1"}}})
+                        }
+                        Some("tools/list") => {
+                            json!({"jsonrpc":"2.0","id":message["id"],"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}})
+                        }
+                        _ => {
+                            json!({"jsonrpc":"2.0","id":message["id"],"error":{"code":-32601,"message":"Method not found"}})
+                        }
+                    };
+                    let _ = events_tx.send(format!("event: message\ndata: {reply}\n\n"));
+                }
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+            });
+        }
+    });
+    (address, received)
+}
+
+#[tokio::test]
+async fn a_type_sse_skill_mcp_lists_tools_over_the_get_event_stream_and_the_announced_post_endpoint()
+ {
+    let (address, received) = start_legacy_sse_server().await;
+    let root = tempfile::tempdir().expect("root");
+    let manager = SkillMcpManager::new(Some(root.path()), None, None);
+    let info = SkillMcpClientInfo {
+        session_id: "sse".into(),
+        skill_name: "test".into(),
+        server_name: "legacy-sse".into(),
+        scope: Some("user".into()),
+        ..Default::default()
+    };
+    let context = SkillMcpServerContext {
+        config: json!({"type":"sse","url":format!("http://{address}/sse"),"headers":{"X-Skill-Header":"present"}}),
+        skill_name: "test".into(),
+    };
+    let tools = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        manager.list_tools(&info, &context, None),
+    )
+    .await
+    .expect("the legacy SSE server to answer")
+    .expect("legacy SSE tools");
+    manager.disconnect_all().await;
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool["name"].clone())
+            .collect::<Vec<_>>(),
+        [json!("echo")]
+    );
+    let received = received.lock().expect("requests").clone();
+    assert_eq!(
+        received
+            .iter()
+            .map(|(what, _, _)| what.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "GET /sse",
+            "initialize /messages",
+            "notifications/initialized /messages",
+            "tools/list /messages"
+        ]
+    );
+    assert!(
+        received
+            .iter()
+            .all(|(_, header, _)| header.as_deref() == Some("present")),
+        "{received:?}"
+    );
+    assert_eq!(
+        received
+            .last()
+            .and_then(|(_, _, version)| version.as_deref()),
+        Some("2024-11-05")
+    );
+}

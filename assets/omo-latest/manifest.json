@@ -195,14 +195,14 @@
       {
         "path": "tests/smoke.ps1",
         "bytes": 5701,
-        "sha256": "36316c7e369f32e74f31c6d1bec0bead7088b87c0d345f85f1f23ca0830c0b56",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/tests/smoke.ps1 (MIT)"
+        "sha256": "5df5853a6cd58008bee5c9ecdba9c06471ba713093648ba55be6bc07b51f7202",
+        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/tests/smoke.ps1, search path passed before --lang as in oh-my-openagent #12714 (MIT)"
       },
       {
         "path": "tests/smoke.sh",
         "bytes": 7765,
-        "sha256": "cfe8e08d19922d88bcc09b50797afb0eb86be569e3eb13d08f7473e736f3a2b0",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/tests/smoke.sh (MIT)"
+        "sha256": "9ca7dd90e394dc114fc3a67380ab4aa37353e5c17ac80ea0f8b8e421eef78971",
+        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/tests/smoke.sh, search path passed before --lang as in oh-my-openagent #12714 (MIT)"
       }
     ],
     "browser": [

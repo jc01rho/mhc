@@ -119,7 +119,7 @@ pub fn task_output_params_schema() -> Value {
         "type": "object",
         "properties": {
             "task_id": {
-                "description": "Task id (st_...) of the child to read. Provide exactly one of task_id or name.",
+                "description": "Task id (st_...) of the child to read. Pass task_id or name; when both are given, task_id wins and name is ignored.",
                 "type": "string"
             },
             "name": {
@@ -153,7 +153,7 @@ const BLOCKING_REMOVED_GUIDANCE: &str =
 pub const TASK_OUTPUT_DESCRIPTION: &str = concat!(
     "Read one child task, keyed by task_id or name. task_output always returns immediately: mode='status' (default) returns one record snapshot per observed progress state, then a short no_progress result until the task changes.",
     " ",
-    "mode='tail' returns the last tail_lines of the recorded transcript; mode='full' returns the whole transcript (capped, with a head/tail elision marker). These explicit transcript modes do not consume the status peek. Completion notifications already include the final result.",
+    "mode='tail' returns the last tail_lines of the recorded transcript, cut to the same 30,000-character cap as full; mode='full' returns the whole transcript (capped, with a head/tail elision marker). These explicit transcript modes do not consume the status peek. Completion notifications already include the final result.",
     " ",
     "READ-ONLY: this never revives, steers, or otherwise touches the child. A lost task returns a status view with a lost explanation and pid/session-dir breadcrumbs.",
     " ",

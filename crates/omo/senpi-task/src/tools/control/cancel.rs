@@ -51,7 +51,7 @@ pub fn task_cancel_params_schema() -> Value {
         "type": "object",
         "properties": {
             "task_id": {
-                "description": "Task id (st_...) of the child to cancel. Provide exactly one of task_id or name.",
+                "description": "Task id (st_...) of the child to cancel. Pass task_id or name; when both are given, task_id wins and name is ignored.",
                 "type": "string"
             },
             "name": {

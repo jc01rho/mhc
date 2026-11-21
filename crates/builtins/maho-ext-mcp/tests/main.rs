@@ -119,6 +119,8 @@ pub mod wrap;
 pub mod challenge_login;
 #[path = "log_sink_retry.rs"]
 pub mod log_sink_retry;
+#[path = "sse_transport.rs"]
+pub mod sse_transport;
 #[path = "stderr_diagnostics.rs"]
 pub mod stderr_diagnostics;
 #[path = "stdio_env_filter.rs"]

@@ -183,7 +183,7 @@ pub fn tool_definitions(tools: &LspTools, cwd: &Path) -> Vec<ToolDefinition> {
         "Get errors, warnings, and hints from the language server BEFORE running build. Works for both single files and directories - file extension is auto-detected for directories.",
         json!({"type": "object", "properties": {
             "filePath": {"type": "string", "description": "File or directory path to check diagnostics for"},
-            "severity": {"type": "string", "enum": ["error", "warning", "information", "hint", "all"], "description": "Filter by severity level"}
+            "severity": {"type": "string", "enum": ["error", "warning", "information", "hint", "all"], "description": "Filter by severity level (default: all)"}
         }, "required": ["filePath"]}),
         Arc::new(|tools, cwd, params| {
             Box::pin(async move {
@@ -222,7 +222,7 @@ pub fn tool_definitions(tools: &LspTools, cwd: &Path) -> Vec<ToolDefinition> {
         cwd,
         "lsp_find_references",
         "LSP Find References",
-        "Find ALL usages/references of a symbol across the entire workspace.",
+        "Find usages/references of a symbol across the workspace. Output lists at most the first 200; when there are more, the first line reports the total.",
         position_schema(
             json!({"includeDeclaration": {"type": "boolean", "description": "Include the declaration itself (default: true)"}}),
             &["filePath", "line", "character"],
@@ -257,7 +257,7 @@ pub fn tool_definitions(tools: &LspTools, cwd: &Path) -> Vec<ToolDefinition> {
             "filePath": {"type": "string", "description": "File path used as LSP context"},
             "scope": {"type": "string", "enum": ["document", "workspace"], "description": "'document' for file symbols, 'workspace' for project-wide search"},
             "query": {"type": "string", "description": "Symbol name to search (required for workspace scope)"},
-            "limit": {"type": "number", "description": "Max results (default: 200)"}
+            "limit": {"type": "number", "description": "Max results (default and maximum: 200; larger values are clamped to 200)"}
         }, "required": ["filePath", "scope"]}),
         Arc::new(|tools, cwd, params| {
             Box::pin(async move {
