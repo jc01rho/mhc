@@ -88,6 +88,7 @@ pub mod recall_wiring;
 pub mod runtime;
 #[cfg(not(feature = "omo"))]
 pub mod session_gateway;
+pub mod session_of_pid;
 pub mod session_picker;
 #[cfg(feature = "omo")]
 pub mod session_policy;
