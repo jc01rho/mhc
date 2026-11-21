@@ -39,6 +39,7 @@ pub mod facts_runner_types;
 pub mod facts_terminal_writes;
 pub mod facts_wiring;
 pub mod guard;
+pub mod guard_foreign_roots;
 #[cfg(test)]
 #[path = "guard_raw_target_tests.rs"]
 mod guard_raw_target_tests;
@@ -94,11 +95,13 @@ pub mod memory_maintenance;
 pub mod memory_notice_spec;
 pub mod memory_reporter;
 pub mod memory_retention;
+pub mod memory_retention_pass;
 #[cfg(test)]
 mod memory_retention_tests;
 pub mod memory_rpc_bridge;
 pub mod memory_rpc_snapshot_state;
 pub mod memory_rpc_sync;
+pub mod memory_runtime_retention;
 pub mod memory_tool_provenance;
 pub mod memory_tool_renderers;
 pub mod memory_usage;
@@ -130,6 +133,7 @@ pub mod reflection_run_id;
 pub mod reflection_settings;
 pub mod reflection_stale_active;
 pub mod sandbox;
+pub mod sandbox_bwrap_probe;
 pub mod sandbox_contracts;
 pub mod sandbox_platform;
 pub mod session_binding;

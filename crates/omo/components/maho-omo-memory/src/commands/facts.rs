@@ -6,6 +6,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use maho_ext_api::ExtensionApi;
 use memory_core::facts::{
     failures_backoff::FactsFailureFilter,
+    failures_schema::FactsFailureState,
     failures_store::{FactsFailureStore, FactsFailureStoreError, FactsFailureStoreOptions},
 };
 
@@ -94,10 +95,24 @@ async fn run_retry(
         return respond(ctx, error, NotifyLevel::Error);
     }
     let names = conversations_in(&matching);
+    // The retry only launches the extractor and does not wait for its outcome, so the report claims
+    // nothing about it and leaves the result to the next /facts read (omo #11909).
+    let unparked = matching
+        .iter()
+        .filter(|record| record.state == FactsFailureState::Parked)
+        .count();
+    let unparked_note = if unparked == 0 {
+        String::new()
+    } else {
+        format!(
+            "; {unparked} parked {} unparked",
+            if unparked == 1 { "batch" } else { "batches" }
+        )
+    };
     respond(
         ctx,
         format!(
-            "cleared {removed} record{} for {}; one launch attempt was triggered",
+            "cleared {removed} record{} for {}; one retry attempt was started{unparked_note}; run /facts again to check whether any batch parked again",
             if removed == 1 { "" } else { "s" },
             names.join(", ")
         ),

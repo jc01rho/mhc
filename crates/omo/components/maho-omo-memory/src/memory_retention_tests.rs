@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use memory_core::facts::{
     failures_schema::{
@@ -37,10 +36,6 @@ fn fixture(records: &[FactsFailureRecord]) -> (tempfile::TempDir, RetentionPaths
     fs::create_dir_all(&parked).unwrap();
     let locks = dir.path().join("locks");
     fs::create_dir_all(&locks).unwrap();
-    let reflection = dir.path().join("reflection");
-    fs::create_dir_all(&reflection).unwrap();
-    let transcripts = dir.path().join("transcripts");
-    fs::create_dir_all(&transcripts).unwrap();
     let rendered = render_failures_file(records, "2026-01-01T00:00:00.000Z");
     fs::write(queue.join("failures.json"), rendered).unwrap();
     for entry in records {
@@ -54,8 +49,6 @@ fn fixture(records: &[FactsFailureRecord]) -> (tempfile::TempDir, RetentionPaths
     let paths = RetentionPaths {
         facts_queue: queue,
         locks,
-        reflection,
-        transcripts,
     };
     (dir, paths)
 }
@@ -63,7 +56,6 @@ fn fixture(records: &[FactsFailureRecord]) -> (tempfile::TempDir, RetentionPaths
 fn options() -> RetentionOptions {
     RetentionOptions {
         now_ms: NOW_MS,
-        is_live_session: Arc::new(|_| false),
         ..Default::default()
     }
 }
@@ -174,8 +166,6 @@ fn absent_runtime_trees_are_not_an_error() {
     let paths = RetentionPaths {
         facts_queue: dir.path().join("missing-queue"),
         locks: dir.path().join("missing-locks"),
-        reflection: dir.path().join("missing-reflection"),
-        transcripts: dir.path().join("missing-transcripts"),
     };
 
     assert!(prune_runtime(&paths, &options()).is_empty());
@@ -210,95 +200,6 @@ fn set_mtime(path: &PathBuf, at_ms: u64) {
 /// File times are derived from the injected clock so no test depends on wall time.
 fn old_mtime(path: &PathBuf) {
     set_mtime(path, NOW_MS - 40 * 24 * 60 * 60 * 1000);
-}
-
-fn fresh_mtime(path: &PathBuf) {
-    set_mtime(path, NOW_MS - 24 * 60 * 60 * 1000);
-}
-
-#[test]
-fn finished_reflection_runs_past_the_horizon_are_removed_but_unfinished_and_live_runs_survive() {
-    let (_dir, paths) = fixture(&[]);
-    let runs = paths.reflection.join("runs");
-    let finished = runs.join("reflection-run-1");
-    let unfinished = runs.join("reflection-run-2");
-    let live = runs.join("reflection-run-3");
-    for run in [&finished, &unfinished, &live] {
-        fs::create_dir_all(run).unwrap();
-        fs::write(run.join("ledger.json"), b"{}").unwrap();
-        old_mtime(&run.join("ledger.json"));
-        old_mtime(run);
-    }
-    fs::write(finished.join("final.json"), b"{}").unwrap();
-    fs::write(live.join("final.json"), b"{}").unwrap();
-    fs::write(
-        paths.reflection.join("active.lock"),
-        br#"{"runId":"reflection-run-3"}"#,
-    )
-    .unwrap();
-
-    let report = prune_runtime(&paths, &options());
-
-    assert_eq!(report.reflection_runs_removed, 1);
-    assert!(!finished.exists());
-    assert!(unfinished.exists());
-    assert!(live.exists());
-}
-
-#[test]
-fn transcripts_past_the_horizon_are_removed_and_live_sessions_are_kept() {
-    let (_dir, paths) = fixture(&[]);
-    let stale = paths.transcripts.join("session-old");
-    let live = paths.transcripts.join("session-live");
-    for session in [&stale, &live] {
-        fs::create_dir_all(session).unwrap();
-        let file = session.join("journal.jsonl");
-        fs::write(&file, b"{}\n").unwrap();
-        old_mtime(&file);
-    }
-    let mut options = options();
-    options.is_live_session = Arc::new(|session| session == "session-live");
-
-    let report = prune_runtime(&paths, &options);
-
-    assert_eq!(report.transcripts_removed, 1);
-    assert!(!stale.exists());
-    assert!(live.exists());
-}
-
-#[test]
-fn a_session_is_kept_whole_when_any_file_is_recent() {
-    let (_dir, paths) = fixture(&[]);
-    let session = paths.transcripts.join("session-mixed");
-    fs::create_dir_all(&session).unwrap();
-    let journal = session.join("transcript.jsonl");
-    fs::write(&journal, b"{}\n").unwrap();
-    old_mtime(&journal);
-    fs::write(session.join("state.json"), b"{}").unwrap();
-    fresh_mtime(&session.join("state.json"));
-
-    let report = prune_runtime(&paths, &options());
-
-    assert_eq!(report.transcripts_removed, 0);
-    assert!(journal.exists());
-    assert!(session.join("state.json").exists());
-}
-
-#[test]
-fn a_locked_session_is_never_removed() {
-    let (_dir, paths) = fixture(&[]);
-    let session = paths.transcripts.join("session-locked");
-    fs::create_dir_all(&session).unwrap();
-    for name in ["transcript.jsonl", "state.json", "state.lock"] {
-        let file = session.join(name);
-        fs::write(&file, b"{}").unwrap();
-        old_mtime(&file);
-    }
-
-    let report = prune_runtime(&paths, &options());
-
-    assert_eq!(report.transcripts_removed, 0);
-    assert!(session.exists());
 }
 
 #[test]

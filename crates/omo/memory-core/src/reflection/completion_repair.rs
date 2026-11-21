@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::git::exec::{GitExec, GitExecOptions, GitExecResult};
+use crate::git::exec::{GitExec, GitExecBytesResult, GitExecOptions, GitExecResult};
 use crate::git::repo::{COMMIT_TIMEOUT_MS, NO_AUTO_MAINTENANCE};
 use crate::sync::redact::redact_secret_like_material;
 
@@ -122,36 +122,54 @@ fn literal_pathspec_env() -> BTreeMap<String, String> {
     ])
 }
 
-struct Run<'a> {
+/// Upstream `literalPathspecRunner` (omo #12645 exports it for the link repair).
+pub(crate) struct Run<'a> {
     exec: &'a dyn GitExec,
     dir: &'a Path,
 }
 
-impl Run<'_> {
-    fn call(&self, argv: &[&str]) -> Result<GitExecResult, String> {
+impl<'a> Run<'a> {
+    pub(crate) fn literal_pathspec(exec: &'a dyn GitExec, dir: &'a Path) -> Self {
+        Self { exec, dir }
+    }
+
+    pub(crate) fn call(&self, argv: &[&str]) -> Result<GitExecResult, String> {
         self.call_with_timeout(argv, GIT_TIMEOUT_MS)
+    }
+
+    fn options(&self, timeout_ms: u64) -> GitExecOptions {
+        GitExecOptions {
+            cwd: self.dir.to_path_buf(),
+            timeout_ms,
+            env: literal_pathspec_env(),
+            stdin: None,
+        }
     }
 
     fn call_with_timeout(&self, argv: &[&str], timeout_ms: u64) -> Result<GitExecResult, String> {
         let argv: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
         self.exec
-            .run(
-                &argv,
-                &GitExecOptions {
-                    cwd: self.dir.to_path_buf(),
-                    timeout_ms,
-                    env: literal_pathspec_env(),
-                    stdin: None,
-                },
-            )
+            .run(&argv, &self.options(timeout_ms))
             .map_err(|error| error.to_string())
     }
 
-    fn must(&self, argv: &[&str]) -> Result<String, String> {
+    /// Keeps stdout as bytes: a note that is not valid UTF-8 must not be decoded lossily.
+    pub(crate) fn call_bytes(&self, argv: &[&str]) -> Result<GitExecBytesResult, String> {
+        let argv: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
+        self.exec
+            .run_bytes(&argv, &self.options(GIT_TIMEOUT_MS))
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn must(&self, argv: &[&str]) -> Result<String, String> {
         self.must_with_timeout(argv, GIT_TIMEOUT_MS)
     }
 
-    fn must_with_timeout(&self, argv: &[&str], timeout_ms: u64) -> Result<String, String> {
+    pub(crate) fn must_with_timeout(
+        &self,
+        argv: &[&str],
+        timeout_ms: u64,
+    ) -> Result<String, String> {
         let result = self.call_with_timeout(argv, timeout_ms)?;
         if result.code != 0 {
             let stderr = result.stderr.trim();

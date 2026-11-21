@@ -1,3 +1,4 @@
+use super::sandbox_bwrap_probe::{SandboxUsability, probe_bwrap_usability};
 use super::sandbox_contracts::{SandboxError, SandboxPolicy, SandboxTransform};
 use std::{
     collections::BTreeMap,
@@ -16,11 +17,21 @@ pub struct PathSandboxInput<'a> {
     pub command: &'a str,
     pub env: &'a BTreeMap<String, String>,
     pub session_executable: Option<&'a Path>,
+    /// Verifies the resolved Linux executable can actually start a sandbox; `None` is the real
+    /// smoke probe, which only spawns when the resolved path exists on this machine.
+    pub probe: Option<&'a dyn Fn(&str) -> SandboxUsability>,
+}
+fn default_probe(executable: &str) -> SandboxUsability {
+    if !Path::new(executable).exists() {
+        return SandboxUsability::Usable;
+    }
+    probe_bwrap_usability(executable)
 }
 fn identity(warning: Option<String>) -> SandboxTransform {
     SandboxTransform {
         was_sandboxed: false,
         warning,
+        probe_degraded: false,
         executable: None,
         inner_command: String::new(),
         profile: None,
@@ -80,6 +91,18 @@ pub fn build_path_sandbox_transform(
                     .join(", ")
             ),
         );
+    }
+    if input.platform == "linux" {
+        let usability = match input.probe {
+            Some(probe) => probe(&executable),
+            None => default_probe(&executable),
+        };
+        if let SandboxUsability::Unusable { reason } = usability {
+            let mut degraded =
+                unavailable(input, format!("bwrap cannot create a sandbox: {reason}"))?;
+            degraded.probe_degraded = true;
+            return Ok(degraded);
+        }
     }
     let writable_dirs = input
         .writable_dirs
@@ -211,6 +234,7 @@ pub fn build_path_sandbox_transform(
     Ok(SandboxTransform {
         was_sandboxed: true,
         warning: None,
+        probe_degraded: false,
         executable: Some(executable),
         inner_command,
         profile,
@@ -274,8 +298,53 @@ mod tests {
             command: "/bin/sh",
             env,
             session_executable: None,
+            probe: Some(&usable),
         }
     }
+    fn usable(_executable: &str) -> SandboxUsability {
+        SandboxUsability::Usable
+    }
+    fn timed_out(_executable: &str) -> SandboxUsability {
+        SandboxUsability::Unusable {
+            reason: "smoke test timed out after 3000ms".into(),
+        }
+    }
+    #[test]
+    fn an_unusable_bwrap_with_auto_policy_runs_unsandboxed_and_says_why() {
+        let root = tempfile::tempdir().unwrap();
+        let env = BTreeMap::new();
+        let mut input = input(root.path(), &env);
+        input.policy = SandboxPolicy::Auto;
+        input.probe = Some(&timed_out);
+
+        let transform =
+            build_path_sandbox_transform(&input, &|_| Some("/usr/bin/bwrap".into())).unwrap();
+
+        assert!(!transform.was_sandboxed);
+        assert!(transform.probe_degraded);
+        assert_eq!(
+            transform.warning.as_deref(),
+            Some(
+                "reflection sandbox unavailable on linux: bwrap cannot create a sandbox: smoke test timed out after 3000ms; running unsandboxed because policy is auto"
+            )
+        );
+    }
+    #[test]
+    fn an_unusable_bwrap_with_required_policy_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let env = BTreeMap::new();
+        let mut input = input(root.path(), &env);
+        input.probe = Some(&timed_out);
+
+        let error = build_path_sandbox_transform(&input, &|_| Some("/usr/bin/bwrap".into())).err();
+
+        assert!(matches!(
+            error,
+            Some(SandboxError::Unavailable { ref reason, .. })
+                if reason.starts_with("bwrap cannot create a sandbox: smoke test timed out")
+        ));
+    }
+
     #[test]
     fn off_skips_detection() {
         let root = tempfile::tempdir().unwrap();

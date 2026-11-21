@@ -1,10 +1,12 @@
 //! EINTR-resilient filesystem boundary for the memory stack.
 
+pub mod remove_tree;
 pub mod rename_contention;
 pub mod resilient;
 pub mod retry;
 pub mod write_all;
 
+pub use remove_tree::remove_tree;
 pub use rename_contention::{
     CONTENTION_DELAYS_MS, RenamePlatform, is_contention_error, rename_with_contention_retry,
 };

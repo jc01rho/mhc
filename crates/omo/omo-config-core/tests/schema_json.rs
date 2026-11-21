@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use omo_config_core::internal::validate::Node;
 use omo_config_core::{object_property_keys, omo_config_json_schema};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 fn document() -> Value {
     omo_config_json_schema()
@@ -132,6 +132,10 @@ fn published_section_properties_equal_their_schema_fields() {
         &omo_config_core::omo_memory_write_notice_schema(),
     );
     assert_properties_match(
+        &["memory", "runtime"],
+        &omo_config_core::omo_memory_runtime_schema(),
+    );
+    assert_properties_match(
         &["model_profiles", "additionalProperties"],
         &omo_config_core::omo_model_profile_schema(),
     );
@@ -203,6 +207,17 @@ fn published_schema_carries_the_documented_defaults() {
     assert_eq!(
         property_schema(&document, &["memory"])["properties"]["write_notice"]["default"]["enabled"],
         true
+    );
+    assert_eq!(
+        property_schema(&document, &["memory"])["properties"]["runtime"]["default"],
+        json!({
+            "retention_days": 7,
+            "abandoned_journal_days": 14,
+            "completions_days": 30,
+            "pass_budget_ms": 60000,
+            "discard_unreflected_journals": false,
+            "max_bytes": 2_147_483_648i64,
+        })
     );
     assert_eq!(
         property_schema(&document, &["computer"])["additionalProperties"],

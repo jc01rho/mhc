@@ -15,7 +15,7 @@ use memory_core::{
         CompletionValidation, IntegrateValidatedReflectionInput, LegacyAutoRunReceiptProbe,
         ReflectionIntegrationMode, ReflectionIntegrationProbe, ValidatedReflectionTip,
         cleanup_reflection_worktree, describe_dropped_entries, integrate_validated_reflection,
-        preflight_reflection_descriptions, probe_legacy_auto_run_receipt,
+        paths_outside_target, preflight_reflection_descriptions, probe_legacy_auto_run_receipt,
         probe_reflection_integration, read_dropped_trailers, validate_completion,
     },
 };
@@ -588,12 +588,13 @@ fn finalize(
             CompletionValidation::Valid {
                 tip_sha,
                 changed_paths,
+                link_repairs,
                 ..
             } => {
-                if ledger.value()["targetDoc"]
-                    .as_str()
-                    .is_some_and(|target| changed_paths.iter().any(|path| path != target))
-                {
+                if ledger.value()["targetDoc"].as_str().is_some_and(|target| {
+                    !paths_outside_target(&changed_paths, &link_repairs, &[target.to_owned()])
+                        .is_empty()
+                }) {
                     let result = decision(
                         "failed",
                         Some("invalid_target"),

@@ -1,9 +1,24 @@
-//! Read-only native diagnostics for configuration, trust, task categories, and package integrity.
+//! Read-only native diagnostics for configuration, trust, task categories, package integrity,
+//! and the per-identity memory runtime size.
 
 use std::{
+    cell::Cell,
     collections::{BTreeMap, HashMap},
     path::Path,
 };
+
+use memory_core::reflection::{
+    HostSweepIdentity, HostSweepOptions, HostSweepResult, HostSweepStep,
+    IdentityOrphanSweepOptions, IdentityOrphanSweepReport, StaleLockProbe, StaleLockReaperOptions,
+    format_stale_lock_fix_lines, reclaim_dead_owner_locks, run_stale_lock_reaper,
+    sweep_host_identities, sweep_identity_orphan_worktrees,
+};
+
+use memory_core::retention::{
+    ForeignMemoryRuntimeSettings, RetentionHostSweepStepOptions, create_retention_host_sweep_step,
+};
+
+use crate::cli::doctor_memory_runtime::doctor_memory_runtime_lines;
 
 const DEFAULT_CATEGORIES: &[&str] = &[
     "architect",
@@ -300,19 +315,208 @@ pub fn doctor_lines(cwd: &Path, env: &BTreeMap<String, String>, agent_dir: &str)
     let mut lines = config_lines(&loaded, env);
     lines.extend(trust_lines(cwd, env, agent_dir));
     lines.extend(category_lines(&loaded.config, agent_dir));
+    lines.extend(doctor_memory_runtime_lines(cwd, env, &loaded.config));
     lines
 }
 
+/// What `mhc doctor --fix` sweeps and with which seams (tests inject the clock and the process table).
+pub struct ReflectionLockFixOptions<'a> {
+    pub memory_root: &'a Path,
+    pub dry_run: bool,
+    pub probe: StaleLockProbe<'a>,
+}
+
+/// The lines `mhc doctor --fix` prints and whether a step failed (exit code 1).
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReflectionLockFixResult {
+    pub lines: Vec<String>,
+    pub failed: bool,
+}
+
+fn orphan_lines(identity: &str, report: &IdentityOrphanSweepReport, dry_run: bool) -> Vec<String> {
+    if report.skipped.is_some() {
+        return Vec::new();
+    }
+    let verb = if dry_run { "WOULD FIX" } else { "FIXED" };
+    let mut lines: Vec<String> = report
+        .removed
+        .iter()
+        .map(|target| format!("{verb} {identity} removed orphan {target}"))
+        .collect();
+    if dry_run {
+        lines.extend(report.kept.iter().map(|entry| {
+            format!(
+                "KEPT {identity} worktree {} ({})",
+                entry.target, entry.reason
+            )
+        }));
+    }
+    lines.extend(
+        report
+            .failed
+            .iter()
+            .map(|entry| format!("KEPT {identity} orphan {} ({})", entry.target, entry.detail)),
+    );
+    lines
+}
+
+/// `memory.runtime` from the GLOBAL omo config only: the sweep visits identities this process does
+/// not host, so another project's layer never decides what is deleted for them.
+fn global_memory_runtime_settings() -> Option<ForeignMemoryRuntimeSettings> {
+    let env = env_map();
+    let home = env.get("HOME").or_else(|| env.get("USERPROFILE"))?;
+    let loaded = loaded_config(Path::new(home), &env);
+    loaded
+        .config
+        .get("memory")
+        .map(ForeignMemoryRuntimeSettings::from_json)
+}
+
+/// `mhc doctor --fix`: one host-wide sweep over every identity that has a `runtime/` (repo or not),
+/// resuming at the persisted cursor. Each step is one closure in `steps`; the reaper and the
+/// dead-owner lock sweep come first, then the git-backed orphan worktree sweep, which skips an
+/// identity without a repo. Further steps join the same pass by being pushed onto `steps`.
+pub fn reflection_lock_fix(options: &ReflectionLockFixOptions<'_>) -> ReflectionLockFixResult {
+    let dry_run = options.dry_run;
+    let failed = Cell::new(false);
+    let reap = |identity: &HostSweepIdentity| -> Result<Vec<String>, String> {
+        let mut reaper = StaleLockReaperOptions::new(&identity.runtime_dir);
+        reaper.probe = options.probe;
+        reaper.dry_run = dry_run;
+        match run_stale_lock_reaper(&reaper) {
+            Ok(report) => {
+                let locks = (!dry_run)
+                    .then(|| reclaim_dead_owner_locks(&identity.runtime_dir.join("locks")));
+                Ok(format_stale_lock_fix_lines(
+                    &identity.name,
+                    &report,
+                    locks.as_ref(),
+                ))
+            }
+            Err(error) => {
+                failed.set(true);
+                Ok(vec![format!(
+                    "FAIL {} reflection lock fix failed: {error}",
+                    identity.name
+                )])
+            }
+        }
+    };
+    let orphans = |identity: &HostSweepIdentity| -> Result<Vec<String>, String> {
+        let now_ms = options.probe.now.map_or_else(
+            || memory_core::support::time::now_millis() as f64,
+            |clock| clock(),
+        );
+        let sweep = sweep_identity_orphan_worktrees(
+            &identity.root,
+            &IdentityOrphanSweepOptions { now_ms, dry_run },
+        );
+        match sweep {
+            Ok(report) => Ok(orphan_lines(&identity.name, &report, dry_run)),
+            Err(error) => {
+                failed.set(true);
+                Ok(vec![format!(
+                    "FAIL {} orphan worktree sweep failed: {error}",
+                    identity.name
+                )])
+            }
+        }
+    };
+    let retention_settings = global_memory_runtime_settings();
+    let retention_now: &dyn Fn() -> i64 = &|| {
+        options
+            .probe
+            .now
+            .map_or_else(memory_core::support::time::now_millis, |clock| {
+                clock() as i64
+            })
+    };
+    let mut retention_step = create_retention_host_sweep_step(RetentionHostSweepStepOptions {
+        settings: retention_settings,
+        now: Some(retention_now),
+        dry_run,
+        ..RetentionHostSweepStepOptions::default()
+    });
+    let retention = |identity: &HostSweepIdentity| -> Result<Vec<String>, String> {
+        let lines = retention_step(identity)?;
+        if lines.iter().any(|line| line.starts_with("FAIL ")) {
+            failed.set(true);
+        }
+        Ok(lines)
+    };
+    let steps: Vec<HostSweepStep<'_>> =
+        vec![Box::new(reap), Box::new(orphans), Box::new(retention)];
+    let mut sweep = HostSweepOptions::new(options.memory_root);
+    sweep.steps = steps;
+    sweep.dry_run = dry_run;
+    let result = sweep_host_identities(sweep);
+    let mut lines = match result {
+        Err(error) => {
+            failed.set(true);
+            vec![format!("FAIL host sweep failed: {error}")]
+        }
+        Ok(HostSweepResult::Busy) => {
+            return ReflectionLockFixResult {
+                lines: vec![
+                    "INFO another sweep is running on this host; try again when it finishes".into(),
+                ],
+                failed: false,
+            };
+        }
+        Ok(HostSweepResult::Swept { lines, .. }) => lines,
+    };
+    if lines.is_empty() {
+        lines.push(
+            if dry_run {
+                "INFO nothing to fix"
+            } else {
+                "PASS no stale reflection locks"
+            }
+            .to_owned(),
+        );
+    }
+    ReflectionLockFixResult {
+        lines,
+        failed: failed.get(),
+    }
+}
+
+const DOCTOR_USAGE: &str = "Usage: mhc doctor [--fix [--dry-run]]
+
+  --fix              Release reflection locks left behind by runs whose processes died,
+                     move a torn active.lock aside, reclaim runtime locks whose owner is gone
+                     and remove orphaned reflection worktrees, on every memory identity
+  --dry-run          With --fix: print what would change and change nothing";
+
 pub fn run_doctor(args: &[String]) -> Result<i32, String> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Usage: mhc doctor");
+        println!("{DOCTOR_USAGE}");
         return Ok(0);
     }
-    if !args.is_empty() {
-        return Err(format!("Unknown doctor option: {}", args[0]));
+    let mut fix = false;
+    let mut dry_run = false;
+    for arg in args {
+        match arg.as_str() {
+            "--fix" => fix = true,
+            "--dry-run" => dry_run = true,
+            other => return Err(format!("Unknown doctor option: {other}")),
+        }
+    }
+    if dry_run && !fix {
+        return Err("--dry-run requires --fix".to_owned());
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let env = env_map();
+    if fix {
+        let memory_root = memory_core::identity::layout::resolve_memory_root(&env, &cwd);
+        let result = reflection_lock_fix(&ReflectionLockFixOptions {
+            memory_root: &memory_root,
+            dry_run,
+            probe: StaleLockProbe::default(),
+        });
+        println!("{}", result.lines.join("\n"));
+        return Ok(i32::from(result.failed));
+    }
     let agent_dir_env: HashMap<_, _> = env
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()))

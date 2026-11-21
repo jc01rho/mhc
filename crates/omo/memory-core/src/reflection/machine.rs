@@ -488,6 +488,34 @@ pub fn complete_transition(
     })
 }
 
+/// A pending run left behind when its active run was released without promotion (the CLI reaper,
+/// omo #12517, DESIGN.r2 4.1b): the next session promotes it exactly as `complete_transition` would
+/// have, dropping a request whose journals no longer trigger it. `reserve_transition` is deliberately
+/// not changed.
+pub fn promote_transition(
+    state: ReservationState,
+    journals: &BTreeMap<String, JournalSnapshot>,
+    config: &TriggerConfig,
+) -> (ReservationState, Option<ReservedRun>) {
+    if state.active.is_some() {
+        return (state, None);
+    }
+    let Some(pending) = state.pending.clone() else {
+        return (state, None);
+    };
+    let pending = cap_pending_run(pending);
+    if !is_still_triggered(&pending.request, journals, config) {
+        return (ReservationState::default(), None);
+    }
+    (
+        ReservationState {
+            active: Some(pending.clone()),
+            pending: None,
+        },
+        Some(pending),
+    )
+}
+
 fn make_request(
     journal: &JournalSnapshot,
     trigger: ReflectionTrigger,

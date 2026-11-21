@@ -111,7 +111,10 @@ fn collect_live_run_ids(
     let runs_dir = context.identity.paths.reflection.join("runs");
     for run_id in run_directory_names(&runs_dir)? {
         let run_dir = runs_dir.join(&run_id);
-        if run_dir.join("final.json").exists() || run_dir.join("abandoned.json").exists() {
+        if ["final.json", "abandoned.json", "quarantined.json"]
+            .iter()
+            .any(|sentinel| run_dir.join(sentinel).exists())
+        {
             continue;
         }
         // prelaunch.json is written before the worktree exists, so it claims the directory early.
@@ -132,12 +135,14 @@ fn run_directory_names(path: &Path) -> Result<Vec<String>, String> {
     let mut names = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
         if entry
             .file_type()
             .map_err(|error| error.to_string())?
             .is_dir()
+            && !name.starts_with('.')
         {
-            names.push(entry.file_name().to_string_lossy().into_owned());
+            names.push(name);
         }
     }
     Ok(names)

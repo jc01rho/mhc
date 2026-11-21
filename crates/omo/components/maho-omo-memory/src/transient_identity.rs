@@ -49,13 +49,8 @@ pub fn finalize_identity_run(run: &IdentityRunPaths) -> std::io::Result<Identity
     if is_durable_identity_root(&run.paths.root) {
         return Ok(IdentityRunDisposition::Kept);
     }
-    match std::fs::remove_dir_all(root) {
-        Ok(()) => Ok(IdentityRunDisposition::Removed),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(IdentityRunDisposition::Removed)
-        }
-        Err(error) => Err(error),
-    }
+    memory_core::fs::remove_tree(root)?;
+    Ok(IdentityRunDisposition::Removed)
 }
 pub fn transient_run_root_from_identity(root: &Path) -> Option<PathBuf> {
     root.ancestors().nth(2).map(Path::to_path_buf)
@@ -113,7 +108,7 @@ pub fn sweep_transient_run_roots(
         let children = match std::fs::read_dir(&identities) {
             Ok(children) => children,
             Err(_) => {
-                std::fs::remove_dir_all(&root)?;
+                memory_core::fs::remove_tree(&root)?;
                 removed += 1;
                 continue;
             }
@@ -136,7 +131,7 @@ pub fn sweep_transient_run_roots(
             }
         }
         if !stranded {
-            std::fs::remove_dir_all(&root)?;
+            memory_core::fs::remove_tree(&root)?;
             removed += 1;
         } else {
             let report = root.join(format!("stranded-{}.json", std::process::id()));
@@ -174,7 +169,7 @@ pub fn sweep_abandoned_identity_roots(
         if modified.is_none_or(|at| now_ms.saturating_sub(at) < max_age_ms) {
             continue;
         }
-        std::fs::remove_dir_all(root)?;
+        memory_core::fs::remove_tree(&root)?;
         removed += 1;
     }
     Ok(removed)

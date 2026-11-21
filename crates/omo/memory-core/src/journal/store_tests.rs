@@ -680,3 +680,155 @@ fn test_append_and_reconcile_refuse_up_front_when_already_cancelled() {
     assert!(matches!(appended, Err(JournalError::Aborted)));
     assert_eq!(journal.lock_path.exists(), false);
 }
+
+type WarnLog = Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>;
+
+fn journal_recording_warnings(dir: &Path) -> (TranscriptJournal, WarnLog) {
+    let log: WarnLog = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&log);
+    let warn: JournalWarn = Box::new(move |message: &str, fields: &[(&str, String)]| {
+        let fields = fields
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect();
+        sink.lock().unwrap().push((message.to_string(), fields));
+    });
+    let mut options = TranscriptJournalOptions::new(dir);
+    options.now = Some(Box::new(|| "2026-08-09T12:00:00.000Z".to_string()));
+    options.warn = Some(warn);
+    (TranscriptJournal::new(options), log)
+}
+
+fn user_message(id: &str) -> TranscriptProjection {
+    TranscriptProjection::User {
+        message_id: id.to_string(),
+        text: "help".to_string(),
+    }
+}
+
+fn assistant_message(id: &str) -> TranscriptProjection {
+    TranscriptProjection::Assistant {
+        message_id: id.to_string(),
+        text_blocks: vec![format!("answer {id}")],
+        reasoning_blocks: Vec::new(),
+        tool_calls: Vec::new(),
+    }
+}
+
+/// Writes a state file as retention leaves it: transcript gone, state kept.
+fn write_kept_state(dir: &Path, anchor: Option<&str>, reflected: u64, stamped: bool) {
+    let mut state = serde_json::json!({
+        "reflected_completed_steps": reflected,
+        "total_completed_steps": reflected,
+    });
+    if let Some(anchor) = anchor {
+        state["reflected_through_message_id"] = serde_json::json!(anchor);
+    }
+    if stamped {
+        state["transcript_pruned_at"] = serde_json::json!("2026-08-01T00:00:00.000Z");
+    }
+    std::fs::write(dir.join("state.json"), state.to_string()).unwrap();
+}
+
+fn stored_state(journal: &TranscriptJournal) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(&journal.state_path).unwrap()).unwrap()
+}
+
+#[test]
+fn test_rebuild_after_prune_recounts_reflected_steps_when_anchor_is_still_projected() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (journal, warnings) = journal_recording_warnings(temp_dir.path());
+    write_kept_state(temp_dir.path(), Some("assistant-2"), 5, true);
+
+    journal
+        .reconcile(&[
+            user_message("user-1"),
+            assistant_message("assistant-1"),
+            assistant_message("assistant-2"),
+            assistant_message("assistant-3"),
+        ])
+        .unwrap();
+
+    let state = stored_state(&journal);
+    assert_eq!(state["reflected_through_message_id"], "assistant-2");
+    assert_eq!(state["reflected_completed_steps"], 2);
+    assert_eq!(state["total_completed_steps"], 3);
+    assert_eq!(state["steps_since_last_successful_reflection"], 1);
+    assert!(state.get("transcript_pruned_at").is_none());
+    assert!(state["reflected_through_byte_offset"].as_u64().unwrap() > 0);
+    assert!(warnings.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_rebuild_after_prune_restarts_the_cursor_and_warns_when_anchor_is_lost() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (journal, warnings) = journal_recording_warnings(temp_dir.path());
+    write_kept_state(temp_dir.path(), Some("gone-message"), 4, true);
+
+    journal
+        .reconcile(&[user_message("user-1"), assistant_message("assistant-1")])
+        .unwrap();
+
+    let state = stored_state(&journal);
+    assert!(state.get("reflected_through_message_id").is_none());
+    assert!(state.get("transcript_pruned_at").is_none());
+    assert_eq!(state["reflected_completed_steps"], 0);
+    assert_eq!(state["steps_since_last_successful_reflection"], 1);
+    let warnings = warnings.lock().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].0, "journal anchor lost after prune");
+    assert_eq!(
+        warnings[0].1,
+        vec![
+            (
+                "journalDir".to_string(),
+                temp_dir.path().display().to_string()
+            ),
+            (
+                "reflectedThroughMessageId".to_string(),
+                "gone-message".to_string()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn test_rebuild_without_a_prune_stamp_keeps_the_stored_cursor() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (journal, warnings) = journal_recording_warnings(temp_dir.path());
+    write_kept_state(temp_dir.path(), Some("gone-message"), 1, false);
+
+    journal
+        .reconcile(&[
+            assistant_message("assistant-1"),
+            assistant_message("assistant-2"),
+        ])
+        .unwrap();
+
+    let state = stored_state(&journal);
+    assert_eq!(state["reflected_through_message_id"], "gone-message");
+    assert_eq!(state["reflected_completed_steps"], 1);
+    assert!(warnings.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_prune_stamp_is_kept_until_a_rebuild_from_nothing_happens() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let journal = create_journal(temp_dir.path());
+    journal
+        .reconcile(&[assistant_message("assistant-1")])
+        .unwrap();
+    write_kept_state(temp_dir.path(), None, 0, true);
+
+    journal
+        .reconcile(&[
+            assistant_message("assistant-1"),
+            assistant_message("assistant-2"),
+        ])
+        .unwrap();
+
+    assert_eq!(
+        stored_state(&journal)["transcript_pruned_at"],
+        "2026-08-01T00:00:00.000Z"
+    );
+}

@@ -476,10 +476,10 @@ pub fn check_disk_with_limits(
             label
         } else {
             format!(
-                "{label}; transcripts expire after {}d, parked facts after {}d, reflection runs after {}d",
-                crate::memory_retention::TRANSCRIPT_RETENTION_DAYS,
-                crate::memory_retention::FACTS_PARKED_RETENTION_DAYS,
-                crate::memory_retention::REFLECTION_RUN_RETENTION_DAYS
+                "{label}; reflection runs and reflected transcripts are removed after {}d, completions after {}d, parked facts after {}d; unreflected journals are kept unless memory.runtime.discard_unreflected_journals is on",
+                memory_core::retention::DEFAULT_RUNTIME_RETENTION.retention_days as u64,
+                memory_core::retention::DEFAULT_RUNTIME_RETENTION.completions_days as u64,
+                crate::memory_retention::FACTS_PARKED_RETENTION_DAYS
             )
         },
     }

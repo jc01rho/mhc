@@ -24,6 +24,7 @@ pub mod repo_tree;
 pub mod repo_types;
 pub mod secret;
 pub mod stable_log_output;
+pub mod timeout_diagnostics;
 pub mod worktree_mutation_queue;
 
 pub use config_lock::*;

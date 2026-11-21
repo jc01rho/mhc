@@ -32,6 +32,8 @@ impl std::error::Error for SandboxError {}
 pub struct SandboxTransform {
     pub was_sandboxed: bool,
     pub warning: Option<String>,
+    /// The bwrap usability probe degraded this transform; it decides per spawn (omo #12378).
+    pub(crate) probe_degraded: bool,
     pub(crate) executable: Option<String>,
     pub(crate) inner_command: String,
     pub(crate) profile: Option<String>,
