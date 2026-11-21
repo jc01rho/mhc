@@ -130,6 +130,7 @@ pub mod reflection_run_id;
 pub mod reflection_settings;
 pub mod reflection_stale_active;
 pub mod sandbox;
+pub mod sandbox_bwrap_probe;
 pub mod sandbox_contracts;
 pub mod sandbox_platform;
 pub mod session_binding;

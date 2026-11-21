@@ -1221,6 +1221,7 @@ impl MemoryRuntime {
                             policy: sandbox_policy(&reflection)?,
                             agent_dir: &self.host.agent_dir,
                             platform: platform(),
+                            probe: None,
                         },
                         args,
                         self.host.which.as_ref(),

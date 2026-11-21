@@ -14,6 +14,7 @@ pub struct ReflectionSandboxInput<'a> {
     pub command: &'a str,
     pub env: &'a BTreeMap<String, String>,
     pub platform: &'a str,
+    pub probe: Option<&'a dyn Fn(&str) -> super::sandbox_bwrap_probe::SandboxUsability>,
 }
 pub fn build_sandbox_transform(
     input: &ReflectionSandboxInput<'_>,
@@ -39,6 +40,7 @@ pub fn build_sandbox_transform(
             command: input.command,
             env: input.env,
             session_executable: session_executable.as_deref(),
+            probe: input.probe,
         },
         which,
     )
@@ -76,6 +78,7 @@ pub fn build_facts_sandbox_transform(
             command: input.command,
             env: input.env,
             session_executable: session_executable.as_deref(),
+            probe: None,
         },
         which,
     )
@@ -236,6 +239,7 @@ mod tests {
                 command: "/bin/sh",
                 env: &env,
                 platform: "linux",
+                probe: None,
             },
             &|_| Some("bwrap".into()),
         )
