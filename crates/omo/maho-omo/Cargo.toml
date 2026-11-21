@@ -61,6 +61,7 @@ maho-omo-start-work-continuation = { path = "../components/maho-omo-start-work-c
 maho-omo-telemetry = { path = "../components/maho-omo-telemetry" }
 maho-ultrawork = { path = "../../maho-ultrawork" }
 maho-omo-ulw-loop = { path = "../components/maho-omo-ulw-loop" }
+maho-omo-js-kernel-guard = { path = "../components/maho-omo-js-kernel-guard" }
 indexmap = "=2.14.0"
 serde_json = "=1.0.149"
 tokio = { version = "=1.52.3", features = ["rt", "sync", "time", "macros", "fs", "io-util", "net", "signal", "process"] }

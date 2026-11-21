@@ -5334,6 +5334,7 @@ dependencies = [
  "maho-omo-git-master",
  "maho-omo-idle-injection",
  "maho-omo-init-deep-advisor",
+ "maho-omo-js-kernel-guard",
  "maho-omo-lsp",
  "maho-omo-memory",
  "maho-omo-model-profile",
@@ -5671,6 +5672,14 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "maho-omo-js-kernel-guard"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
 ]
 
 [[package]]

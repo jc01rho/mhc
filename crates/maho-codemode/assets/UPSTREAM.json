@@ -20,9 +20,10 @@
     },
     {
       "path": "kernels/js/inline-worker-entry.js",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "3cfbdf41a73b44aaac3685e5080b637c55aabf6e6411d0d1ccdcfbb015fbbf6c",
+      "change": "binds process.exit before any cell runs and shuts down through that binding, so the omo js-kernel-guard prelude (oh-my-openagent #14023) cannot turn the worker's own exit into a ProcessExitInCell throw",
+      "sha256": "b5bc3a1d1e601594b81951c76ddefaf662c38b9af988449baa40fce42d8ce90b",
       "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
       "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
     },
@@ -102,9 +103,10 @@
     },
     {
       "path": "kernels/js/worker-entry.js",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "f80879f6fba0ede8b767f4038540d81779c71889ee13aec8483686e1eff72339",
+      "change": "binds process.exit before any cell runs and shuts down through that binding, so the omo js-kernel-guard prelude (oh-my-openagent #14023) cannot turn the worker's own exit into a ProcessExitInCell throw",
+      "sha256": "9ab3d0ba554d2381c3c6954be8c6a53ad0ccea9765f6b68d3ce809d14b88a3f9",
       "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
       "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
     },
