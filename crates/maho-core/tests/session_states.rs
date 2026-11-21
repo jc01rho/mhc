@@ -121,7 +121,7 @@ fn archived_and_settled_markers_are_scoped_to_their_own_session_id_and_validated
     });
     assert!(manager.is_archived() && manager.get_settled().settled);
 
-    manager.new_session(Some(NewSessionOptions {
+    let _new_file = manager.new_session(Some(NewSessionOptions {
         id: Some("019a0000-0000-7000-8000-000000000002".to_owned()),
         ..Default::default()
     }));
