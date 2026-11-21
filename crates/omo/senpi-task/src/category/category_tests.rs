@@ -1238,23 +1238,25 @@ fn fable_and_kimi() -> Vec<Value> {
 }
 
 #[test]
-fn excluded_fable_head_rung_leads_with_the_next_rung() {
+fn excluded_head_rung_leads_with_the_next_rung() {
+    // Artistry's head rung is Claude Opus 5.5 since the Fable routing was dropped; excluding it walks
+    // to the Kimi rung, and the excluded id never reaches the runtime chain.
     let models = registry(fable_and_kimi());
     let resolved = expect_resolved(resolve(
         "artistry",
-        json!({ "exclude_models": ["claude-fable-*"] }),
+        json!({ "exclude_models": ["claude-opus-*"] }),
         &models,
     ));
-    assert_eq!(resolved.spec.provider, "anthropic");
-    assert_eq!(resolved.spec.model_id, "claude-opus-5-5");
+    assert_eq!(resolved.spec.provider, "kimi-for-coding");
+    assert_eq!(resolved.spec.model_id, "k3");
     assert_eq!(resolved.spec.variant.as_deref(), Some("max"));
     assert!(resolved.selection.matched_fallback);
     let fallbacks = resolved.spec.fallback_models.unwrap_or_default();
     assert!(
         fallbacks
             .iter()
-            .all(|fallback| fallback.model_id != "claude-fable-5-1"),
-        "the excluded Fable rung must never reach the runtime chain: {fallbacks:?}"
+            .all(|fallback| fallback.model_id != "claude-opus-5-5"),
+        "the excluded head rung must never reach the runtime chain: {fallbacks:?}"
     );
 }
 
@@ -1296,30 +1298,30 @@ fn excluded_user_pin_is_treated_like_a_model_with_no_login() {
 
 #[test]
 fn category_with_every_rung_excluded_is_gone_from_the_listing() {
-    let fable_only = registry(vec![
-        model("anthropic", "claude-fable-5-1"),
-        model("anthropic", "claude-fable-5"),
+    let opus_only = registry(vec![
+        model("anthropic", "claude-opus-5-5"),
+        model("anthropic", "claude-opus-5"),
     ]);
     let filtered = resolve_available_category_names(
-        &json!({ "exclude_models": ["claude-fable-*"] }),
-        &fable_only,
+        &json!({ "exclude_models": ["claude-opus-*"] }),
+        &opus_only,
     );
     assert!(!contains(&filtered, "artistry"));
-    let unfiltered = resolve_available_category_names(&json!({}), &fable_only);
+    let unfiltered = resolve_available_category_names(&json!({}), &opus_only);
     assert!(contains(&unfiltered, "artistry"));
 }
 
 #[test]
 fn not_found_listing_observes_excluded_models() {
-    let fable_only = registry(vec![model("anthropic", "claude-fable-5-1")]);
+    let opus_only = registry(vec![model("anthropic", "claude-opus-5-5")]);
     let filtered = resolve(
         "no-such-category",
         json!({ "exclude_models": ["*"] }),
-        &fable_only,
+        &opus_only,
     );
     assert_eq!(filtered.kind(), "not_found");
     assert!(!contains(filtered.available_categories(), "artistry"));
-    let unfiltered = resolve("no-such-category", json!({}), &fable_only);
+    let unfiltered = resolve("no-such-category", json!({}), &opus_only);
     assert!(contains(unfiltered.available_categories(), "artistry"));
 }
 
