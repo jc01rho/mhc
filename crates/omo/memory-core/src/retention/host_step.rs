@@ -393,3 +393,7 @@ pub fn create_retention_host_sweep_step<'a>(
         )])
     })
 }
+
+#[cfg(test)]
+#[path = "host_step_tests.rs"]
+mod tests;
