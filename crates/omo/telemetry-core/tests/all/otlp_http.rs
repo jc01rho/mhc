@@ -29,6 +29,7 @@ fn deps(fetch: OtlpFetch, delays: Arc<Mutex<Vec<u64>>>) -> PostDeps {
         abort: AbortSignal::new(),
         request_timeout_ms: 10_000,
         before_attempt: None,
+        not_before: None,
     }
 }
 

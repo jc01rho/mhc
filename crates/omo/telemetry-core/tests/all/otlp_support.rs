@@ -21,6 +21,7 @@ use telemetry_core::OtlpResponse;
 use telemetry_core::OtlpTelemetryTransport;
 use telemetry_core::OtlpWireProjection;
 use telemetry_core::ResourceAttributes;
+use telemetry_core::SleepFn;
 use telemetry_core::SpanAllowlist;
 use telemetry_core::TelemetryCaptureMessage;
 use telemetry_core::TelemetryDiagnostics;
@@ -197,6 +198,7 @@ pub fn ok_fetch() -> RecordingFetch {
 pub struct TransportOverrides {
     pub consent: Option<Consent>,
     pub fetch: Option<OtlpFetch>,
+    pub sleep: Option<SleepFn>,
     pub env: Option<TelemetryEnv>,
     pub endpoint: Option<String>,
     pub now_ms: Option<NowMs>,
@@ -238,8 +240,8 @@ pub fn make_transport(dir: &Path, overrides: TransportOverrides) -> OtlpTelemetr
         request_timeout_ms: None,
         lease_renew_interval_ms: None,
         // No test ever waits on a real retry pause.
-        sleep: Some(Arc::new(|_ms: u64, _abort: AbortSignal| {
-            futures::future::ready(()).boxed()
+        sleep: Some(overrides.sleep.unwrap_or_else(|| {
+            Arc::new(|_ms: u64, _abort: AbortSignal| futures::future::ready(()).boxed())
         })),
         random: Some(Arc::new(|| 0.0)),
         now_ms: overrides.now_ms,
