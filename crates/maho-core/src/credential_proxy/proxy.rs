@@ -136,7 +136,7 @@ pub async fn start_credential_proxy(
 
 fn full(bytes: impl Into<Bytes>) -> ProxyBody {
     Full::new(bytes.into())
-        .map_err(|never| match never {})
+        .map_err(|never: std::convert::Infallible| match never {})
         .boxed_unsync()
 }
 
