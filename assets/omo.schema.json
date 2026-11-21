@@ -2023,6 +2023,50 @@
             "recall": true
           }
         },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "retention_days": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 7
+            },
+            "abandoned_journal_days": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 14
+            },
+            "completions_days": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 30
+            },
+            "pass_budget_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 60000
+            },
+            "discard_unreflected_journals": {
+              "type": "boolean",
+              "default": false
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 2147483648
+            }
+          },
+          "required": [],
+          "additionalProperties": false,
+          "default": {
+            "retention_days": 7,
+            "abandoned_journal_days": 14,
+            "completions_days": 30,
+            "pass_budget_ms": 60000,
+            "discard_unreflected_journals": false,
+            "max_bytes": 2147483648
+          }
+        },
         "compile_warn_tokens": {
           "type": "integer",
           "exclusiveMinimum": 0,
@@ -2285,6 +2329,35 @@
                   },
                   "query_expansion": {
                     "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "retention_days": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "abandoned_journal_days": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "completions_days": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "pass_budget_ms": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "discard_unreflected_journals": {
+                    "type": "boolean"
+                  },
+                  "max_bytes": {
+                    "type": "integer",
+                    "minimum": 0
                   }
                 },
                 "additionalProperties": false
@@ -4171,6 +4244,35 @@
               },
               "additionalProperties": false
             },
+            "runtime": {
+              "type": "object",
+              "properties": {
+                "retention_days": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "abandoned_journal_days": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "completions_days": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "pass_budget_ms": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "discard_unreflected_journals": {
+                  "type": "boolean"
+                },
+                "max_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
             "compile_warn_tokens": {
               "type": "integer",
               "exclusiveMinimum": 0
@@ -4432,6 +4534,35 @@
                       },
                       "query_expansion": {
                         "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "runtime": {
+                    "type": "object",
+                    "properties": {
+                      "retention_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "abandoned_journal_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "completions_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "pass_budget_ms": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "discard_unreflected_journals": {
+                        "type": "boolean"
+                      },
+                      "max_bytes": {
+                        "type": "integer",
+                        "minimum": 0
                       }
                     },
                     "additionalProperties": false
@@ -6313,6 +6444,35 @@
               },
               "additionalProperties": false
             },
+            "runtime": {
+              "type": "object",
+              "properties": {
+                "retention_days": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "abandoned_journal_days": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "completions_days": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "pass_budget_ms": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "discard_unreflected_journals": {
+                  "type": "boolean"
+                },
+                "max_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
             "compile_warn_tokens": {
               "type": "integer",
               "exclusiveMinimum": 0
@@ -6574,6 +6734,35 @@
                       },
                       "query_expansion": {
                         "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "runtime": {
+                    "type": "object",
+                    "properties": {
+                      "retention_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "abandoned_journal_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "completions_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "pass_budget_ms": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "discard_unreflected_journals": {
+                        "type": "boolean"
+                      },
+                      "max_bytes": {
+                        "type": "integer",
+                        "minimum": 0
                       }
                     },
                     "additionalProperties": false
@@ -8455,6 +8644,35 @@
               },
               "additionalProperties": false
             },
+            "runtime": {
+              "type": "object",
+              "properties": {
+                "retention_days": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "abandoned_journal_days": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "completions_days": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "pass_budget_ms": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "discard_unreflected_journals": {
+                  "type": "boolean"
+                },
+                "max_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
             "compile_warn_tokens": {
               "type": "integer",
               "exclusiveMinimum": 0
@@ -8716,6 +8934,35 @@
                       },
                       "query_expansion": {
                         "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "runtime": {
+                    "type": "object",
+                    "properties": {
+                      "retention_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "abandoned_journal_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "completions_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "pass_budget_ms": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "discard_unreflected_journals": {
+                        "type": "boolean"
+                      },
+                      "max_bytes": {
+                        "type": "integer",
+                        "minimum": 0
                       }
                     },
                     "additionalProperties": false
@@ -10599,6 +10846,35 @@
                 },
                 "additionalProperties": false
               },
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "retention_days": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "abandoned_journal_days": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "completions_days": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "pass_budget_ms": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "discard_unreflected_journals": {
+                    "type": "boolean"
+                  },
+                  "max_bytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              },
               "compile_warn_tokens": {
                 "type": "integer",
                 "exclusiveMinimum": 0
@@ -10860,6 +11136,35 @@
                         },
                         "query_expansion": {
                           "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "runtime": {
+                      "type": "object",
+                      "properties": {
+                        "retention_days": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "abandoned_journal_days": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "completions_days": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "pass_budget_ms": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "discard_unreflected_journals": {
+                          "type": "boolean"
+                        },
+                        "max_bytes": {
+                          "type": "integer",
+                          "minimum": 0
                         }
                       },
                       "additionalProperties": false
@@ -12742,6 +13047,35 @@
                     },
                     "additionalProperties": false
                   },
+                  "runtime": {
+                    "type": "object",
+                    "properties": {
+                      "retention_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "abandoned_journal_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "completions_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "pass_budget_ms": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "discard_unreflected_journals": {
+                        "type": "boolean"
+                      },
+                      "max_bytes": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "compile_warn_tokens": {
                     "type": "integer",
                     "exclusiveMinimum": 0
@@ -13003,6 +13337,35 @@
                             },
                             "query_expansion": {
                               "type": "boolean"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "runtime": {
+                          "type": "object",
+                          "properties": {
+                            "retention_days": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "abandoned_journal_days": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "completions_days": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "pass_budget_ms": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "discard_unreflected_journals": {
+                              "type": "boolean"
+                            },
+                            "max_bytes": {
+                              "type": "integer",
+                              "minimum": 0
                             }
                           },
                           "additionalProperties": false
@@ -14884,6 +15247,35 @@
                     },
                     "additionalProperties": false
                   },
+                  "runtime": {
+                    "type": "object",
+                    "properties": {
+                      "retention_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "abandoned_journal_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "completions_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "pass_budget_ms": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "discard_unreflected_journals": {
+                        "type": "boolean"
+                      },
+                      "max_bytes": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "compile_warn_tokens": {
                     "type": "integer",
                     "exclusiveMinimum": 0
@@ -15145,6 +15537,35 @@
                             },
                             "query_expansion": {
                               "type": "boolean"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "runtime": {
+                          "type": "object",
+                          "properties": {
+                            "retention_days": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "abandoned_journal_days": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "completions_days": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "pass_budget_ms": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "discard_unreflected_journals": {
+                              "type": "boolean"
+                            },
+                            "max_bytes": {
+                              "type": "integer",
+                              "minimum": 0
                             }
                           },
                           "additionalProperties": false
@@ -17026,6 +17447,35 @@
                     },
                     "additionalProperties": false
                   },
+                  "runtime": {
+                    "type": "object",
+                    "properties": {
+                      "retention_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "abandoned_journal_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "completions_days": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "pass_budget_ms": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "discard_unreflected_journals": {
+                        "type": "boolean"
+                      },
+                      "max_bytes": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "compile_warn_tokens": {
                     "type": "integer",
                     "exclusiveMinimum": 0
@@ -17287,6 +17737,35 @@
                             },
                             "query_expansion": {
                               "type": "boolean"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "runtime": {
+                          "type": "object",
+                          "properties": {
+                            "retention_days": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "abandoned_journal_days": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "completions_days": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "pass_budget_ms": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "discard_unreflected_journals": {
+                              "type": "boolean"
+                            },
+                            "max_bytes": {
+                              "type": "integer",
+                              "minimum": 0
                             }
                           },
                           "additionalProperties": false
