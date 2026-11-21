@@ -869,6 +869,7 @@ impl Extension for Task {
                 let host_assembly = super::task_host::HostAssembly { session_context: registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).profile.session_context.clone(), turns: Default::default(), runtime: executor.clone(), agent_dir: ctx.agent_dir.clone(), parent: parent.weak_accessor() };
                 runners.process = super::task_host::select_runner(host_assembly.clone(), &config, runners.process);
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
+                let routing_registry = registry.clone();
                 let engine = {
                     let mut slot = engine_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let stale = slot.as_ref().is_none_or(|(cwd, retained, _)| *cwd != ctx.cwd || *retained != config);
@@ -962,6 +963,7 @@ impl Extension for Task {
                         Arc::new(move |m: &str| warn_log.warn(m, None)),
                     );
                     if let Some(component) = maho_omo_task::component::TaskComponent::register_with_process_sweep(&mut api, engine, spawn, ownership, member, sweep)? {
+                        maho_omo_task::model_routing_rpc::wire_model_routing_rpc(&mut api, super::task_runners::model_routing_rpc_deps(ctx.cwd.clone(), environment.clone(), routing_registry, &component.engine))?;
                         let mut workpools = senpi_task::workpool::engine::WorkpoolEngine::with_events(
                             component.engine.store.state_dir(), maho_omo_task::workpool_admission::from_engine(&component.engine),
                             workpool_events,
