@@ -1,4 +1,4 @@
-//! Port of omo-senpi `components/bundled-skills` at latest `455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b`.
+//! Port of omo-senpi `components/bundled-skills` at latest `v5.1.79`.
 //!
 //! One upstream source file per Rust module, names and order preserved:
 //! `index.ts` -> [`index`], `contributed-skill.ts` -> [`contributed_skill`],
@@ -9,10 +9,11 @@ pub mod index;
 pub mod override_dir;
 
 pub use contributed_skill::{
-    BundledSkillProvenance, ContributedSkill, HARNESS, HostCommandInfo, HostCommands,
-    ResolveContributedSkillOptions, host_command_info, host_commands_from_runtime,
-    read_disabled_skills, read_discover_cwd, resolve_bundled_skill_provenance,
-    resolve_contributed_skill,
+    BundledSkillProvenance, ContributedSkill, DEFAULT_OPT_IN_SKILLS, ENABLE_EVAL_INTEGRITY_ENV,
+    ENABLED_SKILLS_ENV, HARNESS, HostCommandInfo, HostCommands, MAHO_ENABLE_EVAL_INTEGRITY_ENV,
+    MAHO_ENABLED_SKILLS_ENV, ResolveContributedSkillOptions, host_command_info,
+    host_commands_from_runtime, is_opt_in_skill_enabled, read_disabled_skills, read_discover_cwd,
+    resolve_bundled_skill_provenance, resolve_contributed_skill,
 };
 pub use index::{
     BUNDLED_SKILLS_COMPONENT_NAME, BUNDLED_SKILLS_ROOT_ENV, BundledSkillsComponent,

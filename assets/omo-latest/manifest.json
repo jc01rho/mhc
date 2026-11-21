@@ -22,11 +22,14 @@
     "dag-library",
     "data-scientist",
     "debugging",
+    "eval-integrity",
     "frontend",
     "git-master",
     "give-me-tips",
+    "hyperplan",
     "init-deep",
     "lsp-setup",
+    "omo-relay",
     "onboarding",
     "programming",
     "refactor",
@@ -42,7 +45,6 @@
     "visualize"
   ],
   "retired": [
-    "hyperplan",
     "mass-ulw",
     "start-work"
   ],
@@ -50,7 +52,7 @@
     "AGENTS.md": {
       "path": "skills/AGENTS.md",
       "source": "packages/omo-senpi/skills/AGENTS.md",
-      "sha256": "0a73e7dec0db5a0e3f04cf3dd04a00e4d17124d56239395b46b52bdd70919416",
+      "sha256": "d2fa2cd0d5742f0d9b7c7bfb14422d5bd17b47a44c3ed6c3904b606f86aeb861",
       "note": "Pool-root developer doc; mirrored in the overlay, not a staged skill."
     }
   },
@@ -220,8 +222,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 9276,
-        "sha256": "1e76a25e28e953562dd6bd8a2be6c34c4b55876af82b14de7db1de138383b06b",
+        "bytes": 9770,
+        "sha256": "f01edcd52a217579fb564015723efc0ab6bc3827f7f4434fee9f7ccae1b86144",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/SKILL.md"
       },
       {
@@ -238,8 +240,8 @@
       },
       {
         "path": "references/owned-engine/README.md",
-        "bytes": 3361,
-        "sha256": "c4dd04d2371e29c8608a99f746a551e4a50e518583056daaf2b37d8fbbb54db9",
+        "bytes": 3326,
+        "sha256": "a0daddc4084558ddf066819eb3c4cb4e99eec46c0a88c01423af26237a836cfe",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/owned-engine/README.md"
       },
       {
@@ -273,9 +275,15 @@
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/remote.md"
       },
       {
+        "path": "scripts/browser-doctor-report.mjs",
+        "bytes": 5664,
+        "sha256": "2393a09e50007313bdb4aea9438fad3bcde1ed41f20584a5ccfceb8ccf90b99c",
+        "source": "packages/shared-skills/skills/browser/scripts/browser-doctor-report.mjs"
+      },
+      {
         "path": "scripts/browser-doctor.mjs",
-        "bytes": 4219,
-        "sha256": "ede67c795baaf06f152c1d5018e4a706394d192bcae3a7d6f06cd98d7c4d1607",
+        "bytes": 1906,
+        "sha256": "84964688ce2a1bad45ebfc5db13a7e70a17fb36ef2c93aa03a4b656da4d183e5",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/scripts/browser-doctor.mjs"
       },
       {
@@ -707,6 +715,14 @@
         "source": "lazycodex@75b01747:plugins/omo/skills/debugging/references/tools/pwntools.md (MIT)"
       }
     ],
+    "eval-integrity": [
+      {
+        "path": "SKILL.md",
+        "bytes": 6249,
+        "sha256": "5170c1f1737101b9d857706678585ac49ebbbd0153289977599fcb4e3b89ecd3",
+        "source": "packages/shared-skills/skills/eval-integrity/SKILL.md"
+      }
+    ],
     "frontend": [
       {
         "path": "ATTRIBUTION.md",
@@ -728,14 +744,14 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 32673,
-        "sha256": "531c52f7446edcbdc3d27bf1c5447ca098d0c01531393afffd366b9718952988",
+        "bytes": 32746,
+        "sha256": "0cb30c280cf4fbd8550a2424f095c804cc22243cd976ce28240fb510948a0b4a",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/SKILL.md"
       },
       {
         "path": "references/design/README.md",
-        "bytes": 24745,
-        "sha256": "d07816d09b223d3d654aac77b0a4364dcfcaedd7f8c96a41d82f77c1bcb0f6d1",
+        "bytes": 24772,
+        "sha256": "7bd40090ba8f4292ad3910a5a0969c8728608db854fd383566c3d7d70b1b5d20",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/design/README.md"
       },
       {
@@ -842,8 +858,8 @@
       },
       {
         "path": "references/design/component-catalogs.md",
-        "bytes": 11458,
-        "sha256": "766732ce9b78757b01338b38a17ee29d6fad9db529774a919490cdab60b182bc",
+        "bytes": 11470,
+        "sha256": "901c81ac36532545c541215d94f03534dd01ea749f3279423a74af1a4c83017c",
         "source": "lazycodex@e809c369:plugins/omo/skills/frontend/references/design/component-catalogs.md (MIT)"
       },
       {
@@ -1106,8 +1122,8 @@
       },
       {
         "path": "references/design/react-dev-tooling-skill.md",
-        "bytes": 8603,
-        "sha256": "26f648a70311d870ffce17798f9ed17501911e483898ee04aed8b08686c36e20",
+        "bytes": 8685,
+        "sha256": "44092192423873baf0c212a017d4930e61b05a91905964121be37029fe11c433",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/react-dev-tooling-skill.md"
       },
       {
@@ -1592,8 +1608,8 @@
       },
       {
         "path": "references/perfection/README.md",
-        "bytes": 12882,
-        "sha256": "f9f065e57b0146701b00df11755cc40d6f0b026f385c48de40b423bbab034076",
+        "bytes": 12900,
+        "sha256": "b79637147be9450091b46ee28313eed4aeba244a8d7383e97b92bbd554b9159f",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/perfection/README.md"
       },
       {
@@ -1844,9 +1860,15 @@
       },
       {
         "path": "scripts/detect/lint.ts",
-        "bytes": 3919,
-        "sha256": "8812f241a100e5a42017d446d35a493f6fa730c0c4a80afc9d9a8d5b4e2c69fc",
+        "bytes": 3970,
+        "sha256": "85b16859dfdf019c398c8cf2c4d2d8d063575329632738bd46056b12bfedf8b1",
         "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/lint.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/render/probe-placement.ts",
+        "bytes": 1849,
+        "sha256": "79414dce75c51293ed03ea607dba2a671b323727b9b51791a1fb5f0f36a2bccc",
+        "source": "packages/shared-skills/skills/frontend/scripts/detect/render/probe-placement.ts"
       },
       {
         "path": "scripts/detect/render/renderer.ts",
@@ -1856,8 +1878,8 @@
       },
       {
         "path": "scripts/detect/render/webview.ts",
-        "bytes": 3374,
-        "sha256": "3896434ce9e144bc99bc98813593170a9c4d412a0c0da2c1adfcbc598554f6a8",
+        "bytes": 3319,
+        "sha256": "718f1c3a0d7ef36c2a2c53d4cb2fb8c9a7183362830b129e3469799013f32d6b",
         "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/render/webview.ts (SUL-1.0)"
       },
       {
@@ -1868,8 +1890,8 @@
       },
       {
         "path": "scripts/detect/rule.ts",
-        "bytes": 1140,
-        "sha256": "568a864cf3a1386bd0af43e22ff5beef5a7eb264962b4bddb6ad5fc7c1e11471",
+        "bytes": 1394,
+        "sha256": "e335118cdb19cc41105705678762ab11db72d4423ce6ceba3b13e276e8eaabae",
         "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rule.ts (SUL-1.0)"
       },
       {
@@ -2060,8 +2082,8 @@
       },
       {
         "path": "scripts/detect/rules/copy/script-error.ts",
-        "bytes": 1583,
-        "sha256": "4061aa9ea257f42363ed80880e0ca3580915106cac0a93f496cfd0b0736a60e4",
+        "bytes": 1608,
+        "sha256": "86bef04d40d80467cf92b2b9690a781b1cfdae6a44cfcdc1771c0a80db966051",
         "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/script-error.ts (SUL-1.0)"
       },
       {
@@ -3137,6 +3159,14 @@
         "source": "mhc clean-room (spec only; MIT (c) 2026 Indo Yoon): skills/give-me-tips/tests/static-check.mjs"
       }
     ],
+    "hyperplan": [
+      {
+        "path": "SKILL.md",
+        "bytes": 27803,
+        "sha256": "e8fc720a528a3e6bf7de002cb51af8cad8116c5f03ab484913d3df04f86af96e",
+        "source": "packages/omo-senpi/skills/hyperplan/SKILL.md"
+      }
+    ],
     "init-deep": [
       {
         "path": "CLEANROOM.md",
@@ -3327,6 +3357,74 @@
         "source": "lazycodex@75b01747:plugins/omo/skills/lsp-setup/scripts/verify-lsp.ts (MIT)"
       }
     ],
+    "omo-relay": [
+      {
+        "path": "SKILL.md",
+        "bytes": 2650,
+        "sha256": "be40a2c4bf9311abf9a5ee9e10e41d6be17c80f3bb6a501731be94da62d396fe",
+        "source": "packages/omo-senpi/skills/omo-relay/SKILL.md"
+      },
+      {
+        "path": "references/errors.md",
+        "bytes": 1470,
+        "sha256": "571924ad12d56c721a60a06e489e1c8f0f17d05639431f63759ef58159586d0e",
+        "source": "packages/omo-senpi/skills/omo-relay/references/errors.md"
+      },
+      {
+        "path": "references/machines.md",
+        "bytes": 3188,
+        "sha256": "8b5f044c73adb7ab7acae410ead9ba3f229b8af068c5ef9dbb3577e8161240aa",
+        "source": "packages/omo-senpi/skills/omo-relay/references/machines.md"
+      },
+      {
+        "path": "references/parallel.md",
+        "bytes": 3203,
+        "sha256": "629b87a77c6170904c359f7cf1a0d0d4922bec000f5aed3718a97c27e07cdce7",
+        "source": "packages/omo-senpi/skills/omo-relay/references/parallel.md"
+      },
+      {
+        "path": "scripts/sdk/bind-eval.ts",
+        "bytes": 5880,
+        "sha256": "b1afd97b3ef755ac5826e412754c3add8eafeba51fe14eccf6ffa901bc47f891",
+        "source": "packages/omo-senpi/skills/omo-relay/scripts/sdk/bind-eval.ts"
+      },
+      {
+        "path": "scripts/sdk/index.ts",
+        "bytes": 453,
+        "sha256": "65e998a75cc78aad3ad37df3cd1885ef355af95494ca9f9a7ae55bee0ea877b7",
+        "source": "packages/omo-senpi/skills/omo-relay/scripts/sdk/index.ts"
+      },
+      {
+        "path": "scripts/sdk/machines.ts",
+        "bytes": 5323,
+        "sha256": "fa6bed8f88dbb88e5aeb7b6dce266248efad05ef44b161e7197d633d2282d30d",
+        "source": "packages/omo-senpi/skills/omo-relay/scripts/sdk/machines.ts"
+      },
+      {
+        "path": "scripts/sdk/outcome.ts",
+        "bytes": 3427,
+        "sha256": "d625d6b4bf8e827092e1c49e74d011cd715bbe4d55ee1d7d033bf089fb30846d",
+        "source": "packages/omo-senpi/skills/omo-relay/scripts/sdk/outcome.ts"
+      },
+      {
+        "path": "scripts/sdk/ports.ts",
+        "bytes": 3015,
+        "sha256": "478c017607bd67275a5a8193c40f68eccf6008926e4ead4ae398b31661a79f72",
+        "source": "packages/omo-senpi/skills/omo-relay/scripts/sdk/ports.ts"
+      },
+      {
+        "path": "scripts/sdk/threads.ts",
+        "bytes": 3347,
+        "sha256": "f415f5165d7d8ad75c71b3c1833a9ba2e37d0f0c37d8b14e18cc9f358aca5429",
+        "source": "packages/omo-senpi/skills/omo-relay/scripts/sdk/threads.ts"
+      },
+      {
+        "path": "scripts/sdk/tsconfig.json",
+        "bytes": 521,
+        "sha256": "130e1aa6f36a0f80b0e33e0806c109b535b2f96dc847864a82cf90369c435eab",
+        "source": "packages/omo-senpi/skills/omo-relay/scripts/sdk/tsconfig.json"
+      }
+    ],
     "onboarding": [
       {
         "path": "CLEANROOM.md",
@@ -3386,20 +3484,20 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 38937,
-        "sha256": "ee97a914f486c2548dc6cbb735cbb0f0844d9395519ada66d123f48416016b55",
+        "bytes": 34101,
+        "sha256": "fc5812f27cd5ec0ecce61651bf7196f7ff8b673db17316a9689341bf1746c95f",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/SKILL.md"
       },
       {
         "path": "references/code-smells.md",
-        "bytes": 14108,
-        "sha256": "508f31398a48dba1e9a165ffe893ca82cce933580438d1ff60b9afca03545b33",
+        "bytes": 14258,
+        "sha256": "3251b1b103c747a4de7b8fce1386b1fd63fd19e2651d8d96d8198f38140cba37",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/code-smells.md"
       },
       {
         "path": "references/go/README.md",
-        "bytes": 7568,
-        "sha256": "faedb8ab4e13f4ff03ad3497f3ed44df1b5b71463b741a58ee61b60ddb68b188",
+        "bytes": 7864,
+        "sha256": "72a6fec478d1a9d161a9158e8fd1bb8adcb5b255e0abe22ebc8b793015a16bdc",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/go/README.md"
       },
       {
@@ -3410,8 +3508,8 @@
       },
       {
         "path": "references/go/bootstrap.md",
-        "bytes": 9059,
-        "sha256": "6fefd389c7565537a19c28477cc4f26c8902ffa0f6a61b58acac0beab10373c6",
+        "bytes": 9080,
+        "sha256": "eca18f80bc44cfe6736e3401676f316fb49ba91b97a0d307496b2700c2e1e8d0",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/go/bootstrap.md"
       },
       {
@@ -3494,8 +3592,8 @@
       },
       {
         "path": "references/python/README.md",
-        "bytes": 15784,
-        "sha256": "23ef4282a10fce99de314ddc3c8d93eca79c92f256c87cf8caa54a2ee703e738",
+        "bytes": 16096,
+        "sha256": "7410d7535b6de42da171b6d55c0f26995cdac86b1d14c7d907143ba1a9bc007d",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/python/README.md"
       },
       {
@@ -3512,8 +3610,8 @@
       },
       {
         "path": "references/python/data-processing.md",
-        "bytes": 4266,
-        "sha256": "1cee6ea8692c213f244070f69682b00b25ab763d64cd114c41b7ac84c7865ed9",
+        "bytes": 4312,
+        "sha256": "137875e7fdaf1af5107bd7188a5b85af8562466961c10f315b1ecec4c03b099d",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/python/data-processing.md"
       },
       {
@@ -3536,14 +3634,14 @@
       },
       {
         "path": "references/python/libraries.md",
-        "bytes": 10820,
-        "sha256": "85847a200b8c0a509008662dae1b4f4dbd3934bac490e61097bf986f83c8f464",
+        "bytes": 10845,
+        "sha256": "f6a391d9c048ca577d093e11b78fced574b0e16066cfa656e9c89d121911c770",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/python/libraries.md"
       },
       {
         "path": "references/python/one-liners.md",
-        "bytes": 7966,
-        "sha256": "17b459cfadbc7e81d2d196d2251191ee8f3b8e97f668cb61f5b02d3cf736fbd1",
+        "bytes": 8066,
+        "sha256": "c46499bdeaa84707a3243d6fc37ed490224719ede8ac1d9f8daaf47f6d26ce02",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/python/one-liners.md"
       },
       {
@@ -3560,8 +3658,8 @@
       },
       {
         "path": "references/python/pyproject-strict.md",
-        "bytes": 9252,
-        "sha256": "655eb106a165d3730d656a9689ac98a00abf7d32cc89f2decaf33ddf43ac0e45",
+        "bytes": 9258,
+        "sha256": "0a1b70fe1ef01a0a129ea8fb96e1dee90a2cc4637e58b91e009c70c35cfc610d",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/python/pyproject-strict.md"
       },
       {
@@ -3620,8 +3718,8 @@
       },
       {
         "path": "references/rust/libraries.md",
-        "bytes": 17772,
-        "sha256": "2f785ba153bdf4cbf2d234c8cbbb83dcd22acb30895845990595bc82ed714896",
+        "bytes": 17781,
+        "sha256": "64c56be3277548a0ca2be5c3cc005c438f2bc5afeceaec45a53c59b51057999d",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/rust/libraries.md"
       },
       {
@@ -3662,8 +3760,8 @@
       },
       {
         "path": "references/rust-ub/README.md",
-        "bytes": 9967,
-        "sha256": "25300ebe1a467f47695959b00964ded8c560e51bb5d92dffe178f9d3f24b87a9",
+        "bytes": 10129,
+        "sha256": "1439ec1239f38620852a4a45617fb7a2deaa304f1118948436c674f0ee637644",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/rust-ub/README.md"
       },
       {
@@ -3679,9 +3777,21 @@
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/rust-ub/ub-taxonomy.md"
       },
       {
+        "path": "references/testing/README.md",
+        "bytes": 10500,
+        "sha256": "3ac5e1dcfa2718d0986a9e064de9517b708fbfd970616a7df8ea4531402bf391",
+        "source": "packages/shared-skills/skills/programming/references/testing/README.md"
+      },
+      {
+        "path": "references/testing/junk-classes.md",
+        "bytes": 6298,
+        "sha256": "6b2df7fb8a686ca6d48820ddc18308e96519ac4f4b046c384dd2ec760e3447fd",
+        "source": "packages/shared-skills/skills/programming/references/testing/junk-classes.md"
+      },
+      {
         "path": "references/typescript/README.md",
-        "bytes": 10300,
-        "sha256": "8d793c29b69e73766befb9e61f4d551e5894d9f900508c0ab9ef0fbab5b9b252",
+        "bytes": 10805,
+        "sha256": "2e382e3cde9acbf50a1bc55aef6ba35e01273006314e0dcb32cbb9447cc49a3a",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/typescript/README.md"
       },
       {
@@ -3733,10 +3843,10 @@
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/scripts/go/check-no-excuse-rules.sh"
       },
       {
-        "path": "scripts/go/new-project.py",
-        "bytes": 4544,
-        "sha256": "233d7521ae549bd271e4f621099adc8d12739fa9d7d0bb5743bc8d89a8747db1",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/scripts/go/new-project.py"
+        "path": "scripts/go/new-project.ts",
+        "bytes": 6943,
+        "sha256": "dc0f3f0d335c9a8589d0bbc1c4409a3f5b45d907d61967264731a65f9dd25402",
+        "source": "packages/shared-skills/skills/programming/scripts/go/new-project.ts"
       },
       {
         "path": "scripts/go/templates/.editorconfig",
@@ -3805,16 +3915,16 @@
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/scripts/python/check-no-excuse-rules.py"
       },
       {
-        "path": "scripts/python/new-project.py",
-        "bytes": 4695,
-        "sha256": "3513d7e9d5817c9e1fd592edce227b57de33ed2c6eeac0e7b2790768c41cba4b",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/scripts/python/new-project.py"
+        "path": "scripts/python/new-project.ts",
+        "bytes": 6875,
+        "sha256": "375f26ae43987575e5b45c78738ae40809ca1d3907f1475526fedf7ae5d056c4",
+        "source": "packages/shared-skills/skills/programming/scripts/python/new-project.ts"
       },
       {
-        "path": "scripts/python/new-script.py",
-        "bytes": 3236,
-        "sha256": "cc707edad564c142164847b514879fc9ed3a349b43c16f18f6fed616c69704be",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/scripts/python/new-script.py"
+        "path": "scripts/python/new-script.ts",
+        "bytes": 4309,
+        "sha256": "6d3e51d6eb0674c3859578d90406081fe2611783f7c69813c5d2f6cc34f8d65d",
+        "source": "packages/shared-skills/skills/programming/scripts/python/new-script.ts"
       },
       {
         "path": "scripts/rust/check-no-excuse-rules.sh",
@@ -3823,21 +3933,45 @@
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/scripts/rust/check-no-excuse-rules.sh"
       },
       {
-        "path": "scripts/rust/new-project.py",
-        "bytes": 5818,
-        "sha256": "4e791c6ab5ccff8dddc6f22173e9b6d9f5db2e2cdfc73634659a3194220bd9a8",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/scripts/rust/new-project.py"
+        "path": "scripts/rust/new-project.ts",
+        "bytes": 6286,
+        "sha256": "169f372e3de969a1d5c423c1d68b4ebbbc472efb03c96bab9ee986a5f9656633",
+        "source": "packages/shared-skills/skills/programming/scripts/rust/new-project.ts"
+      },
+      {
+        "path": "scripts/shared/run-tool.ts",
+        "bytes": 854,
+        "sha256": "b538688d73c342f3a70105d0160b8cfa90cb5308bbf65e2fdae69fa429e7d65f",
+        "source": "packages/shared-skills/skills/programming/scripts/shared/run-tool.ts"
       },
       {
         "path": "scripts/typescript/check-no-excuse-rules.ts",
-        "bytes": 12810,
-        "sha256": "d34cd1a54c5192b0c8243371c6053f95fb4b4969a0224826b2f5d97ba39aa6ff",
+        "bytes": 13378,
+        "sha256": "1ec86c258b7713441d62363196742d520ffb5696a46040b1104da0f21cf2ca8d",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/scripts/typescript/check-no-excuse-rules.ts"
       },
       {
+        "path": "scripts/typescript/check-test-junk-rules.ts",
+        "bytes": 5580,
+        "sha256": "a05e3a027716407b05b4e6137a5f82f2d957fcd3e82c1bdb5005e1d32fafadf7",
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/check-test-junk-rules.ts"
+      },
+      {
+        "path": "scripts/typescript/check-test-junk.ts",
+        "bytes": 5517,
+        "sha256": "9b2a85c1594e386e56df12b5de5200391c6535fe2e241b91e96d1b5b321eb01a",
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/check-test-junk.ts"
+      },
+      {
+        "path": "scripts/typescript/mutation-proof.ts",
+        "bytes": 6529,
+        "sha256": "f9c0601a47f233ddc742d5cbbe502a764be110d37dfdabfa957199fd1181a451",
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/mutation-proof.ts"
+      },
+      {
         "path": "scripts/typescript/new-project.ts",
-        "bytes": 3269,
-        "sha256": "9ef3b949b9beadcd9b3ea14e34acb024dee525a4cdc1e99be6ce84c4be6cafe1",
+        "bytes": 3204,
+        "sha256": "68cc487489a140abfd429b8c90c83316a2c20f55244a4630acd00412700f0e09",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/scripts/typescript/new-project.ts"
       },
       {
@@ -3900,8 +4034,8 @@
     "remove-ai-slops": [
       {
         "path": "SKILL.md",
-        "bytes": 21498,
-        "sha256": "66eaf508a04507682d3c50033988f0e13979d44e0c9fd4bc6e4fc44ab6fd89df",
+        "bytes": 27485,
+        "sha256": "582a94389de36f06866523840dd6f3c1ec1b1ae294856861e3987863584d4631",
         "source": "lazycodex@75b01747:plugins/omo/skills/remove-ai-slops/SKILL.md (MIT)"
       }
     ],
@@ -3914,8 +4048,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 17975,
-        "sha256": "0999825c21b814765de842943b899ba007671d0ccc9c854523797e4552be02e3",
+        "bytes": 17973,
+        "sha256": "47716d7706a7be8e65199387b19267970c04302114f25b19ca3b79fdc9634fc0",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/review-work/SKILL.md"
       }
     ],
@@ -4214,38 +4348,38 @@
         "path": "references/commits.md",
         "bytes": 2910,
         "sha256": "ee9db35f309a5ee3216503017373d05118dfb4f0a852b5e32a556fd5bc76bd89",
-        "source": null
+        "source": "packages/shared-skills/skills/ultrawork/references/commits.md"
       },
       {
         "path": "references/delegation-and-teams.md",
         "bytes": 3915,
         "sha256": "44f139f7482cb6ffd236785038938f1dc666cda0114015952bcf10fab0e34b19",
-        "source": null
+        "source": "packages/shared-skills/skills/ultrawork/references/delegation-and-teams.md"
       },
       {
         "path": "references/qa-channels.md",
         "bytes": 4910,
         "sha256": "2d50225989f61193e76d44ba179656027167dc60b7fb2b6c82a32963b055d7df",
-        "source": null
+        "source": "packages/shared-skills/skills/ultrawork/references/qa-channels.md"
       },
       {
         "path": "references/review-gate.md",
         "bytes": 3221,
         "sha256": "4c8f29343f9f606543003f73461f6cfd964d5d511f73d8f221dbfdb4b764684d",
-        "source": null
+        "source": "packages/shared-skills/skills/ultrawork/references/review-gate.md"
       },
       {
         "path": "references/tui-visual-qa.md",
         "bytes": 3745,
         "sha256": "0a72e11e56e6b10a9af6d330a3266a3c09ebc18470a3152c320d042327d91d29",
-        "source": null
+        "source": "packages/shared-skills/skills/ultrawork/references/tui-visual-qa.md"
       }
     ],
     "ulw-execute": [
       {
         "path": "SKILL.md",
-        "bytes": 27110,
-        "sha256": "4e0664736de2834240ee0970d28bb4c4c809a379d034a896cb42cde61f7b67fd",
+        "bytes": 28819,
+        "sha256": "af77ef8833cbe6f687953aa4f6a168cd6758f3076217d80712742b2f3e44919c",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-execute/SKILL.md (MIT)"
       }
     ],
@@ -4264,8 +4398,8 @@
       },
       {
         "path": "references/full-workflow.md",
-        "bytes": 34736,
-        "sha256": "d0a10c463b3d844f793e3309b837a9eb76fd869113a235bb0c05655a1feb3246",
+        "bytes": 34867,
+        "sha256": "10c6b1329ce41520ee338f4ed797679f4c351ff37296118d448eaa90f5eb4fb5",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-loop/references/full-workflow.md (MIT)"
       }
     ],
@@ -4278,8 +4412,8 @@
       },
       {
         "path": "references/full-workflow.md",
-        "bytes": 31167,
-        "sha256": "7907018594798409b0d0463e68788c13eeb623a30f1a1d204c8758827f4aac01",
+        "bytes": 31507,
+        "sha256": "9cd8264d45ab19b94102d22ef3f880c54535b0a1d3c98e43245738922962e48e",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-plan/references/full-workflow.md (MIT)"
       },
       {
@@ -4296,8 +4430,8 @@
       },
       {
         "path": "scripts/plan-templates.mjs",
-        "bytes": 7177,
-        "sha256": "d5a5685c6e7409d60ae08722665a89e6eeb48396769841c477d9e23259a31a85",
+        "bytes": 7463,
+        "sha256": "4694d22deeab118148c8021ee737832da621c95d86458df20b7ee99015125db7",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-plan/scripts/plan-templates.mjs (MIT)"
       },
       {
@@ -4336,7 +4470,7 @@
         "path": "references/epistemic.md",
         "bytes": 2752,
         "sha256": "7fb55ed7eb0434dbf9043f51d885db45ff43e35f9af5eaf59ca4e31b7631d4f9",
-        "source": null
+        "source": "packages/shared-skills/skills/ulw-research/references/epistemic.md"
       },
       {
         "path": "references/fact-ledger-grammar.md",
@@ -4360,7 +4494,7 @@
         "path": "references/fidelity.md",
         "bytes": 10924,
         "sha256": "c5ee57d93c7f88bbaf18e61d68c75ed0085ccac1a09887c6c5fb2c56aa55f7ff",
-        "source": null
+        "source": "packages/shared-skills/skills/ulw-research/references/fidelity.md"
       },
       {
         "path": "references/markdown-blocks.md",
@@ -4372,7 +4506,7 @@
         "path": "references/mass-collection.md",
         "bytes": 1864,
         "sha256": "ff1a340132890edd906f6a1eb55ee88f0082db25426843806f5a4aa09a8d013d",
-        "source": null
+        "source": "packages/shared-skills/skills/ulw-research/references/mass-collection.md"
       },
       {
         "path": "references/report-gates.md",
@@ -4628,8 +4762,8 @@
       },
       {
         "path": "scripts/fidelity-values.mjs",
-        "bytes": 15425,
-        "sha256": "f0498369baefe42fac7521c42e5d241885adaca801ea419c55392fcff509f8a9",
+        "bytes": 15655,
+        "sha256": "c1a322ca1ca6695fb0f5e52ce74a8bfb9851a9f87a32d4a217a0d5c47e0ae7ca",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-values.mjs (MIT)"
       },
       {
@@ -4681,9 +4815,15 @@
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/gates-text.mjs (MIT)"
       },
       {
+        "path": "scripts/html-foreign-object.mjs",
+        "bytes": 2903,
+        "sha256": "d0e1f4f271704787d685b92503523534fd4204cc434580d492f5a609e1e57b6e",
+        "source": "packages/shared-skills/skills/ulw-research/scripts/html-foreign-object.mjs"
+      },
+      {
         "path": "scripts/html-lite.mjs",
-        "bytes": 9068,
-        "sha256": "de21ec4c6adde62d138e9b732c43687b4429ea1cffa530a314fac5c15ed955ab",
+        "bytes": 9380,
+        "sha256": "0264866ed4cb7096672f51ffeeb7501209f0fe23f13d623358f76acab6959b3f",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/html-lite.mjs (MIT)"
       },
       {
@@ -4936,8 +5076,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 50712,
-        "sha256": "8e73b44e9263f920f38823315a7d4f8840e65fda7af824bf4385bc641171e92f",
+        "bytes": 50847,
+        "sha256": "bb5b0fb3d6f6f94820e74f15e83c23647031e97776eb2a201fef6e1e8b83a54d",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/SKILL.md"
       },
       {
@@ -4992,7 +5132,7 @@
         "path": "scripts/tui-capture.mjs",
         "bytes": 15289,
         "sha256": "4bb2fa70f5cc38f6dd470d8ea46962c985a04d4586ea1abe356550245c4edb99",
-        "source": null
+        "source": "packages/shared-skills/skills/visual-qa/scripts/tui-capture.mjs"
       },
       {
         "path": "scripts/tui-grid.ts",
@@ -5028,8 +5168,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 7281,
-        "sha256": "351bd2ea9e5e0593575130cd3463238a9329db2c117a586e4e470070fc56a531",
+        "bytes": 8227,
+        "sha256": "2bb76ccade359362bb37bcdc6b264cb906641dd702df9d04cf3d0cfc8d954d85",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visualize/SKILL.md"
       },
       {
@@ -5078,11 +5218,14 @@
     "dag-library",
     "data-scientist",
     "debugging",
+    "eval-integrity",
     "frontend",
     "git-master",
     "give-me-tips",
+    "hyperplan",
     "init-deep",
     "lsp-setup",
+    "omo-relay",
     "onboarding",
     "programming",
     "refactor",
@@ -8114,8 +8257,8 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding, init-deep-advisor and skill-pointers components and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 815,
-    "declaredSha256": 815,
+    "files": 846,
+    "declaredSha256": 846,
     "unbound": 0,
     "mechanism": "The skills map declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every declared sha256 is checked against the overlay bytes before staging."
   }

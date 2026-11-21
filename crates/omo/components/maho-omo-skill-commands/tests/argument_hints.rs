@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use maho_core::frontmatter::parse_frontmatter;
 use maho_omo_skill_commands::read_bundled_skill_names;
 
-const ARGUMENT_READING_SKILLS: [&str; 8] = [
+const ARGUMENT_READING_SKILLS: [&str; 9] = [
     "adversarial-plan",
+    "hyperplan",
     "init-deep",
     "refactor",
     "remove-ai-slops",

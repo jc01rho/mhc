@@ -39,7 +39,7 @@ Never call a display or preview tool that is not in the list. If no way to rende
 - The page rules below **override** that skill: no palette or font of your own; colours and fonts come from the host.
 
 ### 3. Build one self-contained HTML file following the page rules.
-A working reference: `scripts/build-example.mjs` renders `references/example-data.csv` into `references/example-chart.html` (and `--empty` into `references/example-empty.html`).
+Give each role its own class name, prefixed or scoped under its chart's parent selector: a short global class such as `.k` that a KPI grid and a bar segment share styles both. A working reference: `scripts/build-example.mjs` renders `references/example-data.csv` into `references/example-chart.html` (and `--empty` into `references/example-empty.html`).
 
 ### 4. Lint — must pass before any preview or display
 - Write the page to a file if you only have it as a string.
@@ -48,7 +48,7 @@ A working reference: `scripts/build-example.mjs` renders `references/example-dat
 - Run this skill's own check: `node $SKILL_DIR/scripts/check-inline-page.mjs <page.html>`. It flags external requests, literal colours outside `var()` fallbacks, unknown or fallback-less variables, non-theme fonts, a missing "how computed" block (`data-role="method"`), and a figure (`data-role="figure"`) with no static markup. Fix and rerun until clean.
 
 ### 5. Look at it
-Render four views: **light and dark** × **reply-column width and 390 px**. For each: read the screenshot, read the console, fix, repeat until clean. Measure the rendered content height (document body height) for step 6.
+Render four views: **light and dark** × **reply-column width and 390 px** (all four views every time, because a page checked in one theme or one width ships broken in another). In each view, measure two things on every chart: the largest bar's rendered height against value ÷ axis maximum × plot height, and each legend swatch's computed colour against its series' colour; then check that the first and last axis labels are whole. For each view: read the screenshot, read the console, fix, repeat until clean. Measure the rendered content height (document body height) for step 6.
 - Case C: open the file via the `browser` skill; set the window width and the colour scheme there (or emulate `prefers-color-scheme`).
 - If Playwright and a Chromium binary are available locally, `python3 $SKILL_DIR/scripts/preview-local.py <page.html> <out_dir> [--reply-width 720] [--no-js]` does all four views with network blocked and reports height, horizontal overflow, clipped elements and console errors.
 - Also check once with JavaScript disabled: the figure must still be there.
@@ -66,9 +66,9 @@ Only what the page does not already say: the takeaway in a sentence, a caveat th
   `--background --foreground --muted --muted-foreground --card --border --primary --accent --destructive --warning --success --chart-1 --chart-2 --chart-3 --chart-4 --chart-5 --chart-6 --font-sans --font-mono --radius`
   Every `var()` carries a fallback that works in both themes, e.g. `var(--chart-1, light-dark(#2563eb, #60a5fa))` with `:root{color-scheme:light dark}`. A page opened outside the host may get none of these variables. No literal colours anywhere except inside fallbacks.
 - **Blend into the reply.** Fluid width. No outer padding, border, card frame or banner around the whole page.
-- **Fixed chart heights** in pixels, never aspect-ratio scaling. Never stretch an SVG unevenly if it contains text: let a `preserveAspectRatio="none"` SVG hold only shapes, and position axis and value labels in HTML by percentage beside it (see the example).
+- **Fixed chart heights** in pixels, never aspect-ratio scaling. Draw bars as HTML elements in a fixed-height container, each sized as a percentage of it, not as a fluid SVG stretched with `preserveAspectRatio="none"`, which stretches its text and strokes too. Position axis and value labels in HTML by percentage beside it: centre inner labels on their tick, and align the first label's left edge and the last label's right edge to the chart's edges so neither clips at 390 px (see the example).
 - **Static first.** The figure is plain markup/SVG that renders with scripts off; JS may only add interaction (tooltips, toggles). Some hosts show pages with scripts disabled until the user allows them.
-- **Traceable.** A small, muted "how these numbers were computed" section containing the actual query or aggregation. Caveats that change the reading (rows dropped, partial period, tiny sample) sit next to the figure they affect, not in a footnote.
+- **Traceable.** A small, muted "how these numbers were computed" section containing the actual query or aggregation. Caveats that change the reading (rows dropped, a partial window such as today's unfinished day marked on its own bar with a lighter fill or hatch and a label, tiny sample) sit next to the figure they affect, not in a footnote; name the second source the figures were checked against when one exists.
 - **Empty and error states** designed in the same style — never a blank box.
 - **Links.** Expect the host may ask the user to confirm before opening a link and show the full URL. Never put data in URLs.
 

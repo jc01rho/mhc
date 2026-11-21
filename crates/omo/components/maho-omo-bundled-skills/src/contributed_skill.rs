@@ -1,5 +1,5 @@
 //! Port of `omo-senpi/src/components/bundled-skills/contributed-skill.ts` at latest
-//! `455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b`.
+//! `v5.1.79`.
 //!
 //! `readDisabledSkills` reads the `disabled_skills` union through the config loader on every call.
 //! The native union collector (`collect_disabled_skills`) is owned by the config lane (contract
@@ -19,6 +19,13 @@ use omo_config_core::{
 /// one, so the collector expands it to the canonical block plus every alias (upstream
 /// `OMO_CONFIG_LEGACY_HARNESS_ALIASES = { senpi: "native" }` -> keys `[native]` and `[senpi]`).
 pub const HARNESS: &str = "senpi";
+
+/// Bundled skills that are shipped on disk but off by default until opted in (POL-03, omo #7593).
+pub const DEFAULT_OPT_IN_SKILLS: &[&str] = &["eval-integrity"];
+pub const ENABLE_EVAL_INTEGRITY_ENV: &str = "OMO_ENABLE_EVAL_INTEGRITY";
+pub const MAHO_ENABLE_EVAL_INTEGRITY_ENV: &str = "MAHO_ENABLE_EVAL_INTEGRITY";
+pub const ENABLED_SKILLS_ENV: &str = "OMO_ENABLED_SKILLS";
+pub const MAHO_ENABLED_SKILLS_ENV: &str = "MAHO_ENABLED_SKILLS";
 
 /// Upstream `pi.getCommands()`: one entry per registered slash command. Optional as a whole —
 /// `None` means the host predates the API, exactly like upstream's `getCommands === undefined`.
@@ -75,6 +82,46 @@ pub fn read_disabled_skills(cwd: &Path, env: &BTreeMap<String, String>) -> BTree
     })
     .into_iter()
     .collect()
+}
+
+fn is_truthy_env(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn list_env_contains(env: &BTreeMap<String, String>, key: &str, skill_name: &str) -> bool {
+    env.get(key).is_some_and(|raw| {
+        raw.split([',', ' '])
+            .map(str::trim)
+            .any(|item| item == skill_name)
+    })
+}
+
+/// Whether a bundled skill is enabled by default or explicitly opted in (POL-03).
+///
+/// Skills outside [`DEFAULT_OPT_IN_SKILLS`] are always enabled unless listed in `disabled_skills`.
+/// An opt-in skill such as `eval-integrity` (#7593) is off by default and turns on only through the
+/// environment: `OMO_ENABLE_EVAL_INTEGRITY` / `MAHO_ENABLE_EVAL_INTEGRITY` for that skill, or the
+/// shared `OMO_ENABLED_SKILLS` / `MAHO_ENABLED_SKILLS` list for any of them. A config key cannot do
+/// it, because `omo.jsonc` accepts no skill-enablement key and strips unknown keys.
+pub fn is_opt_in_skill_enabled(name: &str, env: &BTreeMap<String, String>) -> bool {
+    if !DEFAULT_OPT_IN_SKILLS.contains(&name) {
+        return true;
+    }
+    if name == "eval-integrity"
+        && (env
+            .get(ENABLE_EVAL_INTEGRITY_ENV)
+            .is_some_and(|v| is_truthy_env(v))
+            || env
+                .get(MAHO_ENABLE_EVAL_INTEGRITY_ENV)
+                .is_some_and(|v| is_truthy_env(v)))
+    {
+        return true;
+    }
+    list_env_contains(env, ENABLED_SKILLS_ENV, name)
+        || list_env_contains(env, MAHO_ENABLED_SKILLS_ENV, name)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,7 +187,9 @@ pub fn resolve_bundled_skill_provenance(
 /// still occupies the name and contributing ours would collide. Our own copy left over from an
 /// earlier pass is not a rival. `disabled_skills` hides the skill exactly as it hides a bundled one.
 pub fn resolve_contributed_skill(options: ResolveContributedSkillOptions<'_>) -> ContributedSkill {
-    if read_disabled_skills(&options.cwd, options.env).contains(options.name) {
+    if read_disabled_skills(&options.cwd, options.env).contains(options.name)
+        || !is_opt_in_skill_enabled(options.name, options.env)
+    {
         return ContributedSkill::Disabled;
     }
     let command = format!("skill:{}", options.name);

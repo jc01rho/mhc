@@ -3,6 +3,8 @@
 
 #[path = "skill_pointers.rs"]
 pub mod skill_pointers;
+#[path = "skill_pointers_bunshin.rs"]
+pub mod skill_pointers_bunshin;
 #[path = "skill_pointers_companion.rs"]
 pub mod skill_pointers_companion;
 #[path = "skill_pointers_queue_scope.rs"]
