@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used)]
 
 pub mod availability;
+pub mod bip39;
 pub mod bridge;
 pub mod bridge_enroll;
 pub mod bridge_provenance;
@@ -13,6 +14,8 @@ pub mod hpke_seal;
 pub mod join_notice;
 pub mod key_material;
 pub mod keyring_append;
+pub mod phrase;
+pub mod phrase_hints;
 pub mod ports;
 pub mod recover;
 pub mod recover_join;
@@ -22,6 +25,8 @@ pub mod salt_inputs;
 pub mod served_chain;
 pub mod write_hold;
 
+#[cfg(test)]
+mod phrase_tests;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]

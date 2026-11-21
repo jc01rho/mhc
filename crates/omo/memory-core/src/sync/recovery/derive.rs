@@ -9,7 +9,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
 
-fn framed(context: &[u8], payload: &[u8]) -> Vec<u8> {
+pub(super) fn framed(context: &[u8], payload: &[u8]) -> Vec<u8> {
     [context, &[0], payload].concat()
 }
 pub fn recovery_user_handle(account: &str) -> Vec<u8> {

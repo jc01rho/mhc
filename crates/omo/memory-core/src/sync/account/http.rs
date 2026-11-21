@@ -27,6 +27,8 @@ pub struct AccountState {
     pub head: Head,
     pub current_epoch: u64,
     pub rotation_pending: bool,
+    /// The service's phrase-key floor: absent from an older service, so only a literal `true` is on.
+    pub accepts_phrase_keys: bool,
 }
 #[derive(Clone)]
 pub struct AccountHttp {
@@ -150,6 +152,7 @@ impl AccountHttp {
                 },
                 current_epoch: body["current_epoch"].as_u64()?,
                 rotation_pending: body["rotation_pending"] == true,
+                accepts_phrase_keys: body["accepts_phrase_keys"] == true,
             })
         })())
     }

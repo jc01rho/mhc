@@ -2,6 +2,10 @@ use super::envelope::{exact, integer, text};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use super::recovery_kind::{
+    PHRASE_RECOVERY_RP_ID, RESERVED_RP_PREFIX, is_phrase_key, recovery_kind_of,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Principal {
@@ -10,11 +14,22 @@ pub struct Principal {
     pub sealing_public_key: String,
     pub signing_public_key: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The survivable value is the key kind: a phrase key states `phrase`, never a WebAuthn class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Survivable {
     Synced,
     Roaming,
+    Phrase,
+}
+impl Survivable {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Synced => "synced",
+            Self::Roaming => "roaming",
+            Self::Phrase => "phrase",
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,17 +122,23 @@ const RECOVERY_KEYS: &[&str] = &[
     "survivable",
 ];
 fn read_recovery(v: &Value) -> Option<RecoveryKey> {
+    let credential_id = text(&v["credential_id"])?;
+    let rp_id = text(&v["rp_id"])?;
+    let enrollment_nonce = text(&v["enrollment_nonce"])?;
+    let sealing_public_key = text(&v["sealing_public_key"])?;
+    let signing_public_key = text(&v["signing_public_key"])?;
+    let survivable = recovery_kind_of(v["survivable"].as_str()?, rp_id, credential_id)?;
     Some(RecoveryKey {
-        credential_id: text(&v["credential_id"])?.into(),
-        rp_id: text(&v["rp_id"])?.into(),
-        enrollment_nonce: text(&v["enrollment_nonce"])?.into(),
-        sealing_public_key: text(&v["sealing_public_key"])?.into(),
-        signing_public_key: text(&v["signing_public_key"])?.into(),
-        survivable: match v["survivable"].as_str()? {
-            "synced" => Survivable::Synced,
-            "roaming" => Survivable::Roaming,
-            _ => return None,
+        credential_id: credential_id.into(),
+        rp_id: if survivable == Survivable::Phrase {
+            PHRASE_RECOVERY_RP_ID.into()
+        } else {
+            rp_id.into()
         },
+        enrollment_nonce: enrollment_nonce.into(),
+        sealing_public_key: sealing_public_key.into(),
+        signing_public_key: signing_public_key.into(),
+        survivable,
     })
 }
 pub fn parse_recovery(v: &Value) -> Option<RecoveryKey> {

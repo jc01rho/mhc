@@ -75,7 +75,7 @@ impl HttpClient for Client {
                 let last = rows.last().cloned().unwrap_or(Value::Null);
                 Service::reply(
                     200,
-                    json!({"head":{"seq":last["seq"],"link":last["link"],"keyring_link":last["keyring_link"]},"current_epoch":last["epoch"],"rotation_pending":service.pending.get()}),
+                    json!({"head":{"seq":last["seq"],"link":last["link"],"keyring_link":last["keyring_link"]},"current_epoch":last["epoch"],"rotation_pending":service.pending.get(),"accepts_phrase_keys":false}),
                 )
             } else if path == "/v1/sync/keys" {
                 Service::reply(200, json!({ "entries": rows }))
