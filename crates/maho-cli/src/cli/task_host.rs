@@ -278,6 +278,7 @@ impl HostAssembly {
         context: session_context::ChildSessionContext,
         socket: String,
         path: String,
+        designated_chain_only: bool,
     ) -> OpenedHostResult {
         let mut context = context;
         if let Some((_, key)) = maho_rpc::host_endpoints::parse_shard_socket(&socket) {
@@ -304,6 +305,10 @@ impl HostAssembly {
             #[cfg(unix)]
             {
                 let (socket_client,info)=maho_rpc::host_probe::authenticated_host_socket(&socket,&json!({"type":"get_protocol_info","observe":true}),30_000,Some(&agent_dir)).await.map_err(error)?;
+                // `task.parent_model_fallback: false`: a host that cannot hold the child's designated chain is refused (omo #12759).
+                if designated_chain_only && let Some(model)=spec.model.as_deref() && let Some(message)=session_client_opening::designated_chain_host_refusal(&info["data"]["capabilities"], model, spec.fallback_models.as_deref().unwrap_or_default()) {
+                    return Err(HostSessionOpenError::Refused { code: "capability".into(), session_path: path, retry_after_ms: None, message });
+                }
                 let client=Arc::new(maho_rpc::rpc_client::RpcClient::from_stream(socket_client.into_stream().map_err(error)?,Default::default()));
                 let live=connection::LiveClient::new(client.clone(),runtime.clone(),turn);
                 let mut spec=spec.clone();
@@ -317,7 +322,9 @@ impl HostAssembly {
                     let (provider,id)=reference.split_once('/').ok_or_else(||error("model_unavailable: noncanonical host model pin"))?;
                     request["provider"]=provider.into();request["modelId"]=id.into();
                 }
-                if let (Some(model),Some(chain))=(&spec.model,&spec.fallback_models)
+                if designated_chain_only {
+                    if let Some(model)=spec.model.as_deref() {request["retryFallback"]=senpi_task::runners::designated_fallback_profile::designated_fallback_profile(model, spec.fallback_models.as_deref().unwrap_or_default());}
+                } else if let (Some(model),Some(chain))=(&spec.model,&spec.fallback_models)
                     && !chain.is_empty(){request["retryFallback"]=json!({"modelFallback":true,"fallbackChains":{(model):chain}});}
                 if let Some(reasoning)=spec.reasoning.as_ref().or(spec.variant.as_ref()){request["thinkingLevel"]=reasoning.clone().into();}
                 let opened=match client.open_session(request).await {Ok(opened)=>opened,Err(cause)=>{client.stop().await;return Err(open_error_from_rpc_cause(cause, &path));}};
@@ -330,7 +337,7 @@ impl HostAssembly {
                     attached:opened["attached"]==true,durable_session_id:None,reported_model:None,
                 },Arc::new(move ||outcome.outcome()) as Arc<dyn Fn()->senpi_task::runners::RunnerOutcome+Send+Sync>))
             }
-            #[cfg(not(unix))] {let _=(spec,agent_dir,runtime,socket,path,context,turn);Err(HostSessionOpenError::Host { message: "host runner unavailable on Windows".into() })}
+            #[cfg(not(unix))] {let _=(spec,agent_dir,runtime,socket,path,context,turn,designated_chain_only);Err(HostSessionOpenError::Host { message: "host runner unavailable on Windows".into() })}
         })
     }
 }
@@ -480,13 +487,24 @@ impl RpcRespawnRunner for HostRespawn {
             return self.fallback.start(spec);
         }
         self.runner
-            .get_or_init(|| build_host_runner(self.assembly.clone(), Arc::new(|| Ok(()))))
+            .get_or_init(|| {
+                build_host_runner(
+                    self.assembly.clone(),
+                    Arc::new(|| Ok(())),
+                    designated_chain_only(&self.settings),
+                )
+            })
             .start_rpc(spec.clone())
     }
+}
+/// omo.json `task.parent_model_fallback: false` (fork policy gate for omo #12010/#12761).
+fn designated_chain_only(settings: &serde_json::Value) -> bool {
+    settings["task"]["parent_model_fallback"].as_bool() == Some(false)
 }
 fn build_host_runner(
     assembly: HostAssembly,
     settle: Arc<dyn Fn() -> Result<(), HostError> + Send + Sync>,
+    designated_chain_only: bool,
 ) -> ProductionHostRunner {
     let open_assembly = assembly.clone();
     let admission = assembly.clone();
@@ -515,7 +533,7 @@ fn build_host_runner(
                 .to_string_lossy()
                 .into_owned()
             });
-            open_assembly.open(spec, context, socket, path)
+            open_assembly.open(spec, context, socket, path, designated_chain_only)
         }),
     };
     ProductionHostRunner {
@@ -540,6 +558,7 @@ pub fn select_runner(
     Arc::new(build_host_runner(
         assembly,
         Arc::new(move || cleanup.settle_teardowns().map_err(error)),
+        designated_chain_only(settings),
     ))
 }
 

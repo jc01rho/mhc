@@ -225,7 +225,7 @@ fn build_catalog(model: &str, result: &ModelCatalogProbeResult) -> CatalogResult
     }
 }
 
-fn base_model(model: &str) -> &str {
+pub(crate) fn base_model(model: &str) -> &str {
     let mut base = model;
     let (mut thinking, mut tier) = (false, false);
     for _ in 0..2 {

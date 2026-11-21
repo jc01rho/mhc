@@ -252,6 +252,8 @@ fn compose_task_engine_parts(
     options.traceparent_for = Some(Arc::new(telemetry_core::read_turn_traceparent));
     options.isolation = Some(isolation_runtime);
     options.isolation_settings = isolation_settings;
+    // Fork policy gate for omo #12010/#12761: absent or `true` keeps the parent-model rung.
+    options.parent_model_fallback = settings["parent_model_fallback"].as_bool() != Some(false);
     options.config = ManagerConfig {
         max_depth: settings["max_depth"]
             .as_u64()

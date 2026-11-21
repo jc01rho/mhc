@@ -15,6 +15,7 @@ pub mod launch_fence;
     reason = "mirrors the TS `manager/manager.ts` module path"
 )]
 pub mod manager;
+pub mod model_refusals;
 pub mod names;
 pub mod outcome;
 pub mod parent_model_fallback;

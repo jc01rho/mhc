@@ -37,7 +37,16 @@ pub struct RpcProcessRunnerOptions {
     pub now: Option<Clock>,
     pub model_admission: Option<RpcModelAdmission>,
     pub inherited_extensions: Vec<String>,
+    /// `task.parent_model_fallback: false` (omo #12006, #12759): a child whose engine cannot hold its
+    /// designated chain is never started. `false` keeps the manager-fallback behaviour.
+    pub designated_chain_only: bool,
 }
+
+type StartRefusal = (
+    RunnerFailureKind,
+    String,
+    Option<crate::manager::start_failure_cause::StartCause>,
+);
 
 pub struct RpcProcessRunner {
     fallback_chain_deadline_ms: u64,
@@ -51,6 +60,7 @@ pub struct RpcProcessRunner {
     now: Clock,
     model_admission: RpcModelAdmission,
     inherited_extensions: Vec<String>,
+    designated_chain_only: bool,
 }
 
 impl RpcProcessRunner {
@@ -78,6 +88,7 @@ impl RpcProcessRunner {
                 .model_admission
                 .unwrap_or_else(|| create_rpc_model_admission(RpcModelAdmissionOptions::default())),
             inherited_extensions: options.inherited_extensions,
+            designated_chain_only: options.designated_chain_only,
         }
     }
 
@@ -136,56 +147,66 @@ impl RpcProcessRunner {
                 })
             }),
         });
-        if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models)
-            && !chain.is_empty()
-        {
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
-            let configured = protocol.request(json!({"type":"get_protocol_info"}))
-                    .and_then(|pending| pending.wait_until(deadline))
-                    .and_then(|response| {
-                        let supported = response["success"] == true && response["command"] == "get_protocol_info" && response["data"]["capabilities"].as_array().is_some_and(|items| items.iter().any(|item| item == "retry_fallback_command"));
-                        if !supported {
-                            if !self.unsupported_noticed.swap(true, std::sync::atomic::Ordering::AcqRel) {
-                                utils::logger::log("senpi-task engine lacks retry_fallback_command; retaining manager fallback", None);
+        let chain_refusal = if self.designated_chain_only {
+            spec.model
+                .as_deref()
+                .and_then(|model| self.hold_designated_chain(&protocol, &handle, &spec, model))
+        } else {
+            if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models)
+                && !chain.is_empty()
+            {
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
+                let configured = protocol.request(json!({"type":"get_protocol_info"}))
+                        .and_then(|pending| pending.wait_until(deadline))
+                        .and_then(|response| {
+                            let supported = response["success"] == true && response["command"] == "get_protocol_info" && response["data"]["capabilities"].as_array().is_some_and(|items| items.iter().any(|item| item == "retry_fallback_command"));
+                            if !supported {
+                                if !self.unsupported_noticed.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                                    utils::logger::log("senpi-task engine lacks retry_fallback_command; retaining manager fallback", None);
+                                }
+                                return Ok(());
                             }
-                            return Ok(());
-                        }
-                        if std::time::Instant::now() >= deadline {
-                            return Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: "fallback configuration deadline passed".into() });
-                        }
-                        protocol.request(json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}}))?.wait_until(deadline).and_then(|response| {
-                            if response["success"] == true { Ok(()) } else { Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: format!("fallback configuration refused: {}", response["error"]) }) }
-                        })
-                    });
-            if let Err(error) = configured {
-                utils::logger::log(
-                    "senpi-task child fallback configuration unavailable; retaining manager fallback",
-                    Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
-                );
+                            if std::time::Instant::now() >= deadline {
+                                return Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: "fallback configuration deadline passed".into() });
+                            }
+                            protocol.request(json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}}))?.wait_until(deadline).and_then(|response| {
+                                if response["success"] == true { Ok(()) } else { Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: format!("fallback configuration refused: {}", response["error"]) }) }
+                            })
+                        });
+                if let Err(error) = configured {
+                    utils::logger::log(
+                        "senpi-task child fallback configuration unavailable; retaining manager fallback",
+                        Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
+                    );
+                }
             }
-        }
-        let started = match &spec.resume_session_path {
-            None => handle
-                .start_initial_prompt(&spec.prompt)
-                .map(|()| None)
-                .map_err(|error| {
-                    (
-                        RunnerFailureKind::ChildPromptFailed,
-                        error.to_string(),
-                        crate::manager::start_failure_cause::classify_start_cause(&error),
-                    )
-                }),
-            Some(path) => client
-                .switch_session(path)
-                .map(|result| Some((path.clone(), result)))
-                .map_err(|error| {
-                    (
-                        RunnerFailureKind::SessionUnavailable,
-                        error.to_string(),
-                        crate::manager::start_failure_cause::classify_start_cause(&error),
-                    )
-                }),
+            None
+        };
+        let started = match chain_refusal {
+            Some(refusal) => Err(refusal),
+            None => match &spec.resume_session_path {
+                None => handle
+                    .start_initial_prompt(&spec.prompt)
+                    .map(|()| None)
+                    .map_err(|error| {
+                        (
+                            RunnerFailureKind::ChildPromptFailed,
+                            error.to_string(),
+                            crate::manager::start_failure_cause::classify_start_cause(&error),
+                        )
+                    }),
+                Some(path) => client
+                    .switch_session(path)
+                    .map(|result| Some((path.clone(), result)))
+                    .map_err(|error| {
+                        (
+                            RunnerFailureKind::SessionUnavailable,
+                            error.to_string(),
+                            crate::manager::start_failure_cause::classify_start_cause(&error),
+                        )
+                    }),
+            },
         };
         let resume = match started {
             Ok(resume) => resume,
@@ -248,6 +269,90 @@ impl RpcProcessRunner {
             resume,
         );
         Ok(handle)
+    }
+
+    /// `applyFallbackChain` under the designated-chain-only policy: the child's own chain (with
+    /// tombstones) goes out as `set_retry_fallback` before its first prompt or session switch, and a
+    /// chain the engine does not hold fails the start, so no model outside the chain ever runs.
+    fn hold_designated_chain(
+        &self,
+        protocol: &RpcProtocolClient,
+        handle: &RpcChildHandle,
+        spec: &RpcRunnerSpec,
+        model: &str,
+    ) -> Option<StartRefusal> {
+        use crate::runners::designated_chain_error::{
+            DesignatedChainNotHeldReason as Reason, chain_not_held_cause,
+        };
+        let fallbacks = spec.fallback_models.clone().unwrap_or_default();
+        let profile = crate::runners::designated_fallback_profile::designated_fallback_profile(
+            model, &fallbacks,
+        );
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
+        let unanswered = |error: String| {
+            if std::time::Instant::now() >= deadline {
+                (
+                    Reason::Timeout,
+                    format!("no answer within {} ms", self.fallback_chain_deadline_ms),
+                )
+            } else {
+                (Reason::Refused, format!("refused: {error}"))
+            }
+        };
+        let outcome: Result<(), (Reason, String)> = match protocol
+            .request(json!({"type":"get_protocol_info"}))
+            .and_then(|pending| pending.wait_until(deadline))
+        {
+            Err(error) => Err(unanswered(error.to_string())),
+            Ok(response)
+                if !(response["success"] == true
+                    && response["command"] == "get_protocol_info"
+                    && response["data"]["capabilities"]
+                        .as_array()
+                        .is_some_and(|items| items.iter().any(|item| item == "retry_fallback_command"))) =>
+            {
+                Err((
+                    Reason::Unsupported,
+                    "this senpi engine cannot take a task child's model chain (no retry_fallback_command); upgrade it".to_string(),
+                ))
+            }
+            Ok(_) if std::time::Instant::now() >= deadline => {
+                Err((Reason::Refused, "deadline passed".to_string()))
+            }
+            Ok(_) => match protocol
+                .request(json!({"type":"set_retry_fallback","retryFallback":profile}))
+                .and_then(|pending| pending.wait_until(deadline))
+            {
+                Ok(response) if response["success"] == true => Ok(()),
+                Ok(response) => Err((Reason::Refused, format!("refused: {}", response["error"]))),
+                Err(error) => Err(unanswered(error.to_string())),
+            },
+        };
+        let (reason, detail) = outcome.err()?;
+        let chain =
+            crate::runners::designated_fallback_profile::designated_chain_text(model, &fallbacks);
+        if handle.exit_outcome().is_some() {
+            return Some((
+                RunnerFailureKind::ChildPromptFailed,
+                format!(
+                    "task {}: its designated model chain ({chain}) was not applied because the child exited while it was being sent",
+                    spec.task_id
+                ),
+                None,
+            ));
+        }
+        let models: Vec<String> = std::iter::once(model.to_string())
+            .chain(fallbacks)
+            .collect();
+        Some((
+            RunnerFailureKind::ChildPromptFailed,
+            format!(
+                "task {}: its designated model chain ({chain}) was not applied ({detail}), and a child never runs outside its designated models, so it was not started",
+                spec.task_id
+            ),
+            Some(chain_not_held_cause(reason, &models)),
+        ))
     }
 }
 

@@ -320,6 +320,7 @@ fn seed_mutation_record(
         cancel_requested: None,
         parent_model: None,
         parent_model_fallback: None,
+        model_refusals: None,
         fallback_closing_child: None,
         start_queued: None,
         revive_delivery_uncertain: None,
