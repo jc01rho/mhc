@@ -188,12 +188,46 @@ fn migrate_config_skips_backup_when_content_is_identical() {
         &config_path,
         &obj(json!({"disabled_hooks": ["comment-checker"]})),
     );
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(&config_path)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .ino()
+    };
     let mut raw =
         obj(json!({"disabled_hooks": ["gpt-permission-continuation", "comment-checker"]}));
 
-    migrate_config_file(&config_path, &mut raw);
+    assert!(migrate_config_file(&config_path, &mut raw));
 
+    assert_eq!(
+        Value::Object(raw),
+        json!({"disabled_hooks": ["comment-checker"]})
+    );
     assert_eq!(backup_count(dir.path()), 0);
+    let mut entries: Vec<String> = fs::read_dir(dir.path())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| panic!("{error}"))
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    entries.sort();
+    assert_eq!(entries, ["oh-my-opencode.json"]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&config_path)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .ino(),
+            inode,
+            "an unchanged config keeps its inode"
+        );
+    }
 }
 
 #[test]

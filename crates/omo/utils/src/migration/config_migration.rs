@@ -202,7 +202,13 @@ fn persist(
     let backup_path = format!("{}.bak.{timestamp}", config_path.display());
     let backup_succeeded = content_changed && fs::copy(config_path, &backup_path).is_ok();
 
-    let write_result = write_file_atomically(config_path, &new_content);
+    // An unchanged file counts as written: replacing it would only swap its inode and wait on two
+    // fsyncs (omo #13528, #11839).
+    let write_result = if content_changed {
+        write_file_atomically(config_path, &new_content)
+    } else {
+        Ok(())
+    };
     if let Err(error) = &write_result {
         log(
             &format!(
