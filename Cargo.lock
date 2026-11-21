@@ -5585,6 +5585,7 @@ dependencies = [
  "maho-ai",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-ext-permission-system",
  "maho-omo-bundled-skills",
  "maho-omo-config-core",
  "maho-omo-config-resolution",

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::time::Duration;
 
 use senpi_desktop_core::protocol::MethodRejection;
@@ -630,6 +630,151 @@ fn keeps_legacy_errors_and_method_rejections_compatible() {
             reason: MethodRejection::HostOnly
         }))
     );
+}
+
+// Port of upstream `test/global-input-grant.test.ts` (#10788, #10022) against the scripted engine's
+// `gated` mode, which refuses desktop and display input without the control grant.
+
+fn gated_service(full_access: Option<Arc<AtomicBool>>) -> DesktopService {
+    let mut env = HashMap::new();
+    env.insert("FAKE_ENGINE_MODE".to_string(), "gated".to_string());
+    let log = SpawnLog::new(env);
+    let service = DesktopService::new(DesktopServiceOptions {
+        create_child: Some(log.factory.clone()),
+        on_notification: Some(log.notification_tracer(0)),
+    });
+    if let Some(flag) = full_access {
+        service.set_full_access(Arc::new(move || flag.load(Ordering::SeqCst)));
+    }
+    service
+}
+
+async fn gated_state(service: &DesktopService) -> serde_json::Value {
+    service
+        .call("fake.state", json!({}), CallOptions::default())
+        .await
+        .expect("fake.state")
+}
+
+fn refusal_code(error: &DesktopError) -> Option<senpi_desktop_core::error::ErrorCode> {
+    match error {
+        DesktopError::Rpc(rpc) => match &rpc.data {
+            Some(JsonRpcErrorData::Engine(data)) => Some(data.code),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn desktop_click() -> serde_json::Value {
+    json!({ "target": "desktop", "x": 10, "y": 10 })
+}
+
+#[tokio::test]
+async fn a_desktop_click_outside_full_access_gets_the_engine_refusal_and_no_grant() {
+    // Given
+    let service = gated_service(None);
+    service.open(Default::default()).await.expect("open ok");
+
+    // When
+    let error = service
+        .call("click", desktop_click(), CallOptions::default())
+        .await
+        .expect_err("refused without a grant");
+
+    // Then
+    assert_eq!(
+        refusal_code(&error),
+        Some(senpi_desktop_core::error::ErrorCode::ControlRequired)
+    );
+    assert_eq!(gated_state(&service).await["grants"], json!(0));
+    service.close().await.expect("close ok");
+}
+
+#[tokio::test]
+async fn typing_on_a_display_target_outside_full_access_is_refused_too() {
+    // Given
+    let service = gated_service(Some(Arc::new(AtomicBool::new(false))));
+    service.open(Default::default()).await.expect("open ok");
+
+    // When
+    let error = service
+        .call(
+            "typeText",
+            json!({ "target": "display:1", "text": "hi" }),
+            CallOptions::default(),
+        )
+        .await
+        .expect_err("refused without a grant");
+
+    // Then
+    assert_eq!(
+        refusal_code(&error),
+        Some(senpi_desktop_core::error::ErrorCode::ControlRequired)
+    );
+    assert_eq!(gated_state(&service).await["grants"], json!(0));
+    service.close().await.expect("close ok");
+}
+
+#[tokio::test]
+async fn background_input_to_one_window_needs_no_grant() {
+    // Given
+    let service = gated_service(None);
+    service.open(Default::default()).await.expect("open ok");
+
+    // When
+    service
+        .call(
+            "click",
+            json!({ "target": "101", "x": 5, "y": 5 }),
+            CallOptions::default(),
+        )
+        .await
+        .expect("window click admitted");
+
+    // Then
+    assert_eq!(gated_state(&service).await["grants"], json!(0));
+    service.close().await.expect("close ok");
+}
+
+#[tokio::test]
+async fn full_access_grants_without_asking_before_the_desktop_click() {
+    // Given: no confirm channel at all, as in a headless run
+    let service = gated_service(Some(Arc::new(AtomicBool::new(true))));
+    service.open(Default::default()).await.expect("open ok");
+
+    // When
+    service
+        .call("click", desktop_click(), CallOptions::default())
+        .await
+        .expect("admitted after the grant");
+
+    // Then: one grant, sent before the click, so the engine refused nothing
+    let state = gated_state(&service).await;
+    assert_eq!(state["grants"], json!(1));
+    assert_eq!(state["refusals"], json!(0));
+    service.close().await.expect("close ok");
+}
+
+#[tokio::test]
+async fn leaving_full_access_revokes_the_automatic_grant_before_the_next_call() {
+    // Given: a desktop click granted by full access
+    let full_access = Arc::new(AtomicBool::new(true));
+    let service = gated_service(Some(Arc::clone(&full_access)));
+    service.open(Default::default()).await.expect("open ok");
+    service
+        .call("click", desktop_click(), CallOptions::default())
+        .await
+        .expect("admitted after the grant");
+
+    // When: the session leaves full access
+    full_access.store(false, Ordering::SeqCst);
+    let state = gated_state(&service).await;
+
+    // Then
+    assert_eq!(state["revokes"], json!(1));
+    assert_eq!(state["granted"], json!(false));
+    service.close().await.expect("close ok");
 }
 
 #[test]

@@ -192,6 +192,16 @@ impl ComputerUseComponent {
                 load_runtime: self.options.load_runtime.clone(),
             }))
         });
+        if let Some(loader) = runtime.as_ref() {
+            let state_ctx_full_access = Arc::clone(&state_telemetry_ctx);
+            loader.set_full_access(Arc::new(move || {
+                state_ctx_full_access
+                    .lock()
+                    .ok()
+                    .and_then(|session| session.clone())
+                    .is_some_and(|session| crate::full_access::is_full_access(&session))
+            }));
+        }
 
         let completions: CommandArgumentCompletions = Arc::new(|prefix: &str| {
             let p = prefix.trim().to_string();

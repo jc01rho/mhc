@@ -18,6 +18,10 @@ pub const GRACE_TIMEOUT: Duration = Duration::from_millis(GRACE_MS);
 pub const CAPABILITIES_TIMEOUT_MS: u64 = 10_000;
 pub const CAPABILITIES_TIMEOUT: Duration = Duration::from_millis(CAPABILITIES_TIMEOUT_MS);
 
+/// Bounds a best-effort `control.revoke`; failure is logged, `session.close` stays the backstop.
+pub const REVOKE_TIMEOUT_MS: u64 = 2_000;
+pub const REVOKE_TIMEOUT: Duration = Duration::from_millis(REVOKE_TIMEOUT_MS);
+
 /// Cadence of `stopPath.heartbeat` while a session is open.
 pub const HEARTBEAT_MS: u64 = 500;
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(HEARTBEAT_MS);
