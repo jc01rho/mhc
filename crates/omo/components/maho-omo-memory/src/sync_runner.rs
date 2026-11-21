@@ -814,6 +814,7 @@ mod tests {
                 transport: never.clone(),
                 verifier: never.clone(),
                 sealer: never,
+                freeze: None,
             },
             on_ended: None,
             device_name: Some(Arc::new(|principal| {
@@ -1010,6 +1011,7 @@ mod tests {
                 transport: never.clone(),
                 verifier: never.clone(),
                 sealer: never,
+                freeze: None,
             },
             machine_id: Some("fixed".into()),
             log: None,

@@ -89,6 +89,65 @@ pub struct StreamHandlers {
 
 pub type Unsubscribe = Box<dyn FnOnce()>;
 
+/// Why pushes are frozen (sync-design section 7, rotation on revoke), as a closed set of codes. The
+/// presentation layer owns every word shown for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FreezeReason {
+    Rotating,
+    WaitingRecovery,
+    WaitingUnsupportedFreeze,
+    Unverified,
+    DeviceListUnusable,
+    SelfRevoked,
+    Refused,
+    FlagStuck,
+    NoEpochKey,
+    RateLimited,
+    Unavailable,
+}
+
+impl FreezeReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rotating => "rotating",
+            Self::WaitingRecovery => "waiting_recovery",
+            Self::WaitingUnsupportedFreeze => "waiting_unsupported_freeze",
+            Self::Unverified => "unverified",
+            Self::DeviceListUnusable => "device_list_unusable",
+            Self::SelfRevoked => "self_revoked",
+            Self::Refused => "refused",
+            Self::FlagStuck => "flag_stuck",
+            Self::NoEpochKey => "no_epoch_key",
+            Self::RateLimited => "rate_limited",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// What one settle of a service freeze found or did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreezeOutcome {
+    Clear,
+    Rotated,
+    Adopted,
+    NotMember,
+    Frozen(FreezeReason),
+}
+
+impl FreezeOutcome {
+    /// The freeze ended here: this device rotated, or adopted another member's rotation.
+    pub fn ended(self) -> bool {
+        matches!(self, Self::Rotated | Self::Adopted)
+    }
+}
+
+/// Ends a service freeze by rotating the account key when this device may (the account session's
+/// settler, #12280).
+pub trait FreezeSettler {
+    fn settle(&self) -> std::pin::Pin<Box<dyn Future<Output = FreezeOutcome> + '_>>;
+}
+
 pub trait Transport {
     /// Entries with `seq > after`, in sequence order, at most `limit` of them.
     fn pull(&self, after: u64, limit: usize) -> PortFuture<'_, PullPage>;
