@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -131,6 +132,60 @@ pub fn parse_document(content: &str) -> CredentialPoolStateDocument {
         Ok(document) if is_valid(&document) => document,
         _ => CredentialPoolStateDocument::fresh(),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredSlotRevisions {
+    pub account: String,
+    pub material: String,
+}
+
+pub fn applicable_stored_state<'a>(
+    persisted: Option<&'a CredentialSlotState>,
+    revisions: &StoredSlotRevisions,
+) -> Option<&'a CredentialSlotState> {
+    let persisted = persisted?;
+    if persisted.credential_revision.as_deref() == Some(revisions.material.as_str()) {
+        return Some(persisted);
+    }
+    if persisted.block_reason == Some(BlockReason::AuthError) {
+        return None;
+    }
+    (persisted.credential_revision.as_deref() == Some(revisions.account.as_str()))
+        .then_some(persisted)
+}
+
+fn jwt_subject(token: &str) -> Option<String> {
+    let encoded = token.split('.').nth(1)?;
+    if encoded.is_empty() {
+        return None;
+    }
+    let standard = encoded.replace('-', "+").replace('_', "/");
+    let padded = format!("{standard}{}", "=".repeat((4 - standard.len() % 4) % 4));
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(padded)
+        .ok()?;
+    let payload: Value = serde_json::from_slice(&bytes).ok()?;
+    payload
+        .get("sub")
+        .and_then(Value::as_str)
+        .filter(|sub| !sub.is_empty())
+        .map(str::to_owned)
+}
+
+fn oauth_account_identity(access: Option<&str>) -> String {
+    let Some(access) = access else {
+        return String::new();
+    };
+    let Some(account_id) =
+        maho_ai::utils::chatgpt_subscription_auth::extract_chatgpt_subscription_account_id(access)
+    else {
+        return String::new();
+    };
+    format!(
+        "{account_id}\u{0}{}",
+        jwt_subject(access).unwrap_or_default()
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +334,40 @@ impl CredentialSlotRepository {
         ))
     }
 
+    pub async fn stored_slot_revisions(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        material: &CredentialMaterial,
+    ) -> Result<StoredSlotRevisions, String> {
+        let key = self.installation_key().await?;
+        let identity = if material.key.is_none() {
+            oauth_account_identity(material.access.as_deref())
+        } else {
+            String::new()
+        };
+        let account = hmac_sha256_hex(
+            &key,
+            &format!(
+                "account\u{0}{provider_id}\u{0}{slot_name}\u{0}{}\u{0}{identity}",
+                material.key.as_deref().unwrap_or_default()
+            ),
+        );
+        let material_rev = hmac_sha256_hex(
+            &key,
+            &format!(
+                "{provider_id}\u{0}{slot_name}\u{0}{}\u{0}{}\u{0}{}",
+                material.key.as_deref().unwrap_or_default(),
+                material.access.as_deref().unwrap_or_default(),
+                material.refresh.as_deref().unwrap_or_default()
+            ),
+        );
+        Ok(StoredSlotRevisions {
+            account,
+            material: material_rev,
+        })
+    }
+
     pub async fn list_slots(
         &self,
         provider_id: &str,
@@ -372,6 +461,57 @@ pub struct CredentialMaterial {
     pub key: Option<String>,
     pub access: Option<String>,
     pub refresh: Option<String>,
+}
+
+fn slot_material_tuple(slot: &Value) -> (Option<&str>, Option<&str>, Option<&str>) {
+    (
+        slot.get("key").and_then(Value::as_str),
+        slot.get("access").and_then(Value::as_str),
+        slot.get("refresh").and_then(Value::as_str),
+    )
+}
+
+pub fn slots_started_by_login(before: Option<&Value>, after: Option<&Value>) -> Vec<String> {
+    let previous: BTreeMap<String, Value> = before
+        .map(crate::credential_accounts::stored_slots)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|slot| {
+            let name = slot.get("name").and_then(Value::as_str)?.to_owned();
+            Some((name, slot))
+        })
+        .collect();
+    after
+        .map(crate::credential_accounts::stored_slots)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|slot| {
+            let name = slot.get("name").and_then(Value::as_str)?.to_owned();
+            let changed = match previous.get(&name) {
+                None => true,
+                Some(old) => slot_material_tuple(old) != slot_material_tuple(&slot),
+            };
+            changed.then_some(name)
+        })
+        .collect()
+}
+
+pub async fn retire_login_slot_health(
+    state_path: &str,
+    provider_id: &str,
+    before: Option<&Value>,
+    after: Option<&Value>,
+) {
+    let started = slots_started_by_login(before, after);
+    if started.is_empty() {
+        return;
+    }
+    let repository = CredentialSlotRepository::new(state_path);
+    for name in started {
+        let _ = repository
+            .mutate_slot_state(provider_id, "stored", &name, |_| None)
+            .await;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

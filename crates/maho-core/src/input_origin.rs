@@ -40,6 +40,150 @@ pub fn custom_turn_origin(custom_type: &str) -> InputOrigin {
     }
 }
 
+pub const SAME_ACCOUNT_DELEGATION_CAPABILITY: &str = "same_account_delegation_v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionOrigin {
+    Local,
+    Delegated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOrigin {
+    Local,
+    Delegated,
+    Engine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputTurnMark {
+    Local,
+    Delegated,
+    Engine,
+    Join,
+}
+
+pub const fn resolve_connection_turn_origin(
+    connection_origin: ConnectionOrigin,
+    same_account: bool,
+) -> ConnectionOrigin {
+    match (connection_origin, same_account) {
+        (ConnectionOrigin::Delegated, false) => ConnectionOrigin::Delegated,
+        _ => ConnectionOrigin::Local,
+    }
+}
+
+pub const fn record_turn_origin(
+    origin: ConnectionOrigin,
+    is_acting_method_class: bool,
+) -> ConnectionOrigin {
+    if matches!(origin, ConnectionOrigin::Delegated) && is_acting_method_class {
+        ConnectionOrigin::Delegated
+    } else {
+        ConnectionOrigin::Local
+    }
+}
+
+pub fn input_turn_mark(
+    mode: Option<&str>,
+    source: Option<InputSource>,
+    connection_origin: Option<ConnectionOrigin>,
+    record_delegated: bool,
+) -> InputTurnMark {
+    if mode == Some("steer") {
+        return InputTurnMark::Join;
+    }
+    if let Some(origin) = connection_origin {
+        return match origin {
+            ConnectionOrigin::Local => InputTurnMark::Local,
+            ConnectionOrigin::Delegated => InputTurnMark::Delegated,
+        };
+    }
+    if record_delegated {
+        return InputTurnMark::Delegated;
+    }
+    if source.is_none() || source == Some(InputSource::Interactive) {
+        InputTurnMark::Local
+    } else {
+        InputTurnMark::Engine
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnOriginTracker {
+    current_origin: TurnOrigin,
+    continuing_turn: bool,
+    open_record_scope: Option<ConnectionOrigin>,
+}
+
+impl Default for TurnOriginTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TurnOriginTracker {
+    pub const fn new() -> Self {
+        Self {
+            current_origin: TurnOrigin::Engine,
+            continuing_turn: false,
+            open_record_scope: None,
+        }
+    }
+
+    pub fn begin_record_scope(&mut self, origin: ConnectionOrigin) {
+        self.open_record_scope = Some(origin);
+    }
+
+    pub fn end_record_scope(&mut self) {
+        self.open_record_scope = None;
+    }
+
+    pub fn record_is_delegated(&self) -> bool {
+        self.open_record_scope == Some(ConnectionOrigin::Delegated)
+    }
+
+    pub fn note_run_start(&mut self) {
+        if self.continuing_turn {
+            return;
+        }
+        let delegated = self.record_is_delegated();
+        self.open_record_scope = None;
+        self.current_origin = if delegated {
+            TurnOrigin::Delegated
+        } else {
+            TurnOrigin::Engine
+        };
+    }
+
+    pub fn note_turn_continuation(&mut self, keeps_turn_origin: bool) {
+        if keeps_turn_origin {
+            self.continuing_turn = true;
+        }
+    }
+
+    pub fn end_turn_continuation(&mut self) {
+        self.continuing_turn = false;
+    }
+
+    pub fn note_user_message_start(&mut self, mark: Option<InputTurnMark>) {
+        match mark {
+            Some(InputTurnMark::Join) => {}
+            Some(InputTurnMark::Local) => self.current_origin = TurnOrigin::Local,
+            Some(InputTurnMark::Delegated) => self.current_origin = TurnOrigin::Delegated,
+            Some(InputTurnMark::Engine) | None => self.current_origin = TurnOrigin::Engine,
+        }
+    }
+
+    pub const fn current_origin(&self) -> TurnOrigin {
+        self.current_origin
+    }
+
+    pub fn deciding_turn_is_delegated(&self) -> bool {
+        self.current_origin == TurnOrigin::Delegated
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

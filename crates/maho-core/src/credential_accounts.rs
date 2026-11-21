@@ -354,12 +354,11 @@ pub async fn summarize_credential_accounts(
             let name = slot_string(&slot, "name").unwrap_or_default();
             let display_name = account_display_name(slot_string(&slot, "displayName").as_deref());
             let persisted = state.get(&name);
-            let revision = repository
-                .stored_credential_revision(provider, &name, &material_of(&slot))
+            let revisions = repository
+                .stored_slot_revisions(provider, &name, &material_of(&slot))
                 .await?;
-            // A block belongs to the material that earned it; a re-login starts clean.
-            let applicable = persisted
-                .filter(|state| state.credential_revision.as_deref() == Some(revision.as_str()));
+            let applicable =
+                crate::credential_pool::state_store::applicable_stored_state(persisted, &revisions);
             let block = slot_blocked(&slot, applicable, now);
             summaries.push(CredentialAccountSummary {
                 name: name.clone(),

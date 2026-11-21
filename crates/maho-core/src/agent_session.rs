@@ -618,6 +618,9 @@ pub fn describe_compaction_rejection(cause: CompactionRejectionCause) -> &'stati
         Cause::StaleRevision => {
             "Compaction rejected: the session changed while the summary was being prepared. Retry compaction against the latest context."
         }
+        Cause::TransientFailure => {
+            "Compaction rejected: the summary request failed on a transient provider error. Retry compaction."
+        }
     }
 }
 
@@ -1094,6 +1097,9 @@ pub struct AgentSessionInner {
     observed_held_inputs: Mutex<BTreeSet<String>>,
     stop_interrupt: Mutex<Option<Value>>,
     lifecycle_human_pending: std::sync::atomic::AtomicBool,
+    lifecycle_restart_continues: std::sync::atomic::AtomicBool,
+    restart_continued: std::sync::atomic::AtomicBool,
+    continued_start: std::sync::atomic::AtomicBool,
     /// Mirrors `state.disposed` for the lifecycle write gate: lifecycle records are written while the
     /// caller may hold the state lock (the AgentStart arm), so the gate must not lock state again.
     lifecycle_disposed: std::sync::atomic::AtomicBool,
@@ -4725,6 +4731,9 @@ impl AgentSession {
                 external_admission: Default::default(),
                 stop_interrupt: Mutex::new(None),
                 lifecycle_human_pending: std::sync::atomic::AtomicBool::new(false),
+                lifecycle_restart_continues: std::sync::atomic::AtomicBool::new(false),
+                restart_continued: std::sync::atomic::AtomicBool::new(false),
+                continued_start: std::sync::atomic::AtomicBool::new(false),
                 lifecycle_disposed: std::sync::atomic::AtomicBool::new(false),
                 last_provider_failure: Mutex::new(None),
                 lifecycle_goal: Mutex::new(None),
@@ -5065,6 +5074,8 @@ impl AgentSession {
                     self.external_admission.begin_turn();
                     let mut ledger = lock(&self.lifecycle);
                     ledger.release_restore_barrier();
+                    self.lifecycle_restart_continues
+                        .store(false, Ordering::SeqCst);
                     let origin = if self.lifecycle_human_pending.swap(false, Ordering::SeqCst) {
                         "human"
                     } else {
@@ -6704,7 +6715,7 @@ impl AgentSession {
 
     /// senpi `_stopEngineTurn`: an engine-originated turn that would exceed the engine-wide bound is not
     /// started; the stop is recorded (best effort), emitted and shown (senpi#2967).
-    fn stop_engine_turn(&self, custom_type: &str) -> bool {
+    fn stop_engine_turn_with_release(&self, custom_type: &str, released: bool) -> bool {
         use crate::engine_turn_limit::{
             ENGINE_TURN_LIMIT_ENTRY_TYPE, ENGINE_TURN_LIMIT_EVENT, EngineTurnStopReason,
         };
@@ -6716,13 +6727,11 @@ impl AgentSession {
         });
         let settings = self.with_settings_manager(|manager| manager.get_engine_turn_settings());
         let bound = |value: i64| usize::try_from(value).unwrap_or(0);
+        let resume_window = self.engine_resume_window.load(Ordering::SeqCst) && !released;
         let limits = crate::engine_turn_limit::EngineTurnLimits {
             max_per_user_input: bound(settings.max_per_user_input),
             max_tool_free_per_minute: bound(settings.max_tool_free_per_minute),
-            max_per_resume_window: self
-                .engine_resume_window
-                .load(Ordering::SeqCst)
-                .then(|| bound(settings.max_per_resume_window)),
+            max_per_resume_window: resume_window.then(|| bound(settings.max_per_resume_window)),
         };
         let now = maho_ai::utils::diagnostics::now_ms();
         let starts = lock(&self.engine_turn_starts).clone();
@@ -7310,12 +7319,127 @@ impl AgentSession {
     /// senpi `SessionLifecycleController.requiresHumanContinuation`: the last run was interrupted and no human input
     /// has been admitted since, so automatic continuations wait for a person or Resume.
     pub fn requires_human_continuation(&self) -> bool {
-        lock(&self.lifecycle).interrupted && !self.lifecycle_human_pending.load(Ordering::SeqCst)
+        lock(&self.lifecycle).interrupted
+            && !self.lifecycle_human_pending.load(Ordering::SeqCst)
+            && !self.lifecycle_restart_continues.load(Ordering::SeqCst)
     }
     /// The hold key to install when this session is opened, if its run must wait for a person (senpi#4204).
     pub fn opening_hold_key(&self) -> Option<&'static str> {
         self.requires_human_continuation()
             .then_some(crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY)
+    }
+
+    pub fn set_continued_start(&self, continued: bool) {
+        self.continued_start.store(continued, Ordering::SeqCst);
+    }
+
+    pub fn is_continued_start(&self) -> bool {
+        self.continued_start.load(Ordering::SeqCst)
+    }
+
+    pub fn cut_by_host_shutdown(&self) {
+        let mut ledger = lock(&self.lifecycle);
+        ledger.interrupted = true;
+        ledger.checkpoint(|record| self.persist_lifecycle_record(record));
+    }
+
+    pub fn continue_after_restart(&self) {
+        self.lifecycle_restart_continues
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub fn hold_automatic_turns(&self) {
+        lock(&self.engine_turn_hold).add_hold(
+            crate::engine_turn_hold::HoldKind::Unattended,
+            Some(crate::host_restart_continuation::HOST_DRAIN_HOLD_KEY),
+            None,
+        );
+        self.refresh_lifecycle();
+    }
+
+    fn add_interrupted_run_hold(&self) {
+        let branch = self.with_session_manager(|manager| manager.current_branch());
+        let data = crate::host_restart_continuation::restart_hold_data(
+            self.continued_start.load(Ordering::SeqCst),
+            &branch,
+        );
+        lock(&self.engine_turn_hold).add_hold(
+            crate::engine_turn_hold::HoldKind::SessionHold,
+            Some(crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY),
+            data,
+        );
+    }
+
+    pub async fn continue_after_host_restart(&self) {
+        if !self.continued_start.load(Ordering::SeqCst)
+            || self.restart_continued.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        let holds = self.holds();
+        let branch = self.with_session_manager(|manager| manager.current_branch());
+        let Some(release) = crate::host_restart_continuation::restart_release(&holds, &branch)
+        else {
+            return;
+        };
+        match release {
+            crate::host_restart_continuation::RestartRelease::Release { keys } => {
+                let _ = lock(&self.engine_turn_hold).release(
+                    &keys,
+                    crate::engine_turn_hold::HoldReleaseCause::ResumeSession,
+                );
+                self.refresh_lifecycle();
+            }
+            crate::host_restart_continuation::RestartRelease::Resume { interrupted_run } => {
+                if interrupted_run {
+                    self.continue_after_restart();
+                }
+                let resume: std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>,
+                > = Box::pin(self.resume_session());
+                if let Err(error) = resume.await {
+                    self.session_logger.warn(
+                        "host_restart_resume_failed",
+                        Some(&serde_json::Map::from_iter([(
+                            "error".to_owned(),
+                            Value::String(error),
+                        )])),
+                    );
+                }
+            }
+        }
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.with_session_manager(|manager| manager.is_archived())
+    }
+
+    pub fn set_archived(&self, archived: bool) -> Value {
+        self.with_session_manager_mut(|manager| manager.set_archived(archived))
+    }
+
+    pub fn get_settled(&self) -> crate::session_settled::SessionSettled {
+        self.with_session_manager(|manager| manager.get_settled())
+    }
+
+    pub fn set_settled(&self, state: &crate::session_settled::SessionSettled) -> Value {
+        self.with_session_manager_mut(|manager| manager.set_settled(state))
+    }
+
+    pub fn operating_state(&self) -> crate::session_settled::SessionOperatingState {
+        let held = self.paused();
+        self.with_session_manager(|manager| manager.operating_state(held))
+    }
+
+    pub fn failed_compaction_latches_admission(&self) -> bool {
+        let state = self.compaction_state();
+        let has_compaction = self
+            .latest_current_branch_entry_id("compaction", None)
+            .is_some();
+        crate::compaction::compaction_execution::failed_compaction_latches_admission(
+            &state,
+            has_compaction,
+        )
     }
     /// senpi `LifecycleSessionBinding` restore -> `controller.markInterruptedFromCustody`: consumed custody, or a
     /// ticket whose delivery the transcript already holds, marks the run interrupted before session_start runs.
@@ -9152,6 +9276,7 @@ impl AgentSession {
                         CompactionRejectionCause::CircuitBreaker => "circuit-breaker",
                         CompactionRejectionCause::PerTurnCap => "per-turn-cap",
                         CompactionRejectionCause::StaleRevision => "stale-revision",
+                        CompactionRejectionCause::TransientFailure => "transient-failure",
                     }
                     .to_owned()
                 }),
@@ -9560,7 +9685,7 @@ impl AgentSession {
 
     /// `_isRetryableError`.
     fn is_retryable_error(&self, message: &maho_ai::types::AssistantMessage) -> bool {
-        if Self::is_local_failure(message) {
+        if Self::is_local_failure(message) || self.is_required_compaction_error(message) {
             return false;
         }
         // A route that does not serve the model fails the same way on every attempt, whatever status wraps it.
@@ -9616,6 +9741,7 @@ impl AgentSession {
             return false;
         }
         if Self::is_local_failure(message)
+            || self.is_required_compaction_error(message)
             || crate::retry_fallback::model_config_error::is_model_config_failure(message)
         {
             return false;
@@ -18220,9 +18346,12 @@ impl AgentSession {
                 if proactive { "pre-prompt" } else { "threshold" },
             )
             .await;
-        let on_cooldown = matches!(self.compaction_state(), crate::compaction::lifecycle::CompactionLifecycleState::Failed(_, _, Some(cause), _)
-            if cause == "circuit-breaker");
-        if result.is_err() && at_hard_limit && !self.is_compaction_delegated() && !on_cooldown {
+        let non_latching = matches!(
+            self.compaction_state(),
+            crate::compaction::lifecycle::CompactionLifecycleState::Failed(_, _, Some(cause), _)
+                if crate::compaction::compaction_execution::is_non_latching_rejection_cause(&cause)
+        );
+        if result.is_err() && at_hard_limit && !self.is_compaction_delegated() && !non_latching {
             return Err("Compaction required before provider request".to_owned());
         }
         Ok(())
@@ -18746,12 +18875,8 @@ impl AgentSession {
         self.apply_extension_bindings().await;
         // Opening a session is not explicit Resume. Install the same hold used by Stop before session_start producers
         // run, so automatic work waits quietly in notice custody (senpi#4204).
-        if let Some(key) = self.opening_hold_key() {
-            lock(&self.engine_turn_hold).add_hold(
-                crate::engine_turn_hold::HoldKind::SessionHold,
-                Some(key),
-                None,
-            );
+        if self.opening_hold_key().is_some() {
+            self.add_interrupted_run_hold();
         }
         lock(&self.engine_turn_hold).start();
         let event = {
@@ -18836,6 +18961,9 @@ impl AgentSession {
                 Ok(()) | Err(_) => {}
             }
         }
+        let continue_restart: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> =
+            Box::pin(self.continue_after_host_restart());
+        continue_restart.await;
     }
 
     /// Whether the first extension lifecycle dispatch has completed.
@@ -19994,7 +20122,12 @@ impl AgentSession {
         if user_abort_generation != self.user_abort_generation.load(Ordering::SeqCst) {
             return Ok(false);
         }
-        if self.stop_engine_turn(&message.custom_type) {
+        let released_by_peer =
+            message.custom_type == crate::host_restart_continuation::SESSION_CONTROL_DELIVERY_TYPE;
+        if self.stop_engine_turn_with_release(
+            &message.custom_type,
+            released.is_some() || released_by_peer,
+        ) {
             if released.is_none() {
                 self.record_refused_engine_turn_message(message);
             }
@@ -20517,6 +20650,9 @@ impl AgentSession {
                             maho_ext_api::CompactionRejectionCause::PerTurnCap => "per-turn-cap",
                             maho_ext_api::CompactionRejectionCause::StaleRevision => {
                                 "stale-revision"
+                            }
+                            maho_ext_api::CompactionRejectionCause::TransientFailure => {
+                                "transient-failure"
                             }
                         }
                         .to_owned(),

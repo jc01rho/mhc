@@ -1,4 +1,5 @@
 //! Senpi-compatible headless JSONL protocol and print-mode support.
+#![recursion_limit = "256"]
 pub mod abort_grace;
 pub mod accepted_transcript;
 pub mod agent_effect_session;

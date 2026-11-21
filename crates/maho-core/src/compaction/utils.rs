@@ -192,6 +192,21 @@ pub fn format_file_operations(read_files: &[String], modified_files: &[String]) 
     format!("\n\n{}", sections.join("\n\n"))
 }
 
+pub use super::compaction::{
+    CJK_CHAR_WEIGHT, cjk_extra_chars, estimate_cut_point_tokens, is_cjk_codepoint,
+};
+
+pub fn truncate_utf8_at_char_boundary(text: &str, max_bytes: usize) -> &str {
+    if max_bytes >= text.len() {
+        return text;
+    }
+    let mut index = max_bytes;
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    &text[..index]
+}
+
 /// `TOOL_RESULT_MAX_CHARS`.
 pub const TOOL_RESULT_MAX_CHARS: usize = 2000;
 

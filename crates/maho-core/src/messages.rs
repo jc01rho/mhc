@@ -136,10 +136,39 @@ fn user_message(content: Vec<Value>, timestamp: Option<i64>) -> Value {
 /// copyContextProvenance: carry the request-local provenance across the role projection.
 fn with_context_provenance(source: &Value, target: Value) -> Value {
     match target {
-        Value::Object(target) => Value::Object(
-            maho_ai::context_provenance::copy_context_provenance(source, target),
-        ),
+        Value::Object(mut target) => {
+            if let Some(client_id) = source.get("clientMessageId").filter(|v| v.is_string()) {
+                target.insert("clientMessageId".to_owned(), client_id.clone());
+            }
+            Value::Object(maho_ai::context_provenance::copy_context_provenance(
+                source, target,
+            ))
+        }
         other => other,
+    }
+}
+
+pub fn tool_result_value_is_error(result: &Value) -> bool {
+    result.get("isError").and_then(Value::as_bool) == Some(true)
+        || result
+            .get("details")
+            .and_then(|details| details.get("isError"))
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+pub fn tool_result_is_error(result: &maho_ext_api::AgentToolResult) -> bool {
+    result.is_error == Some(true)
+        || result.details.get("isError").and_then(Value::as_bool) == Some(true)
+}
+
+pub fn sanitize_legacy_wire_turn_id(record: &mut Value) {
+    if matches!(
+        record.get("type").and_then(Value::as_str),
+        Some("agent_start" | "agent_settled")
+    ) && let Some(object) = record.as_object_mut()
+    {
+        object.remove("turnId");
     }
 }
 
