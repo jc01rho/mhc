@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -33,13 +33,13 @@ fn write_dead_owner_lock(lock_path: &Path) {
     );
 }
 
-fn sweep(
-    paths: &MemoryIdentityPaths,
-    configure: impl FnOnce(&mut PruneKibitzerSidecarsOptions<'_>),
+fn sweep<'a>(
+    paths: &'a MemoryIdentityPaths,
+    now: &'a dyn Fn() -> i64,
+    configure: impl FnOnce(&mut PruneKibitzerSidecarsOptions<'a>),
 ) -> PruneKibitzerSidecarsResult {
-    let now = || NOW;
     let mut options = PruneKibitzerSidecarsOptions::new(&paths.recall, &paths.locks);
-    options.now = Some(&now);
+    options.now = Some(now);
     options.max_age_ms = Some(days_ms(7.0));
     configure(&mut options);
     prune_kibitzer_sidecars(&options)
@@ -65,7 +65,7 @@ fn idle_sidecars_with_a_dead_owner_an_owned_one_and_a_live_locked_one_keep_only_
     acquire_lock(&live_lock, &holder, &AcquireLockOptions::default()).expect("hold the live lock");
 
     let owned_names = BTreeSet::from([encoded_session("owned")]);
-    let dead_lock_free_at_delete = Cell::new(Vec::new());
+    let dead_lock_free_at_delete = RefCell::new(Vec::new());
     let before_delete = |tombstone: &Path| {
         if !tombstone.to_string_lossy().contains("sidecars") {
             return;
@@ -81,12 +81,13 @@ fn idle_sidecars_with_a_dead_owner_an_owned_one_and_a_live_locked_one_keep_only_
         }
         dead_lock_free_at_delete.borrow_mut().push(free);
     };
-    let result = sweep(paths, |options| {
+    let now = || NOW;
+    let result = sweep(paths, &now, |options| {
         options.owned = Some(&owned_names);
         options.before_tombstone_delete = Some(&before_delete);
     });
 
-    assert_eq!(dead_lock_free_at_delete.borrow().as_slice(), &[true]);
+    assert_eq!(*dead_lock_free_at_delete.borrow(), vec![true]);
     assert_eq!(result.pruned, vec![encoded_session("dead-owner")]);
     assert_eq!(
         result.kept_reasons[&encoded_session("owned")].as_str(),
@@ -119,7 +120,8 @@ fn a_sidecar_whose_rename_to_a_tombstone_fails_is_kept_as_claim_failed() {
             Ok(())
         }
     };
-    let result = sweep(paths, |options| {
+    let now = || NOW;
+    let result = sweep(paths, &now, |options| {
         options.before_claim_rename = Some(&refuse);
     });
 
@@ -141,7 +143,8 @@ fn a_sidecar_touched_inside_the_window_and_a_file_that_is_not_a_directory_are_le
     std::fs::write(root.join("not-a-directory"), "x\n").expect("stray file");
     age_tree(&root.join("not-a-directory"), days_ago(30.0));
 
-    let result = sweep(paths, |_| {});
+    let now = || NOW;
+    let result = sweep(paths, &now, |_| {});
 
     assert!(result.pruned.is_empty());
     assert_eq!(
@@ -165,7 +168,8 @@ fn a_tombstone_left_by_a_crashed_sweep_is_deleted_without_a_lock() {
     std::fs::create_dir_all(&tombstone).expect("tombstone dir");
     std::fs::write(tombstone.join("wakes.ndjson"), "{}\n").expect("wakes");
 
-    let result = sweep(paths, |_| {});
+    let now = || NOW;
+    let result = sweep(paths, &now, |_| {});
 
     assert!(result.pruned.is_empty());
     assert!(!exists(&tombstone));
