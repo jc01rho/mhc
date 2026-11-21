@@ -6148,3 +6148,187 @@ async fn invalid_handler_budget_keeps_awaiting_handlers_in_order() {
     assert_eq!(*order.lock().unwrap(), ["slow", "next"]);
     assert!(runner.errors.is_empty());
 }
+fn running_turn_runner(extensions: Vec<LoadedExtension>, signal: &AbortSignal) -> ExtensionRunner {
+    let mut context = context();
+    context.signal = Some(signal.clone());
+    context.is_idle_fn = Arc::new(|| false);
+    ExtensionRunner::new(
+        extensions,
+        ExtensionRuntime::default(),
+        EventBus::default(),
+        context,
+    )
+}
+fn aborting_then_hanging() -> ExtensionHandler {
+    Arc::new(|_, ctx| {
+        let signal = ctx.signal.clone();
+        Box::pin(async move {
+            if let Some(signal) = signal {
+                signal.abort();
+            }
+            std::future::pending::<Result<EventResult, ExtensionFailure>>().await
+        })
+    })
+}
+fn observe_hooks(runner: &mut ExtensionRunner) -> Arc<Mutex<Vec<ToolHookLifecycleEvent>>> {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = Arc::clone(&events);
+    runner.set_tool_hook_lifecycle_observer(Some(Arc::new(move |event| {
+        capture.lock().unwrap().push(event.clone())
+    })));
+    events
+}
+fn hook_end(
+    events: &Mutex<Vec<ToolHookLifecycleEvent>>,
+    path: &str,
+) -> (ToolHookStatus, Option<String>) {
+    let events = events.lock().unwrap();
+    let end = events
+        .iter()
+        .find(|event| {
+            event.extension_path == path && matches!(event.phase, ToolHookPhase::End { .. })
+        })
+        .expect("the hook ended");
+    let ToolHookPhase::End {
+        status,
+        error_message,
+        ..
+    } = &end.phase
+    else {
+        panic!("not an end phase")
+    };
+    (*status, error_message.clone())
+}
+fn call_event() -> ToolCallEvent {
+    ToolCallEvent {
+        tool_call_id: "call".into(),
+        tool_name: "bash".into(),
+        input: JsonValue::Null,
+        parent_tool_call_id: None,
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn a_tool_result_handler_that_never_settles_is_abandoned_at_its_deadline() {
+    let hung: ExtensionHandler =
+        Arc::new(|_, _| Box::pin(std::future::pending::<Result<EventResult, ExtensionFailure>>()));
+    let next_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let marker = Arc::clone(&next_ran);
+    let next: ExtensionHandler = Arc::new(move |_, _| {
+        let marker = Arc::clone(&marker);
+        Box::pin(async move {
+            marker.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(EventResult::None)
+        })
+    });
+    let mut runner = runner(vec![
+        extension("<hung>", EventKind::ToolResult, hung),
+        extension("<next>", EventKind::ToolResult, next),
+    ]);
+    let events = observe_hooks(&mut runner);
+    assert!(
+        runner
+            .emit_tool_result(result_event())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(next_ran.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(runner.errors.len(), 1);
+    assert_eq!(runner.errors[0].extension_path, "<hung>");
+    assert_eq!(runner.errors[0].event, "tool_result");
+    assert!(
+        runner.errors[0].error.starts_with("handler timed out after "),
+        "{}",
+        runner.errors[0].error
+    );
+    let (status, message) = hook_end(&events, "<hung>");
+    assert_eq!(status, ToolHookStatus::Failed);
+    assert_eq!(message.as_deref(), Some(runner.errors[0].error.as_str()));
+    assert_eq!(hook_end(&events, "<next>").0, ToolHookStatus::Completed);
+}
+#[tokio::test]
+async fn aborting_the_turn_ends_the_wait_on_a_tool_result_handler() {
+    let signal = AbortSignal::default();
+    let mut runner = running_turn_runner(
+        vec![extension(
+            "<hung>",
+            EventKind::ToolResult,
+            aborting_then_hanging(),
+        )],
+        &signal,
+    );
+    let events = observe_hooks(&mut runner);
+    assert!(
+        runner
+            .emit_tool_result(result_event())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(signal.is_aborted());
+    assert!(runner.errors.is_empty());
+    assert_eq!(
+        hook_end(&events, "<hung>"),
+        (ToolHookStatus::Failed, Some("interrupted".into()))
+    );
+}
+#[tokio::test]
+async fn aborting_the_turn_ends_the_wait_on_a_tool_call_handler_and_blocks_the_call() {
+    let signal = AbortSignal::default();
+    let mut runner = running_turn_runner(
+        vec![extension(
+            "<gate>",
+            EventKind::ToolCall,
+            aborting_then_hanging(),
+        )],
+        &signal,
+    );
+    let events = observe_hooks(&mut runner);
+    let mut event = call_event();
+    let result = runner.emit_tool_call(&mut event).await.unwrap().unwrap();
+    assert_eq!(result.block, Some(true));
+    assert_eq!(result.reason.as_deref(), Some("Operation aborted"));
+    assert!(signal.is_aborted());
+    assert!(runner.errors.is_empty());
+    assert_eq!(hook_end(&events, "<gate>"), (ToolHookStatus::Blocked, None));
+}
+#[tokio::test(start_paused = true)]
+async fn a_tool_call_handler_has_no_deadline() {
+    let slow: ExtensionHandler = Arc::new(|_, _| {
+        Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+            Ok(EventResult::None)
+        })
+    });
+    let mut runner = runner(vec![extension("<gate>", EventKind::ToolCall, slow)]);
+    let mut event = call_event();
+    assert!(runner.emit_tool_call(&mut event).await.unwrap().is_none());
+    assert!(runner.errors.is_empty());
+}
+#[tokio::test]
+async fn an_abort_left_over_from_an_earlier_turn_does_not_skip_the_hooks_of_an_idle_agent() {
+    let signal = AbortSignal::default();
+    signal.abort();
+    let mut stale = context();
+    stale.signal = Some(signal);
+    let handler: ExtensionHandler = Arc::new(|_, _| {
+        Box::pin(async {
+            Ok(EventResult::ToolResult(ToolResultEventResult {
+                content: Some(vec![ToolContent::text("hooked")]),
+                ..Default::default()
+            }))
+        })
+    });
+    let mut runner = ExtensionRunner::new(
+        vec![extension("<late>", EventKind::ToolResult, handler)],
+        ExtensionRuntime::default(),
+        EventBus::default(),
+        stale,
+    );
+    let result = runner
+        .emit_tool_result(result_event())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.content, Some(vec![ToolContent::text("hooked")]));
+}
