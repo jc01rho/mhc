@@ -95,6 +95,7 @@ pub mod memory_maintenance;
 pub mod memory_notice_spec;
 pub mod memory_reporter;
 pub mod memory_retention;
+pub mod memory_retention_pass;
 #[cfg(test)]
 mod memory_retention_tests;
 pub mod memory_rpc_bridge;

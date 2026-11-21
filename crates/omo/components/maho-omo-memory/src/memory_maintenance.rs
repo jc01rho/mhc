@@ -27,6 +27,11 @@ pub struct MemoryMaintenanceOptions {
     pub executable: Option<PathBuf>,
     pub now: Arc<dyn Fn() -> u64 + Send + Sync>,
     pub is_live_session: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    /// The memory settings JSON the runtime retention windows and cap resolve from; absent uses
+    /// the shipped defaults.
+    pub settings: Option<Arc<dyn Fn() -> Option<serde_json::Value> + Send + Sync>>,
+    /// Encoded sidecar directory names this process's live sessions own.
+    pub owned_sidecars: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
 }
 
 impl Default for MemoryMaintenanceOptions {
@@ -45,6 +50,8 @@ impl Default for MemoryMaintenanceOptions {
                     .as_millis() as u64
             }),
             is_live_session: Arc::new(|_| false),
+            settings: None,
+            owned_sidecars: None,
         }
     }
 }
@@ -267,17 +274,93 @@ fn sweep_journals(context: &MemoryIdentityContext, options: &MemoryMaintenanceOp
     sweep_expired_runtime(context, options);
 }
 
+/// The omo runtime retention pass (memory-core `retention/`): one bounded pass per identity per
+/// interval, resumed early when an interrupted pass left a cursor.
+fn retain_runtime(
+    context: &MemoryIdentityContext,
+    options: &MemoryMaintenanceOptions,
+    cancelled: &AtomicBool,
+) {
+    let Ok(repo) = memory_core::git::GitMemoryRepo::open(
+        context.identity_paths.repo.clone(),
+        context.identity.clone(),
+    ) else {
+        return;
+    };
+    let now = (options.now)() as i64;
+    let stamp = repo
+        .config_get(memory_core::retention::RETENTION_STAMP_CONFIG_KEY)
+        .ok()
+        .flatten()
+        .and_then(|value| value.trim().parse::<i64>().ok());
+    let due = memory_core::retention::retention_resume_pending(&context.identity_paths.runtime)
+        || stamp.is_none_or(|last| now - last >= options.interval.as_millis() as i64);
+    if !due {
+        return;
+    }
+    let settings = options.settings.as_ref().and_then(|settings| settings());
+    let reflection_enabled = crate::reflection_settings::resolve_agent_reflection_settings(
+        settings.as_ref(),
+        &context.identity,
+    )
+    .ok()
+    .and_then(|reflection| reflection["enabled"].as_bool())
+    .unwrap_or(true);
+    let owned: std::collections::BTreeSet<String> = options
+        .owned_sidecars
+        .as_ref()
+        .map(|owned| owned().into_iter().collect())
+        .unwrap_or_default();
+    let now_i64 = || (options.now)() as i64;
+    let cancel = || cancelled.load(Ordering::Acquire);
+    let live = options.is_live_session.clone();
+    let is_live: &dyn Fn(&str) -> bool = live.as_ref();
+    let logger = options.logger.clone();
+    let info_logger = logger.clone();
+    let info = move |message: &str| {
+        if let Some(logger) = &info_logger {
+            logger.info(message);
+        }
+    };
+    let warn_logger = logger.clone();
+    let warn = move |message: &str| {
+        if let Some(logger) = &warn_logger {
+            logger.warn(message);
+        }
+    };
+    let input = crate::memory_retention_pass::MaintenanceRetentionInput {
+        identity: &context.identity,
+        paths: &context.identity_paths,
+        repo: &repo,
+        cancel: &cancel,
+        now: &now_i64,
+        policy: None,
+        max_bytes: None,
+        settings: settings.as_ref(),
+        reflection_enabled,
+        is_live_session: Some(is_live),
+        owned_sidecars: Some(&owned),
+        info: Some(&info),
+        warn: Some(&warn),
+    };
+    if let Err(error) = crate::memory_retention_pass::run_maintenance_retention(&input)
+        && !cancelled.load(Ordering::Acquire)
+        && let Some(logger) = &options.logger
+    {
+        logger.warn(&format!(
+            "omo-senpi memory runtime retention failed: {error}"
+        ));
+    }
+}
+
 fn sweep_expired_runtime(context: &MemoryIdentityContext, options: &MemoryMaintenanceOptions) {
     let retention = crate::memory_retention::RetentionOptions {
         now_ms: (options.now)(),
-        is_live_session: options.is_live_session.clone(),
         ..Default::default()
     };
     let paths = crate::memory_retention::RetentionPaths {
         facts_queue: context.identity_paths.facts_queue.clone(),
         locks: context.identity_paths.locks.clone(),
-        reflection: context.identity_paths.reflection.clone(),
-        transcripts: context.identity_paths.transcripts.clone(),
     };
     let report = crate::memory_retention::prune_runtime(&paths, &retention);
     let Some(logger) = &options.logger else {
@@ -342,6 +425,9 @@ fn maintain_locked(
                 logger.info("omo-senpi memory repo packed");
             }
         }
+    }
+    if !cancelled.load(Ordering::Acquire) {
+        retain_runtime(context, options, cancelled);
     }
     Ok(())
 }
