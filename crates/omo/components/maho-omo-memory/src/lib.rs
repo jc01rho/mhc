@@ -100,6 +100,7 @@ mod memory_retention_tests;
 pub mod memory_rpc_bridge;
 pub mod memory_rpc_snapshot_state;
 pub mod memory_rpc_sync;
+pub mod memory_runtime_retention;
 pub mod memory_tool_provenance;
 pub mod memory_tool_renderers;
 pub mod memory_usage;
