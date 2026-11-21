@@ -245,6 +245,10 @@ pub fn omo_task_settings_schema() -> Node {
         optional("state_dir", string()),
         optional("reattach_on_reconcile", boolean()),
         defaulted("resume_children", boolean(), default_resume_children),
+        // Fork policy gate for omo #12010/#12761 (a child runs only on its designated model chain).
+        // Absent or `true` keeps the parent-model rung; `false` adopts upstream's designated-chain-only
+        // behaviour. Optional, not defaulted, so the resolved settings shape is unchanged.
+        optional("parent_model_fallback", boolean()),
         defaulted("warnings", omo_task_warnings_schema(), default_warnings),
         defaulted("wait", omo_task_wait_schema(), default_wait),
         defaulted("team", omo_task_team_settings_schema(), default_team),
@@ -323,6 +327,7 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("state_dir", string()),
         optional("reattach_on_reconcile", boolean()),
         optional("resume_children", boolean()),
+        optional("parent_model_fallback", boolean()),
         optional("warnings", omo_task_warnings_layer_schema()),
         optional("wait", omo_task_wait_layer_schema()),
         optional("team", omo_task_team_settings_layer_schema()),
