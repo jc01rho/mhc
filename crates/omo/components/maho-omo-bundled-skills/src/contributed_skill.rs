@@ -168,13 +168,7 @@ pub fn is_opt_in_skill_enabled(name: &str, cwd: &Path, env: &BTreeMap<String, St
     loaded
         .layers
         .iter()
-        .filter_map(|layer| layer.data.as_ref())
-        .any(|data| {
-            let value = serde_json::Value::Object(
-                data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            );
-            layer_enables_skill(&value, name)
-        })
+        .any(|layer| layer_enables_skill(&layer.config, name))
 }
 
 /// Which file the session's skills listing resolves for `name`, compared with the bundled copy at
