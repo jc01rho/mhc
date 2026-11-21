@@ -68,11 +68,7 @@ fn is_error_diagnostic(
     match diagnostic.kind.as_str() {
         "parse" | "read" | "model_catalog_cycle" => true,
         "validation" => {
-            diagnostic.path == merged_config_path
-                || load
-                    .source_paths
-                    .iter()
-                    .any(|path| *path == diagnostic.path)
+            diagnostic.path == merged_config_path || load.source_paths.contains(&diagnostic.path)
         }
         _ => false,
     }
