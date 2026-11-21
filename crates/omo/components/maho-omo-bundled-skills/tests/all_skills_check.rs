@@ -283,10 +283,15 @@ fn resolve_bundled_skill_provenance_distinguishes_shadowed_and_unshadowed_entrie
 }
 
 fn find_bun() -> Option<PathBuf> {
-    if let Ok(output) = Command::new("bun").arg("--version").output()
-        && output.status.success()
-    {
-        return Some(PathBuf::from("bun"));
+    // An absolute path is required: the scaffolder test replaces PATH with an empty
+    // directory, so a bare "bun" would no longer resolve at spawn time.
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join("bun");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
     }
     if let Ok(home) = std::env::var("HOME") {
         let candidate = Path::new(&home).join(".bun/bin/bun");
