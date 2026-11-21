@@ -7,6 +7,9 @@ use crate::types::{
     SessionAffinityFormat, ThinkingFormat, ThinkingTokenBudgetField, ToolSchemaFlavor,
     UnsignedThinkingReplay, VeniceParameters, VercelGatewayRouting,
 };
+use crate::utils::openai_prompt_cache_lane::{
+    OpenAIPromptCacheLane, classify_openai_prompt_cache_lane,
+};
 use crate::utils::provider_env::get_provider_env_value;
 use regex::{Regex, RegexBuilder};
 use serde_json::Map;
@@ -14,12 +17,42 @@ use std::sync::LazyLock;
 
 pub const PROMPT_CACHE_TTL_SHORT_SECONDS: u64 = 300;
 pub const PROMPT_CACHE_TTL_LONG_SECONDS: u64 = 3600;
+/// OpenAI GPT-5.6 and later: the default `prompt_cache_options.ttl: "30m"` keeps the cache eligible at least
+/// 30 minutes after the latest write or reuse.
+pub const PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS: u64 = 1800;
+/// OpenAI GPT-5.6 and later on the Responses API: `prompt_cache_options.ttl: "12h"`, a 12-hour minimum lifetime.
+pub const PROMPT_CACHE_TTL_OPENAI_LONG_SECONDS: u64 = 43_200;
 
 pub fn is_anthropic_api_base_url(base_url: &str) -> bool {
     url::Url::parse(base_url)
         .ok()
         .and_then(|url| url.host_str().map(|h| h == "api.anthropic.com"))
         .unwrap_or(false)
+}
+
+/// `allowsAnthropicLongCacheRetention`: an explicit `compat.supportsLongCacheRetention` is authoritative on any
+/// host, while an unset value keeps the `api.anthropic.com` hostname inference.
+pub fn allows_anthropic_long_cache_retention(model: &Model) -> bool {
+    model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.anthropic_messages().supports_long_cache_retention)
+        .unwrap_or_else(|| {
+            is_anthropic_api_base_url(&model.base_url)
+                && get_anthropic_compat(model).supports_long_cache_retention
+        })
+}
+
+/// `supportsAnthropicCacheWarming`: whether this Anthropic-messages host applies `cache_control` at all. The
+/// native host always does; a proxy does only when its model entry asserts cache support with
+/// `compat.supportsLongCacheRetention: true`.
+pub fn supports_anthropic_cache_warming(model: &Model) -> bool {
+    is_anthropic_api_base_url(&model.base_url)
+        || model
+            .compat
+            .as_ref()
+            .and_then(|compat| compat.anthropic_messages().supports_long_cache_retention)
+            == Some(true)
 }
 
 static FORCED_TOOL_CHOICE_REJECTING_MODEL_ID: LazyLock<Regex> = LazyLock::new(|| {
@@ -446,12 +479,13 @@ pub fn resolve_prompt_cache_ttl_seconds(model: &Model, env: Option<&ProviderEnv>
     };
     match model.api.as_str() {
         "claude-sdk-oauth" => Some(PROMPT_CACHE_TTL_SHORT_SECONDS),
-        "anthropic-messages" => match retention() {
-            CacheRetention::None => None,
-            retention => Some(ttl(retention == CacheRetention::Long
-                && is_anthropic_api_base_url(&model.base_url)
-                && get_anthropic_compat(model).supports_long_cache_retention)),
-        },
+        "anthropic-messages" => {
+            match retention() {
+                CacheRetention::None => None,
+                retention => Some(ttl(retention == CacheRetention::Long
+                    && allows_anthropic_long_cache_retention(model))),
+            }
+        }
         "bedrock-converse-stream" => match retention() {
             CacheRetention::None => None,
             _ if !supports_prompt_caching(model, env) => None,
@@ -472,7 +506,14 @@ pub fn resolve_prompt_cache_ttl_seconds(model: &Model, env: Option<&ProviderEnv>
         "openai-responses" | "openai-codex-responses" | "azure-openai-responses" => {
             match retention() {
                 CacheRetention::None => None,
-                _ => Some(PROMPT_CACHE_TTL_SHORT_SECONDS),
+                retention => match classify_openai_prompt_cache_lane(model, retention) {
+                    OpenAIPromptCacheLane::ChatgptSubscription => None,
+                    OpenAIPromptCacheLane::ApiLong => Some(PROMPT_CACHE_TTL_OPENAI_LONG_SECONDS),
+                    OpenAIPromptCacheLane::ApiExtended => {
+                        Some(PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS)
+                    }
+                    OpenAIPromptCacheLane::ApiShort => Some(PROMPT_CACHE_TTL_SHORT_SECONDS),
+                },
             }
         }
         _ => None,
@@ -937,6 +978,88 @@ mod tests {
                 "case: {title}"
             );
         }
+    }
+
+    #[test]
+    fn resolves_the_openai_lane_lifetimes_for_gpt_62() {
+        let explicit = compat_of(json!({ "supportsExplicitPromptCacheMode": true }));
+        let api = |retention: Option<CacheRetention>| Model {
+            id: "gpt-6.2-sol".into(),
+            cache_retention: retention,
+            compat: Some(explicit.clone()),
+            ..openai_responses_model()
+        };
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&api(Some(CacheRetention::Long)), None),
+            Some(PROMPT_CACHE_TTL_OPENAI_LONG_SECONDS)
+        );
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&api(Some(CacheRetention::Short)), None),
+            Some(PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS)
+        );
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&api(Some(CacheRetention::None)), None),
+            None
+        );
+        let azure = Model {
+            id: "gpt-6.2-sol".into(),
+            cache_retention: Some(CacheRetention::Long),
+            compat: Some(explicit.clone()),
+            ..create_model("azure-openai-responses")
+        };
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&azure, None),
+            Some(PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS)
+        );
+        let chatgpt = Model {
+            id: "gpt-6.2-sol".into(),
+            provider: "chatgpt-subscription".into(),
+            base_url: "https://chatgpt.com/backend-api".into(),
+            ..create_model("openai-codex-responses")
+        };
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&chatgpt, None),
+            None,
+            "the ChatGPT subscription cache has no expiry to schedule around"
+        );
+    }
+
+    #[test]
+    fn an_explicit_long_cache_flag_is_authoritative_on_any_anthropic_host() {
+        let proxied = |flag: Option<bool>| Model {
+            provider: "proxy".into(),
+            base_url: "https://proxy.example.com/v1".into(),
+            compat: flag.map(|value| compat_of(json!({ "supportsLongCacheRetention": value }))),
+            ..create_model("anthropic-messages")
+        };
+        assert!(allows_anthropic_long_cache_retention(&proxied(Some(true))));
+        assert!(!allows_anthropic_long_cache_retention(&proxied(Some(
+            false
+        ))));
+        assert!(!allows_anthropic_long_cache_retention(&proxied(None)));
+        assert!(allows_anthropic_long_cache_retention(&anthropic_model()));
+        let long = Model {
+            cache_retention: Some(CacheRetention::Long),
+            ..proxied(Some(true))
+        };
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&long, None),
+            Some(PROMPT_CACHE_TTL_LONG_SECONDS)
+        );
+    }
+
+    #[test]
+    fn cache_warming_needs_the_native_host_or_an_explicit_cache_assertion() {
+        let proxied = |flag: Option<bool>| Model {
+            provider: "proxy".into(),
+            base_url: "https://proxy.example.com/v1".into(),
+            compat: flag.map(|value| compat_of(json!({ "supportsLongCacheRetention": value }))),
+            ..create_model("anthropic-messages")
+        };
+        assert!(supports_anthropic_cache_warming(&anthropic_model()));
+        assert!(supports_anthropic_cache_warming(&proxied(Some(true))));
+        assert!(!supports_anthropic_cache_warming(&proxied(Some(false))));
+        assert!(!supports_anthropic_cache_warming(&proxied(None)));
     }
 
     #[test]

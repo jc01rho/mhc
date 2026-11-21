@@ -89,28 +89,56 @@ pub async fn open_file_diff(
     ui.viewer(&format!("{}  (diff, read-only)", file.path), rows)
         .await;
 }
+/// Per-pathspec literal magic stands in for the global `--literal-pathspecs` flag, which git refuses
+/// to combine with any other global pathspec switch: a shell that exports `GIT_GLOB_PATHSPECS=1` or
+/// `GIT_ICASE_PATHSPECS=1` makes git exit 128 before any diff is produced (omo #11176), and the host's
+/// `exec` carries no `env`, so an override could never reach git. Per-pathspec magic is not a global
+/// switch, so it does not trip that conflict, while a `*` or `[` in a file name is still matched
+/// literally. It cannot cancel a global `GIT_ICASE_PATHSPECS` (git ORs the global switch into each
+/// pathspec), but the panel only queries paths exactly as `git status` reported them, so the reported
+/// path's diff is still shown.
+///
+/// The one switch per-pathspec magic cannot coexist with is `GIT_LITERAL_PATHSPECS`: with it exported,
+/// git reads `:(literal)` as part of the file name, so the diff and the untracked listing match nothing
+/// and exit 0. The panel runs in the host process, so it sees the environment the spawned git inherits;
+/// when that switch is on, literal matching already holds and the paths stay bare.
 pub fn git_diff_args(file: &PanelGitEntry) -> Vec<String> {
-    if file.xy == "??" {
-        return [
-            "--literal-pathspecs",
-            "diff",
-            "--no-index",
-            "--",
-            "/dev/null",
-            &file.path,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    git_diff_args_with(file, literal_switch_exported())
+}
+fn literal_switch_exported() -> bool {
+    literal_switch_is_on(std::env::var("GIT_LITERAL_PATHSPECS").ok().as_deref())
+}
+fn literal_switch_is_on(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        !matches!(
+            value.trim().to_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
+}
+fn literal_pathspec(path: &str, literal_switch: bool) -> String {
+    if literal_switch {
+        path.to_owned()
+    } else {
+        format!(":(literal){path}")
     }
-    let mut args: Vec<_> = ["--literal-pathspecs", "diff", "HEAD", "-M", "--"]
+}
+fn git_diff_args_with(file: &PanelGitEntry, literal_switch: bool) -> Vec<String> {
+    if file.xy == "??" {
+        // `--no-index` operands are plain filesystem paths, not pathspecs: no magic prefix.
+        return ["diff", "--no-index", "--", "/dev/null", &file.path]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+    }
+    let mut args: Vec<_> = ["diff", "HEAD", "-M", "--"]
         .into_iter()
         .map(str::to_owned)
         .collect();
     if let Some(from) = &file.from {
-        args.push(from.clone());
+        args.push(literal_pathspec(from, literal_switch));
     }
-    args.push(file.path.clone());
+    args.push(literal_pathspec(&file.path, literal_switch));
     args
 }
 pub async fn read_git_diff(
@@ -118,19 +146,20 @@ pub async fn read_git_diff(
     root: &str,
     file: &PanelGitEntry,
 ) -> Vec<PanelRow> {
+    read_git_diff_with(exec, root, file, literal_switch_exported()).await
+}
+async fn read_git_diff_with(
+    exec: &dyn PanelExec,
+    root: &str,
+    file: &PanelGitEntry,
+    literal_switch: bool,
+) -> Vec<PanelRow> {
     if file.xy == "??" && file.path.ends_with('/') {
-        let args = [
-            "--literal-pathspecs",
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-            &file.path,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+        let args = ["ls-files", "--others", "--exclude-standard", "-z", "--"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([literal_pathspec(&file.path, literal_switch)])
+            .collect();
         let Ok(listed) = exec.exec("git", args, root, GIT_TIMEOUT_MS).await else {
             return diff_error();
         };
@@ -145,11 +174,14 @@ pub async fn read_git_diff(
         let results = futures::future::join_all(paths.iter().take(50).map(|path| {
             exec.exec(
                 "git",
-                git_diff_args(&PanelGitEntry {
-                    xy: "??".into(),
-                    path: (*path).into(),
-                    ..PanelGitEntry::default()
-                }),
+                git_diff_args_with(
+                    &PanelGitEntry {
+                        xy: "??".into(),
+                        path: (*path).into(),
+                        ..PanelGitEntry::default()
+                    },
+                    literal_switch,
+                ),
                 root,
                 GIT_TIMEOUT_MS,
             )
@@ -171,7 +203,12 @@ pub async fn read_git_diff(
         return nonempty_diff(rows);
     }
     let mut result = exec
-        .exec("git", git_diff_args(file), root, GIT_TIMEOUT_MS)
+        .exec(
+            "git",
+            git_diff_args_with(file, literal_switch),
+            root,
+            GIT_TIMEOUT_MS,
+        )
         .await;
     if result
         .as_ref()
@@ -184,7 +221,12 @@ pub async fn read_git_diff(
             ..PanelGitEntry::default()
         };
         result = exec
-            .exec("git", git_diff_args(&untracked), root, GIT_TIMEOUT_MS)
+            .exec(
+                "git",
+                git_diff_args_with(&untracked, literal_switch),
+                root,
+                GIT_TIMEOUT_MS,
+            )
             .await;
     }
     let Ok(result) = result else {
@@ -402,5 +444,223 @@ mod tests {
             ..PanelGitEntry::default()
         };
         assert_eq!(file_option_label(&file), "?? evil]8;;xname.txt");
+    }
+    fn entry(xy: &str, path: &str, from: Option<&str>) -> PanelGitEntry {
+        PanelGitEntry {
+            xy: xy.into(),
+            path: path.into(),
+            from: from.map(str::to_owned),
+            ..PanelGitEntry::default()
+        }
+    }
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| (*part).to_owned()).collect()
+    }
+    fn reply(stdout: &str, code: i32) -> ExecOutput {
+        ExecOutput {
+            stdout: stdout.into(),
+            code,
+        }
+    }
+    struct Recorder {
+        calls: Mutex<Vec<Vec<String>>>,
+        replies: Mutex<std::collections::VecDeque<ExecOutput>>,
+    }
+    impl Recorder {
+        fn new(replies: Vec<ExecOutput>) -> Self {
+            Self {
+                calls: Mutex::default(),
+                replies: Mutex::new(replies.into()),
+            }
+        }
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.lock().expect("lock").clone()
+        }
+    }
+    impl PanelExec for Recorder {
+        fn exec<'a>(
+            &'a self,
+            _: &'a str,
+            args: Vec<String>,
+            _: &'a str,
+            _: u64,
+        ) -> PanelFuture<'a, Result<ExecOutput, String>> {
+            self.calls.lock().expect("lock").push(args);
+            let reply = self
+                .replies
+                .lock()
+                .expect("lock")
+                .pop_front()
+                .unwrap_or_else(|| reply("", 0));
+            Box::pin(async move { Ok(reply) })
+        }
+    }
+    #[test]
+    fn tracked_paths_carry_per_pathspec_literal_magic_and_never_the_global_flag() {
+        assert_eq!(
+            git_diff_args_with(&entry(" M", "tracked.txt", None), false),
+            argv(&["diff", "HEAD", "-M", "--", ":(literal)tracked.txt"])
+        );
+        assert_eq!(
+            git_diff_args_with(&entry("R ", "renamed-new.txt", Some("renamed.txt")), false),
+            argv(&[
+                "diff",
+                "HEAD",
+                "-M",
+                "--",
+                ":(literal)renamed.txt",
+                ":(literal)renamed-new.txt"
+            ])
+        );
+        assert_eq!(
+            git_diff_args_with(&entry("??", "brand-new.txt", None), false),
+            argv(&["diff", "--no-index", "--", "/dev/null", "brand-new.txt"])
+        );
+        let wildcard = git_diff_args_with(&entry(" M", "match*.txt", None), false);
+        assert_eq!(
+            wildcard.last().map(String::as_str),
+            Some(":(literal)match*.txt")
+        );
+        assert!(!wildcard.iter().any(|arg| arg == "--literal-pathspecs"));
+    }
+    #[test]
+    fn an_exported_literal_switch_keeps_the_paths_bare() {
+        assert_eq!(
+            git_diff_args_with(&entry(" M", "tracked.txt", None), true),
+            argv(&["diff", "HEAD", "-M", "--", "tracked.txt"])
+        );
+        for (value, on) in [
+            (None, false),
+            (Some(""), false),
+            (Some("0"), false),
+            (Some(" False "), false),
+            (Some("NO"), false),
+            (Some("off"), false),
+            (Some("1"), true),
+            (Some("true"), true),
+            (Some("yes"), true),
+            (Some("On"), true),
+        ] {
+            assert_eq!(literal_switch_is_on(value), on, "{value:?}");
+        }
+    }
+    #[test]
+    fn a_staged_addition_before_the_first_commit_falls_back_to_the_null_diff() {
+        futures::executor::block_on(async {
+            let exec = Recorder::new(vec![reply("", 128), reply("+++ b/new.txt\n+hello", 1)]);
+            let rows =
+                read_git_diff_with(&exec, "/repo", &entry("A ", "new.txt", None), false).await;
+            assert_eq!(
+                exec.calls(),
+                vec![
+                    argv(&["diff", "HEAD", "-M", "--", ":(literal)new.txt"]),
+                    argv(&["diff", "--no-index", "--", "/dev/null", "new.txt"]),
+                ]
+            );
+            let text: Vec<_> = rows.iter().map(|row| row.text.as_str()).collect();
+            assert_eq!(text, ["+++ b/new.txt", "+hello"]);
+        });
+    }
+    #[test]
+    fn an_untracked_directory_is_listed_with_literal_magic_and_each_file_diffed_plain() {
+        futures::executor::block_on(async {
+            let exec = Recorder::new(vec![
+                reply("build/a.txt\0build/b.txt\0", 0),
+                reply("+content", 1),
+                reply("+content", 1),
+            ]);
+            read_git_diff_with(&exec, "/repo", &entry("??", "build/", None), false).await;
+            assert_eq!(
+                exec.calls(),
+                vec![
+                    argv(&[
+                        "ls-files",
+                        "--others",
+                        "--exclude-standard",
+                        "-z",
+                        "--",
+                        ":(literal)build/"
+                    ]),
+                    argv(&["diff", "--no-index", "--", "/dev/null", "build/a.txt"]),
+                    argv(&["diff", "--no-index", "--", "/dev/null", "build/b.txt"]),
+                ]
+            );
+        });
+    }
+    struct RealGit(Vec<(&'static str, &'static str)>);
+    impl PanelExec for RealGit {
+        fn exec<'a>(
+            &'a self,
+            command: &'a str,
+            args: Vec<String>,
+            cwd: &'a str,
+            _: u64,
+        ) -> PanelFuture<'a, Result<ExecOutput, String>> {
+            Box::pin(async move {
+                let output = std::process::Command::new(command)
+                    .args(&args)
+                    .current_dir(cwd)
+                    .envs(self.0.iter().copied())
+                    .output()
+                    .map_err(|error| error.to_string())?;
+                Ok(ExecOutput {
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    code: output.status.code().unwrap_or(1),
+                })
+            })
+        }
+    }
+    #[test]
+    fn real_git_returns_the_diff_while_a_competing_pathspec_switch_is_exported() {
+        let root = std::env::temp_dir().join(format!(
+            "omo_panel_diff_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("fixture dir");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git runs");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("tracked.txt"), "a\n").expect("write");
+        git(&["add", "tracked.txt"]);
+        git(&[
+            "-c",
+            "user.name=panel",
+            "-c",
+            "user.email=panel@test",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "init",
+        ]);
+        std::fs::write(root.join("tracked.txt"), "a\nb\n").expect("write");
+        let cwd = root.to_str().expect("utf-8 path").to_owned();
+        for variable in ["GIT_GLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"] {
+            let exec = RealGit(vec![(variable, "1")]);
+            let rows = futures::executor::block_on(read_git_diff_with(
+                &exec,
+                &cwd,
+                &entry(" M", "tracked.txt", None),
+                false,
+            ));
+            assert!(
+                rows.iter().any(|row| row.text == "+b"),
+                "{variable}: {rows:?}"
+            );
+        }
+        let _removed = std::fs::remove_dir_all(&root);
     }
 }

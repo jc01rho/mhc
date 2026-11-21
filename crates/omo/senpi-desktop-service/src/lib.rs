@@ -4,6 +4,8 @@
 //! notification dispatch hub, and desktop service coordination.
 
 pub mod child;
+pub mod control_grants;
+pub mod global_input;
 pub mod notifications;
 pub mod parse;
 pub mod rpc_client;
@@ -14,10 +16,14 @@ pub use child::{
     AcquiringEngineChildOptions, ChildFactory, EngineChild, EngineSpawnConfig,
     acquiring_engine_child_factory, default_engine_path, engine_child_factory,
 };
+pub use control_grants::ControlGrants;
+pub use global_input::{
+    FULL_ACCESS_GRANT_REASON, FullAccessConsent, FullAccessReader, is_global_input,
+};
 pub use notifications::{DesktopNotificationError, Listener, NotificationHub, Subscription};
 pub use parse::{
     HelloHandshake, SessionOpened, is_desktop_capabilities, is_stop_path_status, parse_audit_event,
-    parse_error_data, parse_hello, parse_permission, parse_session_opened,
+    parse_capabilities, parse_error_data, parse_hello, parse_permission, parse_session_opened,
 };
 pub use rpc_client::{
     CallOptions, DesktopEngineRpcError, DesktopError, DesktopLaunchContextError,
@@ -26,6 +32,6 @@ pub use rpc_client::{
 pub use service::{DesktopService, DesktopServiceOptions, DesktopSessionOpenParams};
 pub use timeouts::{
     CAPABILITIES_TIMEOUT, CAPABILITIES_TIMEOUT_MS, CLOSE_TIMEOUT, CLOSE_TIMEOUT_MS, GRACE_MS,
-    GRACE_TIMEOUT, HEARTBEAT_INTERVAL, HEARTBEAT_MS, RESTART_MESSAGE, START_TIMEOUT,
-    START_TIMEOUT_MESSAGE, START_TIMEOUT_MS,
+    GRACE_TIMEOUT, HEARTBEAT_INTERVAL, HEARTBEAT_MS, RESTART_MESSAGE, REVOKE_TIMEOUT,
+    REVOKE_TIMEOUT_MS, START_TIMEOUT, START_TIMEOUT_MESSAGE, START_TIMEOUT_MS,
 };

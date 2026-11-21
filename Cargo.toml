@@ -22,6 +22,7 @@ members = [
     "crates/maho-rpc",
     "crates/maho-tool-child",
     "crates/maho-server",
+    "crates/maho-sync-server",
     "crates/maho-codemode",
     "crates/maho-cli",
     "crates/maho-process-env",
@@ -42,9 +43,12 @@ members = [
     "crates/maho-skills",
     "crates/maho-mcp-builtins",
     "crates/maho-gateway",
+    "crates/maho-service-endpoints",
     "crates/maho-agent-home",
     "crates/maho-onboarding",
     "crates/maho-context-files",
+    "crates/maho-socket-secret",
+    "crates/maho-machine-ops",
     "crates/builtins/maho-ext-account",
     "crates/builtins/maho-ext-anthropic-bash",
     "crates/builtins/maho-ext-anthropic-subscription",
@@ -117,6 +121,7 @@ members = [
     "crates/omo/memory-core",
     "crates/omo/utils",
     "crates/omo/idle-injection",
+    "crates/omo/call-budget",
     "crates/omo/omo-config-core",
     "crates/omo/lsp-core",
     "crates/omo/lsp-daemon",
@@ -124,6 +129,8 @@ members = [
     "crates/omo/claude-code-compat-core",
     "crates/omo/delegate-core",
     "crates/omo/telemetry-core",
+    "crates/omo/device-service-core",
+    "crates/omo/mhc-relayd",
     "crates/omo/tmux-core",
     "crates/omo/team-core",
     "crates/omo/config-migration",
@@ -142,6 +149,17 @@ members = [
     "crates/desktop/senpi-desktop-backend-win32",
     "crates/desktop/senpi-desktop-session",
     "crates/desktop/senpi-desktop-engine",
+    "crates/desktop/senpi-desktop-xpc",
+    "crates/omo-computer-core",
+    "crates/omo-computer-safety",
+    "crates/omo-computer-session",
+    "crates/omo-computer-backend-fake",
+    "crates/omo-computer-backend-atspi",
+    "crates/omo-computer-backend-macos",
+    "crates/omo-computer-backend-x11",
+    "crates/omo-computer-backend-wayland",
+    "crates/omo-computer-backend-win32",
+    "crates/omo-computer-engine",
     "crates/omo/senpi-desktop-protocol",
     "crates/omo/senpi-desktop-prelude",
     "crates/omo/senpi-desktop-service",
@@ -171,6 +189,8 @@ members = [
     "crates/omo/components/maho-omo-claude-code",
     "crates/omo/components/maho-omo-x-search",
     "crates/omo/components/maho-omo-gateway",
+    "crates/omo/thread-address-core",
+    "crates/omo/components/maho-omo-remote",
     "crates/omo/components/maho-omo-formatter",
     "crates/omo/components/maho-omo-post-mutation",
     "crates/omo/components/maho-omo-skill-pointers",
@@ -205,6 +225,7 @@ maho-prompts-core = { path = "crates/omo/prompts-core" }
 maho-memory-core = { path = "crates/omo/memory-core" }
 maho-utils = { path = "crates/omo/utils" }
 maho-omo-idle-injection = { path = "crates/omo/idle-injection" }
+maho-omo-call-budget = { path = "crates/omo/call-budget" }
 maho-omo-config-core = { path = "crates/omo/omo-config-core" }
 maho-lsp-core = { path = "crates/omo/lsp-core" }
 maho-lsp-daemon = { path = "crates/omo/lsp-daemon" }

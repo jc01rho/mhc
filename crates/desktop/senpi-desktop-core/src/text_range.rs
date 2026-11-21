@@ -93,20 +93,11 @@ impl TextSelectRequest {
             (1, [start]) => {
                 let length = self.text.encode_utf16().count();
                 Ok(match self.part {
-                    SelectPart::Text => Utf16Range {
-                        start: *start,
-                        length,
-                    },
-                    SelectPart::Start => Utf16Range {
-                        start: *start,
-                        length: 0,
-                    },
-                    SelectPart::End => Utf16Range {
-                        start: start + length,
-                        length: 0,
-                    },
+                    SelectPart::Text => Utf16Range { start: *start, length },
+                    SelectPart::Start => Utf16Range { start: *start, length: 0 },
+                    SelectPart::End => Utf16Range { start: start + length, length: 0 },
                 })
-            }
+            },
             (0, _) if occurrences == 0 => Err(DesktopError::ax_failed(format!(
                 "{:?} does not occur in the element's value ({units} UTF-16 units); nothing was \
                  selected",
@@ -140,7 +131,7 @@ impl TextSelectRequest {
                      ambiguous; give a longer prefix or suffix to choose one; nothing was selected",
                     self.text,
                 )))
-            }
+            },
         }
     }
 

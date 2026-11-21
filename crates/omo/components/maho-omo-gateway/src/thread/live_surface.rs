@@ -13,8 +13,14 @@ use super::adapter::{
     BoxFuture, EndpointLiveness, GatewayEndpointPort, GatewayEndpointRef, ReleaseSessionReply,
     UiAnswer, UiAnswerReply,
 };
+use super::address_book::{AddressBookHost, DiskSession, HostListSessions, read_disk_session};
 use super::attachment_fence::{FenceOutcome, RpcTransport, fenced_command};
+use super::endpoint_controls::{
+    LEGACY_TUI_COMMANDS as TUI_READ_COMMANDS, accepted_controls, control_commands,
+    tui_commands_from,
+};
 use super::gateway_replies::{release_reply, wake_reply};
+use super::host_view::{SessionCommandPort, ThreadHost, ThreadHostSession, ThreadHostView};
 use super::types::GatewayEndpointKind;
 
 pub const REQUEST_TIMEOUT_MS: u64 = 60_000;
@@ -131,9 +137,22 @@ pub fn data_record(frame: &Value, command: &str) -> Result<Map<String, Value>, S
     if success == Some(false) && error == Some("unsupported") {
         return Err(format!("unsupported:{command}"));
     }
+    // An engine from before senpi's archived flag answers set_session_archived as a command it does not know.
+    if success == Some(false)
+        && command == "set_session_archived"
+        && (frame.get("errorCode").and_then(Value::as_str) == Some("unknown_command")
+            || error.is_some_and(|error| {
+                error == "unknown_command" || error.starts_with("Unknown command:")
+            }))
+    {
+        return Err(format!("unsupported:{command}"));
+    }
     if success == Some(true)
         && frame.get("data").is_none()
-        && matches!(command, "set_session_name" | "set_thinking_level")
+        && matches!(
+            command,
+            "set_session_name" | "set_thinking_level" | "set_session_archived"
+        )
     {
         return Ok(Map::new());
     }
@@ -603,6 +622,198 @@ impl LiveThreadSurface {
             opened.insert("socket".into(), Value::String(socket));
             opened.insert("endpoint_kind".into(), Value::String("rpc_host".into()));
             Ok(Value::Object(opened))
+        })
+    }
+}
+
+/// One endpoint's part of a host view.
+struct ListedEndpoint {
+    socket: String,
+    failed: bool,
+    sessions: Vec<ThreadHostSession>,
+    host: AddressBookHost,
+    disk: Vec<DiskSession>,
+}
+
+/// One endpoint's observing `list_sessions`; a terminal also says which session controls it takes. A dead endpoint is
+/// an address-book host carrying its failure, plus the sessions its report still claims, read from their files.
+async fn list_endpoint(
+    transport: Arc<dyn RpcTransport>,
+    endpoint: KnownEndpoint,
+    kind: GatewayEndpointKind,
+    legacy: bool,
+) -> ListedEndpoint {
+    let host = |list_sessions: HostListSessions| AddressBookHost {
+        socket: endpoint.socket.clone(),
+        list_sessions: Some(list_sessions),
+        endpoint_kind: Some(kind),
+        alive: endpoint.alive,
+        reason: endpoint.reason.clone(),
+        legacy,
+    };
+    let listing = transport
+        .request(
+            &endpoint.socket,
+            serde_json::json!({ "type": "list_sessions", "observe": true }),
+            None,
+        )
+        .await
+        .and_then(|frame| data_record(&frame, "list_sessions"));
+    let data = match listing {
+        Ok(data) => data,
+        Err(error) => {
+            return ListedEndpoint {
+                socket: endpoint.socket.clone(),
+                failed: true,
+                sessions: Vec::new(),
+                host: host(HostListSessions::failed(error)),
+                disk: endpoint
+                    .paths
+                    .iter()
+                    .filter_map(|path| {
+                        read_disk_session(
+                            std::path::Path::new(path),
+                            Some(endpoint.socket.as_str()),
+                        )
+                    })
+                    .collect(),
+            };
+        }
+    };
+    let controls = if kind == GatewayEndpointKind::Tui {
+        let info = transport
+            .request(
+                &endpoint.socket,
+                serde_json::json!({ "type": "get_protocol_info", "observe": true }),
+                None,
+            )
+            .await
+            .and_then(|frame| data_record(&frame, "get_protocol_info"))
+            .ok()
+            .map(Value::Object);
+        accepted_controls(kind, Some(&tui_commands_from(info.as_ref())))
+    } else {
+        accepted_controls(kind, None)
+    };
+    let sessions: Vec<ThreadHostSession> = data
+        .get("sessions")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    ThreadHostSession::from_listing(row, &endpoint.socket, kind, &controls)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ListedEndpoint {
+        socket: endpoint.socket.clone(),
+        failed: false,
+        host: host(HostListSessions::ok(
+            sessions
+                .iter()
+                .map(ThreadHostSession::host_session)
+                .collect(),
+        )),
+        sessions,
+        disk: Vec::new(),
+    }
+}
+
+/// The command channel to the endpoint that listed one session. A host session's records go under the attachment
+/// fence; a terminal takes only the commands its session controls name, and any other is `unsupported:<command>`
+/// before anything is sent.
+struct LiveSessionPort {
+    transport: Arc<dyn RpcTransport>,
+    socket: String,
+    kind: GatewayEndpointKind,
+    durable_session_id: String,
+    terminal_commands: std::collections::BTreeSet<String>,
+}
+
+impl SessionCommandPort for LiveSessionPort {
+    fn send(&self, command: Value) -> BoxFuture<Result<Value, String>> {
+        if self.kind == GatewayEndpointKind::Tui {
+            let command_type = command
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if !self.terminal_commands.contains(&command_type) {
+                return Box::pin(async move { Err(format!("unsupported:{command_type}")) });
+            }
+            return self.transport.request(&self.socket, command, None);
+        }
+        SurfaceHandle {
+            transport: self.transport.clone(),
+        }
+        .fenced(
+            &self.socket,
+            command,
+            Some(self.durable_session_id.as_str()),
+        )
+    }
+}
+
+impl ThreadHost for LiveThreadSurface {
+    /// Every known endpoint listed at once. When no endpoint answers, the first failure (the legacy endpoint first) is
+    /// the view's failure, `host_unavailable:<socket>`.
+    fn list_view(&self) -> BoxFuture<Result<ThreadHostView, String>> {
+        let endpoints = self.known_endpoints();
+        let kinds: Vec<GatewayEndpointKind> = endpoints
+            .iter()
+            .map(|endpoint| {
+                if let Some(kind) = endpoint.kind {
+                    self.set_kind(&endpoint.socket, kind);
+                }
+                endpoint
+                    .kind
+                    .unwrap_or_else(|| self.kind_of(&endpoint.socket))
+            })
+            .collect();
+        let transport = self.transport.clone();
+        let legacy = self.legacy.clone();
+        Box::pin(async move {
+            let listed = futures::future::join_all(endpoints.into_iter().zip(kinds).map(
+                |(endpoint, kind)| {
+                    let is_legacy = endpoint.socket == legacy;
+                    list_endpoint(transport.clone(), endpoint, kind, is_legacy)
+                },
+            ))
+            .await;
+            if let Some(first) = listed.first()
+                && listed.iter().all(|endpoint| endpoint.failed)
+            {
+                return Err(format!("host_unavailable:{}", first.socket));
+            }
+            let mut view = ThreadHostView::default();
+            for endpoint in listed {
+                view.sessions.extend(endpoint.sessions);
+                view.hosts.push(endpoint.host);
+                view.disk.extend(endpoint.disk);
+            }
+            Ok(view)
+        })
+    }
+
+    fn session_port(&self, session: &ThreadHostSession) -> Arc<dyn SessionCommandPort> {
+        let mut terminal_commands: std::collections::BTreeSet<String> = TUI_READ_COMMANDS
+            .iter()
+            .map(|command| (*command).to_owned())
+            .collect();
+        for control in &session.controls {
+            terminal_commands.extend(
+                control_commands(control)
+                    .iter()
+                    .map(|command| (*command).to_owned()),
+            );
+        }
+        Arc::new(LiveSessionPort {
+            transport: self.transport.clone(),
+            socket: session.socket.clone(),
+            kind: session.endpoint_kind,
+            durable_session_id: session.thread_id().to_owned(),
+            terminal_commands,
         })
     }
 }

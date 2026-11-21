@@ -79,6 +79,14 @@ impl ReleasableSession for AgentSessionRelease {
         self.session.clear_queue(abort_will_follow)
     }
 
+    fn is_idle(&self) -> bool {
+        self.session.is_idle()
+    }
+
+    fn take_queued_deliveries(&self) {
+        self.session.take_queued_deliveries();
+    }
+
     fn abort_bash(&self) {
         self.session.abort_bash();
     }

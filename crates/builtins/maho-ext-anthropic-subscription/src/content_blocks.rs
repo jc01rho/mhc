@@ -8,6 +8,24 @@ pub fn is_sdk_image_media_type(value: &str) -> bool {
     )
 }
 
+const TOOL_OUTPUT_MARKER: &str = "[tool output] ";
+
+/// `neutralizeToolResultText` (senpi#6669): Claude Code runs a user text block that starts with `/` as one of its own
+/// slash commands, and tool output is untrusted text. Every non-empty text block from `from` on gets a marker first,
+/// whatever its first character is (an invisible one such as a zero-width space or a BOM included).
+pub fn neutralize_tool_result_text(blocks: &mut [Value], from: usize) {
+    for block in blocks.iter_mut().skip(from) {
+        if block["type"] != "text" {
+            continue;
+        }
+        let Some(text) = block["text"].as_str().filter(|text| !text.is_empty()) else {
+            continue;
+        };
+        let marked = format!("{TOOL_OUTPUT_MARKER}{text}");
+        block["text"] = Value::String(marked);
+    }
+}
+
 pub fn append_sdk_content_blocks(blocks: &mut Vec<Value>, content: &Value) -> bool {
     if let Some(text) = content.as_str() {
         if !text.is_empty() {
@@ -59,6 +77,35 @@ fn append_entry(blocks: &mut Vec<Value>, entry: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn every_text_block_from_the_offset_is_marked_whatever_its_first_character() {
+        for text in [
+            "/goal fixture-condition-impossible",
+            "  /clear",
+            "\u{200b}/clear",
+            "\u{feff}/goal fixture-condition-impossible",
+            "search output",
+        ] {
+            let mut blocks = vec![
+                json!({"type":"text","text":"header"}),
+                json!({"type":"text","text":text}),
+                json!({"type":"text","text":"/second block"}),
+            ];
+            neutralize_tool_result_text(&mut blocks, 1);
+            assert_eq!(blocks[0]["text"], "header");
+            assert_eq!(blocks[1]["text"], format!("[tool output] {text}"));
+            assert_eq!(blocks[2]["text"], "[tool output] /second block");
+        }
+    }
+    #[test]
+    fn empty_text_and_non_text_blocks_keep_their_shape() {
+        let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"aW1hZ2U="}});
+        let mut blocks = vec![json!({"type":"text","text":""}), image.clone()];
+        neutralize_tool_result_text(&mut blocks, 0);
+        assert_eq!(blocks, vec![json!({"type":"text","text":""}), image]);
+        neutralize_tool_result_text(&mut blocks, 9);
+        assert_eq!(blocks[0], json!({"type":"text","text":""}));
+    }
     #[test]
     fn sdk_image_media_types_are_the_four_base64_formats() {
         for media in ["image/jpeg", "image/png", "image/gif", "image/webp"] {

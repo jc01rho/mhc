@@ -2,6 +2,12 @@
 use super::resolver::{AccountSessionIdle, AccountSessionOptions, LocalFuture};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use memory_core::sync::{
+    account::{
+        freeze_settler::{FreezeChain, FreezeSettlerInput, create_freeze_settler},
+        http::create_account_http,
+        revocation_view::read_revocation_view,
+    },
+    contract_version::sync_request_headers,
     crypto::{
         anchor::ChainAnchor,
         build::{BuildBatchInput, build_batch, sign_record},
@@ -94,13 +100,12 @@ struct Chain {
 }
 impl Chain {
     async fn read(&self, path: &str) -> Result<Value, String> {
-        let response = self
-            .client
-            .get(format!("{}{path}", self.api))
-            .bearer_auth((self.token)().await?)
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
+        // The account reads declare the sync contract like the engine's requests (#13691).
+        let mut request = self.client.get(format!("{}{path}", self.api));
+        for (key, value) in sync_request_headers(&(self.token)().await?) {
+            request = request.header(key, value);
+        }
+        let response = request.send().await.map_err(|error| error.to_string())?;
         if !response.status().is_success() {
             return Err(format!(
                 "account sync request failed ({})",
@@ -203,6 +208,33 @@ impl Chain {
     }
 }
 struct Crypto(Rc<tokio::sync::Mutex<Chain>>);
+
+/// The runtime chain as the freeze settler reads it (#12280).
+struct FreezeView {
+    account: String,
+    chain: Rc<tokio::sync::Mutex<Chain>>,
+}
+impl FreezeChain for FreezeView {
+    fn account(&self) -> String {
+        self.account.clone()
+    }
+    fn reach(&self, seq: u64) -> PortFuture<'_, ()> {
+        Box::pin(async move {
+            self.chain
+                .lock()
+                .await
+                .extend(seq)
+                .await
+                .map_err(EngineError::Other)
+        })
+    }
+    fn snapshot(&self) -> PortFuture<'_, ChainState> {
+        Box::pin(async move { Ok(self.chain.lock().await.state.clone()) })
+    }
+    fn epoch_key(&self, epoch: u64) -> PortFuture<'_, Option<Vec<u8>>> {
+        Box::pin(async move { Ok(self.chain.lock().await.epoch_key(epoch)) })
+    }
+}
 fn hex_of_b64url(value: &str) -> String {
     URL_SAFE_NO_PAD
         .decode(value)
@@ -386,6 +418,14 @@ pub fn open_account_session(
     options: AccountSessionOptions,
 ) -> LocalFuture<Result<SyncSession, AccountSessionIdle>> {
     Box::pin(async move {
+        if memory_core::sync::account::device_switch::is_device_sync_off(
+            &options.pin_dir,
+            &options.account_id,
+        )
+        .map_err(|error| error.to_string())?
+        {
+            return Ok(Err(AccountSessionIdle::SyncOff));
+        }
         let pin = load_trust_anchor(&options.pin_dir, &options.account_id)
             .map_err(|error| error.to_string())?;
         let anchor = match pin {
@@ -422,19 +462,44 @@ pub fn open_account_session(
             return Ok(Err(AccountSessionIdle::NotMember));
         }
         let token = options.token;
-        let transport = create_http_transport(HttpTransportOptions {
+        let http = HttpTransportOptions {
             base_url: options.api,
             client: Rc::new(Client(client)),
             token: Rc::new(move || {
                 let token = token.clone();
                 Box::pin(async move { token().await.map_err(EngineError::Other) })
             }),
+        };
+        let account = chain.account.clone();
+        let settler_keyring: Rc<dyn DeviceKeyring> = Rc::new(
+            create_device_keyring(options.device_id.clone(), &options.material)
+                .map_err(|error| error.to_string())?,
+        );
+        let shared = Rc::new(tokio::sync::Mutex::new(chain));
+        let account_http = create_account_http(http.clone());
+        let view_http = account_http.clone();
+        let freeze = create_freeze_settler(FreezeSettlerInput {
+            chain: Rc::new(FreezeView {
+                account: account.clone(),
+                chain: shared.clone(),
+            }),
+            http: account_http,
+            revocation_view: Rc::new(move || {
+                let http = view_http.clone();
+                Box::pin(async move { read_revocation_view(&http).await })
+            }),
+            scope: format!("{account}:{}", options.device_id),
+            keyring: settler_keyring,
+            on_event: None,
+            fault: None,
+            sleep: None,
         });
-        let crypto = Rc::new(Crypto(Rc::new(tokio::sync::Mutex::new(chain))));
+        let crypto = Rc::new(Crypto(shared));
         Ok(Ok(SyncSession {
-            transport: Rc::new(transport),
+            transport: Rc::new(create_http_transport(http)),
             verifier: crypto.clone(),
             sealer: crypto,
+            freeze: Some(Rc::new(freeze)),
         }))
     })
 }

@@ -20,10 +20,14 @@ pub const TOOL_CHILD_PLACEMENTS: [&str; 5] = [
 ];
 /// `unload_session` and `session_parked.reason` (senpi#3225).
 pub const UNLOAD_SESSION_CAPABILITY: &str = "unload_session";
+/// `unload_session { deliveries: "refuse" }` and `pending.deliveries` on its `work_pending` refusal (senpi#7004).
+pub const UNLOAD_REFUSE_DELIVERIES_CAPABILITY: &str = "unload_refuse_deliveries";
 /// `get_subscription_limits` and the `subscription_limits` host record (senpi#3370).
 pub const SUBSCRIPTION_LIMITS_CAPABILITY: &str = "subscription_limits";
 /// `resolve_path`: which file a message's path means, the engine's one rule (senpi#3415).
 pub const RESOLVE_PATH_CAPABILITY: &str = "resolve_path";
+/// `find_session`: which session file of this host carries a durable id, read-only (senpi#6429).
+pub const FIND_SESSION_CAPABILITY: &str = "find_session";
 const TOOL_RUNTIME_PREFIX: &str = "tool_runtime:";
 const PLACEMENT_PREFIX: &str = "placement:";
 
@@ -137,6 +141,8 @@ pub fn multi_session_host_capabilities(
         crate::effect_record::EFFECT_LEDGER_CAPABILITY,
         SUBSCRIPTION_LIMITS_CAPABILITY,
         RESOLVE_PATH_CAPABILITY,
+        // Every multi-session host keeps the agent directory whose session files this looks in.
+        FIND_SESSION_CAPABILITY,
         crate::rpc_types::STEER_WHEN_IDLE_CAPABILITY,
         "continue_from_leaf",
         "eval_cells",
@@ -155,6 +161,7 @@ pub fn multi_session_host_capabilities(
         RETAIN_ON_DISCONNECT_CAPABILITY,
         DETACH_CONNECTION_CAPABILITY,
         UNLOAD_SESSION_CAPABILITY,
+        UNLOAD_REFUSE_DELIVERIES_CAPABILITY,
         crate::session_move_wire::MOVE_SESSION_CAPABILITY,
         crate::session_move_wire::MOVE_SESSION_REVOKE_CAPABILITY,
         SESSION_RELOCATION_CAPABILITY,
@@ -297,8 +304,10 @@ mod tests {
             "observe_reads",
             "entries_tail",
             UNLOAD_SESSION_CAPABILITY,
+            UNLOAD_REFUSE_DELIVERIES_CAPABILITY,
             SUBSCRIPTION_LIMITS_CAPABILITY,
             RESOLVE_PATH_CAPABILITY,
+            FIND_SESSION_CAPABILITY,
         ] {
             assert!(
                 plain.iter().any(|capability| capability == wanted),

@@ -363,12 +363,15 @@ pub enum RpcCommandBody {
     MemoryReport,
     /// senpi `{ type: "continue_from_leaf" }`: continue from the last answer with no new prompt.
     ContinueFromLeaf,
-    /// senpi `{ type: "interrupt"; turnId?; intent? }`: stop the running turn, scoped to `turnId` when given.
+    /// senpi `{ type: "interrupt"; turnId?; intent?; background? }`: stop the running turn, scoped to `turnId` when
+    /// given; `background: "stop"` also stops the background jobs that turn started.
     Interrupt {
         #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         intent: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        background: Option<String>,
     },
     RequestSelfSettle,
     GetModelThinkingLevel {
@@ -619,6 +622,11 @@ pub enum RpcCommandBody {
         children: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
+        /// `"refuse"` (senpi#7004): a busy session holding admitted deliveries not yet written is refused
+        /// `work_pending` with their ids in `pending.deliveries`, with or without `interrupt`, and nothing is
+        /// interrupted. Capability `unload_refuse_deliveries`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        deliveries: Option<String>,
     },
     /// Subscribes this connection to `session_status` records (senpi `subscribe_sessions`). Every field stays raw
     /// (read off the request) so a malformed one is refused with `invalid_subscription` naming it.

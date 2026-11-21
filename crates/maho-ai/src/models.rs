@@ -2230,7 +2230,7 @@ pub fn infer_openai_thinking_level_map(model: &Model) -> Option<ThinkingLevelMap
         return Some(map.clone());
     }
     if OPENAI_THINKING_APIS.contains(&model.api.as_str())
-        && ["gpt-6-astra", "gpt-6.1-sol"]
+        && ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"]
             .iter()
             .any(|id| matches_model_family(&model.id, id))
     {
@@ -2300,6 +2300,8 @@ const XHIGH_MODEL_IDS: &[&str] = &[
     "gpt-5.6-terra",
     "gpt-6-astra",
     "gpt-6.1-sol",
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "deepseek-v4-pro",
@@ -2376,6 +2378,8 @@ const OPENAI_MAX_MODEL_IDS: &[&str] = &[
     "gpt-5.6-sol",
     "gpt-6-astra",
     "gpt-6.1-sol",
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-6-sol",
     "gpt-6-luna",
 ];

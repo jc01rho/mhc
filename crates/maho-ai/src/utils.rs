@@ -37,6 +37,7 @@ pub mod model_operations;
 pub mod node_http_proxy;
 pub mod oauth_refresh_error;
 pub mod openai_input_cap;
+pub mod openai_prompt_cache_lane;
 pub mod overflow;
 pub mod pi_user_agent;
 pub mod process_singleton;

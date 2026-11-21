@@ -18,12 +18,10 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Uploads are off when this is set to anything but empty, `0`, `false`, `no`, `off`.
 pub const DISABLE_ENV: &str = "OMO_DISABLE_FEEDBACK";
-/// Intake origin override.
-pub const SERVICE_URL_ENV: &str = "OMO_SERVICE_API_URL";
+/// Intake origin (omo's name; `MAHO_SERVICE_API_URL` wins over it). Unset means local mode.
+pub const SERVICE_URL_ENV: &str = maho_service_endpoints::OMO_SERVICE_API_URL_ENV;
 /// `desktop` marks the client app as the desktop front end.
 pub const SURFACE_ENV: &str = "OMO_NATIVE_SURFACE";
-/// Default intake origin.
-pub const DEFAULT_SERVICE_URL: &str = "https://api.omo.dev";
 /// Report intake path under the origin.
 pub const REPORTS_PATH: &str = "/v1/reports";
 /// Version of the redaction applied to a report body.
@@ -113,24 +111,25 @@ impl Host {
         (self.env)(key)
     }
 
-    /// Whether uploads are switched off by [`DISABLE_ENV`].
+    /// Whether uploads are off: switched off by [`DISABLE_ENV`], or no intake origin is configured
+    /// (local mode), in which case a report is saved locally.
     pub fn uploads_disabled(&self) -> bool {
-        self.env(DISABLE_ENV).is_some_and(|value| {
+        let switched_off = self.env(DISABLE_ENV).is_some_and(|value| {
             !matches!(
                 value.trim().to_ascii_lowercase().as_str(),
                 "" | "0" | "false" | "no" | "off"
             )
-        })
+        });
+        switched_off || self.reports_url().is_none()
     }
 
-    /// `<origin>/v1/reports` with exactly one slash between.
-    pub fn reports_url(&self) -> String {
-        let origin = self
-            .env(SERVICE_URL_ENV)
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_SERVICE_URL.into());
-        format!("{}{REPORTS_PATH}", origin.trim_end_matches('/'))
+    /// `<origin>/v1/reports` with exactly one slash between, or `None` in local mode (no origin
+    /// configured, or one the endpoint guard refuses).
+    pub fn reports_url(&self) -> Option<String> {
+        maho_service_endpoints::resolve_service_api(None, |key| self.env(key))
+            .ok()
+            .flatten()
+            .map(|origin| origin.join(REPORTS_PATH))
     }
 
     /// `<agent dir>/omo-senpi`.
@@ -673,11 +672,13 @@ impl Reports {
             CONTENT_SHA256_HEADER.to_owned(),
             crate::digest::sha256_hex(body.as_bytes()),
         ));
-        let http = HttpRequest {
-            url: self.host.reports_url(),
-            headers,
-            body,
+        let Some(url) = self.host.reports_url() else {
+            return SubmitResult::Refused(Refusal::Unavailable);
         };
+        if maho_service_endpoints::refuse_if_local_only("feedback.submit").is_err() {
+            return SubmitResult::Refused(Refusal::Unavailable);
+        }
+        let http = HttpRequest { url, headers, body };
         let response = match (self.host.transport)(http).await {
             Ok(response) => response,
             Err(_) => return SubmitResult::Refused(Refusal::Unavailable),

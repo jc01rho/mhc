@@ -200,7 +200,7 @@ Layer A, stacking rows (stack on any style skill):
 | `layout-skill.md` | Scroll ownership and CSS-contract mechanics (pairs with `stylegallery.md`) |
 | `imagegen-frontend-web.md` / `imagegen-frontend-mobile.md` / `imagegen-brandkit.md` | Image output only; never code. `image-to-code-skill.md` pairs with exactly one of them |
 
-Layer B, brands: when the user names a brand or site, load `references/design/<brand>.md` as the token source of truth: `aside` `apple` `stripe` `linear.app` `notion` `vercel` `claude` `figma` `airbnb` `nike` `tesla` `spotify` `raycast` `revolut` and ~56 more in `_INDEX.md`. Apply the tokens to the project's own content; never copy logos or trademarked imagery. A missing brand falls back to a Layer A mood match or the `open-design` skill.
+Layer B, brands: when the user names a brand or site, load `references/design/<brand>.md` as the token source of truth: `aside` `apple` `stripe` `linear.app` `notion` `vercel` `claude` `figma` `airbnb` `nike` `tesla` `spotify` `raycast` `revolut` and ~56 more in `_INDEX.md`. Apply the tokens to the project's own content; never copy logos or trademarked imagery. A missing brand falls back to a Layer A mood match or to the nexu-io/open-design library (https://github.com/nexu-io/open-design).
 
 React dev tooling:
 
@@ -245,7 +245,7 @@ Stacks: `html-tailwind` (default), `react nextjs vue svelte astro swiftui react-
 
 | Situation | Load |
 |---|---|
-| Brand or style outside the 70 in `references/design/`, or the user says "Open Design" | `open-design` skill: the local open-design library (137+ design skills, 150+ design systems) |
+| Brand or style outside the 70 in `references/design/`, or the user says "Open Design" | The nexu-io/open-design library (https://github.com/nexu-io/open-design; 137+ design skills, 150+ design systems) |
 | Driving a browser for captures | `visual-qa` skill (and `ultimate-browsing` for signed-in or bot-scored pages) |
 | Pure TypeScript or logic work with zero visual surface | `programming` skill alone; this skill adds nothing there |
 

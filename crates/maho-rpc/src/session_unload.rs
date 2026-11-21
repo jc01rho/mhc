@@ -8,8 +8,13 @@
 //!
 //! Refusals change nothing and answer `outcome: "refused"` with `reason`, `detail` and `action`:
 //! - `turn_active` / `work_pending`: an agent run, a prompt in preflight, compaction, barrier-held work, bash, an
-//!   admitted delivery or another request for the session. `interrupt` aborts the run and bash and waits (bounded)
-//!   before the final check.
+//!   admitted delivery (named in `pending.deliveries`) or another request for the session. With
+//!   `deliveries: "refuse"` a busy session (any `turn_active` blocker) that holds an admitted delivery not yet
+//!   written is refused `work_pending` before anything is interrupted: its work would still read those deliveries,
+//!   and the caller decides whether to drop them (senpi#7004). An idle session's unwritten deliveries are stranded,
+//!   so they are handed back in either mode. `interrupt` aborts the run and bash and waits (bounded) before the
+//!   final check; a delivery the aborted run left queued is handed back unwritten (`dropped.deliveries`), so an
+//!   interrupted run never pins its session (oh-my-openagent#14169).
 //! - `extension_work`: a published wake source other than child tasks. The teardown stops that work and most of it
 //!   does not come back on reopen, so only `force` unloads past it; the refusal names the sources.
 //! - `children_live`: the session started child tasks that are still working (a `*-task` wake source) or worker
@@ -23,7 +28,7 @@ use crate::client_admissions::ClientAdmissions;
 use crate::effect_commands::{EffectCommandContext, begin_effect, effect_answer};
 use crate::effect_ledger::{EffectBegin, EffectLedger, EffectPatch};
 use crate::effect_record::{
-    EffectActor, EffectCommandKind, EffectOutcome, EffectOutcomeKind, EffectState,
+    EffectActor, EffectCommandKind, EffectDeliveries, EffectOutcome, EffectOutcomeKind, EffectState,
 };
 use crate::effect_session::EffectSession;
 use crate::session_release_interrupt::{ReleasableSession, ReleaseSettlePort, abort_and_settle};
@@ -76,11 +81,13 @@ fn is_child_task_source(source: &str) -> bool {
     source.starts_with("senpi-task")
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct Refusal {
     reason: &'static str,
     detail: String,
     action: Option<&'static str>,
+    /// `work_pending` caused by admitted deliveries not yet written: their ids.
+    deliveries: Vec<String>,
 }
 
 const ACTION_EXTENSION_WORK: &str =
@@ -88,6 +95,7 @@ const ACTION_EXTENSION_WORK: &str =
 const ACTION_TURN_ACTIVE: &str =
     "wait for the turn to end, or unload with interrupt: true to stop it first";
 const ACTION_WORK_PENDING: &str = "wait for the work to finish, or unload with interrupt: true";
+const ACTION_WORK_PENDING_REFUSED_DELIVERIES: &str = "the session's work would still read these deliveries: wait for it, or unload with interrupt: true and without deliveries to hand them back to their senders";
 const ACTION_CHILDREN_LIVE: &str =
     "wait for the child tasks, or unload with children: \"detach\" to leave them running";
 const ACTION_ATTACHED: &str =
@@ -109,6 +117,7 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
                 reason: "host_draining",
                 detail: "this host is draining and parks every session itself".into(),
                 action: None,
+                ..Default::default()
             }),
         );
     }
@@ -124,6 +133,7 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
                     reason: "unsupported",
                     detail: "this session keeps no effect ledger".into(),
                     action: None,
+                    ..Default::default()
                 }),
             );
         };
@@ -155,6 +165,13 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
                         data.insert("action".into(), json!(action));
                     }
                 }
+                // Either answer names the deliveries the first one found unwritten or handed back.
+                if let Some(pending) = &replay.pending {
+                    data.insert("pending".into(), json!(pending));
+                }
+                if let Some(dropped) = &replay.dropped {
+                    data.insert("dropped".into(), json!(dropped));
+                }
                 extend(&mut data, effect_answer(&replay, Some(session_id), true));
                 return answer(command, data);
             }
@@ -162,30 +179,58 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
         }
     }
     let blocked = blockers(port, command, &first).await;
+    // senpi#7004: a busy session's unread deliveries are what its work would still read. With `deliveries: "refuse"`
+    // they decide the answer before anything else, with or without `interrupt`: the caller learns their ids and
+    // nothing is stopped.
+    if command["deliveries"] == "refuse"
+        && blocked
+            .iter()
+            .any(|refusal| refusal.reason == "turn_active")
+        && let Some(unread) = blocked
+            .iter()
+            .find(|refusal| !refusal.deliveries.is_empty())
+    {
+        let refusal = Refusal {
+            action: Some(ACTION_WORK_PENDING_REFUSED_DELIVERIES),
+            ..unread.clone()
+        };
+        return fail(command, &first, &refusal, &[]).await;
+    }
     // Never stop work for an unload that would still be refused: only interruptible blockers are interrupted.
     if let Some(standing) = blocked
         .iter()
         .find(|refusal| !interruptible(refusal) || command["interrupt"] != true)
     {
-        return fail(command, &first, standing).await;
+        return fail(command, &first, standing, &[]).await;
     }
-    if !blocked.is_empty() {
+    let handed_back = if blocked.is_empty() {
+        Vec::new()
+    } else {
         let session: Arc<dyn ReleasableSession> = first.session.clone();
-        abort_and_settle(port, session_id, &session).await;
-    }
-    claim_and_unload(port, command).await
+        abort_and_settle(port, session_id, &session).await
+    };
+    claim_and_unload(port, command, handed_back).await
 }
 
 /// The final check and the unload, without an await between them and the close claim.
-async fn claim_and_unload(port: &dyn SessionUnloadPort, command: &Value) -> Value {
+async fn claim_and_unload(
+    port: &dyn SessionUnloadPort,
+    command: &Value,
+    handed_back: Vec<String>,
+) -> Value {
     let session_id = command["sessionId"].as_str().unwrap_or_default();
+    // Deliveries the interrupt handed back are gone from this runtime whatever the answer: every answer names them.
     let ready = match loaded(port, session_id).await {
         Ok(ready) => ready,
-        Err(refusal) => return answer(command, refused(&refusal)),
+        Err(refusal) => {
+            let mut data = refused(&refusal);
+            insert_dropped(&mut data, &handed_back);
+            return answer(command, data);
+        }
     };
     let still_blocked = blockers(port, command, &ready).await;
     if let Some(first) = still_blocked.first() {
-        return fail(command, &ready, first).await;
+        return fail(command, &ready, first, &handed_back).await;
     }
     if command["clearQueue"] == true {
         if let Some(effects) = ready.session.effect_session() {
@@ -201,6 +246,7 @@ async fn claim_and_unload(port: &dyn SessionUnloadPort, command: &Value) -> Valu
                 EffectState::Done,
                 EffectPatch {
                     disposition: Some("unloaded".into()),
+                    dropped: dropped_deliveries(&handed_back),
                     ..Default::default()
                 },
             )
@@ -208,18 +254,19 @@ async fn claim_and_unload(port: &dyn SessionUnloadPort, command: &Value) -> Valu
         _ => None,
     };
     if !port.tear_down(session_id, &ready.session_path).await {
-        return answer(
-            command,
-            refused(&Refusal {
-                reason: "session_closing",
-                detail: "another close of this session finished first".into(),
-                action: None,
-            }),
-        );
+        let mut data = refused(&Refusal {
+            reason: "session_closing",
+            detail: "another close of this session finished first".into(),
+            action: None,
+            ..Default::default()
+        });
+        insert_dropped(&mut data, &handed_back);
+        return answer(command, data);
     }
     let mut data = Map::new();
     data.insert("outcome".into(), "unloaded".into());
     data.insert("sessionPath".into(), json!(ready.session_path));
+    insert_dropped(&mut data, &handed_back);
     if let Some(effect) = &effect {
         extend(&mut data, effect_answer(effect, Some(session_id), false));
     }
@@ -252,12 +299,14 @@ async fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded
             reason: "turn_active",
             detail: running.join(", "),
             action: Some(ACTION_TURN_ACTIVE),
+            ..Default::default()
         });
     }
+    let unwritten = session.admission_pending();
     let pending: Vec<&str> = [
         (activity.is_bash_running, "a bash command"),
         (
-            !session.admission_pending().is_empty(),
+            !unwritten.is_empty(),
             "an admitted delivery not yet written",
         ),
         (
@@ -273,6 +322,7 @@ async fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded
             reason: "work_pending",
             detail: pending.join(", "),
             action: Some(ACTION_WORK_PENDING),
+            deliveries: unwritten,
         });
     }
     let force = command["force"] == true;
@@ -285,6 +335,7 @@ async fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded
             reason: "extension_work",
             detail: format!("work published by {}", other_sources.join(", ")),
             action: Some(ACTION_EXTENSION_WORK),
+            ..Default::default()
         });
     }
     let child_sessions = port.open_child_sessions(&loaded.durable_session_id).await;
@@ -298,6 +349,7 @@ async fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded
             reason: "children_live",
             detail: what,
             action: Some(ACTION_CHILDREN_LIVE),
+            ..Default::default()
         });
     }
     let others = port.other_attachments(session_id);
@@ -306,6 +358,7 @@ async fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded
             reason: "attached",
             detail: format!("{others} other client(s) attached"),
             action: Some(ACTION_ATTACHED),
+            ..Default::default()
         });
     }
     found
@@ -316,12 +369,14 @@ async fn loaded(port: &dyn SessionUnloadPort, session_id: &str) -> Result<Loaded
         reason: "unsupported",
         detail: code,
         action: None,
+        ..Default::default()
     })?;
     if !entry.open {
         return Err(Refusal {
             reason: "session_closing",
             detail: "the session is already closing".into(),
             action: None,
+            ..Default::default()
         });
     }
     let Some(session) = entry.session else {
@@ -329,6 +384,7 @@ async fn loaded(port: &dyn SessionUnloadPort, session_id: &str) -> Result<Loaded
             reason: "unsupported",
             detail: "a worker isolate owns this session's runtime".into(),
             action: None,
+            ..Default::default()
         });
     };
     let Some(session_path) = entry.session_path.or_else(|| session.session_file()) else {
@@ -336,6 +392,7 @@ async fn loaded(port: &dyn SessionUnloadPort, session_id: &str) -> Result<Loaded
             reason: "unsupported",
             detail: "the session has no file to reopen it by".into(),
             action: Some("send a prompt first so the session is written, or close it instead"),
+            ..Default::default()
         });
     };
     let durable_session_id = session.durable_session_id();
@@ -347,13 +404,20 @@ async fn loaded(port: &dyn SessionUnloadPort, session_id: &str) -> Result<Loaded
 }
 
 /// A refusal after the effect began records it `failed`; the answer carries the receipt.
-async fn fail(command: &Value, loaded: &Loaded, refusal: &Refusal) -> Value {
+async fn fail(
+    command: &Value,
+    loaded: &Loaded,
+    refusal: &Refusal,
+    handed_back: &[String],
+) -> Value {
     let session_id = command["sessionId"].as_str().unwrap_or_default();
     let (Some(effect_id), Some(effects)) = (
         command["effectId"].as_str(),
         loaded.session.effect_session(),
     ) else {
-        return answer(command, refused(refusal));
+        let mut data = refused(refusal);
+        insert_dropped(&mut data, handed_back);
+        return answer(command, data);
     };
     let status = EffectLedger::for_session(&effects).await.transition(
         effect_id,
@@ -367,10 +431,13 @@ async fn fail(command: &Value, loaded: &Loaded, refusal: &Refusal) -> Value {
                 abort_source: None,
                 aborted_by: None,
             }),
+            dropped: dropped_deliveries(handed_back),
+            pending: pending_deliveries(refusal),
             ..Default::default()
         },
     );
     let mut data = refused(refusal);
+    insert_dropped(&mut data, handed_back);
     if let Ok(status) = &status {
         extend(&mut data, effect_answer(status, Some(session_id), false));
     }
@@ -385,7 +452,31 @@ fn refused(refusal: &Refusal) -> Map<String, Value> {
     if let Some(action) = refusal.action {
         data.insert("action".into(), action.into());
     }
+    if let Some(pending) = pending_deliveries(refusal) {
+        data.insert("pending".into(), json!(pending));
+    }
     data
+}
+
+/// A refusal's unwritten deliveries as the effect record and the answer carry them; `None` when it names none.
+fn pending_deliveries(refusal: &Refusal) -> Option<EffectDeliveries> {
+    (!refusal.deliveries.is_empty()).then(|| EffectDeliveries {
+        deliveries: refusal.deliveries.clone(),
+    })
+}
+
+/// The deliveries an interrupt handed back, as the effect record keeps them; `None` when there were none.
+fn dropped_deliveries(handed_back: &[String]) -> Option<EffectDeliveries> {
+    (!handed_back.is_empty()).then(|| EffectDeliveries {
+        deliveries: handed_back.to_vec(),
+    })
+}
+
+/// `dropped: { deliveries }` on an answer, only when an interrupt handed deliveries back.
+fn insert_dropped(data: &mut Map<String, Value>, handed_back: &[String]) {
+    if let Some(dropped) = dropped_deliveries(handed_back) {
+        data.insert("dropped".into(), json!(dropped));
+    }
 }
 
 fn extend(data: &mut Map<String, Value>, value: Value) {
@@ -434,6 +525,8 @@ mod tests {
         sources: Mutex<Vec<String>>,
         aborts: AtomicUsize,
         cleared: AtomicUsize,
+        taken: AtomicUsize,
+        pending: Mutex<Vec<String>>,
         effects: Mutex<Option<Arc<FakeSession>>>,
     }
 
@@ -448,7 +541,7 @@ mod tests {
             0
         }
         fn admission_pending(&self) -> Vec<String> {
-            Vec::new()
+            self.0.pending.lock().unwrap().clone()
         }
         fn admission_close(&self, _: &str) {}
         fn admission_reopen(&self) {}
@@ -461,6 +554,14 @@ mod tests {
             }
         }
         fn abort_bash(&self) {}
+        fn is_idle(&self) -> bool {
+            let activity = *self.0.activity.lock().unwrap();
+            !activity.is_streaming && !activity.is_compacting && !activity.has_session_work
+        }
+        fn take_queued_deliveries(&self) {
+            self.0.taken.fetch_add(1, Ordering::SeqCst);
+            self.0.pending.lock().unwrap().clear();
+        }
         fn on_agent_start(&self, _: Arc<dyn Fn() + Send + Sync>) -> SubscriptionGuard {
             Box::new(())
         }
@@ -727,5 +828,135 @@ mod tests {
         assert_eq!(replay["data"]["replayed"], true);
         EffectLedger::forget("unload-refused");
         ClientAdmissions::forget("unload-refused");
+    }
+
+    fn busy_with_unwritten_deliveries(port: &Port, deliveries: &[&str]) {
+        port.live.activity.lock().unwrap().is_streaming = true;
+        *port.live.pending.lock().unwrap() = deliveries.iter().map(|id| (*id).to_owned()).collect();
+    }
+
+    // senpi#7004 "refuses a session that stopped responding mid-run without interrupting it, names its unread
+    // deliveries": guards the early `deliveries: "refuse"` answer in `unload_session`; without it the interrupt
+    // aborts the run and hands the deliveries back unread.
+    #[tokio::test]
+    async fn refusing_deliveries_names_a_busy_sessions_unwritten_ones_and_interrupts_nothing() {
+        let port = port();
+        busy_with_unwritten_deliveries(&port, &["device:d/second", "device:d/third"]);
+        let pending = json!({"deliveries":["device:d/second","device:d/third"]});
+        // Without the option and without interrupt the run is the answer, as before.
+        let plain = unload_session(&port, &unload(json!({}))).await;
+        assert_eq!(plain["data"]["reason"], "turn_active");
+        assert!(plain["data"].get("pending").is_none());
+        // With it, the unread deliveries are the answer whether or not the caller asked to interrupt.
+        for fields in [
+            json!({"deliveries":"refuse"}),
+            json!({"deliveries":"refuse","interrupt":true}),
+        ] {
+            let refused = unload_session(&port, &unload(fields)).await;
+            assert_eq!(refused["data"]["outcome"], "refused");
+            assert_eq!(refused["data"]["reason"], "work_pending");
+            assert_eq!(refused["data"]["pending"], pending);
+            assert_eq!(
+                refused["data"]["action"],
+                ACTION_WORK_PENDING_REFUSED_DELIVERIES
+            );
+            assert!(refused["data"].get("dropped").is_none());
+        }
+        assert_eq!(port.live.aborts.load(Ordering::SeqCst), 0);
+        assert_eq!(port.live.taken.load(Ordering::SeqCst), 0);
+        assert_eq!(port.torn_down.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            *port.live.pending.lock().unwrap(),
+            vec!["device:d/second", "device:d/third"]
+        );
+    }
+
+    // senpi#7004 "the caller chose to drop them": the default mode interrupts and names what it handed back.
+    #[tokio::test]
+    async fn an_interrupting_unload_hands_back_unwritten_deliveries_and_names_them() {
+        let port = port();
+        busy_with_unwritten_deliveries(&port, &["device:d/second"]);
+        let unloaded = unload_session(&port, &unload(json!({"interrupt":true}))).await;
+        assert_eq!(unloaded["data"]["outcome"], "unloaded");
+        assert_eq!(
+            unloaded["data"]["dropped"],
+            json!({"deliveries":["device:d/second"]})
+        );
+        assert_eq!(port.live.aborts.load(Ordering::SeqCst), 1);
+        assert_eq!(port.live.taken.load(Ordering::SeqCst), 1);
+        assert!(port.live.pending.lock().unwrap().is_empty());
+        assert_eq!(port.torn_down.load(Ordering::SeqCst), 1);
+    }
+
+    // senpi#7004 "still hands back an idle session's stranded deliveries" (senpi#6971): no `turn_active` blocker, so
+    // even `deliveries: "refuse"` hands them back; without an interrupt they are a `work_pending` refusal naming them.
+    #[tokio::test]
+    async fn an_idle_sessions_stranded_deliveries_are_named_then_handed_back() {
+        let port = port();
+        *port.live.pending.lock().unwrap() = vec!["device:d/second".to_owned()];
+        let refused = unload_session(&port, &unload(json!({}))).await;
+        assert_eq!(refused["data"]["reason"], "work_pending");
+        assert_eq!(
+            refused["data"]["pending"],
+            json!({"deliveries":["device:d/second"]})
+        );
+        assert_eq!(refused["data"]["action"], ACTION_WORK_PENDING);
+        let unloaded = unload_session(
+            &port,
+            &unload(json!({"interrupt":true,"deliveries":"refuse"})),
+        )
+        .await;
+        assert_eq!(unloaded["data"]["outcome"], "unloaded");
+        assert_eq!(
+            unloaded["data"]["dropped"],
+            json!({"deliveries":["device:d/second"]})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_naming_deliveries_is_recorded_and_replayed_and_the_option_is_part_of_the_effect()
+     {
+        let port = port();
+        *port.live.effects.lock().unwrap() = Some(Arc::new(FakeSession::new("unload-pending")));
+        busy_with_unwritten_deliveries(&port, &["device:d/second"]);
+        let pending = json!({"deliveries":["device:d/second"]});
+        let command = unload(json!({"effectId":"u3","deliveries":"refuse","interrupt":true}));
+        let first = unload_session(&port, &command).await;
+        assert_eq!(first["data"]["outcome"], "refused");
+        assert_eq!(first["data"]["state"], "failed");
+        assert_eq!(first["data"]["pending"], pending);
+        assert_eq!(first["data"]["effect"]["pending"], pending);
+        let replay = unload_session(&port, &command).await;
+        assert_eq!(replay["data"]["reason"], "work_pending");
+        assert_eq!(replay["data"]["pending"], pending);
+        assert_eq!(replay["data"]["replayed"], true);
+        // The option is part of the effect: the same id without it is another request, never a replay of the refusal.
+        let conflict =
+            unload_session(&port, &unload(json!({"effectId":"u3","interrupt":true}))).await;
+        assert_eq!(conflict["success"], false);
+        assert_eq!(conflict["errorCode"], "effect_id_conflict");
+        EffectLedger::forget("unload-pending");
+        ClientAdmissions::forget("unload-pending");
+    }
+
+    #[tokio::test]
+    async fn an_effect_unload_records_the_deliveries_an_interrupt_handed_back_and_replays_them() {
+        let port = port();
+        *port.live.effects.lock().unwrap() = Some(Arc::new(FakeSession::new("unload-dropped")));
+        busy_with_unwritten_deliveries(&port, &["device:d/second"]);
+        let dropped = json!({"deliveries":["device:d/second"]});
+        let command = unload(json!({"effectId":"u4","interrupt":true}));
+        let first = unload_session(&port, &command).await;
+        assert_eq!(first["data"]["outcome"], "unloaded");
+        assert_eq!(first["data"]["dropped"], dropped);
+        assert_eq!(first["data"]["effect"]["dropped"], dropped);
+        assert_eq!(first["data"]["effect"]["disposition"], "unloaded");
+        let replay = unload_session(&port, &command).await;
+        assert_eq!(replay["data"]["outcome"], "unloaded");
+        assert_eq!(replay["data"]["dropped"], dropped);
+        assert_eq!(replay["data"]["replayed"], true);
+        assert_eq!(port.torn_down.load(Ordering::SeqCst), 1);
+        EffectLedger::forget("unload-dropped");
+        ClientAdmissions::forget("unload-dropped");
     }
 }

@@ -3,7 +3,8 @@ use std::fs;
 use std::path::Path;
 
 /// Removes abandoned `.staging-*` directories and version packages that are not current, previous,
-/// or held by a live session lease. A held version stays until a later update.
+/// or held by a live session lease, then the `versions/<v>.lock` files whose version directory is
+/// gone. A held version stays until a later update.
 ///
 /// Current and previous are kept even with no lease: a launcher may have read the pointer and not
 /// acquired `versions/<v>.lock` yet. `keep` is unioned with `current.json` when that file is valid.
@@ -11,10 +12,10 @@ use std::path::Path;
 pub(super) fn run(root: &Path, keep: &[&str]) -> Vec<String> {
     let mut warnings = Vec::new();
     remove_abandoned_staging(root, &mut warnings);
-    let Some(protected) = protected_versions(root, keep, &mut warnings) else {
-        return warnings;
-    };
-    remove_unused_versions(root, &protected, &mut warnings);
+    if let Some(protected) = protected_versions(root, keep, &mut warnings) {
+        remove_unused_versions(root, &protected, &mut warnings);
+    }
+    remove_orphan_locks(root, &mut warnings);
     warnings
 }
 
@@ -108,21 +109,98 @@ fn remove_unused_versions(root: &Path, protected: &BTreeSet<String>, warnings: &
     for name in candidates {
         let directory = versions.join(&name);
         match super::lease::try_exclusive_version(root, &name) {
-            Ok(Some(lock)) => {
-                if let Err(error) = fs::remove_dir_all(&directory)
-                    && error.kind() != std::io::ErrorKind::NotFound
-                {
+            Ok(Some(lock)) => match fs::remove_dir_all(&directory) {
+                Ok(()) => discard_lock(root, &name, lock, warnings),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    discard_lock(root, &name, lock, warnings);
+                }
+                Err(error) => {
                     warnings.push(format!(
                         "cannot remove version {}: {error}",
                         directory.display()
                     ));
+                    drop(lock);
                 }
-                drop(lock);
-            }
+            },
             Ok(None) => {}
             Err(error) => {
                 warnings.push(format!(
                     "cannot check whether version {name} is in use: {error}"
+                ));
+            }
+        }
+    }
+}
+
+/// Removes `versions/<name>.lock` while `lock`, its exclusive lock, is still held, so no session can
+/// take a lease on the file between the check and the removal. Where removing an open file is not
+/// portable the handle is released first; a version without a directory has no payload to start.
+fn discard_lock(root: &Path, name: &str, lock: fs::File, warnings: &mut Vec<String>) {
+    let path = super::lease::version_lock_path(root, name);
+    #[cfg(unix)]
+    let removed = {
+        let removed = fs::remove_file(&path);
+        drop(lock);
+        removed
+    };
+    #[cfg(not(unix))]
+    let removed = {
+        drop(lock);
+        fs::remove_file(&path)
+    };
+    if let Err(error) = removed
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        warnings.push(format!(
+            "cannot remove version lock {}: {error}",
+            path.display()
+        ));
+    }
+}
+
+/// A version's lock outlives the directory it guarded, so one lock file is left behind for every
+/// version ever installed. A lock whose directory is gone and that no session holds is removed; one a
+/// session still holds (its directory deleted by hand) stays until that session ends.
+fn remove_orphan_locks(root: &Path, warnings: &mut Vec<String>) {
+    let versions = root.join("versions");
+    let entries = match fs::read_dir(&versions) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            warnings.push(format!("cannot list {}: {error}", versions.display()));
+            return;
+        }
+    };
+    let mut orphans = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                warnings.push(format!("cannot inspect version lock entry: {error}"));
+                continue;
+            }
+        };
+        let Ok(file_name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(version) = file_name.strip_suffix(".lock") else {
+            continue;
+        };
+        if !super::pointer::is_valid_version(version)
+            || !entry.file_type().is_ok_and(|kind| kind.is_file())
+            || versions.join(version).symlink_metadata().is_ok()
+        {
+            continue;
+        }
+        orphans.push(version.to_owned());
+    }
+    for version in orphans {
+        match super::lease::try_exclusive_version(root, &version) {
+            Ok(Some(lock)) => discard_lock(root, &version, lock, warnings),
+            Ok(None) => {}
+            Err(error) => {
+                warnings.push(format!(
+                    "cannot check whether version {version} is in use: {error}"
                 ));
             }
         }
@@ -201,6 +279,65 @@ mod tests {
             "unreadable pointer blocks version removal"
         );
         assert!(root.path().join("versions/1.2.0").is_dir());
+        Ok(())
+    }
+
+    #[test]
+    fn removes_the_lock_with_its_version_and_the_orphans_older_runs_left()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let versions = root.path().join("versions");
+        for version in ["1.0.0", "1.1.0", "1.2.0"] {
+            fs::create_dir_all(versions.join(version))?;
+        }
+        fs::write(versions.join("0.8.0.lock"), b"")?;
+        fs::write(versions.join("0.9.0.lock"), b"")?;
+        fs::write(versions.join("1.2.0.lock"), b"")?;
+        let session = crate::native_update::install::SessionLease::acquire(root.path(), "1.0.0")?;
+
+        assert!(run(root.path(), &["1.2.0"]).is_empty());
+        assert!(!versions.join("0.8.0.lock").exists(), "orphan lock");
+        assert!(!versions.join("0.9.0.lock").exists(), "orphan lock");
+        assert!(!versions.join("1.1.0").exists());
+        assert!(
+            !versions.join("1.1.0.lock").exists(),
+            "a removed version leaves no lock"
+        );
+        assert!(versions.join("1.0.0").is_dir(), "live lease defers cleanup");
+        assert!(versions.join("1.0.0.lock").is_file(), "held lock stays");
+        assert!(
+            versions.join("1.2.0.lock").is_file(),
+            "an installed version keeps its lock"
+        );
+
+        drop(session);
+        assert!(run(root.path(), &["1.2.0"]).is_empty());
+        assert!(!versions.join("1.0.0").exists());
+        assert!(!versions.join("1.0.0.lock").exists());
+        assert!(versions.join("1.2.0.lock").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_an_orphan_lock_a_session_still_holds_and_unrelated_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let versions = root.path().join("versions");
+        fs::create_dir_all(&versions)?;
+        fs::write(versions.join("notes.txt"), b"keep")?;
+        let session = crate::native_update::install::SessionLease::acquire(root.path(), "1.0.0")?;
+
+        assert!(run(root.path(), &[]).is_empty());
+        assert!(
+            versions.join("1.0.0.lock").is_file(),
+            "a held lock survives its directory"
+        );
+        assert!(versions.join("notes.txt").is_file());
+
+        drop(session);
+        assert!(run(root.path(), &[]).is_empty());
+        assert!(!versions.join("1.0.0.lock").exists());
+        assert!(versions.join("notes.txt").is_file());
         Ok(())
     }
 }

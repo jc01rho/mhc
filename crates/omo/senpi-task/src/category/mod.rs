@@ -1,5 +1,6 @@
 //! Builtin delegation categories and their model resolution (`category/` in TypeScript).
 
+pub mod architect_edits;
 mod builtins;
 mod fallback_chains;
 mod prompts;

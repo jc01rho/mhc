@@ -42,6 +42,26 @@ signal!(
     r"(?:^|[/@:._-])gpt[._-]?6(?:[._-]\d+|\d)?[._-](?:astra|sol|luna)(?:$|[/@:._-])"
 );
 
+// GPT-6.2 Astra and Sol (2026-11-17) have their own guide and codex template, so they resolve to the
+// gpt-6.2 preset ahead of the family signal: gpt-6.2-sol, gpt-6.2-astra-fast, openai/gpt-6.2-sol,
+// Venice's dotless openai-gpt-62-astra, and the display names "GPT-6.2 Astra" / "GPT-6.2 Sol".
+signal!(
+    has_gpt62_signal,
+    is_gpt62_model,
+    r"(?:^|[/@:._-])gpt[._-]?6(?:[._-]2|2)[._-](?:astra|sol)(?:$|[/@:._-])"
+);
+
+// The goal extension's audit-free continuation prompt follows the Astra tier of any GPT-6 point
+// release (senpi#6975): gpt-6-astra, gpt-6-astra-fast, gpt-6.2-astra, gpt-6.2-astra-ultrafast,
+// Venice's dotless openai-gpt-62-astra, and an effort decorator after a colon. Sol and Luna stay
+// out, and so do unknown Astra siblings (previews, dated snapshots).
+pub fn has_gpt6_astra_signal(value: &str) -> bool {
+    static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+        re(r"(?:^|[/@._-])gpt[._-]?6(?:[._-]\d+|\d)*[._-]astra(?:[._-](?:fast|ultrafast))?(?:$|:)")
+    });
+    PATTERN.is_match(&normalize_model_id(value))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gpt5Version {
     Gpt52,

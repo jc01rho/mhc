@@ -180,6 +180,85 @@ impl HostTransport for CliHostTransport {
             Err(error) => Err(HostSessionCloseError { message: error }),
         }
     }
+
+    fn generation_view(&self) -> Option<Arc<dyn senpi_task::lifecycle::HostGenerationView>> {
+        let agent_dir = self.agent_dir.clone()?;
+        Some(Arc::new(DaemonGenerationView { agent_dir }))
+    }
+}
+
+/// senpi-task `runners/rpc-host/generation-view.ts` (omo#11765): the endpoint's daemon state
+/// (`<daemonDir>/generations/<instanceId>/`, `<daemonDir>/handover-parked/<sha256(path)[:16]>.json`),
+/// read-only. Anything but a definite "absent" reads as present, so an unreadable directory never
+/// proves a session ended.
+struct DaemonGenerationView {
+    agent_dir: std::path::PathBuf,
+}
+
+impl senpi_task::lifecycle::HostGenerationView for DaemonGenerationView {
+    fn generation_present(&self, host_session: &senpi_task::state::HostSessionIdentity) -> bool {
+        if !is_generation_id(&host_session.instance_id) {
+            return true;
+        }
+        let paths = maho_rpc::host_daemon_paths::create_host_daemon_paths(
+            &host_session.socket,
+            &self.agent_dir,
+        );
+        present(&paths.generations_dir.join(&host_session.instance_id))
+    }
+
+    fn parked_entry_present(&self, host_session: &senpi_task::state::HostSessionIdentity) -> bool {
+        let paths = maho_rpc::host_daemon_paths::create_host_daemon_paths(
+            &host_session.socket,
+            &self.agent_dir,
+        );
+        let parked = paths.dir.join("handover-parked");
+        session_path_spellings(&host_session.session_path)
+            .iter()
+            .any(|path| present(&parked.join(format!("{}.json", parked_entry_name(path)))))
+    }
+}
+
+fn is_generation_id(id: &str) -> bool {
+    id.chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        && !id.contains("..")
+}
+
+fn present(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+fn parked_entry_name(session_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(session_path.as_bytes())
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The host keys a parked entry by the path it opened the session with, which may be the canonical one.
+fn session_path_spellings(session_path: &str) -> Vec<String> {
+    match std::fs::canonicalize(session_path) {
+        Ok(canonical) => {
+            let canonical = canonical.to_string_lossy().into_owned();
+            if canonical == session_path {
+                vec![canonical]
+            } else {
+                vec![session_path.to_owned(), canonical]
+            }
+        }
+        Err(_) => vec![session_path.to_owned()],
+    }
 }
 
 /// `liveness.daemonReachable`: the engine probe (`get_protocol_info`) answering means the daemon is

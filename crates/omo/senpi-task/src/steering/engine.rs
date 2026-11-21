@@ -15,7 +15,7 @@ use super::types::{
 };
 use crate::agents::interaction_policy_for_agent;
 use crate::host::HostError;
-use crate::lifecycle::DestroyCause;
+use crate::lifecycle::{DestroyCause, is_host_session_record};
 use crate::manager::ManagedChildHandle;
 use crate::manager::child_handle::InputIdentity;
 use crate::runners::rpc_host::session_wire::is_host_session_unresponsive;
@@ -84,6 +84,9 @@ fn stale_send(record: &TaskRecord) -> SendOutcome {
         ),
     }
 }
+
+#[path = "host_session_cancel.rs"]
+mod host_session_cancel;
 
 fn stale_cancel(record: &TaskRecord) -> CancelOutcome {
     CancelOutcome::Stale {
@@ -655,6 +658,9 @@ impl SteeringEngine {
             });
         }
         let reachable = (self.port.live_handle)(&record.task_id);
+        if reachable.is_none() && is_host_session_record(&record) {
+            return self.cancel_unhandled_host_session(&record, reason, expected_run_epoch);
+        }
         let recovering = reachable
             .as_ref()
             .is_some_and(|handle| handle.transport_recovering());

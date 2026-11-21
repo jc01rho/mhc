@@ -1,23 +1,35 @@
 //! X11 input: XTEST for the desktop and foreground delivery (behind the
 //! `_NET_ACTIVE_WINDOW` focus guard), `XSendEvent` for background delivery
-//! to toolkits that accept synthetic events, and held-state tracking for
-//! `release_all`. Background input to a filtering toolkit is refused with
-//! `BackgroundUnavailable`, never retried in the foreground.
+//! to toolkits known to accept synthetic events, and held-state tracking for
+//! `release_all`. Background input to any other client is refused with
+//! `BackgroundUnavailable` before anything is sent, never retried in the
+//! foreground.
 
+mod client_process;
 mod connection;
+mod connection_client;
 mod connection_events;
 mod connection_pointer;
 mod focus;
 mod held;
+mod holds;
 mod keys;
 mod send_event;
 mod server;
 mod settle;
+mod synthetic_input;
 mod toolkit_filter;
+mod transitions;
 mod xtest;
 
 #[cfg(test)]
+mod background_truth_tests;
+#[cfg(test)]
 mod child_tests;
+#[cfg(test)]
+mod client_process_tests;
+#[cfg(test)]
+mod connection_client_tests;
 #[cfg(test)]
 pub(crate) mod fake;
 #[cfg(test)]
@@ -38,11 +50,11 @@ use senpi_desktop_core::types::{DesktopPoint, Target};
 use x11rb::protocol::xproto::Window;
 
 pub use connection::X11InputConnection;
-use held::{Held, HeldButton, HeldKey, Route};
+use held::{Held, Route};
 use keys::Stroke;
 pub use keys::{keysym_variants, Keymap};
 pub use server::InputServer;
-use server::{FakeInput, SentEvent, Spot};
+use server::Spot;
 
 pub struct X11Input<S = X11InputConnection> {
     server: S,
@@ -83,13 +95,13 @@ impl<S: InputServer> X11Input<S> {
     ) -> CoreResult<()> {
         self.last_pointer_motion = None;
         match (target, mode) {
-            (Target::Desktop, _) => self.pointer_xtest(event, None),
+            (Target::Desktop | Target::Display(_), _) => self.pointer_xtest(event, None),
             (Target::Window(id), DeliveryMode::Foreground) => {
                 self.pointer_foreground(parse_window(id)?, event)
             }
             (Target::Window(id), DeliveryMode::Background) => {
                 let window = self.background_window(id, send_event::event_kind(event))?;
-                self.pointer_send_event(window, event)
+                self.pointer_send_event(window, id, event)
             }
         }
     }
@@ -211,7 +223,7 @@ impl<S: InputServer> X11Input<S> {
         deliver: impl FnOnce(&mut Self, Route) -> CoreResult<()>,
     ) -> CoreResult<()> {
         let result = match (target, mode) {
-            (Target::Desktop, _) => deliver(self, Route::Xtest),
+            (Target::Desktop | Target::Display(_), _) => deliver(self, Route::Xtest),
             (Target::Window(id), DeliveryMode::Foreground) => {
                 self.with_foreground(parse_window(id)?, |this| deliver(this, Route::Xtest))
             }
@@ -223,17 +235,42 @@ impl<S: InputServer> X11Input<S> {
         result.and_then(|()| self.server.flush())
     }
 
-    /// The window of a background request, refused when its toolkit drops
-    /// synthetic events.
+    /// The window of a background request, refused unless its client is
+    /// known to accept synthetic events.
     fn background_window(&self, id: &str, kind: &str) -> CoreResult<Window> {
         let window = parse_window(id)?;
         let class = self.server.wm_class(window).unwrap_or_default();
-        match toolkit_filter::filtering_toolkit(&class) {
-            Some(toolkit) => Err(toolkit_filter::background_unavailable(
-                id, kind, toolkit, &class,
-            )),
-            None => Ok(window),
+        self.accepting(window, &class, id, kind)?;
+        Ok(window)
+    }
+
+    /// The window a background pointer event at root `(x, y)` goes to: the
+    /// deepest mapped descendant of `top`, refused unless its own client also
+    /// accepts synthetic events (an embedded window can belong to another
+    /// process, such as a GTK plug inside an Xt or Tk shell).
+    fn background_event_window(
+        &self,
+        top: Window,
+        id: &str,
+        kind: &str,
+        x: i16,
+        y: i16,
+    ) -> CoreResult<Window> {
+        let window = self.server.target_at(top, x, y)?;
+        if window != top {
+            let class = self
+                .server
+                .wm_class(window)
+                .or_else(|| self.server.wm_class(top))
+                .unwrap_or_default();
+            self.accepting(window, &class, id, kind)?;
         }
+        Ok(window)
+    }
+
+    fn accepting(&self, window: Window, class: &[u8], id: &str, kind: &str) -> CoreResult<()> {
+        let acceptance = synthetic_input::acceptance(class, || self.server.client_process(window));
+        synthetic_input::refusal(id, kind, acceptance).map_or(Ok(()), Err)
     }
 
     /// Presses `strokes` in order and releases them in reverse; each event
@@ -258,60 +295,6 @@ impl<S: InputServer> X11Input<S> {
             state &= !stroke.mask;
         }
         first_error.map_or(Ok(()), Err)
-    }
-
-    /// The single key-event emitter: a press is recorded as held before it
-    /// is sent, a release forgotten only once it was sent.
-    fn key(&mut self, route: Route, stroke: Stroke, press: bool, state: u16) -> CoreResult<()> {
-        let held = HeldKey {
-            route,
-            code: stroke.code,
-        };
-        if press {
-            self.held.key_down(held);
-        }
-        match route {
-            Route::Xtest => self.server.fake(FakeInput::Key {
-                code: stroke.code,
-                press,
-            }),
-            Route::Window(window) => self.server.send(
-                window,
-                SentEvent::Key {
-                    code: stroke.code,
-                    press,
-                    state,
-                },
-            ),
-        }?;
-        if !press {
-            self.held.key_up(held);
-        }
-        Ok(())
-    }
-
-    /// The single button-event emitter, with the same held-state rules.
-    fn button(&mut self, button: HeldButton, press: bool, state: u16) -> CoreResult<()> {
-        if press {
-            self.held.button_down(button);
-        }
-        let HeldButton { route, detail, at } = button;
-        match route {
-            Route::Xtest => self.server.fake(FakeInput::Button { detail, press }),
-            Route::Window(window) => self.server.send(
-                window,
-                SentEvent::Button {
-                    detail,
-                    press,
-                    at,
-                    state,
-                },
-            ),
-        }?;
-        if !press {
-            self.held.button_up(route, detail);
-        }
-        Ok(())
     }
 }
 

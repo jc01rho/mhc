@@ -2,11 +2,15 @@
 pub mod account_chain;
 pub mod approve;
 pub mod device_keyring;
+pub mod device_switch;
 pub mod enable;
+pub mod freeze_eligibility;
+pub mod freeze_settler;
 pub mod http;
 pub mod join;
 pub mod pairing;
 pub mod pairing_http;
+pub mod revocation_view;
 pub mod sealer;
 pub mod session;
 pub mod verifier;
@@ -24,3 +28,6 @@ mod pairing_flows_tests;
 
 #[cfg(test)]
 mod join_tests;
+
+#[cfg(test)]
+mod device_switch_tests;

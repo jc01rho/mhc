@@ -12,6 +12,7 @@ pub const THREAD_ERROR_CODES: &[&str] = &[
     "invalid_arguments",
     "caller_context_missing",
     "not_found",
+    "reply_target_mismatch",
     "ambiguous_target",
     "scope_denied",
     "name_conflict",
@@ -20,6 +21,7 @@ pub const THREAD_ERROR_CODES: &[&str] = &[
     "foreign_live_owner",
     "no_active_turn",
     "turn_conflict",
+    "turn_active",
     "not_steerable",
     "message_too_large",
     "queue_full",
@@ -28,6 +30,7 @@ pub const THREAD_ERROR_CODES: &[&str] = &[
     "idempotency_conflict",
     "idempotency_in_progress",
     "idempotency_uncertain",
+    "delivered_unconfirmed",
     "approval_unavailable",
     "approval_route_locked",
     "partial_commit",
@@ -40,6 +43,7 @@ pub const THREAD_ERROR_CODES: &[&str] = &[
     "model_ambiguous",
     "thinking_level_unsupported",
     "loop_detected",
+    "chain_count_limit",
     "binding_conflict",
     "binding_mismatch",
     "binding_inactive",
@@ -47,6 +51,10 @@ pub const THREAD_ERROR_CODES: &[&str] = &[
     "stale_token",
     "already_answered",
     "answer_in_progress",
+    "device_offline",
+    "relay_requires_paid_plan",
+    "alias_taken",
+    "gateway_schema_too_new",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

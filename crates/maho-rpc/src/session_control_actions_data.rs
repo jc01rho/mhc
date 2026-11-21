@@ -3,6 +3,7 @@
 //! `interrupt` outcome.
 use maho_ai::types::ModelThinkingLevel;
 use maho_core::agent_session::AgentSession;
+use maho_ext_api::RunBackgroundStopOutcome;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::future::Future;
@@ -51,14 +52,19 @@ pub struct InterruptOutcome {
     pub interrupted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// Present when the caller asked `background: "stop"`: the interrupted turn's background jobs it stopped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<RunBackgroundStopOutcome>,
 }
 
-/// `interrupt { turnId? }`: stops the running turn and only that. An idle session answers
+/// `interrupt { turnId?, background? }`: stops the running turn and only that. An idle session answers
 /// `interrupted: false`; so does a `turnId` naming a turn that is no longer the running one, which then
-/// answers the running turn's id. `stop` resolves once the turn has stopped.
+/// answers the running turn's id. `stop` resolves once the turn has stopped; with `background: "stop"` the
+/// background jobs that turn started are stopped after it, and the answer names them.
 pub async fn interrupt_running_turn<F, Fut>(
     session: &AgentSession,
     requested_turn_id: Option<&Value>,
+    background: Option<&str>,
     stop: F,
 ) -> InterruptOutcome
 where
@@ -70,25 +76,33 @@ where
         session.is_streaming() || session.retry_attempt() != 0,
         turn_id,
         requested_turn_id,
+        background == Some("stop"),
         stop,
+        |turn_id| async move { session.stop_run_background_jobs(&turn_id).await },
     )
     .await
 }
 
-async fn decide_interrupt<F, Fut>(
+async fn decide_interrupt<F, Fut, G, GFut>(
     running: bool,
     turn_id: String,
     requested_turn_id: Option<&Value>,
+    stops_background: bool,
     stop: F,
+    stop_background: G,
 ) -> InterruptOutcome
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ()>,
+    G: FnOnce(String) -> GFut,
+    GFut: Future<Output = RunBackgroundStopOutcome>,
 {
+    let nothing = || stops_background.then(RunBackgroundStopOutcome::default);
     if !running {
         return InterruptOutcome {
             interrupted: false,
             turn_id: None,
+            background: nothing(),
         };
     }
     if let Some(Value::String(requested)) = requested_turn_id
@@ -97,19 +111,31 @@ where
         return InterruptOutcome {
             interrupted: false,
             turn_id: Some(turn_id),
+            background: nothing(),
         };
     }
     stop().await;
+    let background = if stops_background {
+        Some(stop_background(turn_id.clone()).await)
+    } else {
+        None
+    };
     InterruptOutcome {
         interrupted: true,
         turn_id: Some(turn_id),
+        background,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maho_ext_api::{RunBackgroundJobKind, StoppedRunBackgroundJob};
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn no_background(_turn_id: String) -> std::future::Ready<RunBackgroundStopOutcome> {
+        std::future::ready(RunBackgroundStopOutcome::default())
+    }
 
     #[test]
     fn the_refusal_text_names_the_level() {
@@ -122,26 +148,38 @@ mod tests {
     #[tokio::test]
     async fn idle_and_stale_turns_are_not_interrupted() {
         let stopped = AtomicBool::new(false);
-        let idle = decide_interrupt(false, "3".into(), None, || async {
-            stopped.store(true, Ordering::SeqCst)
-        })
+        let idle = decide_interrupt(
+            false,
+            "3".into(),
+            None,
+            false,
+            || async { stopped.store(true, Ordering::SeqCst) },
+            no_background,
+        )
         .await;
         assert_eq!(
             idle,
             InterruptOutcome {
                 interrupted: false,
-                turn_id: None
+                turn_id: None,
+                background: None
             }
         );
-        let stale = decide_interrupt(true, "3".into(), Some(&json!("2")), || async {
-            stopped.store(true, Ordering::SeqCst)
-        })
+        let stale = decide_interrupt(
+            true,
+            "3".into(),
+            Some(&json!("2")),
+            false,
+            || async { stopped.store(true, Ordering::SeqCst) },
+            no_background,
+        )
         .await;
         assert_eq!(
             stale,
             InterruptOutcome {
                 interrupted: false,
-                turn_id: Some("3".into())
+                turn_id: Some("3".into()),
+                background: None
             }
         );
         assert!(!stopped.load(Ordering::SeqCst));
@@ -150,17 +188,97 @@ mod tests {
     #[tokio::test]
     async fn the_running_turn_is_stopped_for_a_matching_or_absent_id() {
         let stopped = AtomicBool::new(false);
-        let outcome = decide_interrupt(true, "3".into(), Some(&json!("3")), || async {
-            stopped.store(true, Ordering::SeqCst)
-        })
+        let background_stopped = AtomicBool::new(false);
+        let outcome = decide_interrupt(
+            true,
+            "3".into(),
+            Some(&json!("3")),
+            false,
+            || async { stopped.store(true, Ordering::SeqCst) },
+            |_| async {
+                background_stopped.store(true, Ordering::SeqCst);
+                RunBackgroundStopOutcome::default()
+            },
+        )
         .await;
         assert_eq!(
             serde_json::to_value(&outcome).expect("wire"),
             json!({"interrupted":true,"turnId":"3"})
         );
         assert!(stopped.load(Ordering::SeqCst));
+        assert!(!background_stopped.load(Ordering::SeqCst));
         // A non-string turnId does not name a turn.
-        let any = decide_interrupt(true, "3".into(), Some(&json!(3)), || async {}).await;
+        let any = decide_interrupt(
+            true,
+            "3".into(),
+            Some(&json!(3)),
+            false,
+            || async {},
+            no_background,
+        )
+        .await;
         assert!(any.interrupted);
+    }
+
+    #[tokio::test]
+    async fn background_stop_runs_after_the_turn_stopped_and_names_what_it_stopped() {
+        let log = std::sync::Mutex::new(Vec::new());
+        let log = &log;
+        let outcome = decide_interrupt(
+            true,
+            "3".into(),
+            Some(&json!("3")),
+            true,
+            || async move { log.lock().expect("log").push("turn".to_owned()) },
+            |turn_id| async move {
+                log.lock()
+                    .expect("log")
+                    .push(format!("background of {turn_id}"));
+                RunBackgroundStopOutcome {
+                    stopped: vec![StoppedRunBackgroundJob {
+                        kind: RunBackgroundJobKind::Bash,
+                        id: "bash_1".into(),
+                        description: Some("sleep 60".into()),
+                    }],
+                    failed: Vec::new(),
+                }
+            },
+        )
+        .await;
+        assert_eq!(*log.lock().expect("log"), ["turn", "background of 3"]);
+        assert_eq!(
+            serde_json::to_value(&outcome).expect("wire"),
+            json!({
+                "interrupted": true,
+                "turnId": "3",
+                "background": {
+                    "stopped": [{"kind": "bash", "id": "bash_1", "description": "sleep 60"}],
+                    "failed": []
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_or_stale_interrupt_answers_an_empty_stop_list_when_background_was_asked() {
+        let idle =
+            decide_interrupt(false, "3".into(), None, true, || async {}, no_background).await;
+        assert_eq!(
+            serde_json::to_value(&idle).expect("wire"),
+            json!({"interrupted": false, "background": {"stopped": [], "failed": []}})
+        );
+        let stale = decide_interrupt(
+            true,
+            "3".into(),
+            Some(&json!("2")),
+            true,
+            || async {},
+            no_background,
+        )
+        .await;
+        assert_eq!(
+            serde_json::to_value(&stale).expect("wire"),
+            json!({"interrupted": false, "turnId": "3", "background": {"stopped": [], "failed": []}})
+        );
     }
 }

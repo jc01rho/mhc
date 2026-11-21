@@ -1,5 +1,5 @@
 //! Port of `omo-senpi/src/components/bundled-skills/contributed-skill.ts` at latest
-//! `455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b`.
+//! `v5.1.79`.
 //!
 //! `readDisabledSkills` reads the `disabled_skills` union through the config loader on every call.
 //! The native union collector (`collect_disabled_skills`) is owned by the config lane (contract
@@ -19,6 +19,13 @@ use omo_config_core::{
 /// one, so the collector expands it to the canonical block plus every alias (upstream
 /// `OMO_CONFIG_LEGACY_HARNESS_ALIASES = { senpi: "native" }` -> keys `[native]` and `[senpi]`).
 pub const HARNESS: &str = "senpi";
+
+/// Bundled skills that are shipped on disk but off by default until opted in (POL-03, omo #7593).
+pub const DEFAULT_OPT_IN_SKILLS: &[&str] = &["eval-integrity"];
+pub const ENABLE_EVAL_INTEGRITY_ENV: &str = "OMO_ENABLE_EVAL_INTEGRITY";
+pub const MAHO_ENABLE_EVAL_INTEGRITY_ENV: &str = "MAHO_ENABLE_EVAL_INTEGRITY";
+pub const ENABLED_SKILLS_ENV: &str = "OMO_ENABLED_SKILLS";
+pub const MAHO_ENABLED_SKILLS_ENV: &str = "MAHO_ENABLED_SKILLS";
 
 /// Upstream `pi.getCommands()`: one entry per registered slash command. Optional as a whole —
 /// `None` means the host predates the API, exactly like upstream's `getCommands === undefined`.
@@ -77,6 +84,46 @@ pub fn read_disabled_skills(cwd: &Path, env: &BTreeMap<String, String>) -> BTree
     .collect()
 }
 
+fn is_truthy_env(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn list_env_contains(env: &BTreeMap<String, String>, key: &str, skill_name: &str) -> bool {
+    env.get(key).is_some_and(|raw| {
+        raw.split([',', ' '])
+            .map(str::trim)
+            .any(|item| item == skill_name)
+    })
+}
+
+/// Whether a bundled skill is enabled by default or explicitly opted in (POL-03).
+///
+/// Skills outside [`DEFAULT_OPT_IN_SKILLS`] are always enabled unless listed in `disabled_skills`.
+/// An opt-in skill such as `eval-integrity` (#7593) is off by default and turns on only through the
+/// environment: `OMO_ENABLE_EVAL_INTEGRITY` / `MAHO_ENABLE_EVAL_INTEGRITY` for that skill, or the
+/// shared `OMO_ENABLED_SKILLS` / `MAHO_ENABLED_SKILLS` list for any of them. A config key cannot do
+/// it, because `omo.jsonc` accepts no skill-enablement key and strips unknown keys.
+pub fn is_opt_in_skill_enabled(name: &str, env: &BTreeMap<String, String>) -> bool {
+    if !DEFAULT_OPT_IN_SKILLS.contains(&name) {
+        return true;
+    }
+    if name == "eval-integrity"
+        && (env
+            .get(ENABLE_EVAL_INTEGRITY_ENV)
+            .is_some_and(|v| is_truthy_env(v))
+            || env
+                .get(MAHO_ENABLE_EVAL_INTEGRITY_ENV)
+                .is_some_and(|v| is_truthy_env(v)))
+    {
+        return true;
+    }
+    list_env_contains(env, ENABLED_SKILLS_ENV, name)
+        || list_env_contains(env, MAHO_ENABLED_SKILLS_ENV, name)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContributedSkill {
     Contributed { path: PathBuf },
@@ -92,16 +139,57 @@ pub struct ResolveContributedSkillOptions<'a> {
     pub env: &'a BTreeMap<String, String>,
 }
 
+/// Whether the session's skills listing resolves a bundled skill to a copy other than the bundled one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BundledSkillProvenance {
+    pub shadowed: bool,
+}
+
+/// Which file the session's skills listing resolves for `name`, compared with the bundled copy at
+/// `builtin_path`. This is the onboarding tour's fail-open read: senpi appends extension skill paths
+/// after the user, project, settings and package skills it has already loaded and keeps the first
+/// skill of each name, so a same-name user or project skill wins and the built-in drops out of the
+/// listing (omo #12544 review). No entry reads as unshadowed: the host may predate `getCommands`,
+/// discovery may not have run yet, or `disabled_skills` may hide the skill, and in all three the name
+/// form is the fail-open default for the tour (the disabled case falls back to the path in the
+/// caller, where the config is known).
+///
+/// Do NOT reuse this for contributed skills: [`resolve_contributed_skill`] keeps the older, stricter
+/// rule (any loaded same-name entry shadows), because a contributed duplicate that the listing
+/// cannot place would otherwise surface as a skill-conflict collision.
+pub fn resolve_bundled_skill_provenance(
+    commands: Option<&[HostCommandInfo]>,
+    name: &str,
+    builtin_path: &Path,
+) -> BundledSkillProvenance {
+    let command = format!("skill:{name}");
+    let owner_path = commands
+        .and_then(|commands| {
+            commands
+                .iter()
+                .find(|entry| entry.source == "skill" && entry.name == command)
+        })
+        .and_then(|loaded| loaded.source_info_path.as_deref());
+    BundledSkillProvenance {
+        shadowed: owner_path.is_some_and(|owner_path| {
+            canonical_path(Path::new(owner_path)) != canonical_path(builtin_path)
+        }),
+    }
+}
+
 /// One `resources_discover` pass for a skill an omo component contributes on its own (computer-use,
 /// x-search), as opposed to the bundled skills directory.
 ///
 /// senpi appends extension skill paths after the user, project, settings and package skills it has
 /// already loaded, keeps the first skill of each name, and reports every later one as a "Skill
-/// conflicts" collision. A same-name skill that is already loaded wins either way, so ours yields
-/// without a word. Our own copy left over from an earlier pass is not a rival. `disabled_skills`
-/// hides the skill exactly as it hides a bundled one.
+/// conflicts" collision (#9160). A same-name skill that is already loaded wins either way, so ours
+/// yields without a word, even when the listing carries no `sourceInfo.path` for it, because the entry
+/// still occupies the name and contributing ours would collide. Our own copy left over from an
+/// earlier pass is not a rival. `disabled_skills` hides the skill exactly as it hides a bundled one.
 pub fn resolve_contributed_skill(options: ResolveContributedSkillOptions<'_>) -> ContributedSkill {
-    if read_disabled_skills(&options.cwd, options.env).contains(options.name) {
+    if read_disabled_skills(&options.cwd, options.env).contains(options.name)
+        || !is_opt_in_skill_enabled(options.name, options.env)
+    {
         return ContributedSkill::Disabled;
     }
     let command = format!("skill:{}", options.name);

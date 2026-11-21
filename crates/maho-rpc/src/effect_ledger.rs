@@ -9,9 +9,9 @@ use crate::effect_outcome_copy::{
     context_budget_outcome, effect_outcomes, model_switch_error_outcome,
 };
 use crate::effect_record::{
-    EffectActor, EffectCommandKind, EffectIdConflict, EffectKind, EffectOutcome, EffectState,
-    EffectStatus, QueuedChangeAnswer, RPC_EFFECT_ENTRY, RpcEffectRecord, effect_fingerprint,
-    is_terminal_effect_state, parse_rpc_effect_record,
+    EffectActor, EffectCommandKind, EffectDeliveries, EffectIdConflict, EffectKind, EffectOutcome,
+    EffectState, EffectStatus, QueuedChangeAnswer, RPC_EFFECT_ENTRY, RpcEffectRecord,
+    effect_fingerprint, is_terminal_effect_state, parse_rpc_effect_record,
 };
 use crate::effect_session::{EffectSession, EffectSessionEvent, ModelChangeCancelReason};
 use crate::effect_status::{project_admission, project_effect};
@@ -84,6 +84,10 @@ pub struct EffectPatch {
     pub disposition: Option<String>,
     pub outcome: Option<EffectOutcome>,
     pub answer: Option<QueuedChangeAnswer>,
+    /// Deliveries an interrupting unload handed back unwritten (senpi#6971).
+    pub dropped: Option<EffectDeliveries>,
+    /// A refused unload's unwritten deliveries (senpi#7004).
+    pub pending: Option<EffectDeliveries>,
 }
 
 pub struct EffectLedger {
@@ -282,6 +286,7 @@ impl EffectLedger {
                         disposition: Some("no_active_turn".into()),
                         outcome: Some(effect_outcomes::ABORT_INTERRUPTED_BY_REOPEN.outcome()),
                         answer: None,
+                        ..Default::default()
                     },
                 ),
                 EffectKind::SetModel if switched_by.contains(id) => (EffectState::Done, applied()),
@@ -354,6 +359,8 @@ impl EffectLedger {
             disposition: None,
             outcome: None,
             answer: None,
+            dropped: None,
+            pending: None,
             by,
             accepted_at: at.clone(),
             updated_at: at,
@@ -382,6 +389,8 @@ impl EffectLedger {
             disposition: patch.disposition.or(current.disposition.clone()),
             outcome: patch.outcome.or(current.outcome.clone()),
             answer: patch.answer.or(current.answer.clone()),
+            dropped: patch.dropped.or(current.dropped.clone()),
+            pending: patch.pending.or(current.pending.clone()),
             updated_at: now(),
             ..current
         });

@@ -5,9 +5,6 @@ use std::sync::Arc;
 use crate::otel_providers::active_span_context;
 use crate::otlp_http::OtlpFetch;
 
-/// Our own hosts: the collector and the omo-service API. Model-provider hosts are never listed.
-pub const OMO_TRACE_HOSTS: [&str; 2] = ["t.omo.dev", "api.omo.dev"];
-
 pub fn url_host(url: &str) -> Option<String> {
     url::Url::parse(url)
         .ok()

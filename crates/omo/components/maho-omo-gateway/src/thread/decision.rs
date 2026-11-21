@@ -49,6 +49,11 @@ impl RefusalKind {
 }
 
 /// The 15-cell table {idle, mid_turn, waiting_question, compacting, offline} x {auto, steer, follow_up}.
+///
+/// `auto`, the default every send takes, steers the turn the target is running (omo #12921: a message to a busy
+/// session reaches the turn in flight, as typing into its terminal does) and starts a turn when the target is idle; it
+/// queues behind only what cannot be steered (a waiting question, a compaction, or a running turn whose epoch the
+/// engine does not report), and `follow_up` queues on request.
 pub fn decide_delivery(
     state: TargetState,
     mode: GatewayDeliveryMode,
@@ -78,6 +83,16 @@ pub fn decide_delivery(
         return DeliveryDecision::Admit {
             deliver_as: GatewayDeliveryMode::Steer,
             expected_turn_id,
+            expect: Expect::Steered,
+        };
+    }
+    if mode == GatewayDeliveryMode::Auto
+        && state == TargetState::Phase(RuntimePhase::MidTurn)
+        && turn_epoch.is_some()
+    {
+        return DeliveryDecision::Admit {
+            deliver_as: GatewayDeliveryMode::Steer,
+            expected_turn_id: turn_epoch,
             expect: Expect::Steered,
         };
     }
@@ -167,6 +182,100 @@ mod tests {
             decide_delivery(
                 TargetState::Phase(RuntimePhase::Compacting),
                 GatewayDeliveryMode::FollowUp,
+                None,
+                None
+            ),
+            DeliveryDecision::Admit {
+                deliver_as: GatewayDeliveryMode::FollowUp,
+                expected_turn_id: None,
+                expect: Expect::Queued
+            }
+        );
+    }
+
+    fn decided(decision: DeliveryDecision) -> String {
+        match decision {
+            DeliveryDecision::Admit {
+                deliver_as, expect, ..
+            } => format!("admit:{}:{expect:?}", deliver_as.as_str()),
+            DeliveryDecision::Refuse { reason } => format!("refuse:{}", reason.as_str()),
+            DeliveryDecision::QueuedOffline => "queued_offline".to_owned(),
+        }
+    }
+
+    #[test]
+    fn every_cell_of_the_fifteen_cell_table() {
+        let states = [
+            ("idle", TargetState::Phase(RuntimePhase::Idle)),
+            ("mid_turn", TargetState::Phase(RuntimePhase::MidTurn)),
+            (
+                "waiting_question",
+                TargetState::Phase(RuntimePhase::WaitingQuestion),
+            ),
+            ("compacting", TargetState::Phase(RuntimePhase::Compacting)),
+            ("offline", TargetState::Offline),
+        ];
+        let modes = [
+            GatewayDeliveryMode::Auto,
+            GatewayDeliveryMode::Steer,
+            GatewayDeliveryMode::FollowUp,
+        ];
+        let expected = [
+            [
+                "admit:follow_up:Started",
+                "refuse:not_steerable",
+                "admit:follow_up:Started",
+            ],
+            [
+                "admit:steer:Steered",
+                "admit:steer:Steered",
+                "admit:follow_up:Queued",
+            ],
+            [
+                "admit:follow_up:Queued",
+                "refuse:not_steerable",
+                "admit:follow_up:Queued",
+            ],
+            [
+                "admit:follow_up:Queued",
+                "refuse:not_steerable",
+                "admit:follow_up:Queued",
+            ],
+            ["queued_offline", "refuse:turn_conflict", "queued_offline"],
+        ];
+        for ((label, state), row) in states.into_iter().zip(expected) {
+            for (mode, cell) in modes.into_iter().zip(row) {
+                assert_eq!(
+                    decided(decide_delivery(state, mode, Some(3), Some(3))),
+                    cell,
+                    "{label} x {}",
+                    mode.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auto_steers_a_running_turn_by_its_own_epoch_whatever_the_sender_named() {
+        let mid_turn = TargetState::Phase(RuntimePhase::MidTurn);
+        for named in [None, Some(2)] {
+            assert_eq!(
+                decide_delivery(mid_turn, GatewayDeliveryMode::Auto, named, Some(7)),
+                DeliveryDecision::Admit {
+                    deliver_as: GatewayDeliveryMode::Steer,
+                    expected_turn_id: Some(7),
+                    expect: Expect::Steered
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn auto_queues_behind_a_running_turn_whose_epoch_is_unknown() {
+        assert_eq!(
+            decide_delivery(
+                TargetState::Phase(RuntimePhase::MidTurn),
+                GatewayDeliveryMode::Auto,
                 None,
                 None
             ),

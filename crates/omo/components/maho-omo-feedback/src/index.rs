@@ -24,7 +24,6 @@ use crate::submit::{FeedbackSubmitRefusal, ReportTransport, SubmitResult, defaul
 pub const FEEDBACK_COMPONENT_NAME: &str = "feedback";
 pub const FEEDBACK_PREPARE_RPC_METHOD: &str = "omo.feedback.prepare";
 pub const FEEDBACK_SUBMIT_RPC_METHOD: &str = "omo.feedback.submit";
-pub const DEFAULT_API_ORIGIN: &str = "https://api.omo.dev";
 pub const FEEDBACK_RUNTIME_ARTIFACT: &str = "extensions/omo-feedback.js";
 pub const FEEDBACK_UNAVAILABLE: &str = "Feedback needs an OmO runtime that can remove secrets before upload. Update OmO and try again.";
 
@@ -213,12 +212,7 @@ impl Extension for FeedbackComponent {
                     .clone()
                     .unwrap_or_else(|| state_dir_of(&state_env, &home))
             }),
-            api_origin: Arc::new(move || {
-                origin_env
-                    .get("OMO_SERVICE_API_URL")
-                    .cloned()
-                    .unwrap_or_else(|| DEFAULT_API_ORIGIN.into())
-            }),
+            api_origin: Arc::new(move || crate::submit::feedback_service_origin(&origin_env)),
             transport: options.transport.clone().unwrap_or_else(default_transport),
             logger: options.logger.clone(),
         }));

@@ -168,6 +168,8 @@ mod tests {
             disposition: None,
             outcome: None,
             answer: None,
+            dropped: None,
+            pending: None,
             by: None,
             accepted_at: None,
             updated_at: None,

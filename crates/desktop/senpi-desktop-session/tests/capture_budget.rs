@@ -57,8 +57,9 @@ impl Backend for NoisyFake {
         &mut self,
         target: &Target,
         caps: &CaptureCaps,
+        exclude_window_titles: &[String],
     ) -> CoreResult<(RgbaImage, FrameGeometry)> {
-        let (_, geometry) = self.fake.capture(target, caps)?;
+        let (_, geometry) = self.fake.capture(target, caps, exclude_window_titles)?;
         Ok(((*self.noise).clone(), geometry))
     }
     fn pointer(
@@ -124,6 +125,7 @@ async fn capture(session: &Session, caps: Option<CaptureCaps>) -> CoreResult<Val
     let params = CaptureParams {
         target: "desktop".to_owned(),
         caps,
+        exclude_window_titles: None,
     };
     let reply = session.submit(Op::Capture(params)).wait().await?;
     Ok(serde_json::to_value(reply).expect("capture serializes"))

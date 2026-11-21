@@ -1,0 +1,20 @@
+[package]
+name = "maho-machine-ops"
+description = "Engine-free host file operations confined to a scope root: symlink and `..` escapes are refused, glob patterns are judged by where their fixed prefix resolves (port of senpi packages/machine-ops, files and policy part)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT"
+
+[dependencies]
+regex.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "time", "test-util"] }
+
+[lints]
+workspace = true

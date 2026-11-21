@@ -69,7 +69,7 @@ impl Validator<'_> {
                 }
             }
             "enum" if !options().any(|option| option == value) => {
-                return fail(&format!("not one of {rule}"));
+                return fail(&format!("not one of {rule}"))
             }
             "const" if rule != value => return fail(&format!("not {rule}")),
             "properties" | "additionalProperties" | "required" => {

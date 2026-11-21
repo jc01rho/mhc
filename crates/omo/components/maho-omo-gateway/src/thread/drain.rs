@@ -192,8 +192,12 @@ impl InboxDrain {
                 row.expected_turn_id,
                 Some(gate.turn_epoch),
             );
-            let deliver_as = match decision {
-                DeliveryDecision::Admit { deliver_as, .. } => deliver_as,
+            let (deliver_as, expected_turn_id) = match decision {
+                DeliveryDecision::Admit {
+                    deliver_as,
+                    expected_turn_id,
+                    ..
+                } => (deliver_as, expected_turn_id),
                 DeliveryDecision::Refuse { reason } => {
                     let refusal = if reason == RefusalKind::NotSteerable {
                         RefusalReason::NotSteerable
@@ -210,7 +214,7 @@ impl InboxDrain {
                     });
                     continue;
                 }
-                DeliveryDecision::QueuedOffline => GatewayDeliveryMode::FollowUp,
+                DeliveryDecision::QueuedOffline => (GatewayDeliveryMode::FollowUp, None),
             };
             let lane = if deliver_as == GatewayDeliveryMode::Steer {
                 super::types::EffectiveLane::Steer
@@ -230,7 +234,7 @@ impl InboxDrain {
                 delivery_id: claimed_row.delivery_id.clone(),
                 text: render_delivery_text(&claimed_row),
                 deliver_as,
-                expected_turn_id: None,
+                expected_turn_id,
                 sender: Some(delivery_sender(&claimed_row)),
                 display_text: Some(format!(
                     "{}\n{}",

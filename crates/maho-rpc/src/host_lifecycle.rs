@@ -301,7 +301,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     // win32: the supervisor owns the public secret, provisioned BEFORE the internal hop and the child so a
     // provisioning failure leaves no scratch directory and no host process behind (senpi #1370).
     let public_secret: Option<Vec<u8>> = if platform == "win32" {
-        Some(ensure_public_socket_secret(&public_socket)?.to_vec())
+        Some(ensure_public_socket_secret(&public_socket).await?.to_vec())
     } else {
         None
     };
@@ -1414,19 +1414,21 @@ fn register_supervisor_signals(
 /// Reuses a valid public secret - including one `ensureHost` just wrote - and creates one when missing or
 /// unusable (senpi `ensurePublicSocketSecret`). Reuse is required: on win32 the pipe name derives from the socket
 /// path AND the secret, so rotating it would move this supervisor off the endpoint its caller published.
-pub fn ensure_public_socket_secret(
+pub async fn ensure_public_socket_secret(
     public_socket: &str,
 ) -> std::io::Result<[u8; crate::socket_transport::SOCKET_SECRET_BYTES]> {
     let path = crate::socket_transport::socket_secret_path(public_socket)
         .map_err(std::io::Error::other)?;
-    crate::socket_transport::ensure_socket_secret(std::path::Path::new(&path)).map_err(|error| {
-        std::io::Error::new(
-            error.kind(),
-            format!(
-                "senpi rpc host supervisor: cannot provision public socket secret {path}: {error}"
-            ),
-        )
-    })
+    crate::socket_transport::ensure_socket_secret(std::path::Path::new(&path))
+        .await
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "senpi rpc host supervisor: cannot provision public socket secret {path}: {error}"
+                ),
+            )
+        })
 }
 /// win32 has no SIGTERM/SIGHUP; the closest gentle shutdown requests are the console break, close and system
 /// shutdown events. Each carries senpi's SIGTERM exit code 143. There is no SIGUSR1 equivalent: a drain

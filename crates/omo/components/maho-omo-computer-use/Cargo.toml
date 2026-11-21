@@ -15,6 +15,7 @@ crate-type = ["rlib"]
 futures = { workspace = true }
 maho-ai = { version = "=0.0.0", path = "../../../maho-ai" }
 maho-ext-api = { path = "../../../maho-ext-api" }
+maho-ext-permission-system = { path = "../../../builtins/maho-ext-permission-system" }
 maho-omo-bundled-skills = { path = "../maho-omo-bundled-skills" }
 maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
 maho-tools = { version = "=0.0.0", path = "../../../maho-tools" }

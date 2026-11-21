@@ -1,4 +1,5 @@
 use crate::sync::{
+    contract_version::sync_request_headers,
     crypto::entry::Head,
     engine::{
         adapters::http_transport::{HttpRequest, HttpTransportOptions},
@@ -26,6 +27,8 @@ pub struct AccountState {
     pub head: Head,
     pub current_epoch: u64,
     pub rotation_pending: bool,
+    /// The service accepts recovery-phrase keys (contract A1 floor read, #13335); an older service says nothing.
+    pub accepts_phrase_keys: bool,
 }
 #[derive(Clone)]
 pub struct AccountHttp {
@@ -42,7 +45,7 @@ impl AccountHttp {
         body: Option<Value>,
     ) -> EngineResult<(u16, Value)> {
         let token = (self.options.token)().await?;
-        let mut headers = vec![("authorization".into(), format!("Bearer {token}"))];
+        let mut headers = sync_request_headers(&token);
         if body.is_some() {
             headers.push(("content-type".into(), "application/json".into()));
         }
@@ -149,6 +152,7 @@ impl AccountHttp {
                 },
                 current_epoch: body["current_epoch"].as_u64()?,
                 rotation_pending: body["rotation_pending"] == true,
+                accepts_phrase_keys: body["accepts_phrase_keys"] == true,
             })
         })())
     }

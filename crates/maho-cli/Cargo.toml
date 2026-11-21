@@ -21,6 +21,7 @@ omo = [
     "dep:maho-omo-memory",
     "dep:maho-omo-telemetry",
     "dep:maho-omo-lsp",
+    "dep:maho-omo-remote",
     "dep:ulw-loop-core",
     "dep:memory-core",
     "dep:lsp-daemon",
@@ -158,6 +159,7 @@ maho-omo-memory = { path = "../omo/components/maho-omo-memory", optional = true 
 maho-omo-telemetry = { path = "../omo/components/maho-omo-telemetry", optional = true }
 memory-core = { package = "maho-memory-core", path = "../omo/memory-core", optional = true }
 maho-omo-lsp = { path = "../omo/components/maho-omo-lsp", optional = true }
+maho-omo-remote = { path = "../omo/components/maho-omo-remote", optional = true }
 lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon", optional = true }
 senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task", optional = true }
 omo-utils = { package = "maho-utils", path = "../omo/utils", optional = true }

@@ -2,7 +2,9 @@
 //!
 //! An endpoint is removed only on three-part evidence evaluated inside its ensure lock: no generation pidfile
 //! names a live process, no session-path claim has a live owner, and the socket (and every `.next-*` successor
-//! bind) refuses the connection or does not exist. Anything else is kept with the reason.
+//! bind) refuses the connection or does not exist. Anything else is kept with the reason. On win32 the pipe name
+//! derives from the socket secret, so a missing or invalid secret keeps the endpoint as `credential_unavailable`
+//! (senpi#4293) and never reaches the stale-engine judgement.
 //!
 //! `stale_engine` adds the one case where gc ends a RUNNING host (senpi #3268): an endpoint kept as
 //! `live_generation` or `reachable` is judged by `host_stale_engine` inside the same lock, and a stale
@@ -21,6 +23,9 @@ use std::sync::Arc;
 pub const GC_LOCK_WAIT_MS: u64 = 2_000;
 /// A connect that neither succeeds nor fails within this budget counts as an answer.
 pub const SOCKET_PROBE_TIMEOUT_MS: u64 = 2_000;
+/// win32: the socket secret is missing or invalid, so the pipe it names cannot be proven silent and the endpoint is
+/// kept without the stale-engine judgement (senpi#4293, sisyphuslabs/omo-desktop-app#4199).
+pub const CREDENTIAL_UNAVAILABLE: &str = "credential_unavailable";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostGcEntry {
@@ -250,6 +255,22 @@ async fn endpoint_in_use(
     socket: &str,
     paths: &crate::host_daemon_paths::HostDaemonPaths,
 ) -> EndpointEvidence {
+    endpoint_in_use_by(socket, paths, |candidate| async move {
+        socket_silence(&candidate).await
+    })
+    .await
+}
+/// `endpoint_in_use` with the socket probe injected: how each candidate socket (the public one and every `.next-*`
+/// successor bind) proved silent, or `None` when it answered.
+async fn endpoint_in_use_by<Probe, Fut>(
+    socket: &str,
+    paths: &crate::host_daemon_paths::HostDaemonPaths,
+    probe: Probe,
+) -> EndpointEvidence
+where
+    Probe: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Option<&'static str>>,
+{
     if any_generation_live(paths) {
         return EndpointEvidence::InUse("live_generation");
     }
@@ -259,22 +280,27 @@ async fn endpoint_in_use(
     {
         return EndpointEvidence::InUse("live_claim");
     }
-    let Some(silence) = socket_silence(socket).await else {
+    let Some(silence) = probe(socket.to_owned()).await else {
         return EndpointEvidence::InUse("reachable");
     };
+    if silence == CREDENTIAL_UNAVAILABLE {
+        return EndpointEvidence::InUse(CREDENTIAL_UNAVAILABLE);
+    }
+    // A successor mid-handoff listens on `<socket>.next-<gen>` before it registers anywhere.
     for successor in socket_siblings(socket)
         .into_iter()
         .filter(|name| name.starts_with(&format!("{}.next-", base_name(socket))))
     {
-        if socket_silence(
-            &Path::new(socket)
-                .with_file_name(successor)
-                .to_string_lossy(),
-        )
-        .await
-        .is_none()
-        {
-            return EndpointEvidence::InUse("reachable");
+        let successor_socket = Path::new(socket)
+            .with_file_name(successor)
+            .to_string_lossy()
+            .into_owned();
+        match probe(successor_socket).await {
+            None => return EndpointEvidence::InUse("reachable"),
+            Some(CREDENTIAL_UNAVAILABLE) => {
+                return EndpointEvidence::InUse(CREDENTIAL_UNAVAILABLE);
+            }
+            Some(_) => {}
         }
     }
     EndpointEvidence::Silent(silence)
@@ -285,9 +311,25 @@ async fn judge_and_remove(
     paths: &crate::host_daemon_paths::HostDaemonPaths,
     stale_engine: Option<&StaleEngineRequest>,
 ) -> std::io::Result<Judged> {
-    match endpoint_in_use(socket, paths).await {
+    judge_evidence(
+        socket,
+        dir,
+        endpoint_in_use(socket, paths).await,
+        stale_engine,
+    )
+    .await
+}
+/// `judge_and_remove` once the evidence is in: a silent endpoint is removed, a live claim or an unreadable win32
+/// secret keeps its endpoint without judging the engine, any other use is judged only when `stale_engine` asks.
+async fn judge_evidence(
+    socket: &str,
+    dir: &Path,
+    evidence: EndpointEvidence,
+    stale_engine: Option<&StaleEngineRequest>,
+) -> std::io::Result<Judged> {
+    match evidence {
         EndpointEvidence::InUse(in_use) => match stale_engine {
-            Some(request) if in_use != "live_claim" => {
+            Some(request) if in_use != "live_claim" && in_use != CREDENTIAL_UNAVAILABLE => {
                 stop_if_stale(socket, dir, in_use, request).await
             }
             _ => Ok(Judged::Kept(in_use)),
@@ -386,8 +428,19 @@ async fn socket_silence(socket: &str) -> Option<&'static str> {
     }
 }
 #[cfg(not(unix))]
-async fn socket_silence(_socket: &str) -> Option<&'static str> {
-    None
+async fn socket_silence(socket: &str) -> Option<&'static str> {
+    win32_socket_silence(socket)
+}
+/// senpi `socketSilence` on win32: the pipe name includes the socket secret, so without a readable one nothing proves
+/// the pipe silent (a live host may still serve it under the key whose file was lost), and the endpoint is kept as
+/// `credential_unavailable`. A readable secret answers `None`: this host has no named-pipe probe yet, so the pipe is
+/// assumed to have answered, which keeps the endpoint as `reachable`.
+#[cfg(any(not(unix), test))]
+fn win32_socket_silence(socket: &str) -> Option<&'static str> {
+    let secret = crate::socket_transport::socket_secret_path(socket)
+        .ok()
+        .and_then(|path| crate::socket_transport::read_socket_secret(Path::new(&path)).ok());
+    secret.is_none().then_some(CREDENTIAL_UNAVAILABLE)
 }
 /// Siblings first (a directory is not a socket's leftover and stays, reported), then the socket, the endpoint directory LAST.
 fn remove_endpoint(socket: &str, dir: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -674,5 +727,108 @@ mod tests {
             "the host still runs"
         );
         assert_eq!(host.socket, plain.kept[0].socket.clone().expect("socket"));
+    }
+}
+
+/// senpi#4293 (sisyphuslabs/omo-desktop-app#4199, design test 7): on win32 the pipe name derives from the socket
+/// secret, so an unreadable or invalid secret proves nothing about whether a host still serves the pipe and gc keeps
+/// the endpoint. The win32 probe and the evidence rule are platform independent, so every host runs these.
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    fn dead_endpoint(temp: &Path) -> (String, crate::host_daemon_paths::HostDaemonPaths) {
+        let socket = temp.join("gone.sock").to_string_lossy().into_owned();
+        let paths = crate::host_daemon_paths::create_host_daemon_paths(&socket, temp);
+        crate::host_daemon_paths::create_daemon_directories(&paths).expect("daemon directories");
+        (socket, paths)
+    }
+
+    async fn win32_probe(candidate: String) -> Option<&'static str> {
+        win32_socket_silence(&candidate)
+    }
+
+    fn in_use(evidence: EndpointEvidence) -> Option<&'static str> {
+        match evidence {
+            EndpointEvidence::InUse(reason) => Some(reason),
+            EndpointEvidence::Silent(_) => None,
+        }
+    }
+
+    // Guards `if silence == CREDENTIAL_UNAVAILABLE` in `endpoint_in_use_by`: without it an unreadable secret reads as
+    // silence and a live win32 host's endpoint directory is deleted.
+    #[tokio::test]
+    async fn an_otherwise_dead_endpoint_whose_secret_cannot_be_read_is_kept() {
+        for (label, content) in [
+            ("missing", None),
+            ("empty", Some(Vec::new())),
+            ("short", Some(vec![1u8; 8])),
+            ("long", Some(vec![1u8; 33])),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let (socket, paths) = dead_endpoint(temp.path());
+            if let Some(bytes) = content {
+                let secret =
+                    crate::socket_transport::socket_secret_path(&socket).expect("secret path");
+                std::fs::write(secret, bytes).expect("secret file");
+            }
+            let evidence = endpoint_in_use_by(&socket, &paths, win32_probe).await;
+            assert_eq!(in_use(evidence), Some("credential_unavailable"), "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_readable_secret_answers_reachable_because_the_pipe_is_not_probed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (socket, paths) = dead_endpoint(temp.path());
+        let secret = crate::socket_transport::socket_secret_path(&socket).expect("secret path");
+        crate::socket_transport::create_socket_secret(Path::new(&secret)).expect("secret");
+        let evidence = endpoint_in_use_by(&socket, &paths, win32_probe).await;
+        assert_eq!(in_use(evidence), Some("reachable"));
+    }
+
+    // Guards the successor loop: a `.next-*` bind whose secret cannot be read keeps the endpoint as well, and one
+    // that answers keeps it as reachable, while silent successors leave the endpoint silent.
+    #[tokio::test]
+    async fn a_successor_bind_is_judged_the_same_way() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (socket, paths) = dead_endpoint(temp.path());
+        std::fs::write(format!("{socket}.next-g1"), "").expect("successor entry");
+        let by_successor = |successor: Option<&'static str>| {
+            move |candidate: String| async move {
+                if candidate.ends_with(".next-g1") {
+                    successor
+                } else {
+                    Some("socket_absent")
+                }
+            }
+        };
+        let unreadable =
+            endpoint_in_use_by(&socket, &paths, by_successor(Some(CREDENTIAL_UNAVAILABLE))).await;
+        assert_eq!(in_use(unreadable), Some("credential_unavailable"));
+        let answering = endpoint_in_use_by(&socket, &paths, by_successor(None)).await;
+        assert_eq!(in_use(answering), Some("reachable"));
+        let silent =
+            endpoint_in_use_by(&socket, &paths, by_successor(Some("socket_refused"))).await;
+        assert!(matches!(silent, EndpointEvidence::Silent("socket_absent")));
+    }
+
+    // Guards `in_use != CREDENTIAL_UNAVAILABLE` in `judge_evidence`: an endpoint kept for its unreadable secret is
+    // never handed to the stale-engine judgement, which could stop a host whose pipe was never probed.
+    #[tokio::test]
+    async fn an_unreadable_secret_and_a_live_claim_are_kept_without_judging_the_engine() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (socket, _paths) = dead_endpoint(temp.path());
+        let request = StaleEngineRequest::default();
+        for reason in [CREDENTIAL_UNAVAILABLE, "live_claim"] {
+            let judged = judge_evidence(
+                &socket,
+                temp.path(),
+                EndpointEvidence::InUse(reason),
+                Some(&request),
+            )
+            .await;
+            assert!(matches!(judged, Ok(Judged::Kept(kept)) if kept == reason));
+        }
     }
 }

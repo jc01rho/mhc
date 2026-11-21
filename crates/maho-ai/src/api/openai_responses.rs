@@ -395,7 +395,7 @@ pub fn get_prompt_cache_options(
         return Some(json!({ "mode": "explicit" }));
     }
     if cache_retention == CacheRetention::Long && compat.supports_long_cache_retention {
-        return Some(json!({ "ttl": "30m" }));
+        return Some(json!({ "ttl": "12h" }));
     }
     None
 }
@@ -912,11 +912,11 @@ pub fn build_params(
 /// `getServiceTierCostMultiplier`.
 pub fn get_service_tier_cost_multiplier(model: &Model, service_tier: Option<&str>) -> f64 {
     match service_tier {
-        // OpenAI prices GPT-6 Astra and GPT-6.1 Sol Ultrafast at 6x Standard on every
-        // token class and context tier. Any other model keeps its base rate.
+        // OpenAI prices GPT-6 Astra, GPT-6.1 Sol and both GPT-6.2 tiers Ultrafast at 6x Standard on
+        // every token class and context tier. Any other model keeps its base rate.
         Some("ultrafast") => {
             let id = model.upstream_model_id.as_deref().unwrap_or(&model.id);
-            if ["gpt-6-astra", "gpt-6.1-sol"].contains(&id) {
+            if crate::api::openai_responses_shared::ULTRAFAST_DOCUMENTED_MODEL_IDS.contains(&id) {
                 6.0
             } else {
                 1.0

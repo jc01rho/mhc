@@ -81,20 +81,41 @@ mod platform {
 #[cfg(not(unix))]
 mod platform {
     use std::process::{Command, Stdio};
+    use std::time::Instant;
 
     use super::{Duration, RpcChildProcess, io};
+
+    /// The one window the tree kill and the child's exit are observed in (#14300).
+    const PROCESS_EXIT_OBSERVATION_TIMEOUT: Duration = Duration::from_millis(2_000);
+    const PROCESS_EXIT_OBSERVATION_INTERVAL: Duration = Duration::from_millis(10);
 
     pub(super) fn terminate(child: &RpcChildProcess, pid: u32, _delay: Duration) -> io::Result<()> {
         if child.has_exited() {
             return Ok(());
         }
-        Command::new("taskkill.exe")
+        let mut taskkill = Command::new("taskkill.exe")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()?;
-        child.wait_exit();
+            .spawn()?;
+        // taskkill.exe itself can hang (AV hooks, a tree member it cannot open): its completion is
+        // not the cleanup contract, the child's exit is. Race the tool's end against the child's
+        // exit inside one bounded window (#14300: an open-ended taskkill wait held a cleanup hook for
+        // 46.8 s). A tree kill still running then is left to finish on its own: stopping it would end
+        // /T /F partway and orphan descendants the child's own exit cannot reach.
+        let deadline = Instant::now() + PROCESS_EXIT_OBSERVATION_TIMEOUT;
+        loop {
+            let exited = child
+                .wait_exit_timeout(PROCESS_EXIT_OBSERVATION_INTERVAL)
+                .is_some();
+            if exited || taskkill.try_wait()?.is_some() || Instant::now() >= deadline {
+                break;
+            }
+        }
+        // The forced kill ends the process, but its exit is observed for a bounded window, never
+        // waited on open-ended (#14106).
+        child.wait_exit_timeout(PROCESS_EXIT_OBSERVATION_TIMEOUT);
         Ok(())
     }
 }

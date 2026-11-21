@@ -1088,6 +1088,21 @@ impl SettingsManager {
         self.settings.get(key)
     }
 
+    /// The user's thread chain count limit (`threads.chainCountLimit`, senpi K8): a non-negative safe integer, else
+    /// unlimited. Read at each thread-call admission, never cached.
+    pub fn get_thread_chain_count_limit(&self) -> Option<u64> {
+        let configured = self.get_value("threads")?.get("chainCountLimit")?;
+        let limit = configured.as_u64().or_else(|| {
+            configured
+                .as_f64()
+                .filter(|float| {
+                    float.fract() == 0.0 && (0.0..=9_007_199_254_740_991.0).contains(float)
+                })
+                .map(|float| float as u64)
+        })?;
+        (limit <= 9_007_199_254_740_991).then_some(limit)
+    }
+
     /// `getSessionShutdownQuitBudgetMs`: total wait across all `session_shutdown` handlers on quit; 0 disables.
     pub fn get_session_shutdown_quit_budget_ms(&self) -> Result<u64, String> {
         Ok(parse_timeout_setting(
@@ -3159,6 +3174,29 @@ mod tests {
         assert_eq!(manager.get_session_shutdown_quit_budget_ms(), Ok(1_500));
         assert_eq!(manager.set_session_shutdown_quit_budget_ms(0.0), Ok(()));
         assert_eq!(manager.get_session_shutdown_quit_budget_ms(), Ok(0));
+    }
+
+    // senpi#5923 (decision K8): `threads.chainCountLimit` is a non-negative safe integer; anything else is unlimited.
+    #[test]
+    fn thread_chain_count_limit_is_a_non_negative_safe_integer_else_unlimited() {
+        assert_eq!(
+            SettingsManager::in_memory(Settings::new(), true).get_thread_chain_count_limit(),
+            None
+        );
+        for (raw, expected) in [
+            (r#"{"threads":{"chainCountLimit":2}}"#, Some(2)),
+            (r#"{"threads":{"chainCountLimit":0}}"#, Some(0)),
+            (r#"{"threads":{"chainCountLimit":3.0}}"#, Some(3)),
+            (r#"{"threads":{"chainCountLimit":-1}}"#, None),
+            (r#"{"threads":{"chainCountLimit":1.5}}"#, None),
+            (r#"{"threads":{"chainCountLimit":"2"}}"#, None),
+            (r#"{"threads":{"chainCountLimit":9007199254740992}}"#, None),
+            (r#"{"threads":{}}"#, None),
+            (r#"{"threads":"x"}"#, None),
+        ] {
+            let manager = SettingsManager::in_memory(settings(raw), true);
+            assert_eq!(manager.get_thread_chain_count_limit(), expected, "{raw}");
+        }
     }
 
     #[test]

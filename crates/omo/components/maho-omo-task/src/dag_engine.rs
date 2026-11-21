@@ -38,6 +38,10 @@ const SCHEDULABLE_RUN_STATUSES: [DagRunStatus; 2] = [DagRunStatus::Pending, DagR
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+/// The latest session start's gated attach, shared by every waiter: `last_attach` and each real
+/// turn's `before_agent_start` (#12113).
+type AttachGate = futures::future::Shared<futures::future::BoxFuture<'static, ()>>;
 fn failure(error: impl std::fmt::Display) -> maho_ext_api::ExtensionFailure {
     maho_ext_api::ExtensionFailure::new(error.to_string())
 }
@@ -100,7 +104,7 @@ pub struct TaskDagEngine {
     surfaces: Mutex<Option<Arc<DagSurfaces>>>,
     active_session: Mutex<Option<String>>,
     /// The latest session start's gated attach (`wireDagLifecycle().lastAttach`).
-    last_attach: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    last_attach: Arc<Mutex<Option<AttachGate>>>,
     wake: Mutex<Option<crate::dag_wake::DagWake>>,
     delivered: Mutex<BTreeMap<DagRunId, u64>>,
     /// Event-log (byte length, mtime) at the last successful durable publish per run: a log that
@@ -654,14 +658,7 @@ impl TaskDagEngine {
                     ),
                     adopt: Arc::new(move |installed| {
                         if let Some(dag) = adopt.upgrade() {
-                            lock(&dag.schedulers).insert(
-                                installed.run_id.clone(),
-                                DagOwnedScheduler {
-                                    scheduler: installed.scheduler.clone(),
-                                    running: None,
-                                },
-                            );
-                            dag.spawn_running(installed.run_id, installed.scheduler, true);
+                            dag.adopt_installed(installed);
                         }
                     }),
                     cancel_run: Arc::new(move |run| {
@@ -932,6 +929,20 @@ impl TaskDagEngine {
         }
         self.spawn_running(run.to_owned(), scheduler, false);
         Ok(())
+    }
+
+    /// TS `adoptInstalled`: a run recovery installed keeps running in its own scheduler; register
+    /// it like any re-entry so `ensure_scheduled` and `is_run_held_in_process` see it instead of
+    /// starting a second scheduler.
+    fn adopt_installed(self: &Arc<Self>, installed: senpi_task::dag::recovery::InstalledDagRun) {
+        lock(&self.schedulers).insert(
+            installed.run_id.clone(),
+            DagOwnedScheduler {
+                scheduler: installed.scheduler.clone(),
+                running: None,
+            },
+        );
+        self.spawn_running(installed.run_id, installed.scheduler, true);
     }
 
     /// TS `adoptReentry`: the re-entry scheduler is already running on its own thread.
@@ -1306,9 +1317,13 @@ impl TaskDagEngine {
 
     /// TS `recoverPausedRuns(scope)`.
     fn recover_paused_runs(self: &Arc<Self>, scope: &RecoveryScope) {
-        let outcomes = self
-            .recovery
-            .resume_paused_runs_from(&scope.session_id, scope.fork_source_session_id.as_deref());
+        // #12122: the session's first turn waits for the attach, so recovery returns once each
+        // recovered run is installed and registered, never when the run finishes.
+        let outcomes = self.recovery.install_paused_runs(
+            &scope.session_id,
+            &mut |installed| self.adopt_installed(installed),
+            scope.fork_source_session_id.as_deref(),
+        );
         let subscriptions = std::mem::take(&mut *lock(&self.recovery_task_subscriptions));
         for unsubscribe in subscriptions.into_values() {
             unsubscribe();
@@ -1392,9 +1407,18 @@ impl TaskDagEngine {
 
     /// Settles when the latest session start's gated attach ended (`lastAttach()`).
     pub async fn last_attach(&self) {
-        let handle = lock(&self.last_attach).take();
-        if let Some(handle) = handle {
-            let _ = handle.await;
+        let gate = lock(&self.last_attach).clone();
+        if let Some(gate) = gate {
+            gate.await;
+        }
+    }
+
+    /// TS `runtime.resend()` (#12113): restates the current `omo.dag.updated` snapshot for a
+    /// client that reattached to the retained session.
+    pub fn resend(&self) {
+        let bridge = lock(&self.rpc).clone();
+        if let Some(bridge) = bridge {
+            bridge.resend();
         }
     }
 
@@ -1823,9 +1847,46 @@ impl TaskDagEngine {
                             }
                         }
                     });
-                    *lock(&last_attach) = Some(latest);
+                    let gate: AttachGate =
+                        futures::FutureExt::shared(futures::FutureExt::boxed(async move {
+                            let _ = latest.await;
+                        }));
+                    *lock(&last_attach) = Some(gate);
                     Ok(maho_ext_api::EventResult::None)
                 })
+            }),
+        );
+        // #12113: the attach publishes the recovered omo.dag.updated snapshot. Admission does not
+        // wait for it, but a turn does, so the snapshot is on the wire before the turn starts and
+        // the turn's own DAG tools see recovered runs. A preview pass starts no turn: no wait.
+        let turn_gate = self.last_attach.clone();
+        api.on(
+            maho_ext_api::EventKind::BeforeAgentStart,
+            Arc::new(move |event, _| {
+                let gate = match event {
+                    maho_ext_api::ExtensionEvent::BeforeAgentStart(start) if !start.preview => {
+                        lock(&turn_gate).clone()
+                    }
+                    _ => None,
+                };
+                Box::pin(async move {
+                    if let Some(gate) = gate {
+                        gate.await;
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
+        // A client reattaching to a retained session gets no session_start. An attach still in
+        // flight publishes on its own, so this only restates an attached bridge.
+        let resend = Arc::downgrade(self);
+        api.on(
+            maho_ext_api::EventKind::SessionResumed,
+            Arc::new(move |_, _| {
+                if let Some(dag) = resend.upgrade() {
+                    dag.resend();
+                }
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
             }),
         );
         let dispose = Arc::downgrade(self);

@@ -442,6 +442,34 @@ pub static BASE64_RUN_RE: LazyLock<Regex> =
 /// senpi BASE64_CHAR_WEIGHT.
 pub const BASE64_CHAR_WEIGHT: usize = 4;
 
+pub const CJK_CHAR_WEIGHT: usize = 3;
+
+pub fn is_cjk_codepoint(ch: char) -> bool {
+    matches!(
+        u32::from(ch),
+        0x1100..=0x11ff
+            | 0x2e80..=0x9fff
+            | 0xac00..=0xd7af
+            | 0xf900..=0xfaff
+            | 0xff00..=0xffef
+            | 0x20000..=0x2fa1f
+    )
+}
+
+pub fn cjk_extra_chars(text: &str) -> usize {
+    text.chars()
+        .filter(|ch| is_cjk_codepoint(*ch))
+        .map(|ch| ch.len_utf16() * (CJK_CHAR_WEIGHT - 1))
+        .sum()
+}
+
+pub fn estimate_cut_point_tokens(message: &Value) -> u64 {
+    let base = estimate_tokens(message);
+    let serialized = message.to_string();
+    let extra = cjk_extra_chars(&serialized);
+    base.saturating_add(u64::try_from(extra.div_ceil(4)).unwrap_or(u64::MAX))
+}
+
 /// senpi weightedChars: long base64-ish runs count four times over.
 pub fn weighted_chars(text: &str) -> usize {
     let mut chars = text.encode_utf16().count();
@@ -702,7 +730,7 @@ pub fn find_cut_point(
             .iter()
             .enumerate()
             .filter(|(position, _)| weighted[entry_offsets[local] + position])
-            .map(|(_, message)| estimate_tokens(message) as i64)
+            .map(|(_, message)| estimate_cut_point_tokens(message) as i64)
             .sum();
         if message_tokens != 0 {
             accumulated_tokens += message_tokens;

@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::child::{ChildFactory, engine_child_factory};
+use crate::control_grants::ControlGrants;
+use crate::global_input::{FullAccessConsent, FullAccessReader, is_global_input};
 use crate::notifications::{NotificationHub, Subscription};
 use crate::parse::{parse_hello, parse_session_opened};
 use crate::rpc_client::{
@@ -103,6 +105,8 @@ pub struct DesktopService {
     desired: RwLock<Option<DesiredSession>>,
     last_stop_path: Arc<std::sync::Mutex<Option<StopPathStatus>>>,
     on_notification: Option<NotificationObserver>,
+    grants: Arc<ControlGrants>,
+    consent: FullAccessConsent,
 }
 
 impl DesktopService {
@@ -119,6 +123,7 @@ impl DesktopService {
         let create_child = options
             .create_child
             .unwrap_or_else(|| engine_child_factory(None));
+        let grants = Arc::new(ControlGrants::default());
         Self {
             create_child,
             hub,
@@ -127,7 +132,15 @@ impl DesktopService {
             desired: RwLock::new(None),
             last_stop_path,
             on_notification: options.on_notification,
+            consent: FullAccessConsent::new(Arc::clone(&grants)),
+            grants,
         }
+    }
+
+    /// Binds the session's live full-access decision (#10022); until bound the session never counts as
+    /// full access, so desktop input waits for a grant the engine already admits.
+    pub fn set_full_access(&self, reader: FullAccessReader) {
+        self.consent.set_full_access(reader);
     }
 
     pub fn on_audit(&self, listener: impl Fn(AuditEvent) + Send + Sync + 'static) -> Subscription {
@@ -208,7 +221,23 @@ impl DesktopService {
         options: CallOptions,
     ) -> Result<Value, DesktopError> {
         let conn = self.live().await?;
-        conn.rpc.request(method, params, options).await
+        self.consent.fence(&conn.rpc).await?;
+        match method {
+            "control.grant" => {
+                self.grants
+                    .grant(|| conn.rpc.request(method, params, options), false, false)
+                    .await
+            }
+            "control.revoke" => {
+                self.grants
+                    .revoke(|| conn.rpc.request(method, params, options))
+                    .await
+            }
+            _ if is_global_input(method, &params) => {
+                self.consent.send(&conn.rpc, method, params, options).await
+            }
+            _ => conn.rpc.request(method, params, options).await,
+        }
     }
 
     pub async fn capabilities(&self) -> Result<DesktopCapabilities, DesktopError> {
@@ -217,15 +246,10 @@ impl DesktopService {
             cancel_rx: None,
         };
         let res = self.call("capabilities", json!({}), opts).await?;
-        if !crate::parse::is_desktop_capabilities(&res) {
-            return Err(DesktopError::Service(DesktopServiceError::internal(
-                "malformed capabilities: mistyped optional field".to_string(),
-            )));
-        }
-        serde_json::from_value::<DesktopCapabilities>(res).map_err(|e| {
-            DesktopError::Service(DesktopServiceError::internal(format!(
-                "malformed capabilities: {e}"
-            )))
+        crate::parse::parse_capabilities(&res).ok_or_else(|| {
+            DesktopError::Service(DesktopServiceError::internal(
+                "desktop engine sent a malformed capabilities result".to_string(),
+            ))
         })
     }
 

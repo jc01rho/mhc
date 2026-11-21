@@ -23,6 +23,7 @@ use super::super::ports::{
     StreamHandlers, Transport, Unsubscribe,
 };
 use crate::support::sha256::hex;
+use crate::sync::contract_version::sync_request_headers;
 
 pub const STREAM_RETRY_MS: u64 = 5_000;
 
@@ -192,7 +193,7 @@ impl HttpTransport {
         let token = (self.options.token)()
             .await
             .map_err(|_| EngineError::Auth)?;
-        let mut headers = vec![("authorization".to_string(), format!("Bearer {token}"))];
+        let mut headers = sync_request_headers(&token);
         if body.is_some() && json {
             headers.push(("content-type".to_string(), "application/json".to_string()));
         }
@@ -368,10 +369,11 @@ async fn stream_once(
         .open_stream(HttpRequest {
             method: "GET",
             url: format!("{base_url}/v1/me/events"),
-            headers: vec![
-                ("authorization".to_string(), format!("Bearer {bearer}")),
-                ("accept".to_string(), "text/event-stream".to_string()),
-            ],
+            headers: {
+                let mut headers = sync_request_headers(&bearer);
+                headers.push(("accept".to_string(), "text/event-stream".to_string()));
+                headers
+            },
             body: None,
         })
         .await?;

@@ -28,8 +28,10 @@ Environment (interface facts):
 
 - `OMO_DISABLE_FEEDBACK`: uploads are off when it is set to anything except empty, `0`, `false`,
   `no`, `off` (trimmed, case-insensitive).
-- `OMO_SERVICE_API_URL`: intake origin; default `https://api.omo.dev`. Reports are POSTed to
-  `<origin without trailing slash>/v1/reports`.
+- `OMO_SERVICE_API_URL` (`MAHO_SERVICE_API_URL` wins over it): intake origin. Reports are POSTed to
+  `<origin without trailing slash>/v1/reports`. Unset, or an origin the endpoint guard refuses
+  (anything but HTTPS, or plain HTTP to a loopback or tailnet host), is local mode: uploads are off
+  and a report is saved locally, as with `OMO_DISABLE_FEEDBACK`.
 - `OMO_NATIVE_SURFACE=desktop` marks the client app as `desktop`, otherwise `cli`.
 
 No configuration keys. No agent tool is registered.

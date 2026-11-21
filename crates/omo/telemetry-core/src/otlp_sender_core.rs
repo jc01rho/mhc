@@ -24,7 +24,6 @@ use crate::otel_minimal_trace::MinimalTracerProvider;
 use crate::otel_providers::CreateTelemetryProvidersInput;
 use crate::otel_providers::TelemetryProviders;
 use crate::otel_providers::create_telemetry_providers;
-use crate::otel_traceparent_fetch::OMO_TRACE_HOSTS;
 use crate::otel_traceparent_fetch::create_traceparent_fetch;
 use crate::otel_traceparent_fetch::url_host;
 use crate::otel_turn_span::TurnSpanRecord;
@@ -158,10 +157,13 @@ pub fn create_otlp_sender(input: CreateOtlpTelemetryTransportInput) -> OtlpTelem
     let sender_endpoint = endpoint.clone();
     let consent = safe_consent(&input);
     let fetch = input.fetch.clone().unwrap_or_else(create_reqwest_fetch);
-    let mut hosts: Vec<String> = OMO_TRACE_HOSTS
-        .iter()
-        .map(|host| (*host).to_string())
-        .collect();
+    // SAFETY-DIVERGENCE(packages/telemetry-core/src/otel-traceparent-fetch.ts): upstream attaches trace context to t.omo.dev and api.omo.dev; mhc attaches it only to the configured collector (below) and the configured service API host.
+    let trace_env = input.env.clone();
+    let mut hosts: Vec<String> =
+        maho_service_endpoints::service_trace_hosts(|key| match trace_env.as_ref() {
+            Some(env) => env.get(key).cloned(),
+            None => std::env::var(key).ok(),
+        });
     if let Some(host) = url_host(&endpoint)
         && !host.is_empty()
     {

@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "all_skills_check.rs"]
+pub mod all_skills_check;
 #[path = "contributed_skill.rs"]
 pub mod contributed_skill;
 #[path = "override_dir.rs"]

@@ -24,7 +24,9 @@ reis = { version = "=0.5.0", features = ["tokio"] }
 senpi-desktop-backend-atspi = { package = "maho-senpi-desktop-backend-atspi", path = "../senpi-desktop-backend-atspi" }
 senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core", features = ["system-clipboard"] }
 senpi-desktop-safety = { package = "maho-senpi-desktop-safety", path = "../senpi-desktop-safety" }
-tokio = { workspace = true, features = ["macros", "sync", "time"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 xkeysym = "=0.2.1"
 zbus = { version = "=5.19.0", default-features = false, features = [
     "async-io",
@@ -32,4 +34,4 @@ zbus = { version = "=5.19.0", default-features = false, features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-tempfile = "=3.27.0"
+tempfile.workspace = true

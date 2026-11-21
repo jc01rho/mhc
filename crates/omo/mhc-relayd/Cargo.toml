@@ -1,0 +1,35 @@
+[package]
+name = "mhc-relayd"
+description = "mhc's open device service: serves the local API v1 on this device (per-boot token, mutual proof) and links to the account's other devices over loopback or a tailnet with Ed25519 mutual authentication, in place of the closed omo-relay-daemon and its hosted relay."
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+autotests = false
+
+[lib]
+name = "mhc_relayd"
+path = "src/lib.rs"
+
+[dependencies]
+base64.workspace = true
+chrono = { workspace = true, features = ["clock", "std"] }
+ed25519-dalek = "=2.2.0"
+gethostname.workspace = true
+maho-device-service-core = { path = "../device-service-core" }
+maho-service-endpoints = { path = "../../maho-service-endpoints" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

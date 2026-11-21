@@ -3,6 +3,9 @@ use maho_ext_api::*;
 use regex::Regex;
 use std::sync::{Arc, LazyLock};
 
+use crate::pointer_text::{
+    SkillCompanion, SkillPointerTarget, companion_condition, companion_pointer, skill_pointer,
+};
 use crate::strip_quoted_regions::{
     NOT_AFTER_IDENTIFIER, NOT_BEFORE_PATH, NOT_INTO_IDENTIFIER, prompt_regex, strip_quoted_regions,
 };
@@ -12,27 +15,15 @@ pub const ULW_LOOP_CUSTOM_TYPE: &str = "omo-ulw-loop:skill-pointer";
 pub const ULW_RESEARCH_CUSTOM_TYPE: &str = "omo-ulw-research:skill-pointer";
 pub const BROWSER_CUSTOM_TYPE: &str = "omo-browser:skill-pointer";
 pub const ULTIMATE_BROWSING_CUSTOM_TYPE: &str = "omo-ultimate-browsing:skill-pointer";
+pub const OMO_RELAY_CUSTOM_TYPE: &str = "omo-omo-relay:skill-pointer";
 pub const SKILL_POINTERS_DISABLED_FLAG: &str = "omo-senpi-skill-pointers-disabled";
 
 pub const SKILL_COMMAND_PREFIX: &str = "/skill:";
 
-pub struct SkillCompanion {
-    pub skill_name: &'static str,
-    pub custom_type: &'static str,
-    pub expanded_block_pattern: LazyLock<Regex>,
-    pub role: &'static str,
-    pub instruction: &'static str,
-}
-
-pub struct SkillPointerTarget {
-    pub skill_name: &'static str,
-    pub custom_type: &'static str,
-    pub pattern: LazyLock<FancyRegex>,
-    pub expanded_block_pattern: LazyLock<Regex>,
-    pub instruction: &'static str,
-    pub extra: Option<fn(Option<&str>) -> String>,
-    pub companions: &'static [&'static SkillCompanion],
-}
+/// The bunshin repo's node-agent executable. Importing it runs main() and process.exit.
+pub const BUNSHIN_NODE_AGENT_ENTRY: &str = "scripts/node/bunshin-node.mjs";
+/// The two sentences that keep a JS cell alive: anything but sdk.js can end the kernel.
+pub const BUNSHIN_TS_IMPORT_SAFETY: &str = "Import only sdk.js. Never import scripts/node/bunshin-node.mjs (that file is the node-agent executable; its top-level main() calls process.exit).";
 
 pub struct SkillPointerMessage {
     pub custom_type: &'static str,
@@ -89,6 +80,7 @@ pub static TARGET_ULW_PLAN: LazyLock<SkillPointerTarget> = LazyLock::new(|| Skil
     instruction: "run the explore-first planning workflow and produce one decision-complete work plan",
     extra: None,
     companions: &[],
+    pointer: None,
 });
 
 pub static TARGET_ULW_LOOP: LazyLock<SkillPointerTarget> = LazyLock::new(|| SkillPointerTarget {
@@ -101,6 +93,7 @@ pub static TARGET_ULW_LOOP: LazyLock<SkillPointerTarget> = LazyLock::new(|| Skil
     instruction: "run the goal-driven ultrawork loop with evidence-bound execution",
     extra: Some(ulw_loop_tool_sentence),
     companions: &[],
+    pointer: None,
 });
 
 pub static TARGET_ULW_RESEARCH: LazyLock<SkillPointerTarget> =
@@ -114,10 +107,37 @@ pub static TARGET_ULW_RESEARCH: LazyLock<SkillPointerTarget> =
         instruction: "orchestrate team-first maximum-saturation research",
         extra: None,
         companions: &*RESEARCH_COMPANIONS,
+        pointer: None,
     });
 
-pub fn get_targets() -> [&'static SkillPointerTarget; 3] {
-    [&*TARGET_ULW_PLAN, &*TARGET_ULW_LOOP, &*TARGET_ULW_RESEARCH]
+pub fn omo_relay_extra(_session_scope: Option<&str>) -> String {
+    format!(" {BUNSHIN_TS_IMPORT_SAFETY}")
+}
+
+pub static TARGET_OMO_RELAY: LazyLock<SkillPointerTarget> = LazyLock::new(|| SkillPointerTarget {
+    skill_name: "omo-relay",
+    custom_type: OMO_RELAY_CUSTOM_TYPE,
+    pattern: LazyLock::new(|| {
+        skill_name_pattern(
+            r"(?:(?:bunshin|(?:my|our)\s+fleets?(?=[^\S\n]*(?:$|\r?\n|\x00|[,.;:!?)]|(?:and|or|now|then|today|please|up|down|via|with|from|to|on|for)(?![A-Za-z0-9_])))|fleet[\s-]+(?:machines?|devices?|hosts?(?!\s+(?:a|an|the)(?![A-Za-z0-9_]))|nodes?|box(?:es)?)(?:-[a-z0-9]+)*|machine[\s-]*mesh)|(?:(?:my|our)\s+other\s+(?:machines?|devices?|computers?|hosts?|boxes)(?!\s+learning)|omo[\s-]*relay))",
+        )
+    }),
+    expanded_block_pattern: LazyLock::new(|| {
+        Regex::new(r#"(?i)<skill\s+name="omo-relay""#).expect("valid regex")
+    }),
+    instruction: "work on the account's other machines and threads through its typed helpers",
+    extra: Some(omo_relay_extra),
+    companions: &[],
+    pointer: None,
+});
+
+pub fn get_targets() -> [&'static SkillPointerTarget; 4] {
+    [
+        &*TARGET_ULW_PLAN,
+        &*TARGET_ULW_LOOP,
+        &*TARGET_ULW_RESEARCH,
+        &*TARGET_OMO_RELAY,
+    ]
 }
 
 pub fn binding_forms(command: &str, keyword: &str) -> FancyRegex {
@@ -239,65 +259,6 @@ pub fn skill_is_shipped(skills_root: &str, skill_name: &str) -> bool {
     root.join(skill_name).join("SKILL.md").is_file()
 }
 
-pub fn skill_pointer(
-    target: &SkillPointerTarget,
-    session_scope: Option<&str>,
-    skills_root: &str,
-) -> String {
-    let extra = match target.extra {
-        Some(f) => f(session_scope),
-        None => String::new(),
-    };
-    format!(
-        "<omo-{}-pointer>This message mentions {}. If the user of this session is asking to run {}, read the {} skill at {}{}/SKILL.md with the read tool and follow it: {}. If {} is only being discussed, quoted, or relayed from another session, ignore this pointer.{}</omo-{}-pointer>",
-        target.skill_name,
-        target.skill_name,
-        target.skill_name,
-        target.skill_name,
-        skills_root,
-        target.skill_name,
-        target.instruction,
-        target.skill_name,
-        extra,
-        target.skill_name,
-    )
-}
-
-pub fn companion_pointer(
-    parent: &SkillPointerTarget,
-    companion: &SkillCompanion,
-    skills_root: &str,
-) -> String {
-    format!(
-        "<omo-{}-pointer>{} {}. If the user of this session is asking to run {}: {} If {} is only being discussed, quoted, or relayed from another session, ignore this pointer.</omo-{}-pointer>",
-        companion.skill_name,
-        parent.skill_name,
-        companion.role,
-        parent.skill_name,
-        companion_condition(parent, companion, skills_root),
-        parent.skill_name,
-        companion.skill_name,
-    )
-}
-
-/// The companion is read only after the parent's triage marks the run as external browser
-/// collection; local-only, codebase-only, or search-only runs never load it (ULW-9).
-pub fn companion_condition(
-    parent: &SkillPointerTarget,
-    companion: &SkillCompanion,
-    skills_root: &str,
-) -> String {
-    format!(
-        "Do not read the {} skill up front: read the {} skill first and write its triage line. Only when that triage says `External: yes` and `Collection: browser`, read the {} skill at {}{}/SKILL.md with the read tool and {}. For local-only, codebase-only, or search-only research, never read it.",
-        companion.skill_name,
-        parent.skill_name,
-        companion.skill_name,
-        skills_root,
-        companion.skill_name,
-        companion.instruction,
-    )
-}
-
 #[derive(Clone, Debug)]
 pub struct SkillPointersComponent {
     pub skills_root: String,
@@ -378,14 +339,16 @@ impl Extension for SkillPointersComponent {
                     // Mirrors `readSessionRole`: the session context role wins, the env is the fallback.
                     let delegated = role_delegated
                         || std::env::var("SENPI_TASK_MEMBER")
-                            .is_ok_and(|member| !member.is_empty())
-                        || std::env::var("OMO_SENPI_TASK_RPC_CHILD")
-                            .is_ok_and(|child| child == "1");
-                    if input.source == InputSource::Extension || delegated {
-                        return Ok(EventResult::Input(InputEventResult::Continue));
-                    }
+                            .ok()
+                            .is_some_and(|v| !v.is_empty())
+                        || std::env::var("SENPI_TASK_CHILD")
+                            .ok()
+                            .is_some_and(|v| !v.is_empty())
+                        || std::env::var("SENPI_TASK_ROLE")
+                            .ok()
+                            .is_some_and(|v| !v.is_empty());
 
-                    if input.text.is_empty() {
+                    if delegated || input.source == InputSource::Extension {
                         return Ok(EventResult::Input(InputEventResult::Continue));
                     }
 
@@ -416,7 +379,9 @@ impl Extension for SkillPointersComponent {
                             content: if binds(target, &visible) {
                                 skill_mode(target, session_scope.as_deref(), &skills_root)
                             } else {
-                                skill_pointer(target, session_scope.as_deref(), &skills_root)
+                                target.pointer.map(str::to_owned).unwrap_or_else(|| {
+                                    skill_pointer(target, session_scope.as_deref(), &skills_root)
+                                })
                             },
                         })
                         .collect();
@@ -540,6 +505,8 @@ mod tests {
             "the mass-ulw-loop-runner session finished",
             "see mass-ulw-research-notes.md",
             "Do not load mass-ulw or ulw-research or launch your own workflow.",
+            "avoid ulw-loop and ulw-plan here",
+            "skip ulw-research",
             "[REPORT] lane | filed | mass ulw research and ulw-loop",
             "[a -> b] run ulw-loop",
             "Lead (main), lane: ulw-research and mass-ulw",
@@ -570,6 +537,7 @@ mod tests {
             ("Don't load ulw-plan; run ulw-loop", vec!["ulw-loop"]),
             ("Never run ulw-plan then ulw-loop", vec!["ulw-loop"]),
             ("Do not arm ulw-plan - ulw-loop", vec!["ulw-loop"]),
+            ("No ulw-plan, just ulw-loop this", vec!["ulw-loop"]),
         ];
         for (text, expected) in cases {
             let matched = matched_skill_pointer_names(text);

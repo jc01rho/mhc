@@ -24,7 +24,17 @@ pub(super) fn pointer(
     wid: u32,
     window: &DesktopWindow,
     event: PointerEvent,
+    overlay: &crate::overlay::Overlay,
 ) -> CoreResult<()> {
+    let start = match &event {
+        PointerEvent::Click { x, y, .. }
+        | PointerEvent::Move { x, y }
+        | PointerEvent::Scroll { x, y, .. } => Some((*x, *y)),
+        PointerEvent::Drag { path, .. } => path.first().copied(),
+    };
+    if let Some((x, y)) = start {
+        overlay.target(x, y);
+    }
     match event {
         PointerEvent::Click {
             x,
@@ -54,7 +64,9 @@ pub(super) fn pointer(
             path,
             button,
             modifiers,
-        } => drag(source, held, pid, wid, window, &path, button, modifiers),
+        } => drag(
+            source, held, pid, wid, window, &path, button, modifiers, overlay,
+        ),
         PointerEvent::Scroll { x, y, dx, dy } => scroll(
             ScrollTarget {
                 source,
@@ -207,6 +219,7 @@ fn drag(
     path: &[(f64, f64)],
     button: MouseButton,
     modifiers: Modifiers,
+    overlay: &crate::overlay::Overlay,
 ) -> CoreResult<()> {
     let Some(&(start_x, start_y)) = path.first() else {
         return Err(DesktopError::input_failed(
@@ -229,6 +242,7 @@ fn drag(
     )?;
     for &(x, y) in &path[1..] {
         thread::sleep(Duration::from_millis(16));
+        overlay.target(x, y);
         held.button_moved(&route, button, local_point(window, x, y));
         post_mouse(
             source, pid, wid, window, dragged, cg_button, x, y, 3, 1, number, group, flags,

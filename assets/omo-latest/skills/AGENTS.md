@@ -11,6 +11,9 @@ Native Senpi skills authored directly against the Senpi tool surface (not ported
 | `ulw-loop/` | Goal/QA lifecycle loop; component-owned native source, shipped verbatim. |
 | `ulw-research/` | Claim-graph research orchestration: claims enter `claim-graph.md` as `verified-claims`; unsupported claims stay unresolved/refuted. |
 | `adversarial-plan/` | Adversarial cross-critique planning: five critics argue for three rounds through a team, and only surviving points reach the planner that writes the plan; rounds and handoff must not be skipped. |
+| `hyperplan/` | Adversarial 5-member cross-critique planning via `team_create`/`task_send`/`team_delete`, followed by a mandatory `ulw-plan` planner handoff. |
+| `omo-relay/` | Work on the account's other devices from a js eval cell: typed helpers in `scripts/sdk/` over the fleet client and thread tools, with `references/` for machine calls, parallel waves, and error codes. |
+| `visualize/` | Builds a self-contained HTML page to show inline next to a reply, routing data to `data-scientist` and design to `frontend` under strict offline/theme/4-view rules. |
 | `init-deep/` | Hierarchical AGENTS.md generation via a size-formula dag map-reduce (quick scanners -> high writers, ALWAYS-REDUCE); senpi-local override shadowing the shared-pool copy. |
 | `dag-library/` | Store a dag definition once and re-run it by name; loads through `plugin/runtime/dag/library.js`. |
 | `onboarding/` | Runs a new user's first conversation: tour of what mhc adds (naming only installed skills), optional one-time offers to import another agent's setup, read past sessions (explicit consent before `onboarding_understand`), estimate prompt-caching savings from local mhc logs with `scripts/savings-estimate.mjs`, and propose AGENTS.md only when `scripts/init-deep-gate.mjs` says the repo is eligible. Memory writes need a per-item yes. Clean-room, MIT; tests in `tests/`. |

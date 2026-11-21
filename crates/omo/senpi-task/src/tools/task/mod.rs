@@ -10,6 +10,8 @@ mod categories_tests;
 pub mod checked_project_skills;
 pub mod description;
 #[cfg(test)]
+mod description_mcp_cap_tests;
+#[cfg(test)]
 mod description_plan_gated_tests;
 #[cfg(test)]
 mod description_tests;

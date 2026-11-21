@@ -3,6 +3,9 @@
 use crate::backend::Modifiers;
 use crate::error::{CoreResult, DesktopError};
 
+mod dangerous;
+pub use dangerous::{dangerous_chord, ChordHost};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyName {
     Ctrl,
@@ -118,7 +121,7 @@ pub fn parse_key(value: &str) -> CoreResult<KeyName> {
                 _ => {
                     return Err(DesktopError::invalid_key(format!(
                         "unsupported key `{value}`"
-                    )));
+                    )))
                 }
             }
         }

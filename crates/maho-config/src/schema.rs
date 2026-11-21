@@ -256,6 +256,7 @@ fn categories() -> Rule {
         f("is_unstable_agent", Rule::Bool),
         f("disable", Rule::Bool),
         f("warn_unavailable", Rule::Bool),
+        f("allow_edits", Rule::Bool),
     ]))
 }
 

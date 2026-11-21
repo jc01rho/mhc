@@ -417,6 +417,7 @@ pub struct RequiredFailure {
     pub kind: crate::deterministic_fallback::SummaryFailure,
     pub message: String,
     pub unsafe_diagnostics: Option<crate::deterministic_fallback::DeterministicFallbackDiagnostic>,
+    pub retryable_attempt: bool,
 }
 
 impl From<&crate::speculative::SummaryGenerationError> for RequiredFailure {
@@ -430,16 +431,27 @@ impl From<&crate::speculative::SummaryGenerationError> for RequiredFailure {
                 }
                 _ => None,
             },
+            retryable_attempt: crate::speculative::is_retryable_summary_attempt(error),
         }
     }
 }
 
 impl From<&crate::speculative_job::LiveSummaryFailure> for RequiredFailure {
     fn from(failure: &crate::speculative_job::LiveSummaryFailure) -> Self {
+        let retryable_attempt = !failure.message.starts_with("senpi:no-turn-retry:")
+            && matches!(
+                failure.fallback,
+                crate::deterministic_fallback::SummaryFailure::Request {
+                    transient: true,
+                    refused: false,
+                    truncated: false
+                }
+            );
         Self {
             kind: failure.fallback,
             message: failure.message.clone(),
             unsafe_diagnostics: failure.unsafe_diagnostics.clone(),
+            retryable_attempt,
         }
     }
 }
@@ -864,6 +876,9 @@ pub async fn generate_core_route_compaction(
             }
             Ok(EventResult::SessionBefore(SessionBeforeEventResult {
                 cancel: Some(true),
+                rejection_cause: error
+                    .retryable_attempt
+                    .then_some(maho_ext_api::CompactionRejectionCause::TransientFailure),
                 reason: Some(error.message.replace("senpi:no-turn-retry:", "")),
                 ..Default::default()
             }))

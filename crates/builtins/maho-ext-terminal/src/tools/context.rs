@@ -12,12 +12,16 @@ use std::sync::{Arc, Mutex};
 pub struct TerminalExitView {
     pub exit_result: Option<PtyExit>,
     full_output: String,
+    /// Set when `interrupt { background: "stop" }` on this turn id stopped the session: its notice reaches the next
+    /// turn and starts none (senpi `stoppedByInterrupt`).
+    pub stopped_by_interrupt: Option<String>,
 }
 impl TerminalExitView {
     pub fn new(exit_result: Option<PtyExit>, full_output: String) -> Self {
         Self {
             exit_result,
             full_output,
+            stopped_by_interrupt: None,
         }
     }
     pub fn full_output(&self) -> &str {

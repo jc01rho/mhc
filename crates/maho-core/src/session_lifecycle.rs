@@ -200,6 +200,7 @@ pub struct SessionLifecycleController {
     pub children: LifecycleChildren,
     idle_boundary_passed: bool,
     pending_human: bool,
+    restart_continues: bool,
     admitting_human: bool,
     run_admitted: bool,
     goal: Option<Value>,
@@ -244,6 +245,7 @@ impl SessionLifecycleController {
             children,
             idle_boundary_passed: false,
             pending_human: false,
+            restart_continues: false,
             admitting_human: false,
             run_admitted: false,
             goal: None,
@@ -271,7 +273,16 @@ impl SessionLifecycleController {
         })
     }
     pub fn requires_human_continuation(&self) -> bool {
-        self.ledger.interrupted && !self.pending_human
+        self.ledger.interrupted && !self.pending_human && !self.restart_continues
+    }
+
+    pub fn cut_by_host_shutdown(&mut self) {
+        self.ledger.interrupted = true;
+        self.checkpoint();
+    }
+
+    pub fn continue_after_restart(&mut self) {
+        self.restart_continues = true;
     }
     /// The hold key to install when this session is opened, if its run must wait for a person.
     pub fn opening_hold_key(&self) -> Option<&'static str> {
@@ -350,6 +361,7 @@ impl SessionLifecycleController {
                 EpochOrigin::Automatic => "automatic",
             });
         self.pending_human = false;
+        self.restart_continues = false;
         if let Some(id) = interrupted {
             self.obligations.settle_run(&id);
         }

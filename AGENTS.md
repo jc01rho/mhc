@@ -30,6 +30,7 @@ crates/
 ├── extensions/          # 14 native ports of user extensions (see PINS.md)
 ├── vendor/              # maho-grep, maho-pty
 ├── desktop/             # senpi-desktop-*: computer-use engine and platform backends (MIT; tool layer is in omo/)
+├── omo-computer-*/      # computer use v3 engine crates imported from omo (MIT; backends are upstream stubs)
 └── omo/                 # oh-my-openagent port (SUL-1.0)
     ├── maho-omo/        # omo composition root: registers the components
     ├── components/      # 33 omo feature components (maho-omo-*: task, memory, lsp, ultrawork, ...)

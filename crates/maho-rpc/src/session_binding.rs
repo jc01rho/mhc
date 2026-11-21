@@ -148,6 +148,7 @@ pub fn session_event_record(
                     C::CircuitBreaker => "circuit-breaker",
                     C::PerTurnCap => "per-turn-cap",
                     C::StaleRevision => "stale-revision",
+                    C::TransientFailure => "transient-failure",
                 }
                 .into();
             }

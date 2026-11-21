@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::engine_schema;
+use crate::error::DesktopError;
 use crate::methods::{Effect, Exposure, Method, Notification, METHODS};
 
 const SCHEMA_PATH: &str = "schema/engine.schema.json";
@@ -99,6 +100,8 @@ fn only_session_and_stop_path_controls_are_host_only() {
         string_set([
             "session.open",
             "session.close",
+            "control.grant",
+            "control.revoke",
             "stopPath.start",
             "stopPath.heartbeat",
             "stopPath.resume"
@@ -126,7 +129,7 @@ fn error_table_lists_every_error_code_in_ordinal_order() {
     let codes: Vec<i64> = ERROR_CODES.into_iter().map(rpc_error_code).collect();
     assert_eq!(
         codes,
-        (0..28)
+        (0..31)
             .map(|ordinal| -32_000 - ordinal)
             .collect::<Vec<i64>>()
     );
@@ -148,11 +151,43 @@ fn amendment_one_codes_follow_the_frozen_table() {
         assert_eq!(rpc_error_code(code), numeric, "{}", code.as_str());
         assert_eq!(engine_schema()["errors"][code.as_str()], json!(numeric));
     }
-    assert_eq!(ERROR_CODES[24..], appended.map(|(code, _)| code));
+    assert_eq!(ERROR_CODES[24..28], appended.map(|(code, _)| code));
     assert_eq!(rpc_error_code(ErrorCode::PermissionDenied), -32_000);
     assert_eq!(rpc_error_code(ErrorCode::CaptureUnavailable), -32_023);
     assert_eq!(PROTOCOL_VERSION, "1");
     assert_eq!(ABI, "senpi-desktop/1");
+}
+
+/// Amendment 2 appends three codes; every earlier numeric code stays put.
+#[test]
+fn amendment_two_codes_follow_the_frozen_table() {
+    use crate::error::ErrorCode;
+    let appended = [
+        (ErrorCode::AmbiguousTarget, -32_028),
+        (ErrorCode::CaptureConsentRequired, -32_029),
+        (ErrorCode::ProtectedProcess, -32_030),
+    ];
+    for (code, numeric) in appended {
+        assert_eq!(rpc_error_code(code), numeric, "{}", code.as_str());
+        assert_eq!(engine_schema()["errors"][code.as_str()], json!(numeric));
+    }
+    assert_eq!(ERROR_CODES[28..], appended.map(|(code, _)| code));
+    assert_eq!(rpc_error_code(ErrorCode::SpaceMoveDenied), -32_027);
+    assert_eq!(PROTOCOL_VERSION, "1");
+    assert_eq!(ABI, "senpi-desktop/1");
+}
+
+#[test]
+fn capture_unavailable_carries_its_reason_on_the_wire() {
+    // Given
+    let error = DesktopError::capture_unavailable("minimized", "window is minimized");
+    // When
+    let value = serde_json::to_value(&error).unwrap();
+    // Then
+    assert_eq!(value["code"], "CaptureUnavailable");
+    assert_eq!(value["captureUnavailable"], json!({"reason": "minimized"}));
+    assert_eq!(rpc_error_code(error.code), -32_023);
+    assert!(ERROR_CODES.contains(&crate::error::ErrorCode::CaptureUnavailable));
 }
 
 #[test]
@@ -237,8 +272,17 @@ fn protocol_doc() -> String {
         "\n## Errors\n\n\
          An engine error is `{code, message, data: {code: <ErrorCode>, hint}}`. A method-level rejection \
          is the standard `-32601 Method not found` with `data: {reason: \"unknown\" | \"hostOnly\" | \
-         \"testOnly\"}`. Malformed input uses the standard `-32700`, `-32600`, and `-32602`. The table is \
-         append-only: a new code takes the next ordinal, so no existing numeric code moves.\n\n\
+         \"testOnly\"}`. Malformed input uses the standard `-32700`, `-32600`, and `-32602`. \
+         `CaptureUnavailable` also carries `data: {captureUnavailable: {reason}}`; B9 defines the \
+         reason `\"minimized\"` for a window that exists but is minimized; P8 adds `\"off-space\"` for a \
+         window on another Space that no route can read (switch to its Space, or read it through \
+         accessibility) and `\"off-screen\"` for an off-screen window that drew nothing and is not placed \
+         on another Space. In a session opened with \
+         `reportMode: \"object\"`, every error of a mutating request also carries `data.disposition` \
+         (and, when they apply, `reason`, `delivered`, `focusRestoration`), and its result is an \
+         `ActionReport` instead of `null`; `engine.hello` lists `action-report` in `features` when the \
+         engine supports it. The table is append-only: a new code takes the next ordinal, so no existing \
+         numeric code moves.\n\n\
          | ErrorCode | JSON-RPC code |\n|---|---|\n",
     );
     for code in ERROR_CODES {

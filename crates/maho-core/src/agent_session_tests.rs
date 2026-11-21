@@ -2460,6 +2460,7 @@ fn every_rejection_cause_has_a_message() {
         CompactionRejectionCause::CircuitBreaker,
         CompactionRejectionCause::PerTurnCap,
         CompactionRejectionCause::StaleRevision,
+        CompactionRejectionCause::TransientFailure,
     ] {
         assert!(describe_compaction_rejection(cause).starts_with("Compaction rejected"));
     }
@@ -5019,6 +5020,83 @@ fn reserving_queued_input_order_is_monotonic() {
     let session = test_session();
     assert_eq!(session.reserve_queued_input_order(), 1);
     assert_eq!(session.reserve_queued_input_order(), 2);
+}
+
+/// The carrier an external admission queues for `delivery_id`, built the way `delivery_message` shapes it.
+fn queued_delivery_carrier(delivery_id: &str) -> maho_agent::harness::messages::CustomMessage {
+    let message = crate::external_admission::delivery_message(
+        &serde_json::json!({"delivery_id": delivery_id, "text": "probe", "deliverAs": "followUp"}),
+    );
+    maho_agent::harness::messages::CustomMessage {
+        role: "custom".into(),
+        custom_type: crate::extensions::session_control_types::SESSION_CONTROL_DELIVERY_TYPE.into(),
+        content: maho_agent::harness::messages::CustomMessageContent::Text("probe".into()),
+        display: true,
+        details: Some(message["details"].clone()),
+        timestamp: 0,
+    }
+}
+
+// senpi#6971 `takeQueuedDeliveries`: an interrupt hands back the deliveries an aborted run left queued without touching
+// the user's queued input. Guards the filter on the delivery id (a user's input must stay) and the `drop_queued` call
+// (a stale admission would refuse every later unload `work_pending`).
+#[tokio::test]
+async fn take_queued_deliveries_removes_only_delivery_carriers_and_drops_their_admission() {
+    let session = test_session();
+    let carrier = queued_delivery_carrier("d1");
+    let carrier_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
+        carrier.clone(),
+    ));
+    let admitted = session
+        .external_admission()
+        .admit(
+            &serde_json::json!({"delivery_id": "d1", "text": "probe", "deliverAs": "followUp"}),
+            &serde_json::json!({}),
+            true,
+            |_, _| Ok(()),
+        )
+        .expect("admit");
+    assert_eq!(admitted["kind"], "queued");
+    session.agent.follow_up(carrier_message.clone());
+    let receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+    session.track_queued_custom_receipt(carrier.clone(), receipt.clone());
+    let note = maho_agent::harness::messages::CustomMessage {
+        role: "custom".into(),
+        custom_type: "note".into(),
+        content: maho_agent::harness::messages::CustomMessageContent::Text(
+            "a person's input".into(),
+        ),
+        display: true,
+        details: None,
+        timestamp: 0,
+    };
+    let note_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(note));
+    session.agent.follow_up(note_message.clone());
+    assert_eq!(
+        session.external_admission().list()["pending"],
+        serde_json::json!(["d1"])
+    );
+
+    session.take_queued_deliveries();
+
+    assert!(!session.agent.contains_queued_message(&carrier_message));
+    assert!(session.agent.contains_queued_message(&note_message));
+    assert_eq!(
+        session.external_admission().list()["pending"],
+        serde_json::json!([])
+    );
+    assert!(matches!(receipt.outcome(), Some(Err(_))));
+}
+
+#[test]
+fn take_queued_deliveries_with_nothing_queued_changes_nothing() {
+    let session = test_session();
+    session.take_queued_deliveries();
+    assert_eq!(session.pending_message_count(), 0);
+    assert_eq!(
+        session.external_admission().list()["pending"],
+        serde_json::json!([])
+    );
 }
 
 #[test]
@@ -17808,4 +17886,86 @@ fn a_queued_text_two_inputs_share_keeps_no_client_message_id() {
         queued_input_client_message_id(&session.state(), "absent"),
         None
     );
+}
+
+fn background_job(id: &str, stopped: &Arc<Mutex<Vec<String>>>) -> maho_ext_api::RunBackgroundJob {
+    let (id, stopped) = (id.to_owned(), Arc::clone(stopped));
+    maho_ext_api::RunBackgroundJob {
+        kind: maho_ext_api::RunBackgroundJobKind::Bash,
+        id: id.clone(),
+        description: Some(format!("{id} job")),
+        stop: Arc::new(
+            move |turn_id: String| -> maho_ext_api::ExtensionFuture<'static, ()> {
+                let (id, stopped) = (id.clone(), Arc::clone(&stopped));
+                Box::pin(async move {
+                    lock(&stopped).push(format!("{id}@{turn_id}"));
+                    Ok::<(), maho_ext_api::ExtensionFailure>(())
+                })
+            },
+        ),
+    }
+}
+
+/// senpi #6675 `registerRunBackgroundJob` / `stopRunBackgroundJobs`: a job is recorded under the running turn only,
+/// `interrupt { background: "stop" }` stops that turn's jobs in start order, and a released job is not stopped.
+#[tokio::test]
+async fn background_jobs_register_under_the_running_turn_and_stop_by_turn() {
+    let session = test_session();
+    let stopped = Arc::new(Mutex::new(Vec::new()));
+    let turn_id = session.external_admission().turn_epoch().to_string();
+
+    let idle = session.register_run_background_job(background_job("idle", &stopped));
+    idle();
+    assert_eq!(
+        session.stop_run_background_jobs(&turn_id).await,
+        maho_ext_api::RunBackgroundStopOutcome::default()
+    );
+
+    session.agent_run_active.store(true, Ordering::SeqCst);
+    let _first = session.register_run_background_job(background_job("first", &stopped));
+    let ended = session.register_run_background_job(background_job("ended", &stopped));
+    let _second = session.register_run_background_job(background_job("second", &stopped));
+    ended();
+    let outcome = session.stop_run_background_jobs(&turn_id).await;
+
+    assert_eq!(
+        outcome
+            .stopped
+            .iter()
+            .map(|job| job.id.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert!(outcome.failed.is_empty());
+    assert_eq!(
+        *lock(&stopped),
+        [format!("first@{turn_id}"), format!("second@{turn_id}")]
+    );
+    assert_eq!(
+        session.stop_run_background_jobs(&turn_id).await,
+        maho_ext_api::RunBackgroundStopOutcome::default()
+    );
+}
+
+#[tokio::test]
+async fn the_extension_context_actions_register_background_jobs_through_the_session() {
+    let session = test_session();
+    session.agent_run_active.store(true, Ordering::SeqCst);
+    let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+    let stopped = Arc::new(Mutex::new(Vec::new()));
+
+    let release = maho_ext_api::ExtensionContextActions::register_run_background_job(
+        &actions,
+        background_job("via-context", &stopped),
+    );
+    let turn_id = session.external_admission().turn_epoch().to_string();
+    let outcome = session.stop_run_background_jobs(&turn_id).await;
+
+    assert_eq!(outcome.stopped.len(), 1);
+    assert_eq!(outcome.stopped[0].id, "via-context");
+    assert_eq!(
+        outcome.stopped[0].description.as_deref(),
+        Some("via-context job")
+    );
+    release();
 }

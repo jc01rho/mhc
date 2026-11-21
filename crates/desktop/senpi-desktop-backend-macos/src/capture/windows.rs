@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use senpi_desktop_core::error::{CoreResult, DesktopError};
-use senpi_desktop_core::types::DesktopWindow;
+use senpi_desktop_core::types::{DesktopWindow, WindowIdentity};
 use xcap::Window;
 
 const MIN_WINDOW_EDGE: u32 = 16;
@@ -37,11 +37,19 @@ pub(crate) fn enumerate() -> CoreResult<Vec<DesktopWindow>> {
         if (title.is_empty() && app.is_empty()) || app == WINDOW_SERVER_OWNER {
             continue;
         }
+        let pid = window.pid().ok();
         result.push(DesktopWindow {
+            // The owning process and its start time tell this window from a
+            // later process reusing its number (object-mode frames).
+            identity: pid.map(|pid| WindowIdentity {
+                window_number: id.to_string(),
+                pid,
+                process_start: crate::input::process_started(pid),
+            }),
             id: id.to_string(),
             title,
             app,
-            pid: window.pid().ok(),
+            pid,
             x,
             y,
             width,
@@ -49,9 +57,27 @@ pub(crate) fn enumerate() -> CoreResult<Vec<DesktopWindow>> {
             // xcap marks every window of the active app focused; the AX
             // focused window lands with the focus guard (todo 15).
             focused: window.is_focused().unwrap_or(false),
+            // xcap cannot report SCWindow.isOnScreen; the SCK capture reply
+            // owns the on-Screen truth (B9).
+            is_on_screen: None,
             elevated: None,
         });
     }
+    let helper_ids = match crate::focus::window_info() {
+        Ok(info) => Some(
+            info.iter()
+                .filter(|w| w.cursor_overlay)
+                .map(|w| w.window_number)
+                .collect::<Vec<_>>(),
+        ),
+        Err(error) => {
+            eprintln!(
+                "window list cannot identify cursor helpers; hiding every title match: {error}"
+            );
+            None
+        }
+    };
+    super::exclude_overlay_windows(&mut result, helper_ids.as_deref());
     Ok(result)
 }
 

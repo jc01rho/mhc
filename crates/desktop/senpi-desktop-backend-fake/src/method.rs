@@ -19,6 +19,10 @@ pub enum FakeMethod {
     ClipboardRead,
     ClipboardWrite,
     KeyChord,
+    KeyPress,
+    KeyRelease,
+    MousePress,
+    MouseRelease,
     RaiseWindow,
     ReleaseAll,
     CursorPosition,
@@ -34,10 +38,19 @@ pub enum FakeMethod {
     AxPerform,
     AxSetValue,
     AxFocus,
+    AxTypeText,
     AxElementAt,
     AxFocusedElement,
+    AxAppFocusedElement,
     AxAttributes,
     AxOwner,
+    MenuItems,
+    MenuSelect,
+    WindowIdentity,
+    FocusRead,
+    FocusRecord,
+    HitRead,
+    FrontmostPid,
 }
 
 /// The AX writes a scenario can leave unanswered (`ax_cannot_complete`):
@@ -49,6 +62,8 @@ pub enum AxWrite {
     AxPerform,
     AxSetValue,
     AxFocus,
+    /// The insertion write of `ax.typeText` into a native text field.
+    AxTypeText,
 }
 
 impl AxWrite {
@@ -57,6 +72,7 @@ impl AxWrite {
             Self::AxPerform => FakeMethod::AxPerform,
             Self::AxSetValue => FakeMethod::AxSetValue,
             Self::AxFocus => FakeMethod::AxFocus,
+            Self::AxTypeText => FakeMethod::AxTypeText,
         }
     }
 }

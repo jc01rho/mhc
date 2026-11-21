@@ -1,7 +1,7 @@
 use std::{io, path::Path};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-pub const SOCKET_SECRET_BYTES: usize = 32;
+pub const SOCKET_SECRET_BYTES: usize = maho_socket_secret::SOCKET_SECRET_BYTES;
 pub const SOCKET_SECRET_SUFFIX: &str = ".secret";
 pub const SOCKET_SECRET_FILE_ENV: &str = "SENPI_RPC_SOCKET_SECRET_FILE";
 pub const SOCKET_HANDSHAKE_TIMEOUT_MS: u64 = 2000;
@@ -98,41 +98,35 @@ pub fn read_socket_secret(path: &Path) -> io::Result<[u8; SOCKET_SECRET_BYTES]> 
         )
     })
 }
+/// senpi `createSocketSecret`: creates the secret unless one is already there. A valid regular file already at the
+/// path, or one published by a concurrent creator, is returned unchanged; an invalid one or a symlink is refused, never
+/// replaced or written through (`maho-socket-secret`, sisyphuslabs/omo-desktop-app#4199 design 4.3).
 pub fn create_socket_secret(path: &Path) -> io::Result<[u8; SOCKET_SECRET_BYTES]> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut secret = [0; SOCKET_SECRET_BYTES];
-    getrandom::fill(&mut secret).map_err(|error| io::Error::other(error.to_string()))?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    std::io::Write::write_all(&mut file, &secret)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(secret)
+    maho_socket_secret::create_socket_secret(path)
 }
-pub fn ensure_socket_secret(path: &Path) -> io::Result<[u8; SOCKET_SECRET_BYTES]> {
-    match read_socket_secret(path) {
-        Ok(secret) => Ok(secret),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
-            ) =>
-        {
-            create_socket_secret(path)
-        }
-        Err(error) => Err(error),
+/// senpi `ensureSocketSecret`: a valid secret is reused as it is, and anything else is provisioned under the
+/// per-secret lock (design 4.2 and 4.4), so two contenders never both repair one entry and a symlink or another
+/// non-regular entry is refused instead of followed.
+pub async fn ensure_socket_secret(path: &Path) -> io::Result<[u8; SOCKET_SECRET_BYTES]> {
+    // The first read is only a hint: a contender may publish or repair before the lock is held.
+    if let Some(secret) = maho_socket_secret::read_valid_socket_secret(path)? {
+        return Ok(secret);
     }
+    maho_socket_secret::prepare_socket_secret_parent(path)?;
+    let lock_path = maho_socket_secret::socket_secret_lock_path(path)?;
+    let mut lock = crate::ownership_safe_lock::acquire_ownership_safe_lock(
+        &lock_path,
+        crate::ownership_safe_lock::LockRetries::default(),
+    )
+    .await
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    let provisioned = maho_socket_secret::provision_socket_secret_locked(path);
+    let released = lock
+        .release()
+        .map_err(|error| io::Error::other(error.to_string()));
+    let secret = provisioned?;
+    released?;
+    Ok(secret)
 }
 pub async fn authenticate_socket(
     socket: &mut (impl AsyncRead + Unpin),
@@ -270,14 +264,14 @@ mod tests {
         let secret = create_socket_secret(&path).unwrap();
         assert_eq!(read_socket_secret(&path).unwrap(), secret);
     }
-    #[test]
-    fn existing_secret_is_reused_and_bad_length_replaced() {
+    #[tokio::test]
+    async fn existing_secret_is_reused_and_bad_length_replaced() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("rpc.secret");
-        let secret = ensure_socket_secret(&path).unwrap();
-        assert_eq!(ensure_socket_secret(&path).unwrap(), secret);
+        let secret = ensure_socket_secret(&path).await.unwrap();
+        assert_eq!(ensure_socket_secret(&path).await.unwrap(), secret);
         std::fs::write(&path, [0]).unwrap();
-        assert_eq!(ensure_socket_secret(&path).unwrap().len(), 32);
+        assert_eq!(ensure_socket_secret(&path).await.unwrap().len(), 32);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

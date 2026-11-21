@@ -11,6 +11,8 @@ mod execution_tooling;
 mod faux_session;
 #[path = "file_operations.rs"]
 mod file_operations;
+#[path = "gpt_6_2_preset.rs"]
+mod gpt_6_2_preset;
 #[path = "hooks.rs"]
 mod hooks;
 #[path = "main_hooks.rs"]

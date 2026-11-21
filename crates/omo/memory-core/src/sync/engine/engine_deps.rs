@@ -3,7 +3,9 @@ use std::rc::Rc;
 use super::error::EngineResult;
 
 pub type SyncLog = Rc<dyn Fn(&str)>;
-use super::ports::{Clock, ItemStore, Sealer, SyncRepo, Transport, Verifier, WriterLock};
+use super::ports::{
+    Clock, FreezeSettler, ItemStore, Sealer, SyncRepo, Transport, Verifier, WriterLock,
+};
 
 /// Where a crash can be injected: right after each journal marker, or between an effect and its marker.
 pub const INBOUND_POINTS: [&str; 12] = [
@@ -67,6 +69,8 @@ pub struct EngineDeps {
     pub batch_bytes: Option<usize>,
     /// Uniform `[0, 1)` source for the jittered stale-base backoff.
     pub random: Option<Rc<dyn Fn() -> f64>>,
+    /// The account session's freeze settler (#12280): a push refused `stale_base` asks it first.
+    pub freeze: Option<Rc<dyn FreezeSettler>>,
 }
 
 impl EngineDeps {

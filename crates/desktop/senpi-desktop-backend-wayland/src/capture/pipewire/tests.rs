@@ -158,6 +158,7 @@ fn a_missing_libpipewire_is_reported_not_loadable() {
 
 fn portal_window(id: &str, x: i32, y: i32, width: u32, height: u32) -> DesktopWindow {
     DesktopWindow {
+        identity: None,
         id: id.to_owned(),
         title: String::new(),
         app: String::new(),
@@ -167,6 +168,7 @@ fn portal_window(id: &str, x: i32, y: i32, width: u32, height: u32) -> DesktopWi
         width,
         height,
         focused: false,
+        is_on_screen: None,
         elevated: None,
     }
 }

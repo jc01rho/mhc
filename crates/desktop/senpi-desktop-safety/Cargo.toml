@@ -13,5 +13,14 @@ parking_lot = "=0.12.5"
 senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core" }
 thiserror.workspace = true
 
+[features]
+# Test-only helpers that bypass the user-only resume proof. Never enabled by
+# a production dependency; only dev-dependencies turn it on.
+test-support = []
+
 [dev-dependencies]
 senpi-desktop-backend-fake = { package = "maho-senpi-desktop-backend-fake", path = "../senpi-desktop-backend-fake" }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true

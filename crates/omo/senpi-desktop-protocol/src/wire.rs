@@ -3,7 +3,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use senpi_desktop_core::protocol_results::{LogLevel, StopPathKind, StopPathStatus};
+pub use senpi_desktop_core::protocol_results::{
+    EpochChanged, EpochReason, LogLevel, StopPathKind, StopPathStatus,
+};
 pub use senpi_desktop_core::types::DesktopCapabilities;
 
 /// The `engine.log` notification payload.

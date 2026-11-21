@@ -38,7 +38,7 @@ pub fn fake_backend(scenario: &str) -> (&'static str, String) {
 }
 
 pub struct Engine {
-    child: Option<Child>,
+    child: Child,
     stdin: Option<ChildStdin>,
     lines: mpsc::Receiver<Value>,
     /// Id of the next [`Engine::invoke`]; far above the explicit ids tests pick.
@@ -73,7 +73,7 @@ impl Engine {
         });
         let stdin = child.stdin.take();
         Self {
-            child: Some(child),
+            child,
             stdin,
             lines,
             next_id: 1_000,
@@ -95,6 +95,13 @@ impl Engine {
         stdin
             .write_all(batch.as_bytes())
             .expect("engine reads stdin");
+        stdin.flush().expect("stdin flushes");
+    }
+
+    /// Writes `bytes` as they are, with no framing added.
+    pub fn send_raw(&mut self, bytes: &[u8]) {
+        let stdin = self.stdin.as_mut().expect("stdin is open");
+        stdin.write_all(bytes).expect("engine reads stdin");
         stdin.flush().expect("stdin flushes");
     }
 
@@ -143,25 +150,29 @@ impl Engine {
         }
     }
 
+    /// Every line written until the engine closes its output on its own;
+    /// stdin stays open.
+    pub fn until_closed(&self) -> Vec<Value> {
+        let mut written = Vec::new();
+        loop {
+            match self.lines.recv_timeout(HANG_GUARD) {
+                Ok(message) => written.push(message),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return written,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("engine did not close its output within the hang guard")
+                }
+            }
+        }
+    }
+
     /// Closes stdin and returns the exit status.
     pub fn finish(mut self) -> ExitStatus {
         drop(self.stdin.take());
-        let mut child = self.child.take().expect("engine process is owned");
         let (sender, exited) = mpsc::channel();
-        thread::spawn(move || sender.send(child.wait().expect("engine exits")));
+        thread::spawn(move || sender.send(self.child.wait().expect("engine exits")));
         exited
             .recv_timeout(HANG_GUARD)
             .expect("engine exits at stdin EOF within the hang guard")
-    }
-}
-
-impl Drop for Engine {
-    fn drop(&mut self) {
-        drop(self.stdin.take());
-        if let Some(mut child) = self.child.take() {
-            child.kill().expect("owned test engine is terminated");
-            child.wait().expect("owned test engine is reaped");
-        }
     }
 }
 

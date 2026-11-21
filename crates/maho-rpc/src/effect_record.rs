@@ -85,6 +85,14 @@ pub enum EffectState {
     Failed,
 }
 
+/// The delivery ids an unload names beside its outcome, kept on the effect so a replay answers as the live call did:
+/// `dropped` is what an interrupt handed back unwritten, `pending` what a refusal found unwritten (senpi#6971, #7004).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectDeliveries {
+    pub deliveries: Vec<String>,
+}
+
 /// One `rpc_effect` entry's data. `kind` never holds `input` (inputs use the admission entry).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +107,12 @@ pub struct RpcEffectRecord {
     /// What a queued-input change answered beyond its status, so a replay answers as the live call did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<QueuedChangeAnswer>,
+    /// Deliveries an interrupting unload handed back unwritten, so a replay names them as the live answer did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<EffectDeliveries>,
+    /// A refused unload's unwritten deliveries (senpi#7004), so a replay names them as the live refusal did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<EffectDeliveries>,
     pub by: EffectActor,
     pub accepted_at: String,
     pub updated_at: String,
@@ -132,6 +146,12 @@ pub struct EffectStatus {
     pub outcome: Option<EffectOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<QueuedChangeAnswer>,
+    /// An interrupting unload's handed-back deliveries (`unload_session` `dropped`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<EffectDeliveries>,
+    /// A refused unload's admitted deliveries not yet written (`unload_session` `pending`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<EffectDeliveries>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<EffectActor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,7 +207,7 @@ impl EffectCommandKind {
             Self::Abort => &["awaitIdle", "clearQueue", "graceMs"],
             Self::SetModel => &["provider", "modelId", "thinkingLevel"],
             Self::SetThinkingLevel => &["level", "scope"],
-            Self::Unload => &["interrupt", "clearQueue", "children", "force"],
+            Self::Unload => &["interrupt", "clearQueue", "children", "force", "deliveries"],
             Self::Dequeue => &["queuedId", "expectedRevision"],
             Self::EditQueued => &["queuedId", "text", "expectedRevision"],
         }

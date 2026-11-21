@@ -336,13 +336,19 @@ fn model_ids_of(models: &[String]) -> HashSet<String> {
 fn prompt_append_for_category(
     category_name: &str,
     model: Option<&str>,
-    user_prompt_append: Option<&str>,
+    user_config: Option<&Value>,
 ) -> Option<String> {
-    let base = builtin_category(category_name).map_or("", |definition| {
-        definition
-            .resolve_prompt_append
-            .map_or(definition.prompt_append, |resolve| resolve(model))
-    });
+    let user_prompt_append = user_config
+        .and_then(|user| user.get("prompt_append"))
+        .and_then(Value::as_str);
+    let base =
+        super::architect_edits::prompt_append(category_name, user_config).unwrap_or_else(|| {
+            builtin_category(category_name).map_or("", |definition| {
+                definition
+                    .resolve_prompt_append
+                    .map_or(definition.prompt_append, |resolve| resolve(model))
+            })
+        });
     match user_prompt_append.filter(|append| !append.is_empty()) {
         None => (!base.is_empty()).then(|| base.to_string()),
         Some(user) if base.is_empty() => Some(user.to_string()),
@@ -596,13 +602,8 @@ pub fn resolve_category(
         )));
     };
 
-    let prompt_append = prompt_append_for_category(
-        category_name,
-        Some(&selection.selected_model),
-        user_config
-            .and_then(|user| user.get("prompt_append"))
-            .and_then(Value::as_str),
-    );
+    let prompt_append =
+        prompt_append_for_category(category_name, Some(&selection.selected_model), user_config);
     let variant = user_config
         .and_then(|user| string_field(user, "variant"))
         .or_else(|| selection.variant.clone())
@@ -656,6 +657,9 @@ pub fn resolve_category(
     };
     let description = user_config
         .and_then(|user| string_field(user, "description"))
+        .or_else(|| {
+            super::architect_edits::description(category_name, user_config).map(str::to_string)
+        })
         .or_else(|| builtin.map(|definition| definition.description.to_string()));
     Ok(CategoryResolutionResult::Resolved {
         category: category_name.to_string(),

@@ -20,14 +20,23 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
 ulid = "=3.0.0"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "net", "process", "rt-multi-thread", "test-util"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 senpi-desktop-backend-macos = { package = "maho-senpi-desktop-backend-macos", path = "../senpi-desktop-backend-macos" }
+senpi-desktop-xpc = { package = "maho-senpi-desktop-xpc", path = "../senpi-desktop-xpc" }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+core-graphics = { version = "=0.25.0", features = ["highsierra"] }
 libc.workspace = true
+objc2-app-kit = "=0.3.2"
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

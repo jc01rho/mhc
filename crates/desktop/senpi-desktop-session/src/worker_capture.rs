@@ -2,53 +2,114 @@
 //! artifact-only), recorded as the target's latest frame.
 
 use senpi_desktop_core::error::CoreResult;
+use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::protocol_params::CaptureParams;
-use senpi_desktop_core::types::{CaptureResult, DesktopSessionOptions, Target};
+use senpi_desktop_core::report::ReportMode;
+use senpi_desktop_core::types::{
+    CaptureCaps, CaptureRegion, CaptureResult, DesktopSessionOptions, Target, WindowIdentity,
+};
 
-use crate::budget::{plan_screenshot, Budget, Delivery};
+use crate::budget::{plan_screenshot, Budget, Delivery, ScreenshotResult};
 use crate::request::Response;
 use crate::worker::Worker;
 
 impl Worker {
     pub(crate) fn capture(&mut self, params: &CaptureParams) -> CoreResult<Response> {
         let target = Target::parse(&params.target);
-        let artifact_dir = self.artifact_dir();
-        let unopened = DesktopSessionOptions::default();
-        let caps = self
-            .options
-            .as_ref()
-            .unwrap_or(&unopened)
-            .capture_caps
-            .clone();
-        let budget = Budget::new(&caps, params.caps.as_ref(), artifact_dir)?;
-        let (image, mut geometry) = self.backend()?.capture(&target, budget.caps())?;
+        let budget = self.capture_budget(params.caps.as_ref())?;
+        let (image, mut geometry) = self.backend()?.capture(
+            &target,
+            budget.caps(),
+            params.exclude_window_titles.as_deref().unwrap_or(&[]),
+        )?;
         let screenshot = plan_screenshot(image, &mut geometry, &budget)?;
+        let on_screen = geometry.window_is_on_screen();
+        let legacy_capture = geometry.is_legacy_capture();
+        let identity = self.object_identity(&geometry);
         let frame_id = self.frames.record(&target, geometry);
         self.refresh_capabilities();
-        let scale = screenshot.scale();
-        let mode = screenshot.delivery.mode();
-        let (data, mime_type, artifact_path, note) = match screenshot.delivery {
-            Delivery::InlinePng(png) => (Some(base64(&png)), "image/png", None, None),
-            Delivery::InlineJpeg { jpeg, note } => {
-                (Some(base64(&jpeg)), "image/jpeg", None, Some(note))
-            }
-            Delivery::ArtifactOnly { path, note } => (None, "image/png", Some(path), Some(note)),
-        };
-        Ok(Response::Capture(CaptureResult {
-            mode,
-            data,
-            mime_type: Some(mime_type.to_owned()),
-            artifact_path,
-            width: screenshot.width,
-            height: screenshot.height,
-            source_width: screenshot.source_width,
-            source_height: screenshot.source_height,
-            scale,
-            target: target.key().to_owned(),
-            frame_id,
-            note,
-        }))
+        Ok(with_identity(
+            capture_response(
+                screenshot,
+                &target,
+                frame_id,
+                None,
+                on_screen,
+                legacy_capture,
+            ),
+            identity,
+        ))
     }
+
+    /// The captured window's identity, reported in object mode only.
+    pub(crate) fn object_identity(&self, geometry: &FrameGeometry) -> Option<WindowIdentity> {
+        (self.registry.report_mode() == ReportMode::Object)
+            .then(|| geometry.identity().cloned())
+            .flatten()
+    }
+
+    pub(crate) fn capture_budget(&self, caps: Option<&CaptureCaps>) -> CoreResult<Budget> {
+        let unopened = DesktopSessionOptions::default();
+        Budget::new(
+            &self.options.as_ref().unwrap_or(&unopened).capture_caps,
+            caps,
+            self.artifact_dir(),
+        )
+    }
+}
+
+/// A capture reply carrying `identity` (object mode).
+pub(crate) fn with_identity(response: Response, identity: Option<WindowIdentity>) -> Response {
+    match response {
+        Response::Capture(capture) => Response::Capture(CaptureResult {
+            identity,
+            ..capture
+        }),
+        other => other,
+    }
+}
+
+pub(crate) fn capture_response(
+    screenshot: ScreenshotResult,
+    target: &Target,
+    frame_id: String,
+    zoom: Option<(CaptureRegion, (u32, u32))>,
+    is_on_screen: Option<bool>,
+    legacy_capture: bool,
+) -> Response {
+    let (coordinate_width, coordinate_height) = zoom
+        .map_or((screenshot.width, screenshot.height), |(_, dimensions)| {
+            dimensions
+        });
+    let scale = screenshot.scale();
+    let mode = screenshot.delivery.mode();
+    let (data, mime_type, artifact_path, note) = match screenshot.delivery {
+        Delivery::InlinePng(png) => (Some(base64(&png)), "image/png", None, None),
+        Delivery::InlineJpeg { jpeg, note } => {
+            (Some(base64(&jpeg)), "image/jpeg", None, Some(note))
+        }
+        Delivery::ArtifactOnly { path, note } => (None, "image/png", Some(path), Some(note)),
+    };
+    Response::Capture(CaptureResult {
+        identity: None,
+        mode,
+        data,
+        mime_type: Some(mime_type.to_owned()),
+        artifact_path,
+        width: screenshot.width,
+        height: screenshot.height,
+        source_width: screenshot.source_width,
+        source_height: screenshot.source_height,
+        coordinate_width,
+        coordinate_height,
+        region: zoom.map(|(region, _)| region),
+        scale,
+        target: target.key().to_owned(),
+        frame_id,
+        note,
+        is_on_screen,
+        legacy_capture,
+    })
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

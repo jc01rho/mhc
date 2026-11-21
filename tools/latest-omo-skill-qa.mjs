@@ -423,8 +423,10 @@ async function scenarioBareRewrite(ctx) {
 				const bareMessages = await client.request({ type: "get_messages", sessionId });
 				receipt.bareMessage = userMessageText(bareMessages);
 				const bareExpanded = receipt.bareMessage.includes(skill.marker);
-				await client.request({ type: "prompt", sessionId, message: `/skill:${skill.name} hello` });
-				const namedMessages = await client.request({ type: "get_messages", sessionId });
+				const namedOpened = await client.request({ type: "open_session", cwd: join(home, "project") });
+				const namedSessionId = namedOpened?.data?.sessionId ?? sessionId;
+				await client.request({ type: "prompt", sessionId: namedSessionId, message: `/skill:${skill.name} hello` });
+				const namedMessages = await client.request({ type: "get_messages", sessionId: namedSessionId });
 				receipt.namedMessage = userMessageText(namedMessages);
 				const namedExpanded = receipt.namedMessage.includes(skill.marker);
 				receipt.expandedBare = bareExpanded;

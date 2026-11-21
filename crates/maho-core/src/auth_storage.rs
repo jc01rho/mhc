@@ -1639,13 +1639,34 @@ impl AuthStorage {
             signal.clone(),
             Arc::new(LegacyInteraction { callbacks, signal }),
         );
+        let before = self.get(provider_id);
         let credential = oauth
             .login(&interaction)
             .await
             .map_err(|err| err.to_string())?;
         let val =
             serde_json::to_value(Credential::OAuth(credential)).map_err(|err| err.to_string())?;
-        self.set(provider_id, Some(val))
+        self.set(provider_id, Some(val))?;
+        if let Some(auth_path) = self.auth_path.as_deref()
+            && let Some(parent) = Path::new(auth_path).parent()
+        {
+            let state_path = parent
+                .join(crate::credential_pool::state_store::CREDENTIAL_POOL_STATE_FILENAME)
+                .to_string_lossy()
+                .into_owned();
+            let after = self.get(provider_id);
+            let retire: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> =
+                Box::pin(
+                    crate::credential_pool::state_store::retire_login_slot_health(
+                        &state_path,
+                        provider_id,
+                        before.as_ref(),
+                        after.as_ref(),
+                    ),
+                );
+            retire.await;
+        }
+        Ok(())
     }
 
     pub async fn oauth_login(

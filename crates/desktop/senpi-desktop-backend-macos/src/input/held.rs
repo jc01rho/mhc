@@ -119,18 +119,24 @@ impl Held {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn take_keys(&mut self) -> Vec<HeldKey> {
         std::mem::take(&mut self.state.lock().keys)
     }
 
+    #[cfg(test)]
     pub(super) fn take_buttons(&mut self) -> Vec<HeldButton> {
         std::mem::take(&mut self.state.lock().buttons)
     }
 
-    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         let state = self.state.lock();
         state.keys.is_empty() && state.buttons.is_empty()
+    }
+
+    pub(super) fn snapshot(&self) -> (Vec<HeldKey>, Vec<HeldButton>) {
+        let state = self.state.lock();
+        (state.keys.clone(), state.buttons.clone())
     }
 }
 

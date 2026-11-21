@@ -14,7 +14,9 @@ use super::adapters::git_sync_repo::{GitSyncRepoOptions, create_git_sync_repo};
 use super::engine::{EngineStatus, SyncEngine};
 use super::engine_deps::EngineDeps;
 use super::error::{EngineError, EngineResult};
-use super::ports::{Cancel, Clock, Sealer, SyncRepo, Transport, Verifier, WriterLock};
+use super::ports::{
+    Cancel, Clock, FreezeSettler, Sealer, SyncRepo, Transport, Verifier, WriterLock,
+};
 use crate::fs::resilient;
 use crate::locks::{
     AcquireLockError, AcquireLockOptions, CreateLockRecordOptions, LockRecord, WithLockError,
@@ -29,6 +31,8 @@ pub struct SyncSession {
     pub transport: Rc<dyn Transport>,
     pub verifier: Rc<dyn Verifier>,
     pub sealer: Rc<dyn Sealer>,
+    /// Settles a service freeze (rotation on revoke, #12280); `None` keeps the plain stale-base retry.
+    pub freeze: Option<Rc<dyn FreezeSettler>>,
 }
 
 pub struct OpenDeviceSyncOptions {
@@ -155,6 +159,7 @@ pub fn open_device_sync(options: OpenDeviceSyncOptions) -> EngineResult<Option<D
             log: options.log.clone(),
             batch_bytes: None,
             random: None,
+            freeze: options.session.freeze.clone(),
         }))
     })();
     match built {

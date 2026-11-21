@@ -11,7 +11,7 @@ pub use senpi_desktop_core::protocol::{
 };
 
 use crate::engine_schema_generated::ErrorCode;
-use crate::wire::{AuditEvent, EngineLog, StopPathStatus};
+use crate::wire::{AuditEvent, EngineLog, EpochChanged, StopPathStatus};
 
 /// A client request; `id` is absent only for client notifications such as `$/cancel`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -35,6 +35,10 @@ pub struct EngineErrorData {
     pub hint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<PermissionDeniedData>,
+    /// Machine-readable cause, an open token set per code (e.g. `consumed` for
+    /// `InvalidCoordinateFrame`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Error data carried by every `-32601` rejection.
@@ -95,6 +99,8 @@ pub enum EngineNotificationMessage {
     StopPathChanged(StopPathStatus),
     #[serde(rename = "engine.log")]
     EngineLog(EngineLog),
+    #[serde(rename = "epoch.changed")]
+    EpochChanged(EpochChanged),
 }
 
 /// A server-to-client notification, discriminated by `method`.

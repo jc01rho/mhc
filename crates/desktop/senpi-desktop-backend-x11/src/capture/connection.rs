@@ -252,9 +252,7 @@ fn request_failed(error: impl std::fmt::Display) -> DesktopError {
 
 fn root_capture_failed(error: ReplyError) -> DesktopError {
     match &error {
-        ReplyError::X11Error(x11)
-            if matches!(x11.error_kind, ErrorKind::Match | ErrorKind::Drawable) =>
-        {
+        ReplyError::X11Error(x11) if matches!(x11.error_kind, ErrorKind::Match | ErrorKind::Drawable) => {
             DesktopError::capture_failed(
                 "X11 root window is not a readable drawable; rootless XWayland capture requires the Wayland portal backend",
             )
