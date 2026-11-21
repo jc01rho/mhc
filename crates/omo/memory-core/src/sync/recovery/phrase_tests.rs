@@ -1,5 +1,5 @@
 use super::*;
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 const FIXTURE: &str = include_str!("fixtures/phrase-v1.json");
 
@@ -45,8 +45,7 @@ fn every_official_vector_encodes_and_derives_exactly() {
             parse_recovery_phrase(&TypedPhrase::new(vector["words"].as_str().unwrap_or("")))
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
         assert_eq!(
-            *parsed.entropy.as_ref(),
-            entropy,
+            *parsed.entropy, entropy,
             "{name}: a parsed phrase carries its entropy"
         );
         let account = vector["account"].as_str().unwrap_or("");
@@ -81,7 +80,7 @@ fn typed_input_is_normalised_before_parsing() {
                     panic!("{}: {error}", input["name"].as_str().unwrap_or(""))
                 });
         assert_eq!(
-            parsed.entropy.as_ref().as_slice(),
+            &parsed.entropy[..],
             hex_bytes(input["entropy_hex"].as_str().unwrap_or("")).as_slice(),
             "{}",
             input["name"].as_str().unwrap_or("")
