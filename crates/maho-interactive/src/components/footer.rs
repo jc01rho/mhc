@@ -2,7 +2,7 @@
 //! ordered, foldable extension status line with memory pinned right. Diverges from senpi's
 //! footer.ts by design; see docs/divergences.md (UX-2).
 use super::footer_layout::{
-    FoldableStatus, FooterGroup, compact_cwd, elide_path, flatten_groups, groups_width,
+    FoldableStatus, FooterGroup, compact_cwd, elide_head, elide_path, flatten_groups, groups_width,
     join_groups, plan_status_fold, status_fold_width,
 };
 use crate::theme::theme::{Theme, ThemeColor};
@@ -80,6 +80,8 @@ pub struct FooterSnapshot {
     pub subscription: bool,
     pub provider_count: usize,
     pub account_suffix: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_model_id: Option<String>,
     pub extension_statuses: BTreeMap<String, String>,
 }
 pub struct FooterComponent {
@@ -88,7 +90,7 @@ pub struct FooterComponent {
     pub auto_compact_enabled: bool,
     pub compaction_delegated: bool,
 }
-/// Status key of the native badge; always first on the status line and never folded.
+const HELD_TARGET_FLOOR_COLUMNS: usize = 14;
 const BADGE_STATUS_KEY: &str = "  omo-native";
 /// Status key rendered right-aligned on the status line; never folded.
 const MEMORY_STATUS_KEY: &str = "memory";
@@ -432,7 +434,12 @@ impl FooterComponent {
                 .with(format!("{}%", rate.round() as i64), ThemeColor::Dim),
         )
     }
-    fn model_group(&self, with_provider: bool, strip_vendor: bool) -> FooterGroup {
+    fn model_group(
+        &self,
+        with_provider: bool,
+        strip_vendor: bool,
+        elide_held_target: bool,
+    ) -> FooterGroup {
         let s = &self.snapshot;
         let model = s
             .model_id
@@ -472,10 +479,21 @@ impl FooterComponent {
         } else {
             String::new()
         };
-        FooterGroup::run(if s.fast_mode { "⚡ " } else { "" }, ThemeColor::Warning)
+        let mut group = FooterGroup::run(if s.fast_mode { "⚡ " } else { "" }, ThemeColor::Warning)
             .with(provider_prefix, ThemeColor::Muted)
             .with(model, ThemeColor::Accent)
-            .with(level, ThemeColor::Muted)
+            .with(level, ThemeColor::Muted);
+        if let Some(pending) = s.pending_model_id.as_deref().filter(|id| !id.is_empty()) {
+            let target = if elide_held_target {
+                elide_head(pending, HELD_TARGET_FLOOR_COLUMNS)
+            } else {
+                pending.to_owned()
+            };
+            group = group
+                .with(format!(" → {target}"), ThemeColor::Warning)
+                .with(" (after compact)", ThemeColor::Muted);
+        }
+        group
     }
     fn location_group(cwd: &str, branch: Option<&str>) -> FooterGroup {
         let mut group = FooterGroup::run(cwd, ThemeColor::Accent);
@@ -498,16 +516,19 @@ impl FooterComponent {
         let cost = self.cost_group();
         let ctx = self.context_group();
         let cache = self.cache_group();
-        let right_for = |with_cache: bool, with_provider: bool, strip_vendor: bool| {
-            cost.iter()
-                .cloned()
-                .chain(std::iter::once(ctx.clone()))
-                .chain(cache.iter().filter(|_| with_cache).cloned())
-                .chain(std::iter::once(
-                    self.model_group(with_provider, strip_vendor),
-                ))
-                .collect::<Vec<_>>()
-        };
+        let right_for =
+            |with_cache: bool, with_provider: bool, strip_vendor: bool, elide_held: bool| {
+                cost.iter()
+                    .cloned()
+                    .chain(std::iter::once(ctx.clone()))
+                    .chain(cache.iter().filter(|_| with_cache).cloned())
+                    .chain(std::iter::once(self.model_group(
+                        with_provider,
+                        strip_vendor,
+                        elide_held,
+                    )))
+                    .collect::<Vec<_>>()
+            };
         let finish = |left: &[FooterGroup], right: &[FooterGroup], gap: usize| {
             let l = join_groups(left, gap, theme);
             let r = join_groups(right, gap, theme);
@@ -535,26 +556,37 @@ impl FooterComponent {
             if with_session && let Some(session) = &session {
                 left.push(session.clone());
             }
-            let right = right_for(with_cache, with_provider, false);
+            let right = right_for(with_cache, with_provider, false, false);
             if fits(&left, &right, gap) {
                 return finish(&left, &right, gap);
             }
         }
         let branch_width = branch.map_or(0, |b| 2 + visible_width(b));
-        // Head-elide the path, then strip the vendor prefix from the model and elide again.
-        // Before stripping the vendor, the path must keep at least its last component.
+        // Head-elide the path, elide a long held target id (keeping context meter), then strip
+        // the vendor prefix from the model and elide again.
         let last_component = cwd.rsplit('/').next().unwrap_or(&cwd);
         let min_path = visible_width(&cwd).min(2 + visible_width(last_component));
-        for (strip_vendor, min_path) in [(false, min_path), (true, 2)] {
-            let right = right_for(false, false, strip_vendor);
+        let has_elided_held = s
+            .pending_model_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .is_some_and(|id| elide_head(id, HELD_TARGET_FLOOR_COLUMNS) != id);
+        let mut narrow_steps = vec![(false, false, min_path)];
+        if has_elided_held {
+            narrow_steps.push((false, true, min_path));
+        }
+        narrow_steps.push((true, has_elided_held, 2));
+        for (strip_vendor, elide_held, min_path) in narrow_steps {
+            let right = right_for(false, false, strip_vendor, elide_held);
             let budget = width.saturating_sub(gap + groups_width(&right, gap) + branch_width);
             if budget >= min_path.max(1) {
                 let left = [Self::location_group(&elide_path(&cwd, budget), branch)];
                 return finish(&left, &right, gap);
             }
         }
-        // Extremely narrow: keep only an elided path, then only the right side, then truncate it.
-        let right = right_for(false, false, true);
+        // Extremely narrow: keep only an elided path, then only the right side, then held floor,
+        // then truncate it.
+        let right = right_for(false, false, true, has_elided_held);
         let right_width = groups_width(&right, gap);
         let budget = width.saturating_sub(gap + right_width);
         if budget >= 1 {
@@ -566,6 +598,17 @@ impl FooterComponent {
         }
         if right_width <= width {
             return finish(&[], &right, gap);
+        }
+        if s.pending_model_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty())
+        {
+            for strip_vendor in [false, true] {
+                let floor = [self.model_group(false, strip_vendor, has_elided_held)];
+                if groups_width(&floor, gap) <= width {
+                    return finish(&[], &floor, gap);
+                }
+            }
         }
         let truncated = flatten_groups(&right, gap).truncated(width);
         pad_line("", 0, &truncated.render(theme), truncated.width(), width)

@@ -3409,6 +3409,25 @@ impl InteractiveMode {
         .unwrap_or_else(|| self.session.model())
     }
 
+    fn host_pending_model_switch(&self) -> Option<maho_ai::model::Model> {
+        if self.session_host.is_some() {
+            self.with_remote_state(|state| {
+                state
+                    .pending_model_switch
+                    .as_ref()
+                    .and_then(|pending| pending.get("model").or(Some(pending)))
+                    .and_then(|value| {
+                        <maho_ai::model::Model as serde::Deserialize>::deserialize(value).ok()
+                    })
+            })
+            .flatten()
+        } else {
+            self.session
+                .pending_model_switch()
+                .map(|pending| pending.model)
+        }
+    }
+
     fn host_thinking_level(&self) -> maho_ai::types::ModelThinkingLevel {
         match self.with_remote_state(|state| {
             state
@@ -3712,7 +3731,15 @@ impl InteractiveMode {
                 let suffix = system_prompt_name
                     .map(|name| format!(" (optimized system prompt applied: {name})"))
                     .unwrap_or_default();
-                self.show_status(format!("Model: {}{suffix}", model.id));
+                let held_tail = if self.host_pending_model_switch().is_some_and(|pending| {
+                    pending.provider == model.provider && pending.id == model.id
+                }) {
+                    " · after the next compaction"
+                } else {
+                    ""
+                };
+                self.show_status(format!("Model: {}{suffix}{held_tail}", model.id));
+                self.editor_host.request_render();
                 self.show_risky_main_model_warning(&model);
                 let (provider, id) = (model.provider.clone(), model.id.clone());
                 self.maybe_warn_about_anthropic_subscription_auth(model);
@@ -12487,8 +12514,16 @@ impl InteractiveMode {
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
             // senpi v2026.10.27-2 `session_recovered` (a torn session tail kept aside, senpi#4295).
             AgentSessionEvent::SessionRecovered { notice, .. } => self.show_warning(&maho_tui::terminal_text::sanitize_terminal_label(notice)),
-            // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
-            AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
+            // senpi `model_change_pending`: warn, invalidate the footer, and request a render (senpi#6097).
+            AgentSessionEvent::ModelChangePending { notice, .. } => {
+                self.show_warning(notice);
+                if let Some(footer) = &mut self.footer {
+                    footer.invalidate();
+                }
+                self.editor_host.request_render();
+            }
+            // senpi `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
+            AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
             // senpi `offload_module_stuck`: `showWarning` naming the module, the files whose locks it holds, and the `--tool-runtime child` alternative.
             AgentSessionEvent::OffloadModuleStuck { notice, .. } => self.show_warning(&maho_tui::terminal_text::sanitize_terminal_label(notice)),
             // senpi `system_prompt_change`.
@@ -12554,7 +12589,14 @@ impl InteractiveMode {
                 extra: Vec::new(), expanded_line: None,
             }),
             // senpi `model_changed`: the new model does not inherit the delegation episode.
-            AgentSessionEvent::ModelChanged { .. } => { self.external_owner_compaction_notice_shown = false; self.compaction_delegated = false; }
+            AgentSessionEvent::ModelChanged { .. } => {
+                self.external_owner_compaction_notice_shown = false;
+                self.compaction_delegated = false;
+                if let Some(footer) = &mut self.footer {
+                    footer.invalidate();
+                }
+                self.editor_host.request_render();
+            }
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
             // senpi `model_change_skipped`.
             AgentSessionEvent::ModelChangeSkipped { model, budget, .. } => {
@@ -14207,6 +14249,7 @@ impl InteractiveMode {
             thinking_level: Some(self.host_thinking_level().as_str().into()),
             subscription,
             provider_count: self.footer_data.available_provider_count(),
+            pending_model_id: self.host_pending_model_switch().map(|pending| pending.id),
             ..Default::default()
         }
     }

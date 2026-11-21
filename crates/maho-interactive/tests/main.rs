@@ -37,6 +37,8 @@ mod components32_transcript;
 mod extension_ui_repaint;
 #[path = "footer_corpus.rs"]
 mod footer_corpus;
+#[path = "footer_pending_model_switch.rs"]
+mod footer_pending_model_switch;
 #[path = "foundation.rs"]
 mod foundation;
 #[path = "grok_mermaid_edges.rs"]
