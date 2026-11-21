@@ -25,6 +25,8 @@ pub enum AccountSessionIdle {
     NoPin,
     CorruptPin,
     NotMember,
+    /// Sync is turned off on this device for the account (#14093).
+    SyncOff,
 }
 pub enum AccountSessionOutcome {
     Session(SyncSession),
@@ -46,6 +48,9 @@ pub async fn open_account_session(
         return Err(EngineError::Other(
             "openAccountSession: a space id is 16 bytes".into(),
         ));
+    }
+    if super::device_switch::is_device_sync_off(&options.pin_dir, &options.account)? {
+        return Ok(AccountSessionOutcome::Idle(AccountSessionIdle::SyncOff));
     }
     let anchor = match load_trust_anchor(&options.pin_dir, &options.account)
         .map_err(|e| EngineError::Recovery(e.into()))?

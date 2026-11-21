@@ -2,6 +2,7 @@
 pub mod account_chain;
 pub mod approve;
 pub mod device_keyring;
+pub mod device_switch;
 pub mod enable;
 pub mod freeze_eligibility;
 pub mod freeze_settler;
@@ -27,3 +28,6 @@ mod pairing_flows_tests;
 
 #[cfg(test)]
 mod join_tests;
+
+#[cfg(test)]
+mod device_switch_tests;

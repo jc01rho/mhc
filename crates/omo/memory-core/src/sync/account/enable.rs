@@ -1,4 +1,7 @@
-use super::{account_chain::open_account_chain, http::AccountHttp, pairing_http::PairingHttp};
+use super::{
+    account_chain::open_account_chain, device_switch::turn_device_sync_on, http::AccountHttp,
+    pairing_http::PairingHttp,
+};
 use crate::sync::{
     crypto::{
         anchor::ChainAnchor,
@@ -24,7 +27,8 @@ pub async fn enable_sync(
     pairing: &PairingHttp,
 ) -> EngineResult<EnableOutcome> {
     pairing.set_account_sync(true).await?;
-    pairing.set_device_sync(service_device_id, true).await?;
+    // Turning sync on clears the local off mark an earlier `disable_sync` left (#14093).
+    turn_device_sync_on(pairing, service_device_id, pin_dir, account).await?;
     if chain.list_keys().await?.is_none_or(|keys| keys.is_empty()) {
         return Ok(EnableOutcome::NeedsFirstDevice);
     }
