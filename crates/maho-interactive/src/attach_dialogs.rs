@@ -2,6 +2,9 @@
 //! owns its resolution and lifetime. A component's answer lands in an outbox and is sent after the
 //! component's input call returns; the outcome of the send comes back through `answer_accepted` or
 //! `answer_failed`, because the TUI loop never blocks on the endpoint.
+use crate::components::ask_user_question_state::{
+    Question, QuestionOption, QuestionRequest, QuestionResponse, QuestionStatus,
+};
 use crate::{
     attach_client::RequestError,
     components::{
@@ -12,7 +15,6 @@ use crate::{
     },
     theme::theme::{Theme, ThemeColor},
 };
-use maho_ext_api::{Question, QuestionOption, QuestionRequest, QuestionResponse, QuestionStatus};
 use maho_tui::{
     components::{
         editor::{EditorOptions, EditorTuiHost},
@@ -674,7 +676,7 @@ mod tests {
             status: QuestionStatus::Answered,
             answers: std::iter::once((
                 "q".to_owned(),
-                maho_ext_api::QuestionAnswer {
+                crate::components::ask_user_question_state::QuestionAnswer {
                     selected: vec!["yes".to_owned()],
                     text: None,
                 },

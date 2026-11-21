@@ -3,7 +3,8 @@
 //! shape the endpoint sends and `AssistantMessageComponent::update_content` reads.
 use crate::{
     components::{
-        assistant_message::AssistantMessageComponent, markdown_transform::shared_markdown_theme,
+        assistant_message::AssistantMessageComponent,
+        markdown_transform::{MarkdownComponent, shared_markdown_theme},
         user_message::UserMessageComponent,
     },
     theme::theme::{Theme, ThemeColor},
@@ -329,14 +330,14 @@ impl RecordRenderer {
                     1,
                     0,
                 ))));
-                result.add_child(Rc::new(RefCell::new(Markdown::new(
+                result.add_child(Rc::new(RefCell::new(MarkdownComponent(Markdown::new(
                     &message_text(&message["content"]),
                     1,
                     0,
                     markdown_theme,
                     None,
                     MarkdownOptions::default(),
-                ))));
+                )))));
                 Rc::new(RefCell::new(result))
             }
             other => {
