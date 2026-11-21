@@ -366,7 +366,11 @@ fn the_cancel_driver_finishes_the_cancel_on_the_pass_that_confirms_the_end() {
     );
     let (events_tx, events) = mpsc::channel();
 
-    drive_host_session_cancel(fixture.context.clone(), record, Arc::new(Sink(events_tx)));
+    drive_host_session_cancel(
+        fixture.context.clone(),
+        record,
+        Arc::new(Sink(Mutex::new(events_tx))),
+    );
 
     assert_eq!(sink_events(&events), vec!["ended", "settled"]);
     assert_eq!(opens(&fixture), 3);
@@ -391,7 +395,11 @@ fn the_cancel_driver_only_settles_once_the_task_moved_to_another_run() {
         .expect("a later run");
     let (events_tx, events) = mpsc::channel();
 
-    drive_host_session_cancel(fixture.context.clone(), record, Arc::new(Sink(events_tx)));
+    drive_host_session_cancel(
+        fixture.context.clone(),
+        record,
+        Arc::new(Sink(Mutex::new(events_tx))),
+    );
 
     assert_eq!(sink_events(&events), vec!["settled"]);
     assert_eq!(opens(&fixture), 1);
