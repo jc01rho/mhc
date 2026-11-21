@@ -27,6 +27,8 @@ pub enum AccountSessionIdle {
     NoPin,
     CorruptPin,
     NotMember,
+    /// Sync is turned off on this device for the account (omo #14093).
+    SyncOff,
 }
 pub enum SyncSessionResolution {
     SignedOut,
