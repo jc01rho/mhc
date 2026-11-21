@@ -5630,6 +5630,7 @@ dependencies = [
  "maho-omo-agent-home",
  "maho-omo-config-core",
  "maho-omo-config-resolution",
+ "maho-thread-address-core",
  "regex",
  "rusqlite",
  "serde",
@@ -6456,6 +6457,15 @@ dependencies = [
  "tempfile",
  "tokio",
  "vt100",
+]
+
+[[package]]
+name = "maho-thread-address-core"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]
