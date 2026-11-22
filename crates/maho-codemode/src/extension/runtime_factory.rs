@@ -3,12 +3,31 @@ use maho_ext_api::{
     JsonValue, ToolContext,
 };
 
+const TOP_LEVEL_ONLY_TOOL_REFUSALS: [(&str, &str); 1] = [(
+    "show_html_page",
+    "show_html_page cannot run inside eval: a page shown from a cell never reaches the reader. Build the HTML in the cell if you like, then call show_html_page directly as its own tool call.",
+)];
+
+pub fn top_level_only_tool_refusal(tool_name: &str) -> Option<&'static str> {
+    TOP_LEVEL_ONLY_TOOL_REFUSALS
+        .iter()
+        .find_map(|(name, refusal)| (*name == tool_name).then_some(*refusal))
+}
+
 pub async fn execute_tool(
     api: &ExtensionApi,
     tool_name: &str,
     params: JsonValue,
     mut options: ExecuteToolOptions,
 ) -> Result<AgentToolResult, ExecuteToolError> {
+    if let Some(refusal) = top_level_only_tool_refusal(tool_name) {
+        return Err(ExecuteToolError {
+            code: maho_ext_api::ExecuteToolErrorCode::Blocked,
+            tool_name: tool_name.into(),
+            message: refusal.into(),
+            active_tools: Vec::new(),
+        });
+    }
     options.activate_inactive_tool = Some(true);
     api.execute_tool(tool_name, params, options).await
 }

@@ -1014,3 +1014,27 @@ async fn eval_cells_rpc_handlers_answer_before_session_start() {
         .unwrap_err();
     assert_eq!(missing.code.as_deref(), Some("eval_cell_not_found"));
 }
+
+#[tokio::test]
+async fn show_html_page_is_refused_inside_eval_execute_tool() {
+    let api = ExtensionApi::new(
+        LoadedExtension::new("codemode", "/fixture".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let error = maho_codemode::extension::runtime_factory::execute_tool(
+        &api,
+        "show_html_page",
+        serde_json::json!({"title":"t","html":"<p>x</p>"}),
+        ExecuteToolOptions::default(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, ExecuteToolErrorCode::Blocked);
+    assert!(
+        error
+            .message
+            .contains("show_html_page cannot run inside eval")
+    );
+}
