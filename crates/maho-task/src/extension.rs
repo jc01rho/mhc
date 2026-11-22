@@ -259,8 +259,9 @@ struct Shared {
 
 impl Shared {
     fn available(&self) -> &[String] {
-        self.available
-            .get_or_init(|| (self.config.available_models)())
+        self.available.get_or_init(|| {
+            maho_model_select::without_gate_blocked((self.config.available_models)())
+        })
     }
 
     fn state_root(&self, session_id: &str) -> PathBuf {

@@ -43,6 +43,16 @@ fn live_registry_gate_and_explicit_disable() -> Result<(), Box<dyn std::error::E
         make_model("claude-fable-5-2")?,
         make_model("claude-opus-5-5")?,
     ]);
+    // The builtin architect gate is Fable-only, so the execution gate (on by default) keeps it shut.
+    assert!(!has_active_architect_category_with_env(
+        &project,
+        Some(env.clone()),
+        Some(&registry)
+    ));
+    std::fs::write(
+        project.join(".omo/omo.json"),
+        r#"{"model_policy":{"block_fable":false}}"#,
+    )?;
     assert!(has_active_architect_category_with_env(
         &project,
         Some(env.clone()),
@@ -55,7 +65,7 @@ fn live_registry_gate_and_explicit_disable() -> Result<(), Box<dyn std::error::E
     ));
     std::fs::write(
         project.join(".omo/omo.json"),
-        r#"{"categories":{"quick":{"model":"some/model"}}}"#,
+        r#"{"model_policy":{"block_fable":false},"categories":{"quick":{"model":"some/model"}}}"#,
     )?;
     assert!(has_active_architect_category_with_env(
         &project,
@@ -72,7 +82,7 @@ fn live_registry_gate_and_explicit_disable() -> Result<(), Box<dyn std::error::E
     ));
     std::fs::write(
         project.join(".omo/omo.json"),
-        r#"{"categories":{"architect":{"disable":true}}}"#,
+        r#"{"model_policy":{"block_fable":false},"categories":{"architect":{"disable":true}}}"#,
     )?;
     assert!(!has_active_architect_category_with_env(
         &project,

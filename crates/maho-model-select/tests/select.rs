@@ -108,6 +108,19 @@ fn matching_cases() {
     assert!(!is_available("nothing", &list(&["acme/gpt-7-2"])));
 }
 
+#[test]
+fn the_execution_gate_drops_fable_models_from_the_available_list() {
+    assert_eq!(
+        without_gate_blocked(list(&[
+            "anthropic/claude-fable-5-2",
+            "anthropic/claude-opus-5-5",
+            "github-copilot/claude-fable-5.1",
+            "openai/gpt-6-sol",
+        ])),
+        list(&["anthropic/claude-opus-5-5", "openai/gpt-6-sol"])
+    );
+}
+
 // ---- Transforms ------------------------------------------------------------------------
 
 #[test]

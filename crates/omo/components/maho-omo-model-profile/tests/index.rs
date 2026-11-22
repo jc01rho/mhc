@@ -671,6 +671,79 @@ async fn a_custom_user_profile_chain_is_applied() {
 }
 
 #[tokio::test]
+async fn a_fable_pin_is_refused_naming_the_gate_setting_until_the_gate_is_off() {
+    let pin = |block_fable: Option<bool>| match block_fable {
+        Some(block_fable) => json!({
+            "model_profile": "anthropic/claude-fable-5-1",
+            "model_policy": {"block_fable": block_fable}
+        }),
+        None => json!({"model_profile": "anthropic/claude-fable-5-1"}),
+    };
+    let harness = start(
+        pin(None),
+        Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS]))),
+        "session-1",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    assert!(harness.session_models().is_empty());
+    assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNAVAILABLE_TYPE);
+    assert!(
+        harness
+            .notices()
+            .iter()
+            .any(|(text, _)| text.contains("model_policy.block_fable")),
+        "{:?}",
+        harness.notices()
+    );
+    let harness = start(
+        pin(Some(false)),
+        Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS]))),
+        "session-1",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-fable-5-1"]
+    );
+}
+
+#[tokio::test]
+async fn a_lane_skips_a_gate_blocked_fable_rung_for_its_next_rung() {
+    let lane = |block_fable: bool| {
+        json!({
+            "model_profile": "night-shift",
+            "model_profiles": {"night-shift": {"display_name": "Night shift", "models": ["anthropic/claude-fable-5-1", "anthropic/claude-opus-5-5"]}},
+            "model_policy": {"block_fable": block_fable}
+        })
+    };
+    for (block_fable, applied) in [
+        (true, "anthropic/claude-opus-5-5"),
+        (false, "anthropic/claude-fable-5-1"),
+    ] {
+        let harness = start(
+            lane(block_fable),
+            Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS]))),
+            "session-1",
+            ExtensionMode::Rpc,
+            STARTUP,
+            Some("settings"),
+        )
+        .await;
+        assert_eq!(
+            selectors(&harness.session_models()),
+            [applied],
+            "block_fable={block_fable}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_resumed_forked_or_reloaded_session_is_not_applied() {
     let harness = harness_for(
         json!({"model_profile": "daily-normal"}),

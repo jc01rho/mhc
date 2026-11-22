@@ -73,12 +73,14 @@ While it is on:
   next rung. A chain made only of Fable rungs, such as the builtin `architect` category, is
   unavailable until the gate is off or `categories.architect.model` names another model.
 - A direct selection is refused with a one-line message naming `model_policy.block_fable`: `/model`
-  and model cycling, a task `model` pin, and an omo.json `model` that points at a Fable id.
+  and model cycling, a task `model` pin, a `model_profile` pin, and an omo.json `model` that points
+  at a Fable id.
 - A request that still reaches a Fable model (for example a session started with `--model` on one)
   fails before any provider is contacted, with the same message.
 
 The setting follows the usual omo.json(c) layering (user, project, `[senpi]`, profile). mhc reads it
-when it loads the omo config at session start and on each live reload.
+when it loads the omo config at session start and on each live reload. The MIT build
+(`--no-default-features`) does not read `model_policy`; there the gate is always on.
 
 ## Environment variables
 

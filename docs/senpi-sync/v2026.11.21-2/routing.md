@@ -35,6 +35,12 @@ The re-port replaces the module wholesale, so changes from before v5.1.40 that m
 `unlisted_provider_model` from #9146, the coverage module) are included. File mapping and test
 counts: `crates/omo/senpi-task/parity.d/14400.md`.
 
+Downstream tests that named the retired chains follow upstream's v5.1.79 versions: the quick chain's
+providers (`maho-omo-task` `tests/category_warning.rs`, `maho-omo-memory`
+`kibitzer_sidecar_connected_order.rs`), the `writing` probe registry (`maho-omo-task`
+`tests/planner_effort.rs`, upstream `planner.test.ts`) and the `deep-low` category name
+(`maho-omo-telemetry` `omo_native_tools.rs`, upstream `omo-native-tools.test.ts`).
+
 ## Part B: Fable features and the execution gate
 
 | senpi PR | verdict | mhc location or reason |
@@ -59,11 +65,15 @@ counts: `crates/omo/senpi-task/parity.d/14400.md`.
   `assets/omo.schema.json`), default on; maho-cli publishes each loaded omo config's value
   (`crates/maho-cli/src/cli/task_runners.rs`).
 - Chains skip Fable rungs like an unavailable model: senpi-task registry views
-  (`crates/omo/senpi-task/src/model_exclusion.rs`, category, agent and model-chain resolvers) and
-  the maho-core retry fallback candidates.
+  (`crates/omo/senpi-task/src/model_exclusion.rs`, category, agent and model-chain resolvers), the
+  model-profile lanes (`crates/omo/components/maho-omo-model-profile/src/index.rs`), the MIT build's
+  profile and delegation lists (`crates/maho-model-select/src/matching.rs` `without_gate_blocked`,
+  used by its `ext.rs` and `crates/maho-task/src/extension.rs`) and the maho-core retry fallback
+  candidates.
 - Direct selections are refused with a one-line message naming the setting: `/model` and cycling
   (`crates/maho-core/src/agent_session.rs`), task `model` pins
-  (`crates/omo/components/maho-omo-task/src/planner_explicit_pin.rs`), an omo.json category model
+  (`crates/omo/components/maho-omo-task/src/planner_explicit_pin.rs`), a `model_profile` pin
+  (`crates/omo/components/maho-omo-model-profile/src/index.rs`), an omo.json category model
   (planner model-unavailable text).
 - Execution backstop: `crates/maho-ai/src/{compat,models}.rs` and
   `crates/maho-core/src/model_runtime.rs` refuse a Fable request before any provider call.
@@ -71,4 +81,7 @@ counts: `crates/omo/senpi-task/parity.d/14400.md`.
   `crates/omo/senpi-task/src/category/gate_tests.rs` (Fable head rung skipped, Fable-only category
   unavailable, direct pin refused, gate off selects Fable, plan-consultant),
   `crates/omo/components/maho-omo-task/src/planner_explicit_pin.rs` (task pin refused / allowed),
-  `crates/maho-core/src/model_runtime.rs` (no provider call for a blocked model).
+  `crates/maho-core/src/model_runtime.rs` (no provider call for a blocked model),
+  `crates/omo/components/maho-omo-model-profile/tests/index.rs` (Fable pin refused, lane skips a Fable
+  rung), `crates/omo/components/maho-omo-fallback-architect/tests/architect_gate.rs` (Fable-only
+  architect gate shut while the gate is on), `crates/maho-model-select/tests/select.rs`.

@@ -29,6 +29,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use maho_ai::model::Model;
+use maho_ai::model_execution_gate::{
+    blocked_model_message, fable_blocked_in, is_execution_blocked,
+};
 use maho_ai::types::ModelThinkingLevel;
 use maho_ext_api::{
     ComponentLogger, EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent,
@@ -270,14 +273,19 @@ async fn resolve_with_request_auth(
     profiles: Option<&JsonValue>,
     active: &str,
     exclude_models: Option<&[String]>,
+    block_fable: bool,
     probes: &mut ProbeState,
     logger: Option<&Arc<dyn ComponentLogger>>,
 ) -> ProbedResolution {
     // An excluded model is never a candidate, a literal pin included: exclude_models wins
-    // everywhere.
+    // everywhere. A model the Fable execution gate blocks (docs/divergences.md GATE-1) is skipped
+    // the same way, so a lane moves on to its next rung.
     let available: Vec<String> = available_selectors(registry)
         .into_iter()
-        .filter(|selector| !is_excluded_model(selector.as_str(), exclude_models))
+        .filter(|selector| {
+            !is_excluded_model(selector.as_str(), exclude_models)
+                && !is_execution_blocked(selector, block_fable)
+        })
         .collect();
     let custom_providers = custom_model_providers(agent_dir);
     let ProbeState {
@@ -478,6 +486,20 @@ impl Extension for ModelProfileComponent {
                     let mode = mode_str(ctx.mode);
                     let logger = ctx.logger.clone();
                     let exclude_models = exclude_models.as_deref();
+                    let block_fable = fable_blocked_in(&config);
+                    // A literal pin is a direct selection: one the execution gate blocks is refused
+                    // with the setting named, and the session keeps its model.
+                    if let Some(pin) = explicit.map(str::trim).filter(|active| active.contains('/'))
+                        && is_execution_blocked(pin, block_fable)
+                    {
+                        let message = blocked_model_message(pin);
+                        record_outcome(&runtime, MODEL_PROFILE_UNAVAILABLE_TYPE, message.clone(), None, logger.as_ref());
+                        notify(ctx, &message, true);
+                        if let Some(logger) = logger.as_ref() {
+                            logger.warn(&message, None);
+                        }
+                        return Ok(EventResult::None);
+                    }
                     let (probed, probes) = if let Some(active) = explicit {
                         let mut probes = new_probe_state();
                         let probed = resolve_with_request_auth(
@@ -486,6 +508,7 @@ impl Extension for ModelProfileComponent {
                             profiles.as_ref(),
                             active,
                             exclude_models,
+                            block_fable,
                             &mut probes,
                             logger.as_ref(),
                         ).await;
@@ -499,7 +522,7 @@ impl Extension for ModelProfileComponent {
                             new_probe_state(),
                             |profile_id, mut probes| async move {
                                 let probed = resolve_with_request_auth(
-                                    registry, agent_dir, profiles, profile_id, exclude_models, &mut probes, logger,
+                                    registry, agent_dir, profiles, profile_id, exclude_models, block_fable, &mut probes, logger,
                                 ).await;
                                 (probed, probes)
                             },

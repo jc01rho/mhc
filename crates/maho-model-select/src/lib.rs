@@ -19,7 +19,7 @@ pub use grammar::{
     ParsedModel, clamp_reasoning, normalize_model, normalize_model_id, normalize_reasoning,
     parse_model_string, parse_variant, split_reasoning_suffix,
 };
-pub use matching::{is_available, match_available};
+pub use matching::{is_available, match_available, without_gate_blocked};
 pub use profile::{
     BuiltProfiles, DEFAULT_PROFILE_ORDER, DroppedRung, Exclusions, GATED_ACCEPTED_LEVELS,
     LAUNCH_GATED_MODEL, ModelProfile, ProfileResolution, ProfileRung, build_builtin_profiles,
