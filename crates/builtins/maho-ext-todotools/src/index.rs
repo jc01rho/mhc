@@ -14,6 +14,7 @@ struct NativeTodoAccessors {
     phases: std::sync::Mutex<Vec<TodoPhase>>,
     ask: std::sync::Mutex<Option<TodoAsk>>,
     surface: std::sync::Mutex<maho_ext_api::PromptSurface>,
+    cue_kind: std::sync::Mutex<maho_ext_prompt_preset::contract::HandoffCueKind>,
     ui: std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>,
     widget_sender:
         tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>,
@@ -71,6 +72,12 @@ impl crate::tools_todo::TodoAccessors for NativeTodoAccessors {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+    fn handoff_cue_kind(&self) -> maho_ext_prompt_preset::contract::HandoffCueKind {
+        *self
+            .cue_kind
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
     fn sync_widget(
         &self,
         _: &dyn maho_ext_api::ToolContext,
@@ -105,6 +112,7 @@ impl maho_ext_api::Extension for NativeTodotoolsExtension {
             phases: Default::default(),
             ask: Default::default(),
             surface: Default::default(),
+            cue_kind: Default::default(),
             ui: Default::default(),
             widget_sender: self.widget_sender.clone(),
         });
@@ -145,6 +153,15 @@ impl maho_ext_api::Extension for NativeTodotoolsExtension {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner) =
                             ctx.get_system_prompt_options().surface;
+                        *captured
+                            .cue_kind
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            maho_ext_prompt_preset::contract::preset_handoff_cue_kind(
+                                maho_ext_prompt_preset::active_preset::resolve_active_preset_name(
+                                    ctx, None,
+                                ),
+                            );
                         Ok(maho_ext_api::EventResult::None)
                     })
                 }),
@@ -645,6 +662,7 @@ mod tests {
             phases: Default::default(),
             ask: Default::default(),
             surface: Default::default(),
+            cue_kind: Default::default(),
             ui: Default::default(),
             widget_sender: tokio::sync::mpsc::unbounded_channel().0,
         };

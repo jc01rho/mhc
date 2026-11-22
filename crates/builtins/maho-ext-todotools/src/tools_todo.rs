@@ -23,6 +23,10 @@ pub trait TodoAccessors: Send + Sync {
     fn prompt_surface(&self) -> maho_ext_api::PromptSurface {
         maho_ext_api::PromptSurface::default()
     }
+    /// The handoff cue kind the session's active prompt preset defines (senpi#6977).
+    fn handoff_cue_kind(&self) -> maho_ext_prompt_preset::contract::HandoffCueKind {
+        maho_ext_prompt_preset::contract::HandoffCueKind::Default
+    }
     fn sync_widget(
         &self,
         ctx: &dyn maho_tools::definition::ToolContext,
@@ -202,12 +206,13 @@ pub fn create_todo_tool(
                 } else {
                     current_ask.clone()
                 };
-                let (text, mut details) = plan_execution_with_ask(
+                let (text, mut details) = plan_execution_with_ask_and_kind(
                     &call.params,
                     &previous,
                     current_ask.as_ref(),
                     next_ask.as_ref(),
                     accessors.prompt_surface() != maho_ext_api::PromptSurface::Chat,
+                    accessors.handoff_cue_kind(),
                     storage,
                 )
                 .map_err(ToolError::Message)?;
@@ -351,6 +356,26 @@ pub fn plan_execution_with_ask(
     handoff_cue: bool,
     storage: crate::todo_types::TodoStorage,
 ) -> Result<(String, crate::todo_types::TodoToolDetails), String> {
+    plan_execution_with_ask_and_kind(
+        raw,
+        previous,
+        previous_ask,
+        ask,
+        handoff_cue,
+        maho_ext_prompt_preset::contract::HandoffCueKind::Default,
+        storage,
+    )
+}
+
+pub fn plan_execution_with_ask_and_kind(
+    raw: &serde_json::Value,
+    previous: &[crate::todo_types::TodoPhase],
+    previous_ask: Option<&crate::todo_types::TodoAsk>,
+    ask: Option<&crate::todo_types::TodoAsk>,
+    handoff_cue: bool,
+    handoff_cue_kind: maho_ext_prompt_preset::contract::HandoffCueKind,
+    storage: crate::todo_types::TodoStorage,
+) -> Result<(String, crate::todo_types::TodoToolDetails), String> {
     let normalized = crate::normalize::normalize_todo_params(raw, previous);
     let entry = match (normalized.error, normalized.entry) {
         (Some(error), _) => {
@@ -393,7 +418,7 @@ pub fn plan_execution_with_ask(
     let summary = format!(
         "{}{}",
         summary_with_header(&applied.phases, &[], read_only, ask),
-        crate::todo_format::format_handoff_cue(moment)
+        crate::todo_format::format_handoff_cue_with_kind(moment, handoff_cue_kind)
     );
     let text = if corrections.is_empty() {
         summary
@@ -1372,6 +1397,32 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.starts_with("Ask: "));
+        let (gpt_text, _) = plan_execution_with_ask_and_kind(
+            &init,
+            &[],
+            None,
+            None,
+            true,
+            maho_ext_prompt_preset::contract::HandoffCueKind::GptBlock,
+            memory,
+        )
+        .unwrap();
+        assert!(gpt_text.contains(&format!(
+            "{} handoff block",
+            crate::todo_format::GPT_HANDOFF_LABELS
+        )));
+        assert!(!gpt_text.contains("Ask / For you / Now / Next"));
+        let (none_text, _) = plan_execution_with_ask_and_kind(
+            &init,
+            &[],
+            None,
+            None,
+            true,
+            maho_ext_prompt_preset::contract::HandoffCueKind::None,
+            memory,
+        )
+        .unwrap();
+        assert!(!none_text.contains("Handoff due"));
     }
     #[test]
     fn omitted_operation_renders_before_execute_inference() {

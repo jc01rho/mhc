@@ -10,6 +10,7 @@ autotests = false
 maho-ai = { path = "../../maho-ai" }
 maho-core = { path = "../../maho-core" }
 maho-ext-api = { path = "../../maho-ext-api" }
+maho-ext-prompt-preset = { path = "../maho-ext-prompt-preset" }
 maho-tools = { path = "../../maho-tools" }
 maho-tui = { path = "../../maho-tui" }
 maho-interactive = { path = "../../maho-interactive" }

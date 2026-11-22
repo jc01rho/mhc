@@ -4869,6 +4869,7 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-ext-prompt-preset",
  "maho-interactive",
  "maho-tools",
  "maho-tui",

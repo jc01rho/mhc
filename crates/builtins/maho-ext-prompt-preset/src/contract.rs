@@ -255,6 +255,49 @@ pub fn preset_shared_sections(
     }
 }
 
+/// The handoff block a preset's prompt defines, so the todo tool's cue can name that block in the
+/// prompt's own words instead of the default core's (senpi#6977).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HandoffCueKind {
+    #[default]
+    Default,
+    GptBlock,
+    None,
+}
+
+impl HandoffCueKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::GptBlock => "gpt-block",
+            Self::None => "none",
+        }
+    }
+}
+
+pub const GPT_BLOCK_HANDOFF_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[P::Gpt55, P::Gpt56, P::Gpt6Astra]
+};
+
+pub const NO_HANDOFF_BLOCK_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[P::Gpt62]
+};
+
+pub fn preset_handoff_cue_kind(name: Option<PromptPresetName>) -> HandoffCueKind {
+    let Some(name) = name else {
+        return HandoffCueKind::Default;
+    };
+    if GPT_BLOCK_HANDOFF_PRESETS.contains(&name) {
+        HandoffCueKind::GptBlock
+    } else if NO_HANDOFF_BLOCK_PRESETS.contains(&name) {
+        HandoffCueKind::None
+    } else {
+        HandoffCueKind::Default
+    }
+}
+
 /// `PromptPresetModelCase`.
 #[derive(Clone, Copy, Debug)]
 pub struct PromptPresetModelCase {

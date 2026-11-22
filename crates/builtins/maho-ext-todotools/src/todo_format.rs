@@ -1,4 +1,5 @@
 use crate::todo_types::{TodoAsk, TodoItem, TodoPhase, TodoStatus};
+pub use maho_ext_prompt_preset::contract::HandoffCueKind;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -157,11 +158,36 @@ pub fn handoff_cue_text(moment: HandoffMoment) -> &'static str {
         }
     }
 }
-/// senpi `formatHandoffCue`: the cue line appended to a todo result, or nothing.
+/// The labels of the handoff block every GPT block preset renders (gpt-5.5, gpt-5.6, gpt-6-astra).
+pub const GPT_HANDOFF_LABELS: &str = "Outcome so far / You need / Now / Next";
+
+pub fn gpt_handoff_cue_text(moment: HandoffMoment) -> String {
+    match moment {
+        HandoffMoment::ListCreated => format!(
+            "Handoff due: the plan exists. Before your next tool call, write the {GPT_HANDOFF_LABELS} handoff block."
+        ),
+        HandoffMoment::PhaseClosed => format!(
+            "Handoff due: a phase closed. Before your next tool call, write the {GPT_HANDOFF_LABELS} handoff block."
+        ),
+        HandoffMoment::AllClosed => "Handoff due: every task is closed. Your final message is the Outcome so far / You need / Now / Next handoff block, with Now and Next saying no task remains; any other report an instruction asks for (a self-review, a checklist, a summary) goes inside You need.".to_owned(),
+    }
+}
+
+/// senpi `formatHandoffCue`: the cue line appended to a todo result, or nothing when no handoff moment
+/// was reached or the active preset defines no handoff block to cue (senpi#6977).
+pub fn format_handoff_cue_with_kind(moment: Option<HandoffMoment>, kind: HandoffCueKind) -> String {
+    let Some(moment) = moment else {
+        return String::new();
+    };
+    match kind {
+        HandoffCueKind::None => String::new(),
+        HandoffCueKind::GptBlock => format!("\n\n{}", gpt_handoff_cue_text(moment)),
+        HandoffCueKind::Default => format!("\n\n{}", handoff_cue_text(moment)),
+    }
+}
+
 pub fn format_handoff_cue(moment: Option<HandoffMoment>) -> String {
-    moment.map_or_else(String::new, |moment| {
-        format!("\n\n{}", handoff_cue_text(moment))
-    })
+    format_handoff_cue_with_kind(moment, HandoffCueKind::Default)
 }
 pub fn format_ask_now_next_header(phases: &[TodoPhase], ask: Option<&TodoAsk>) -> String {
     let (ask, now, next) = describe_ask_now_next(phases, ask);
@@ -331,6 +357,65 @@ mod tests {
             format_handoff_cue(Some(HandoffMoment::PhaseClosed))
                 .starts_with("\n\nHandoff due: a phase closed.")
         );
+    }
+    #[test]
+    fn cue_names_the_handoff_block_the_active_preset_defines() {
+        use maho_core::dynamic_prompt::build::BuildDynamicSystemPromptOptions;
+        use maho_ext_prompt_preset::{
+            contract::{PROMPT_PRESET_MODEL_CASES, preset_handoff_cue_kind},
+            presets::{ModelMetadata, resolve_preset},
+            settings::PromptPresetName,
+        };
+        for case in PROMPT_PRESET_MODEL_CASES {
+            let prompt = resolve_preset(
+                ModelMetadata {
+                    id: case.model_id,
+                    provider: case.provider_id,
+                    name: None,
+                    prompt_preset: None,
+                },
+                PromptPresetName::Auto,
+                BuildDynamicSystemPromptOptions::default(),
+            )
+            .map(|resolved| resolved.prompt)
+            .unwrap_or_default();
+            let expected = if case.preset == PromptPresetName::Gpt62 {
+                HandoffCueKind::None
+            } else if prompt.contains("[Outcome so far] toward") {
+                HandoffCueKind::GptBlock
+            } else {
+                HandoffCueKind::Default
+            };
+            assert_eq!(
+                preset_handoff_cue_kind(Some(case.preset)),
+                expected,
+                "{}",
+                case.preset.as_str()
+            );
+        }
+        assert_eq!(preset_handoff_cue_kind(None), HandoffCueKind::Default);
+        for id in ["gpt-5.5", "gpt-5.6", "gpt-6-astra"] {
+            let prompt = resolve_preset(
+                ModelMetadata {
+                    id,
+                    provider: "openai",
+                    name: None,
+                    prompt_preset: None,
+                },
+                PromptPresetName::Auto,
+                BuildDynamicSystemPromptOptions::default(),
+            )
+            .expect("gpt preset")
+            .prompt;
+            assert!(prompt.contains("[Outcome so far] toward"), "{id}");
+            assert!(prompt.contains("You need:"), "{id}");
+            assert!(prompt.contains("Now:"), "{id}");
+            assert!(prompt.contains("Next:"), "{id}");
+        }
+        for moment in [HandoffMoment::ListCreated, HandoffMoment::PhaseClosed] {
+            assert!(gpt_handoff_cue_text(moment).contains(GPT_HANDOFF_LABELS));
+        }
+        assert!(gpt_handoff_cue_text(HandoffMoment::AllClosed).contains("goes inside You need"));
     }
     #[test]
     fn result_counts_only_open_tasks() {
