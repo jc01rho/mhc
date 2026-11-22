@@ -11056,48 +11056,17 @@ async fn title_generation_retries_one_transient_error() {
 
 #[tokio::test]
 async fn auto_title_emits_session_info_changed_before_agent_settled_and_skips_aborted_run() {
-    use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider};
-    let provider = faux_provider(RegisterFauxProviderOptions {
-        tokens_per_second: Some(0.0),
-        ..Default::default()
-    })
-    .expect("valid faux provider");
-    provider.set_responses(vec![
-        maho_ai::providers::faux::faux_assistant_message("turn complete", Default::default())
-            .into(),
-        maho_ai::providers::faux::faux_assistant_message(
-            "<title>QA session</title>",
-            Default::default(),
-        )
-        .into(),
-    ]);
-    let session = test_session_with_stream_function(false);
+    let session = retry_session(
+        vec![
+            maho_ai::providers::faux::faux_assistant_message("turn complete", Default::default()),
+            maho_ai::providers::faux::faux_assistant_message(
+                "<title>QA session</title>",
+                Default::default(),
+            ),
+        ],
+        0,
+    );
     session.state().auto_title_sessions = true;
-    session
-        .agent
-        .set_model(provider.get_model(Some("faux-1")).expect("model"));
-    let stream_provider = provider.provider.clone();
-    session
-        .agent
-        .set_stream_fn(Arc::new(move |model, context, options| {
-            stream_provider
-                .stream_simple(model, context, options)
-                .expect("faux stream")
-        }));
-    let mut runtime = session.model_runtime().clone();
-    runtime.register_native_provider(provider.provider.clone());
-    runtime
-        .register_provider(
-            "faux",
-            crate::provider_composer::ProviderConfigInput {
-                config: crate::model_config_schema::ModelsJsonProvider {
-                    api_key: Some("faux-test".into()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .expect("auth");
     let order = Arc::new(Mutex::new(Vec::<String>::new()));
     let order_sink = order.clone();
     let _sub = session.subscribe(Arc::new(move |event| {
