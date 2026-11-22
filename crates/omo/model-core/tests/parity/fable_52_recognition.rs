@@ -5,6 +5,7 @@ use model_core::ContextLimitEnv;
 use model_core::ContextLimitModelCacheState;
 use model_core::GetModelCapabilitiesInput;
 use model_core::ModelCapabilitiesSnapshot;
+use model_core::SnapshotModalities;
 use model_core::SnapshotSource;
 use model_core::get_bundled_model_capabilities_snapshot;
 use model_core::get_model_capabilities;
@@ -80,12 +81,17 @@ fn registers_the_launch_capabilities_without_depending_on_a_generated_catalog_ro
     assert_eq!(result.diagnostics.snapshot, SnapshotSource::BundledSnapshot);
     assert_eq!(result.max_output_tokens, Some(128_000));
     assert_eq!(result.tool_call, Some(true));
-    let modalities = result.modalities.as_ref().expect("launch modalities");
     assert_eq!(
-        modalities.input.as_deref(),
-        Some(["text", "image", "pdf"].as_slice())
+        result.modalities,
+        Some(SnapshotModalities {
+            input: Some(vec![
+                "text".to_string(),
+                "image".to_string(),
+                "pdf".to_string(),
+            ]),
+            output: Some(vec!["text".to_string()]),
+        })
     );
-    assert_eq!(modalities.output.as_deref(), Some(["text"].as_slice()));
     assert_eq!(
         result.diagnostics.max_output_tokens,
         CapabilitySource::BundledSnapshot
