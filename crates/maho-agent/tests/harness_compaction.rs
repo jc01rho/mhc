@@ -1470,6 +1470,106 @@ mod summaries {
         assert!(!result.retained_tail.is_empty());
         assert!(result.details.is_some());
     }
+
+    #[tokio::test]
+    async fn summary_request_builders_carry_the_session_cwd() {
+        use maho_agent::harness::compaction::branch_summarization::{
+            BranchPreparation, PreparedBranchSummaryOptions, generate_branch_summary_with_request,
+        };
+        use maho_agent::harness::context::with_session_cwd;
+
+        const SESSION_CWD: &str = "/workspace/project";
+        let session_context = with_session_cwd(Some(SESSION_CWD.into()), &BACKGROUND_CONTEXT);
+        let (_, model, _) = faux_models(false, 8192);
+
+        let (request, seen) = scripted(vec![reply("summary")]);
+        generate_summary_with_request(
+            &[user_message("history")],
+            &summary_options(&model, None),
+            &request,
+            &session_context,
+        )
+        .await
+        .expect("generate_summary_with_request");
+        assert_eq!(
+            seen.lock()
+                .expect("seen")
+                .iter()
+                .map(|(_, options)| options.stream.request.cwd.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(SESSION_CWD.to_owned())]
+        );
+
+        let (request, seen) = scripted(vec![reply("summary"), reply("prefix summary")]);
+        compact_with_request(
+            &preparation(
+                vec![user_message("old history")],
+                vec![user_message("large turn")],
+                true,
+                1_000,
+            ),
+            &compact_options(&model, None),
+            &request,
+            &session_context,
+        )
+        .await
+        .expect("compact_with_request");
+        assert_eq!(
+            seen.lock()
+                .expect("seen")
+                .iter()
+                .map(|(_, options)| options.stream.request.cwd.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(SESSION_CWD.to_owned()), Some(SESSION_CWD.to_owned())]
+        );
+
+        let (request, seen) = scripted(vec![reply("branch summary")]);
+        generate_branch_summary_with_request(
+            &BranchPreparation {
+                messages: vec![user_message("abandoned")],
+                file_ops: FileOperations::default(),
+                total_tokens: 10,
+            },
+            &PreparedBranchSummaryOptions {
+                custom_instructions: None,
+                replace_instructions: false,
+            },
+            &request,
+            &session_context,
+        )
+        .await
+        .expect("generate_branch_summary_with_request");
+        assert_eq!(
+            seen.lock()
+                .expect("seen")
+                .iter()
+                .map(|(_, options)| options.stream.request.cwd.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(SESSION_CWD.to_owned())]
+        );
+
+        let (models, model, faux) = faux_models(false, 8192);
+        faux.set_responses(vec![reply("summary").into()]);
+        compact(
+            &preparation(vec![user_message("old history")], Vec::new(), false, 1_000),
+            &models,
+            &model,
+            None,
+            None,
+            None,
+            None,
+            &session_context,
+        )
+        .await
+        .expect("compact");
+        assert_eq!(
+            faux.get_call_log()
+                .into_iter()
+                .map(|entry| entry.options.and_then(|options| options.request.cwd))
+                .collect::<Vec<_>>(),
+            vec![Some(SESSION_CWD.to_owned())]
+        );
+    }
 }
 
 #[test]

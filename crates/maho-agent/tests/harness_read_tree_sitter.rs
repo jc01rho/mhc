@@ -281,3 +281,29 @@ fn prepares_the_grammar_backed_folder_for_exactly_the_languages_frozen_to_wasm()
     }
     assert!(prepare_read_folder("input.js", None, &selected).is_none());
 }
+
+#[test]
+fn retains_a_missing_grammar_only_when_cached() {
+    for cache in [true, false] {
+        reset_tree_sitter_grammars();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let make_options = || {
+            let calls = calls.clone();
+            let mut options = TreeSitterFolderOptions::new(Arc::new(SelectedReadFolder));
+            options.cache = cache;
+            options.resolve_grammar = Some(Arc::new(move |_| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                None
+            }));
+            options
+        };
+        assert!(load_tree_sitter_folder(TreeSitterLanguage::Js, make_options()).is_none());
+        assert!(load_tree_sitter_folder(TreeSitterLanguage::Js, make_options()).is_none());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            if cache { 1 } else { 2 },
+            "cache={cache}"
+        );
+    }
+    reset_tree_sitter_grammars();
+}

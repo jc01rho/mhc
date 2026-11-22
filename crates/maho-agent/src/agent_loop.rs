@@ -277,6 +277,11 @@ async fn run_loop(
 
     // Check for steering messages at start (user may have typed while waiting)
     let mut pending_messages: Vec<AgentMessage> = get_messages(&config.get_steering_messages).await;
+    // Follow-ups an error-ended run parked are taken here, so this run writes them even if its request fails.
+    if pending_messages.is_empty() && config.take_follow_ups_at_start {
+        pending_source = PendingQueue::FollowUp;
+        pending_messages = get_messages(&config.get_follow_up_messages).await;
+    }
 
     // Outer loop: continues when queued follow-up messages arrive after agent would stop
     loop {

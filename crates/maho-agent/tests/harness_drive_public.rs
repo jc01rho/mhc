@@ -76,6 +76,7 @@ struct Fixture {
 struct FixtureOptions {
     deferred: bool,
     resources: Option<AgentHarnessResources>,
+    cwd: Option<String>,
 }
 
 async fn create_fixture(options: FixtureOptions) -> Fixture {
@@ -84,7 +85,7 @@ async fn create_fixture(options: FixtureOptions) -> Fixture {
             id: "public-drive".into(),
             created_at: 1,
             storage_version: 1,
-            cwd: None,
+            cwd: options.cwd,
             parent_session_id: None,
             legacy_parent_session_path: None,
             path: None,
@@ -1201,4 +1202,122 @@ async fn faults_the_harness_when_a_detached_pass_fails() {
         .expect_err("faulted lane rejects reads");
     assert!(fixture.lane.faulted());
     assert_ne!(error.kind, SessionErrorKind::Closed);
+}
+
+#[tokio::test]
+async fn harness_provider_requests_carry_the_session_cwd() {
+    const SESSION_CWD: &str = "/workspace/project";
+
+    let turn_fixture = create_fixture(FixtureOptions {
+        cwd: Some(SESSION_CWD.into()),
+        ..Default::default()
+    })
+    .await;
+    turn_fixture.faux.set_responses(vec![
+        faux_assistant_message("answer", Default::default()).into(),
+    ]);
+    let record = settled_run(
+        bounded(
+            turn_fixture
+                .lane
+                .prompt(text("question"), &BACKGROUND_CONTEXT),
+        )
+        .await
+        .expect("no fault")
+        .expect("admitted"),
+    );
+    assert_eq!(record.status, TerminalStatus::Completed);
+    assert_eq!(
+        turn_fixture
+            .faux
+            .get_call_log()
+            .into_iter()
+            .map(|entry| entry.options.and_then(|options| options.request.cwd))
+            .collect::<Vec<_>>(),
+        vec![Some(SESSION_CWD.to_owned())]
+    );
+
+    let compact_fixture = create_fixture(FixtureOptions {
+        cwd: Some(SESSION_CWD.into()),
+        ..Default::default()
+    })
+    .await;
+    compact_fixture
+        .lane
+        .append_message(user("history", 1), &BACKGROUND_CONTEXT)
+        .await
+        .expect("history");
+    compact_fixture.faux.set_responses(vec![
+        faux_assistant_message("summary", Default::default()).into(),
+    ]);
+    let compact_outcome = bounded(compact_fixture.lane.compact(None, &BACKGROUND_CONTEXT))
+        .await
+        .expect("no fault")
+        .expect("admitted");
+    assert_eq!(compact_outcome.compaction.status, TerminalStatus::Completed);
+    assert_eq!(
+        compact_fixture
+            .faux
+            .get_call_log()
+            .into_iter()
+            .map(|entry| entry.options.and_then(|options| options.request.cwd))
+            .collect::<Vec<_>>(),
+        vec![Some(SESSION_CWD.to_owned())]
+    );
+
+    let nav_fixture = create_fixture(FixtureOptions {
+        cwd: Some(SESSION_CWD.into()),
+        ..Default::default()
+    })
+    .await;
+    let root_id = nav_fixture
+        .lane
+        .append_message(user("root", 1), &BACKGROUND_CONTEXT)
+        .await
+        .expect("root");
+    nav_fixture
+        .lane
+        .append_message(user("source", 2), &BACKGROUND_CONTEXT)
+        .await
+        .expect("source");
+    let mutation = nav_fixture
+        .session
+        .begin_mutation(&BACKGROUND_CONTEXT)
+        .await
+        .expect("mutation");
+    mutation
+        .commit(
+            vec![maho_agent::harness::session::commit::insert_entry(
+                NewEntry::message("target", Some(root_id), user("target", 3)),
+            )],
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .expect("target entry");
+    mutation.end(&BACKGROUND_CONTEXT).await;
+    nav_fixture.faux.set_responses(vec![
+        faux_assistant_message("branch summary", Default::default()).into(),
+    ]);
+    let nav_outcome = bounded(nav_fixture.lane.navigate_tree(
+        Some("target".into()),
+        NavigationOptions {
+            summarize: true,
+            label: None,
+            custom_instructions: None,
+        },
+        &BACKGROUND_CONTEXT,
+    ))
+    .await
+    .expect("no fault")
+    .expect("admitted");
+    assert_eq!(nav_outcome.navigation.status, TerminalStatus::Completed);
+    assert_eq!(
+        nav_fixture
+            .faux
+            .get_call_log()
+            .into_iter()
+            .map(|entry| entry.options.and_then(|options| options.request.cwd))
+            .collect::<Vec<_>>(),
+        vec![Some(SESSION_CWD.to_owned())]
+    );
 }
