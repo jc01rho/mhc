@@ -161,7 +161,11 @@ fn an_unknown_name_and_an_empty_profile_carry_their_reason() {
 
 #[test]
 fn a_default_lane_that_cannot_resolve_reports_its_rungs_as_no_login() {
-    let view = describe_model_profile(&json!({}), &available(&["example/nothing-in-any-chain"]));
+    // With the execution gate on, the Fable rung reads as excluded by it instead of no login.
+    let view = describe_model_profile(
+        &json!({"model_policy": {"block_fable": false}}),
+        &available(&["example/nothing-in-any-chain"]),
+    );
     assert_eq!(view.profile, "daily-normal");
     assert_eq!(view.selection, ModelProfileSelection::Default);
     assert_eq!(view.applied, None);
