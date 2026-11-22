@@ -105,6 +105,9 @@ pub const RPC_ERROR_CONTEXT_BUDGET: &str = "context_budget";
 pub const RPC_ERROR_EVAL_CELL_NOT_FOUND: &str = "eval_cell_not_found";
 pub const RPC_ERROR_INVALID_EVAL_CELL_REQUEST: &str = "invalid_eval_cell_request";
 pub const RPC_ERROR_EVAL_CELLS_UNAVAILABLE: &str = "eval_cells_unavailable";
+pub const RPC_ERROR_PROVIDER_CREDENTIALS_MISSING: &str = "provider_credentials_missing";
+pub const RPC_ERROR_PROVIDER_CREDENTIALS_EXPIRED: &str = "provider_credentials_expired";
+pub const RPC_ERROR_NO_MODEL_SELECTED: &str = "no_model_selected";
 pub const RPC_ERROR_UNKNOWN_COMMAND: &str = "unknown_command";
 pub const RPC_ERROR_HOST_STOPPING: &str = "host_stopping";
 /// A sealed (overflowed) session's output cannot be reattached; the client unloads and reopens it.

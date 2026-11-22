@@ -129,6 +129,7 @@ pub mod manual_continue;
 pub mod mcp_form_types;
 pub mod mcp_grant_presentations;
 pub mod mcp_mrtr_presentations;
+pub mod model_not_ready_error;
 pub mod models_store;
 pub mod moved_session_cwd;
 pub mod moved_sessions;

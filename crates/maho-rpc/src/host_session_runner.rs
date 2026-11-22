@@ -1452,5 +1452,30 @@ mod tests {
             "/s",
         );
         assert_eq!(gone.payload["reason"], "transport_gone");
+        for code in [
+            "provider_credentials_missing",
+            "provider_credentials_expired",
+        ] {
+            let message = "No API key found for openai.";
+            let outcome = map_error(
+                &RpcClientError::Command(crate::rpc_client::RpcCommandError {
+                    message: message.into(),
+                    error_code: Some(code.into()),
+                    error_data: Some(json!({ "provider": "openai" })),
+                }),
+                "/rpc.sock",
+            );
+            assert_eq!(outcome.exit_code, 3);
+            assert_eq!(
+                outcome.payload,
+                json!({
+                    "action": "refuse",
+                    "reason": code,
+                    "detail": message,
+                    "socket": "/rpc.sock",
+                    "data": { "provider": "openai" },
+                })
+            );
+        }
     }
 }

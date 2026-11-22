@@ -1180,6 +1180,21 @@ async fn run_prompt_command(
                 })),
             ));
         }
+        if let Err(error) = &result
+            && let Some(not_ready) = session.classify_model_not_ready_error(error)
+        {
+            let error_data = not_ready
+                .provider
+                .map(|provider| serde_json::json!({ "provider": provider }));
+            return Some(command_response_coded(
+                session,
+                command,
+                "prompt",
+                Err(not_ready.message),
+                Some(not_ready.code.as_str()),
+                error_data,
+            ));
+        }
         Some(command_response(session, command, "prompt", result))
     }
 }
@@ -4612,6 +4627,69 @@ mod new_session_tests {
             assert_eq!(response["success"], false);
             assert_eq!(response["errorCode"], "invalid_argument");
         }
+    }
+    #[tokio::test]
+    async fn prompt_refuses_with_typed_error_code_when_model_not_ready() {
+        let sess = session();
+        let mut fake_model = sess.model();
+        fake_model.id = "fake-model".into();
+        fake_model.provider = "fake-provider".into();
+        sess.agent.set_model(fake_model);
+
+        let missing = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(serde_json::json!({
+                    "id": "nk1",
+                    "type": "prompt",
+                    "message": "Hello"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(missing["success"], false);
+        assert_eq!(missing["errorCode"], "provider_credentials_missing");
+        assert_eq!(
+            missing["errorData"],
+            serde_json::json!({ "provider": "fake-provider" })
+        );
+        assert!(
+            missing["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("No API key found for fake-provider.")
+        );
+
+        let mut no_model = sess.model();
+        no_model.id.clear();
+        no_model.provider.clear();
+        sess.agent.set_model(no_model);
+        let unselected = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(serde_json::json!({
+                    "id": "nk2",
+                    "type": "prompt",
+                    "message": "Hello"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unselected["success"], false);
+        assert_eq!(unselected["errorCode"], "no_model_selected");
+        assert!(unselected.get("errorData").is_none());
+        assert!(
+            unselected["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("No model selected.")
+        );
     }
 }
 

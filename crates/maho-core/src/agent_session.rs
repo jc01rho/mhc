@@ -7826,6 +7826,16 @@ impl AgentSession {
         }
         // senpi `prompt()`: refuse before any provider work when the model's provider has no auth.
         let model = self.model();
+        if model.id.is_empty() && model.provider.is_empty() {
+            heap_future(|| {
+                self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                    input_id,
+                    disposition: maho_ext_api::InputDisposition::Rejected,
+                })
+            })
+            .await;
+            return Err(crate::auth_guidance::format_no_model_selected_message());
+        }
         let has_configured_auth = self.model_runtime().has_configured_auth(&model.provider)
             || match self.model_runtime().check_auth(&model.provider, None).await {
                 Ok(check) => check.is_some(),
@@ -15528,6 +15538,44 @@ impl AgentSession {
 
     pub fn model(&self) -> Model {
         self.agent.model()
+    }
+
+    pub fn classify_model_not_ready_error(
+        &self,
+        error: &str,
+    ) -> Option<crate::model_not_ready_error::ModelNotReadyError> {
+        use crate::model_not_ready_error::{ModelNotReadyCode, ModelNotReadyError};
+        if error == crate::auth_guidance::format_no_model_selected_message()
+            || error.starts_with("No model selected.")
+        {
+            return Some(ModelNotReadyError::new(
+                error.to_owned(),
+                ModelNotReadyCode::NoModelSelected,
+                None,
+            ));
+        }
+        let provider = self.model().provider;
+        if provider.is_empty() {
+            return None;
+        }
+        let expired = format!(
+            "Authentication failed for \"{provider}\". Credentials may have expired or network is unavailable. Run '/login {provider}' to re-authenticate."
+        );
+        if error == expired {
+            return Some(ModelNotReadyError::new(
+                error.to_owned(),
+                ModelNotReadyCode::ProviderCredentialsExpired,
+                Some(provider),
+            ));
+        }
+        if error == crate::auth_guidance::format_no_api_key_found_message(&provider) {
+            return Some(ModelNotReadyError::new(
+                error.to_owned(),
+                ModelNotReadyCode::ProviderCredentialsMissing,
+                Some(provider),
+            ));
+        }
+        None
     }
 
     /// senpi `_refreshCurrentModelFromRegistry`. Assigns the catalog object directly: `set_model`
