@@ -3,7 +3,7 @@ use crate::model_error_text::{
     AgentUnavailable, agent_model_failure_text, category_model_failure_text,
 };
 use crate::planner_explicit_pin::{
-    ExplicitPinResolution, ResolveDefaultRoute, resolve_explicit_pin,
+    ExplicitPinResolution, ResolveDefaultRoute, resolve_gated_explicit_pin,
 };
 use senpi_task::{
     agents::{
@@ -17,7 +17,7 @@ use senpi_task::{
         types::{ChildPlanner, PlanResolutionCode, PlanResolutionError, ResolvedChildPlan},
     },
     model_chain::ModelDistributor,
-    model_exclusion::is_excluded_model,
+    model_exclusion::{blocked_model_refusal, is_excluded_model},
     state::{ResolvedModelRecord, ResolvedModelSource},
 };
 use serde_json::Value;
@@ -153,11 +153,12 @@ pub fn create_task_child_planner_live(
             if let Some(pin) = explicit {
                 // An explicit override is parsed ONCE against the live registry and refused typed.
                 let live = resolve_registry();
-                match resolve_explicit_pin(
+                match resolve_gated_explicit_pin(
                     pin,
                     live.as_deref(),
                     resolve_default_route.as_ref(),
                     Some(&excluded),
+                    &config,
                 ) {
                     ExplicitPinResolution::Resolved {
                         canonical,
@@ -299,11 +300,12 @@ pub fn create_task_child_planner_live(
         }
         if let Some(pin) = spec.model.as_deref().filter(|model| !model.is_empty()) {
             let live = resolve_registry();
-            return match resolve_explicit_pin(
+            return match resolve_gated_explicit_pin(
                 pin,
                 live.as_deref(),
                 resolve_default_route.as_ref(),
                 Some(&excluded),
+                &config,
             ) {
                 ExplicitPinResolution::Resolved {
                     canonical,
@@ -338,7 +340,6 @@ pub fn create_task_child_planner_live(
             registry.as_ref(),
             &ResolveCategoryOptions {
                 distribute_models: Some(distributor.clone()),
-                ..ResolveCategoryOptions::default()
             },
         )
         .map_err(|error| {
@@ -416,6 +417,13 @@ pub fn create_task_child_planner_live(
                     category_model_failure_text(&error, &config, Some(&unavailable.category))
                 {
                     error.message = message;
+                }
+                if let Some(refusal) = unavailable
+                    .attempted_model
+                    .as_deref()
+                    .and_then(|model| blocked_model_refusal(model, &config))
+                {
+                    error.message = format!("{} {refusal}", error.message);
                 }
                 Err(Box::new(error))
             }

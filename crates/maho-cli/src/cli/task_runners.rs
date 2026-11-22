@@ -15,12 +15,15 @@ pub fn resolved_omo_config(
     cwd: &std::path::Path,
     env: &BTreeMap<String, String>,
 ) -> serde_json::Value {
-    maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
-        cwd: Some(cwd.to_string_lossy().into_owned()),
-        env: Some(env.clone()),
-        ..Default::default()
-    })
-    .config
+    let config =
+        maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            env: Some(env.clone()),
+            ..Default::default()
+        })
+        .config;
+    maho_ai::model_execution_gate::apply_config(&config);
+    config
 }
 
 /// The task planner's live omo config (`createLiveConfigProvider`): the register-time load, plus a
@@ -66,6 +69,9 @@ fn live_config_load(
             env: Some(env.clone()),
             ..Default::default()
         });
+    // The senpi-side selection paths (`/model`, the retry chain, the provider stream) never see the
+    // omo config, so every load publishes its Fable execution gate setting process-wide.
+    maho_ai::model_execution_gate::apply_config(&loaded.config);
     let diagnostics = loaded
         .diagnostics
         .iter()

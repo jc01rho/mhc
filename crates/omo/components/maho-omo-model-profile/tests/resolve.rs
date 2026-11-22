@@ -11,6 +11,7 @@ const OPUS_SUBSCRIPTION: &str = "anthropic-subscription/claude-opus-5-5";
 const OPUS_ZEN: &str = "opencode/claude-opus-5-5";
 const OPUS_API: &str = "anthropic-api/claude-opus-5-5";
 const FABLE: &str = "anthropic-subscription/claude-fable-5-1";
+const FABLE_ZEN: &str = "opencode/claude-fable-5-1";
 const KIMI: &str = "moonshotai/kimi-k3.1-pro";
 const FLASH: &str = "deepseek/deepseek-flash";
 const LUNA: &str = "openai/gpt-5.6-luna-fast";
@@ -130,7 +131,13 @@ fn picks_the_first_rung_the_registry_can_serve_and_names_the_skipped_ones() {
     assert_eq!(resolved.provider, "moonshotai");
     assert_eq!(resolved.model_id, "kimi-k3.1-pro");
     assert_eq!(resolved.reasoning, Some("max"));
-    assert_eq!(resolved.skipped, [OPUS_SUBSCRIPTION.to_owned()]);
+    assert_eq!(
+        resolved.skipped,
+        [
+            OPUS_SUBSCRIPTION.to_owned(),
+            "anthropic-subscription/claude-fable-5-2".to_owned()
+        ]
+    );
     assert_eq!(profile_of(&result).id, "daily-normal");
     assert_eq!(profile_of(&result).source, ModelProfileSource::Builtin);
 }
@@ -253,8 +260,8 @@ fn reports_an_empty_registry_as_unavailable_and_lists_the_chain() {
         chain_of(&result),
         [
             OPUS_SUBSCRIPTION.to_owned(),
-            "kimi-coding/kimi-k3.1-pro".to_owned(),
-            "zai/glm-5.3".to_owned()
+            "anthropic-subscription/claude-fable-5-2".to_owned(),
+            "kimi-coding/kimi-k3.1-pro".to_owned()
         ]
     );
 }
@@ -305,11 +312,28 @@ fn reports_a_blank_value_as_unknown_rather_than_silently_doing_nothing() {
 }
 
 #[test]
-fn keeps_daily_heavy_on_the_claude_subscription_when_an_opencode_zen_key_serves_the_same_model() {
-    let result = resolve("daily-heavy", &[OPUS_ZEN, FABLE, OPUS_SUBSCRIPTION], None);
+fn prefers_fable_5_2_at_high_without_changing_listed_providers() {
+    let result = resolve(
+        "daily-heavy",
+        &[
+            "opencode/claude-fable-5-2",
+            "anthropic-subscription/claude-fable-5-2",
+            FABLE,
+        ],
+        None,
+    );
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "anthropic-subscription");
-    assert_eq!(resolved.model_id, "claude-opus-5-5");
+    assert_eq!(resolved.model_id, "claude-fable-5-2");
+    assert_eq!(resolved.reasoning, Some("high"));
+}
+
+#[test]
+fn keeps_daily_heavy_on_the_claude_subscription_when_an_opencode_zen_key_serves_the_same_model() {
+    let result = resolve("daily-heavy", &[FABLE_ZEN, FABLE], None);
+    let resolved = resolved(&result);
+    assert_eq!(resolved.provider, "anthropic-subscription");
+    assert_eq!(resolved.model_id, "claude-fable-5-1");
     assert_eq!(resolved.reasoning, Some("xhigh"));
 }
 
@@ -396,7 +420,8 @@ fn never_serves_a_builtin_lane_from_a_gateways_copy_of_its_models() {
             active,
             &[
                 "openrouter/anthropic/claude-opus-5-5",
-                "opengateway/anthropic/claude-opus-5-5",
+                "opengateway/anthropic/claude-fable-5-1",
+                "opengateway/anthropic/claude-fable-5-2",
                 "openrouter/moonshotai/kimi-k3",
                 "openrouter/openai/gpt-6-astra",
                 "openrouter/openai/gpt-5.6-sol",
@@ -539,17 +564,16 @@ fn recommended_is_no_longer_a_builtin_but_can_be_user_defined() {
 }
 
 #[test]
-fn picks_zai_glm_53_on_daily_normal_when_only_a_zai_key_serves_glm() {
-    let result = resolve("daily-normal", &["zai/glm-5.3"], None);
-    let resolved = resolved(&result);
-    assert_eq!(resolved.provider, "zai");
-    assert_eq!(resolved.model_id, "glm-5.3");
-    assert_eq!(resolved.reasoning, Some("max"));
-}
-
-#[test]
-fn does_not_pick_opencode_zai_coding_plan_on_daily_normal() {
-    let result = resolve("daily-normal", &["zai-coding-plan/glm-5.3"], None);
+fn leaves_daily_normal_unavailable_when_only_glm_is_served() {
+    let result = resolve(
+        "daily-normal",
+        &[
+            "zai/glm-5.3",
+            "zai-coding-plan/glm-5.3",
+            "opencode-go/glm-5.3",
+        ],
+        None,
+    );
     assert!(matches!(result, ModelProfileResolution::Unavailable { .. }));
 }
 

@@ -4,7 +4,7 @@ use maho_ai::models::{
     clamp_thinking_level, get_supported_thinking_levels, infer_openai_thinking_level_map,
     supports_configuration_update, supports_max, supports_xhigh,
 };
-use maho_ai::models_generated::{MODELS, get_builtin_model};
+use maho_ai::models_generated::get_builtin_model;
 use maho_ai::types::{Model, ModelThinkingLevel as L, ServiceTierPreference};
 
 fn builtin(provider: &str, id: &str) -> Model {
@@ -127,18 +127,5 @@ fn the_gpt_6_2_rows_opt_into_configuration_updates() {
             supports_configuration_update(&builtin(provider, id)),
             "{id}"
         );
-    }
-}
-
-#[test]
-fn no_fable_5_2_row_is_shipped() {
-    for (provider, models) in MODELS.iter() {
-        for id in models.keys() {
-            let lower = id.to_lowercase();
-            assert!(
-                !(lower.contains("fable-5-2") || lower.contains("fable-5.2")),
-                "{provider}/{id}: Fable 5.2 rows stay out of the catalog"
-            );
-        }
     }
 }

@@ -201,11 +201,23 @@ fn resolve_api_provider(api: &str) -> Result<ApiProviderInternal, ApiRegistryErr
     get_api_provider(api)?.ok_or_else(|| ApiRegistryError::NoProvider(api.to_owned()))
 }
 
+/// The Fable execution gate (`model_execution_gate`) refuses a blocked model before any request.
+fn refuse_blocked_model(model: &Model) -> Result<(), CompatError> {
+    match crate::model_execution_gate::execution_refusal(&model.provider, &model.id) {
+        Some(message) => Err(CompatError::Models(crate::models::ModelsError::new(
+            crate::models::ModelsErrorCode::ModelValidation,
+            message,
+        ))),
+        None => Ok(()),
+    }
+}
+
 pub fn try_stream(
     model: &Model,
     context: &Context,
     options: Option<StreamOptions>,
 ) -> Result<AssistantMessageEventStream, CompatError> {
+    refuse_blocked_model(model)?;
     let normalized = crate::types::transcript::normalize_context(context);
     let normalized_context = Context {
         messages: normalized.messages,
@@ -255,6 +267,7 @@ pub fn try_stream_simple(
     context: &Context,
     options: Option<SimpleStreamOptions>,
 ) -> Result<AssistantMessageEventStream, CompatError> {
+    refuse_blocked_model(model)?;
     let normalized = crate::types::transcript::normalize_context(context);
     let normalized_context = Context {
         messages: normalized.messages,

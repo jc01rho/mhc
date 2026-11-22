@@ -1,5 +1,4 @@
 use model_core::CapabilitySource;
-use model_core::FABLE_55_LAUNCH_ID;
 use model_core::GetModelCapabilitiesInput;
 use model_core::ModelCapabilitiesSnapshot;
 use model_core::ModelCapabilitiesSnapshotEntry;
@@ -48,32 +47,31 @@ fn keeps_gpt_4_1_openai_variants_marked_as_supporting_tool_calls() {
     }
 }
 
-// The launch placeholder must never hide real data once the generated catalog lists the model.
 #[test]
-fn generated_catalog_data_wins_over_the_launch_placeholder() {
-    let generated = ModelCapabilitiesSnapshotEntry {
-        id: FABLE_55_LAUNCH_ID.to_string(),
-        family: Some("claude-fable".to_string()),
-        reasoning: Some(true),
-        temperature: Some(false),
-        tool_call: Some(true),
-        modalities: Some(SnapshotModalities {
-            input: Some(vec!["text".to_string(), "image".to_string()]),
-            output: Some(vec!["text".to_string()]),
-        }),
-        limit: Some(SnapshotLimit {
-            context: Some(1_000_000),
-            input: None,
-            output: Some(128_000),
-        }),
-    };
-    let snapshot = get_bundled_model_capabilities_snapshot(&ModelCapabilitiesSnapshot {
-        generated_at: "2026-10-22T00:00:00Z".to_string(),
-        source_url: "fixture".to_string(),
-        models: [(FABLE_55_LAUNCH_ID.to_string(), generated.clone())]
-            .into_iter()
-            .collect(),
-    });
+fn registers_claude_fable_5_2_with_its_launch_limits_and_modalities() {
+    let snapshot = get_bundled_model_capabilities_snapshot(&ModelCapabilitiesSnapshot::default());
 
-    assert_eq!(snapshot.models.get(FABLE_55_LAUNCH_ID), Some(&generated));
+    assert_eq!(
+        snapshot.models.get("claude-fable-5-2"),
+        Some(&ModelCapabilitiesSnapshotEntry {
+            id: "claude-fable-5-2".to_string(),
+            family: Some("claude-fable".to_string()),
+            reasoning: Some(true),
+            temperature: Some(false),
+            tool_call: Some(true),
+            modalities: Some(SnapshotModalities {
+                input: Some(vec![
+                    "text".to_string(),
+                    "image".to_string(),
+                    "pdf".to_string(),
+                ]),
+                output: Some(vec!["text".to_string()]),
+            }),
+            limit: Some(SnapshotLimit {
+                context: Some(1_000_000),
+                input: None,
+                output: Some(128_000),
+            }),
+        })
+    );
 }

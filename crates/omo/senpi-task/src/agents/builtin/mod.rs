@@ -155,6 +155,8 @@ pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallba
             (
                 "plan-consultant",
                 vec![
+                    entry(&claude, "claude-fable-5-2", Some("max")),
+                    entry(&claude, "claude-fable-5-1", Some("max")),
                     entry(&claude, "claude-opus-5-5", Some("max")),
                     entry(
                         &["opencode-go", "kimi-for-coding", "moonshotai"],
@@ -168,6 +170,13 @@ pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallba
             (
                 "plan-reviewer",
                 vec![
+                    // GPT-6 Astra stays behind each GPT-6.2 Astra rung for a registry without 6.2;
+                    // Copilot does not serve 6.2.
+                    entry(
+                        &["chatgpt-subscription", "openai"],
+                        "gpt-6.2-astra",
+                        Some("xhigh"),
+                    ),
                     entry(
                         &["chatgpt-subscription", "openai"],
                         "gpt-6-astra",
@@ -176,10 +185,14 @@ pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallba
                     entry(&["github-copilot"], "gpt-6-astra", Some("high")),
                     entry(
                         &["chatgpt-subscription", "openai", "opencode"],
+                        "gpt-6.2-astra",
+                        Some("high"),
+                    ),
+                    entry(
+                        &["chatgpt-subscription", "openai", "opencode"],
                         "gpt-6-astra",
                         Some("high"),
                     ),
-                    entry(&["github-copilot"], "gpt-6-astra", Some("high")),
                     entry(&claude, "claude-opus-5-5", Some("max")),
                     entry(
                         &["google", "google-vertex", "opencode"],

@@ -52,7 +52,7 @@ mod tests {
     async fn defaults_choose_the_first_resolving_lane_or_report_the_primary() {
         for (models, expected, attempted) in [
             (vec!["anthropic/claude-opus-5-5"], "daily-normal", 1),
-            (vec!["anthropic/claude-fable-5-1"], "daily-normal", 4),
+            (vec!["anthropic/claude-fable-5-1"], "daily-heavy", 2),
             (vec!["chatgpt-subscription/gpt-6.2-sol"], "geeky-normal", 3),
             (vec!["chatgpt-subscription/gpt-6.1-sol"], "geeky-normal", 3),
             (vec!["chatgpt-subscription/gpt-6-astra"], "geeky-normal", 3),

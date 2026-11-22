@@ -29,6 +29,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use maho_ai::model::Model;
+use maho_ai::model_execution_gate::{
+    blocked_model_message, fable_blocked_in, is_execution_blocked,
+};
 use maho_ai::types::ModelThinkingLevel;
 use maho_ext_api::{
     ComponentLogger, EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent,
@@ -259,6 +262,21 @@ struct ProbedResolution {
     model: Option<Model>,
 }
 
+/// Which registry selectors may be candidates at all: `omo.json` `exclude_models` and the Fable
+/// execution gate (docs/divergences.md GATE-1).
+#[derive(Clone, Copy)]
+struct CandidateFilter<'a> {
+    exclude_models: Option<&'a [String]>,
+    block_fable: bool,
+}
+
+impl CandidateFilter<'_> {
+    fn keeps(&self, selector: &str) -> bool {
+        !is_excluded_model(selector, self.exclude_models)
+            && !is_execution_blocked(selector, self.block_fable)
+    }
+}
+
 // Each failed probe removes at least one selector (the whole provider for a credential failure, the
 // one model for a request-configuration failure), so the walk ends after at most one pass per
 // available selector. A literal pin is the user's explicit choice and is never swapped, so it is not
@@ -269,15 +287,16 @@ async fn resolve_with_request_auth(
     agent_dir: Option<&Path>,
     profiles: Option<&JsonValue>,
     active: &str,
-    exclude_models: Option<&[String]>,
+    candidates: CandidateFilter<'_>,
     probes: &mut ProbeState,
     logger: Option<&Arc<dyn ComponentLogger>>,
 ) -> ProbedResolution {
     // An excluded model is never a candidate, a literal pin included: exclude_models wins
-    // everywhere.
+    // everywhere. A model the Fable execution gate blocks is skipped the same way, so a lane moves on
+    // to its next rung.
     let available: Vec<String> = available_selectors(registry)
         .into_iter()
-        .filter(|selector| !is_excluded_model(selector.as_str(), exclude_models))
+        .filter(|selector| candidates.keeps(selector))
         .collect();
     let custom_providers = custom_model_providers(agent_dir);
     let ProbeState {
@@ -477,7 +496,24 @@ impl Extension for ModelProfileComponent {
 
                     let mode = mode_str(ctx.mode);
                     let logger = ctx.logger.clone();
-                    let exclude_models = exclude_models.as_deref();
+                    let block_fable = fable_blocked_in(&config);
+                    let candidates = CandidateFilter {
+                        exclude_models: exclude_models.as_deref(),
+                        block_fable,
+                    };
+                    // A literal pin is a direct selection: one the execution gate blocks is refused
+                    // with the setting named, and the session keeps its model.
+                    if let Some(pin) = explicit.map(str::trim).filter(|active| active.contains('/'))
+                        && is_execution_blocked(pin, block_fable)
+                    {
+                        let message = blocked_model_message(pin);
+                        record_outcome(&runtime, MODEL_PROFILE_UNAVAILABLE_TYPE, message.clone(), None, logger.as_ref());
+                        notify(ctx, &message, true);
+                        if let Some(logger) = logger.as_ref() {
+                            logger.warn(&message, None);
+                        }
+                        return Ok(EventResult::None);
+                    }
                     let (probed, probes) = if let Some(active) = explicit {
                         let mut probes = new_probe_state();
                         let probed = resolve_with_request_auth(
@@ -485,7 +521,7 @@ impl Extension for ModelProfileComponent {
                             Some(ctx.agent_dir.as_path()),
                             profiles.as_ref(),
                             active,
-                            exclude_models,
+                            candidates,
                             &mut probes,
                             logger.as_ref(),
                         ).await;
@@ -499,7 +535,7 @@ impl Extension for ModelProfileComponent {
                             new_probe_state(),
                             |profile_id, mut probes| async move {
                                 let probed = resolve_with_request_auth(
-                                    registry, agent_dir, profiles, profile_id, exclude_models, &mut probes, logger,
+                                    registry, agent_dir, profiles, profile_id, candidates, &mut probes, logger,
                                 ).await;
                                 (probed, probes)
                             },

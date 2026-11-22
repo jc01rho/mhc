@@ -8,7 +8,7 @@ use crate::agents::{
 use crate::category::exclude_model_patterns;
 use crate::category::{ResolveCategoryOptions, resolve_category};
 use crate::host::{HostError, SenpiModelRegistry};
-use crate::model_exclusion::without_excluded_models;
+use crate::model_exclusion::without_config_excluded_models;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -80,7 +80,7 @@ pub fn describe_agent_chain(
     }
     declared.extend(builtin_rungs(agent_fallback_chain(name), available));
     let exclusions = exclude_model_patterns(config).unwrap_or_default();
-    let filtered = without_excluded_models(registry, Some(&exclusions));
+    let filtered = without_config_excluded_models(registry, config);
     let result = resolve_agent(
         name,
         agents,

@@ -116,8 +116,6 @@ fn inherits_the_fallback_variant_for_an_explicit_transformed_gateway_model() {
     assert_eq!(result.variant.as_deref(), Some("high"));
 }
 
-// Cold provider-models cache with only anthropic connected: the builtin chains carry no Fable
-// rung, so every Claude-led lane resolves straight to Opus 5.5.
 fn cold_anthropic() -> ResolutionConstraints {
     ResolutionConstraints {
         available_models: set(&[]),
@@ -126,7 +124,7 @@ fn cold_anthropic() -> ResolutionConstraints {
 }
 
 #[test]
-fn metis_and_prometheus_resolve_to_their_opus_head_rung_on_a_cold_cache() {
+fn metis_and_prometheus_resolve_to_their_fable_5_2_head_rung_on_a_cold_cache() {
     for agent in ["metis", "prometheus"] {
         let result = resolve_model_pipeline(&ModelResolutionRequest {
             constraints: cold_anthropic(),
@@ -139,28 +137,32 @@ fn metis_and_prometheus_resolve_to_their_opus_head_rung_on_a_cold_cache() {
 
         assert_eq!(
             result.map(|result| result.model),
-            Some("anthropic/claude-opus-5-5".to_string()),
+            Some("anthropic/claude-fable-5-2".to_string()),
             "{agent}"
         );
     }
 }
 
 #[test]
-fn artistry_and_visual_engineering_chains_resolve_to_opus_without_a_fable_rung() {
-    for category in ["artistry", "visual-engineering"] {
-        let result = resolve_model_pipeline(&ModelResolutionRequest {
-            constraints: cold_anthropic(),
-            policy: ResolutionPolicy {
-                fallback_chain: Some(CATEGORY_MODEL_REQUIREMENTS[category].fallback_chain.clone()),
-                system_default_model: None,
-            },
+fn artistry_fable_5_2_category_default_resolves_on_the_connected_provider() {
+    let result = resolve_model_pipeline(&ModelResolutionRequest {
+        intent: ResolutionIntent {
+            category_default_model: Some("anthropic/claude-fable-5-2".to_string()),
             ..Default::default()
-        });
+        },
+        constraints: cold_anthropic(),
+        policy: ResolutionPolicy {
+            fallback_chain: Some(
+                CATEGORY_MODEL_REQUIREMENTS["artistry"]
+                    .fallback_chain
+                    .clone(),
+            ),
+            system_default_model: None,
+        },
+    });
 
-        assert_eq!(
-            result.map(|result| result.model),
-            Some("anthropic/claude-opus-5-5".to_string()),
-            "{category}"
-        );
-    }
+    assert_eq!(
+        result.map(|result| result.model),
+        Some("anthropic/claude-fable-5-2".to_string())
+    );
 }

@@ -11841,6 +11841,11 @@ impl AgentSession {
         thinking: Option<ModelThinkingLevel>,
         favorite_thinking: Option<(Option<ModelThinkingLevel>, Option<ThinkingSelection>)>,
     ) -> Result<Option<SystemPromptChangeEvent>, String> {
+        if let Some(refusal) =
+            maho_ai::model_execution_gate::execution_refusal(&model.provider, &model.id)
+        {
+            return Err(refusal);
+        }
         let previous = self.model();
         let context_changed = !models_are_equal(Some(&previous), Some(&model))
             || previous.context_window != model.context_window
@@ -12183,6 +12188,12 @@ impl AgentSession {
             let entry = &models[next];
             let model = &entry.model;
             if models_are_equal(Some(model), Some(&current)) {
+                continue;
+            }
+            if maho_ai::model_execution_gate::execution_refusal(&model.provider, &model.id)
+                .is_some()
+            {
+                skipped_models.push(model.clone());
                 continue;
             }
             let live = downswitch_live(model)?;

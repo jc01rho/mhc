@@ -3,6 +3,9 @@
 //! Also the crate's home for the `excluded-models.ts` matcher: `withoutExcludedModels` is the only
 //! thing that needs it, and both the category and agent resolvers walk registries through it.
 
+use maho_ai::model_execution_gate::{
+    blocked_model_message, fable_blocked, fable_blocked_in, is_execution_blocked,
+};
 use serde_json::Value;
 
 use crate::host::{HostError, SenpiModelRegistry};
@@ -88,10 +91,18 @@ pub fn is_excluded_model(model: &str, patterns: &[String]) -> bool {
 
 /// The registry as `exclude_models` leaves it (`model-exclusion.ts` `withoutExcludedModels`): an
 /// excluded model is neither available nor found, so every chain walk skips it exactly as it skips a
-/// model whose provider has no login. With no patterns every call delegates unchanged.
+/// model whose provider has no login. A Claude Fable model is kept out the same way while the
+/// execution gate (`maho_ai::model_execution_gate`) is on.
 pub struct ExcludedModelsRegistry<'a> {
     inner: &'a dyn SenpiModelRegistry,
     patterns: Vec<String>,
+    block_fable: bool,
+}
+
+impl ExcludedModelsRegistry<'_> {
+    fn keeps_out(&self, model: &str) -> bool {
+        is_excluded_model(model, &self.patterns) || is_execution_blocked(model, self.block_fable)
+    }
 }
 
 impl SenpiModelRegistry for ExcludedModelsRegistry<'_> {
@@ -105,27 +116,57 @@ impl SenpiModelRegistry for ExcludedModelsRegistry<'_> {
                 .into_iter()
                 .filter(|model| match registry_model_key(model) {
                     None => true,
-                    Some(key) => !is_excluded_model(&key, &self.patterns),
+                    Some(key) => !self.keeps_out(&key),
                 })
                 .collect(),
         ))
     }
 
     fn find(&self, provider: &str, model_id: &str) -> Option<Value> {
-        if is_excluded_model(&format!("{provider}/{model_id}"), &self.patterns) {
+        if self.keeps_out(&format!("{provider}/{model_id}")) {
             return None;
         }
         self.inner.find(provider, model_id)
     }
 }
 
-/// `withoutExcludedModels`: the registry with `patterns` applied.
+/// `withoutExcludedModels`: the registry with `patterns` applied, gated by the process-wide setting.
 pub fn without_excluded_models<'a>(
     registry: &'a dyn SenpiModelRegistry,
     patterns: Option<&[String]>,
 ) -> ExcludedModelsRegistry<'a> {
+    without_kept_out_models(
+        registry,
+        patterns.map(<[String]>::to_vec).unwrap_or_default(),
+        fable_blocked(),
+    )
+}
+
+/// The registry an omo config view leaves: its `exclude_models` and its execution gate setting.
+pub fn without_config_excluded_models<'a>(
+    registry: &'a dyn SenpiModelRegistry,
+    config: &Value,
+) -> ExcludedModelsRegistry<'a> {
+    without_kept_out_models(
+        registry,
+        crate::category::exclude_model_patterns(config).unwrap_or_default(),
+        fable_blocked_in(config),
+    )
+}
+
+/// The refusal for running `model` (`provider/id`) under an omo config view's execution gate.
+pub fn blocked_model_refusal(model: &str, config: &Value) -> Option<String> {
+    is_execution_blocked(model, fable_blocked_in(config)).then(|| blocked_model_message(model))
+}
+
+pub fn without_kept_out_models(
+    registry: &dyn SenpiModelRegistry,
+    patterns: Vec<String>,
+    block_fable: bool,
+) -> ExcludedModelsRegistry<'_> {
     ExcludedModelsRegistry {
         inner: registry,
-        patterns: patterns.map(<[String]>::to_vec).unwrap_or_default(),
+        patterns,
+        block_fable,
     }
 }

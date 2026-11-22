@@ -17,7 +17,6 @@ fn spawn(
 ) -> ResolvedChildSpec {
     let options = ResolveCategoryOptions {
         distribute_models: Some(distributor.clone()),
-        ..ResolveCategoryOptions::default()
     };
     match resolve_category(category, config, models, &options).expect("resolve") {
         CategoryResolutionResult::Resolved { spec, .. } => *spec,

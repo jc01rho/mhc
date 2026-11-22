@@ -20,7 +20,7 @@ use crate::model_chain::{
     BuildModelChainOptions, ChainRungCandidateOptions, RuntimeModelChain,
     build_runtime_model_chain, chain_rung_candidates,
 };
-use crate::model_exclusion::without_excluded_models;
+use crate::model_exclusion::without_kept_out_models;
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -119,10 +119,14 @@ pub fn resolve_agent(
                 .and_then(crate::category::exclude_model_patterns)
         })
         .unwrap_or_default();
+    let block_fable = options.omo_config.as_ref().map_or_else(
+        maho_ai::model_execution_gate::fable_blocked,
+        maho_ai::model_execution_gate::fable_blocked_in,
+    );
     let filtered;
     let registry = match registry {
-        Some(inner) if !excluded.is_empty() => {
-            filtered = without_excluded_models(inner, Some(excluded.as_slice()));
+        Some(inner) if !excluded.is_empty() || block_fable => {
+            filtered = without_kept_out_models(inner, excluded, block_fable);
             Some(&filtered as &dyn SenpiModelRegistry)
         }
         other => other,
@@ -286,7 +290,6 @@ pub fn resolve_agent(
             registry,
             &crate::category::ResolveCategoryOptions {
                 distribute_models: options.distribute_models.clone(),
-                ..crate::category::ResolveCategoryOptions::default()
             },
         ) {
             let found = ParsedModel {

@@ -124,6 +124,7 @@ fn the_common_schema_drops_machine_hash_and_the_vocabulary_knows_the_new_models(
     assert!(!common.contains_key("omo.machine_hash"));
     assert!(!common.contains_key("machine_hash"));
     for model in [
+        "claude-fable-5-2",
         "claude-fable-5-5",
         "k3.1-pro",
         "k3.1-pro-highspeed",

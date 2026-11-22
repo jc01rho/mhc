@@ -2474,6 +2474,16 @@
         "type": "string"
       }
     },
+    "model_policy": {
+      "type": "object",
+      "properties": {
+        "block_fable": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
     "[opencode]": {
       "type": "object",
       "additionalProperties": {}
@@ -4674,6 +4684,16 @@
           "items": {
             "type": "string"
           }
+        },
+        "model_policy": {
+          "type": "object",
+          "properties": {
+            "block_fable": {
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -6874,6 +6894,16 @@
           "items": {
             "type": "string"
           }
+        },
+        "model_policy": {
+          "type": "object",
+          "properties": {
+            "block_fable": {
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -9074,6 +9104,16 @@
           "items": {
             "type": "string"
           }
+        },
+        "model_policy": {
+          "type": "object",
+          "properties": {
+            "block_fable": {
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -11277,6 +11317,16 @@
               "type": "string"
             }
           },
+          "model_policy": {
+            "type": "object",
+            "properties": {
+              "block_fable": {
+                "type": "boolean"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
           "[opencode]": {
             "type": "object",
             "additionalProperties": {}
@@ -13477,6 +13527,16 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "model_policy": {
+                "type": "object",
+                "properties": {
+                  "block_fable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
               }
             },
             "additionalProperties": false
@@ -15677,6 +15737,16 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "model_policy": {
+                "type": "object",
+                "properties": {
+                  "block_fable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
               }
             },
             "additionalProperties": false
@@ -17877,6 +17947,16 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "model_policy": {
+                "type": "object",
+                "properties": {
+                  "block_fable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
               }
             },
             "additionalProperties": false

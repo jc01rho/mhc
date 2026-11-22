@@ -130,7 +130,16 @@ mod upstream_cases {
     use super::*;
     use crate::host::fake::{FakeRegistry, model};
     fn report(config: Value) -> ModelChainsReport {
+        // Upstream's cases predate the Fable execution gate (GATE-1), so they run with it off.
+        let mut config = config;
+        if let Value::Object(object) = &mut config {
+            object
+                .entry("model_policy")
+                .or_insert_with(|| serde_json::json!({ "block_fable": false }));
+        }
         let models = vec![
+            model("anthropic", "claude-fable-5-2"),
+            model("anthropic", "claude-fable-5-1"),
             model("anthropic", "claude-opus-5-5"),
             model("kimi-for-coding", "k3.1-pro"),
             model("kimi-for-coding", "kimi-for-coding-highspeed"),
@@ -150,21 +159,48 @@ mod upstream_cases {
             .iter()
             .find(|entry| entry.name == "artistry")
             .unwrap();
+        assert_eq!(entry.primary.as_deref(), Some("anthropic/claude-fable-5-2"));
         assert_eq!(
             entry.runtime,
-            vec!["anthropic/claude-opus-5-5", "kimi-for-coding/k3.1-pro"]
+            vec![
+                "anthropic/claude-fable-5-2",
+                "anthropic/claude-fable-5-1",
+                "anthropic/claude-opus-5-5",
+                "kimi-for-coding/k3.1-pro"
+            ]
         );
         assert_eq!(
             entry
                 .rungs
                 .iter()
-                .map(|rung| &rung.state)
+                .map(|rung| (rung.model.as_str(), rung.source.as_str(), &rung.state))
                 .collect::<Vec<_>>(),
-            vec![&ChainRungState::Primary, &ChainRungState::Fallback]
+            vec![
+                (
+                    "anthropic/claude-fable-5-2",
+                    "built-in",
+                    &ChainRungState::Primary
+                ),
+                (
+                    "anthropic/claude-fable-5-1",
+                    "built-in",
+                    &ChainRungState::Fallback
+                ),
+                (
+                    "anthropic/claude-opus-5-5",
+                    "built-in",
+                    &ChainRungState::Fallback
+                ),
+                (
+                    "kimi-for-coding/k3.1-pro",
+                    "built-in",
+                    &ChainRungState::Fallback
+                ),
+            ]
         );
     }
     #[test]
-    fn override_keeps_the_builtin_tail_as_fallback() {
+    fn later_override_leaves_earlier_builtin_not_reached() {
         let report = report(
             serde_json::json!({"categories":{"artistry":{"model":"anthropic/claude-opus-5-5"}}}),
         );
@@ -177,20 +213,57 @@ mod upstream_cases {
             entry.runtime,
             vec!["anthropic/claude-opus-5-5", "kimi-for-coding/k3.1-pro"]
         );
-        assert_eq!(entry.rungs[0].source, "omo.json");
-        assert_eq!(entry.rungs[1].state, ChainRungState::Fallback);
+        assert_eq!(
+            entry
+                .rungs
+                .iter()
+                .map(|rung| (rung.model.as_str(), rung.source.as_str(), &rung.state))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "anthropic/claude-opus-5-5",
+                    "omo.json",
+                    &ChainRungState::Primary
+                ),
+                (
+                    "anthropic/claude-fable-5-2",
+                    "built-in",
+                    &ChainRungState::NotReached
+                ),
+                (
+                    "anthropic/claude-fable-5-1",
+                    "built-in",
+                    &ChainRungState::NotReached
+                ),
+                (
+                    "kimi-for-coding/k3.1-pro",
+                    "built-in",
+                    &ChainRungState::Fallback
+                ),
+            ]
+        );
     }
     #[test]
     fn exclusion_promotes_next_builtin_rung() {
-        let report = report(serde_json::json!({"exclude_models":["claude-opus-*"]}));
+        let report = report(serde_json::json!({"exclude_models":["claude-fable-*"]}));
+        assert_eq!(report.exclude_models, vec!["claude-fable-*".to_string()]);
         let entry = report
             .categories
             .iter()
             .find(|entry| entry.name == "artistry")
             .unwrap();
-        assert_eq!(entry.primary.as_deref(), Some("kimi-for-coding/k3.1-pro"));
-        assert_eq!(entry.rungs[0].state, ChainRungState::Excluded);
-        assert_eq!(entry.rungs[0].excluded_by.as_deref(), Some("claude-opus-*"));
+        assert_eq!(entry.primary.as_deref(), Some("anthropic/claude-opus-5-5"));
+        for (index, model) in ["anthropic/claude-fable-5-2", "anthropic/claude-fable-5-1"]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(entry.rungs[index].model, model);
+            assert_eq!(entry.rungs[index].state, ChainRungState::Excluded);
+            assert_eq!(
+                entry.rungs[index].excluded_by.as_deref(),
+                Some("claude-fable-*")
+            );
+        }
     }
     #[test]
     fn agent_no_login_rungs_retain_provider_choices() {

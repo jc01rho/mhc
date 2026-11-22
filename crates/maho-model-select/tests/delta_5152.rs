@@ -46,12 +46,10 @@ fn flag_off_removes_the_gated_rung_everywhere() {
     for profile in &built.profiles {
         assert!(profile.rungs.iter().all(|r| !is_launch_gated(&r.model)));
     }
-    // The shipped flag is off, so the default builder matches.
     assert_eq!(builtin_profiles(), built.profiles);
 
-    // Daily · Heavy runs Opus 5.5 at the xhigh the Fable rung used, on the Anthropic providers.
     let first = &heavy(&built.profiles).rungs[0];
-    assert_eq!(first.model, "claude-opus-5-5");
+    assert_eq!(first.model, "claude-fable-5-2");
     assert_eq!(first.reasoning.as_deref(), Some("xhigh"));
     assert_eq!(first.providers[0], "anthropic-subscription");
 
@@ -78,21 +76,14 @@ fn flag_off_removes_the_gated_rung_everywhere() {
 }
 
 #[test]
-fn no_builtin_rung_routes_to_a_claude_fable_model_in_either_gate_state() {
-    for released in [false, true] {
-        let mut warnings = Vec::new();
-        let built = build_builtin_profiles(released, &mut |m: &str| warnings.push(m.to_owned()));
-        for profile in &built.profiles {
-            assert!(
-                profile.rungs.iter().all(|r| !r.model.contains("fable")),
-                "{}",
-                profile.id
-            );
-        }
-        assert_eq!(heavy(&built.profiles).rungs[0].model, "claude-opus-5-5");
-        assert!(built.dropped.is_empty());
-        assert!(warnings.is_empty());
-    }
+fn flag_on_with_xhigh_starts_with_the_gated_rung() {
+    let mut warnings = Vec::new();
+    let built = build_builtin_profiles(true, &mut |m: &str| warnings.push(m.to_owned()));
+    let first = &heavy(&built.profiles).rungs[0];
+    assert!(is_launch_gated(&first.model));
+    assert_eq!(first.reasoning.as_deref(), Some("xhigh"));
+    assert!(built.dropped.is_empty());
+    assert!(warnings.is_empty());
 }
 
 #[test]
