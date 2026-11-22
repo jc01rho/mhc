@@ -218,20 +218,34 @@ fn resolve_runtime_fallback_chain_is_retained() {
     let resolved = expect_resolved(resolve("quick", config, &models));
     assert_eq!(resolved.spec.provider, "vendor-b");
     assert_eq!(resolved.spec.model_id, "fallback-model");
-    assert_eq!(
-        (resolved.spec.requested_model, resolved.spec.fallback_models),
+    // Upstream's `toMatchObject` checks only these four fields; the records also inherit quick's
+    // builtin variant.
+    let identity = |record: &ResolvedModelRecord| {
         (
-            Some(ResolvedModelRecord::new(
-                ResolvedModelSource::Category,
-                "vendor-a",
-                "primary-model"
-            )),
-            Some(vec![ResolvedModelRecord::new(
-                ResolvedModelSource::Category,
-                "vendor-c",
-                "final-model"
-            )]),
+            record.source,
+            record.provider.clone(),
+            record.model_id.clone(),
+            record.display.clone(),
         )
+    };
+    let expected = |provider: &str, model_id: &str| {
+        identity(&ResolvedModelRecord::new(
+            ResolvedModelSource::Category,
+            provider,
+            model_id,
+        ))
+    };
+    assert_eq!(
+        resolved.spec.requested_model.as_ref().map(identity),
+        Some(expected("vendor-a", "primary-model"))
+    );
+    assert_eq!(
+        resolved
+            .spec
+            .fallback_models
+            .as_ref()
+            .map(|records| records.iter().map(identity).collect::<Vec<_>>()),
+        Some(vec![expected("vendor-c", "final-model")])
     );
 }
 

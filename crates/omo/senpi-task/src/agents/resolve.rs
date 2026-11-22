@@ -290,7 +290,6 @@ pub fn resolve_agent(
             registry,
             &crate::category::ResolveCategoryOptions {
                 distribute_models: options.distribute_models.clone(),
-                ..crate::category::ResolveCategoryOptions::default()
             },
         ) {
             let found = ParsedModel {

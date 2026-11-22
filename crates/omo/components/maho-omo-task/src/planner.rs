@@ -340,7 +340,6 @@ pub fn create_task_child_planner_live(
             registry.as_ref(),
             &ResolveCategoryOptions {
                 distribute_models: Some(distributor.clone()),
-                ..ResolveCategoryOptions::default()
             },
         )
         .map_err(|error| {

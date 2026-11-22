@@ -261,7 +261,9 @@ fn explicit_model_cannot_bypass_disabled_agent() {
 }
 #[test]
 fn unknown_target_and_dead_agent_chain_preserve_available_target_metadata() {
-    let registry = Arc::new(Registry(json!({"provider":"google","id":"gemini-3.1-pro"})));
+    let registry = Arc::new(Registry(
+        json!({"provider":"anthropic","id":"claude-opus-5-5"}),
+    ));
     let agents = maho_omo_task::engine_runners::resolve_task_agents(&json!({}))
         .into_iter()
         .collect();
