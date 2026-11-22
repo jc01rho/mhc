@@ -151,6 +151,7 @@ pub fn multi_session_host_capabilities(
         crate::rpc_types::QUEUED_MESSAGE_REVISION_CAPABILITY,
         "tool_barrier",
         crate::rpc_types::USER_ACTIVITY_CAPABILITY,
+        crate::rpc_types::SESSION_MODEL_SCOPE_CAPABILITY,
         // Both shared runtimes dispatch through the active session-writing holder guard.
         SESSION_HELD_CAPABILITY,
         RESUME_SESSION_CAPABILITY,
@@ -310,6 +311,7 @@ mod tests {
             RESOLVE_PATH_CAPABILITY,
             FIND_SESSION_CAPABILITY,
             crate::custom_capability::ACCOUNT_RESET_CAPABILITY,
+            crate::rpc_types::SESSION_MODEL_SCOPE_CAPABILITY,
         ] {
             assert!(
                 plain.iter().any(|capability| capability == wanted),

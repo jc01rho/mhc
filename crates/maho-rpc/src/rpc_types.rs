@@ -118,6 +118,8 @@ pub const STEER_WHEN_IDLE_CAPABILITY: &str = "steer_when_idle";
 pub const QUEUED_MESSAGE_REVISION_CAPABILITY: &str = "queued_message_revision";
 /// Capability: `record_user_activity` reports composer draft activity (senpi#3859).
 pub const USER_ACTIVITY_CAPABILITY: &str = "user_activity";
+/// Capability: `set_model` honours `scope: "session"` and leaves the default model alone (senpi#5933).
+pub const SESSION_MODEL_SCOPE_CAPABILITY: &str = "session_model_scope";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
