@@ -168,6 +168,14 @@ impl ModelsError {
     }
 }
 
+/// The Fable execution gate (`model_execution_gate`) refuses a blocked model before any request.
+fn refuse_blocked_model(model: &Model) -> Result<(), ModelsError> {
+    match crate::model_execution_gate::execution_refusal(&model.provider, &model.id) {
+        Some(message) => Err(ModelsError::new(ModelsErrorCode::ModelValidation, message)),
+        None => Ok(()),
+    }
+}
+
 /// Stored provider credential (`auth/types.ts` `Credential`, owned by todo 13), carried as JSON.
 pub type Credential = Value;
 
@@ -1946,6 +1954,7 @@ impl Models {
         let models = self.clone();
         let (model_owned, context) = (model.clone(), context.clone());
         self.lazy(model, async move {
+            refuse_blocked_model(&model_owned)?;
             let mut options = options.unwrap_or_default();
             let (provider, request_model, request) = models
                 .apply_auth(&model_owned, &options.request, &transforms)
@@ -1978,6 +1987,7 @@ impl Models {
         let models = self.clone();
         let (model_owned, context) = (model.clone(), context.clone());
         self.lazy(model, async move {
+            refuse_blocked_model(&model_owned)?;
             let mut options = options.unwrap_or_default();
             let (provider, request_model, request) = models
                 .apply_auth(&model_owned, &options.stream.request, &transforms)

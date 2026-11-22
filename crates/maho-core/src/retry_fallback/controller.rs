@@ -379,6 +379,12 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
                 self.skip(raw, "self");
                 continue;
             }
+            if maho_ai::model_execution_gate::execution_refusal(&selector.provider, &selector.id)
+                .is_some()
+            {
+                self.skip(raw, "execution-gate");
+                continue;
+            }
             if refused_provider == Some(selector.provider.as_str())
                 || self.refused_providers.contains(&selector.provider)
             {

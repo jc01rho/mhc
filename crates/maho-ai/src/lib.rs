@@ -23,6 +23,7 @@ pub mod legacy_api_aliases;
 pub mod legacy_provider_ids;
 pub mod model;
 pub mod model_catalog;
+pub mod model_execution_gate;
 pub mod models;
 pub mod models_generated;
 pub mod models_store;

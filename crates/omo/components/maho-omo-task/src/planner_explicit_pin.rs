@@ -8,9 +8,10 @@
 
 use senpi_task::{
     host::SenpiModelRegistry,
-    model_exclusion::excluded_model_pattern,
+    model_exclusion::{blocked_model_refusal, excluded_model_pattern},
     state::{ResolvedModelRecord, ResolvedModelSource},
 };
+use serde_json::Value;
 
 /// `NO_REGISTRY_MESSAGE`: the one wording every fail-closed path shares.
 pub const NO_REGISTRY_MESSAGE: &str =
@@ -149,6 +150,28 @@ pub fn resolve_explicit_pin(
     })
 }
 
+/// [`resolve_explicit_pin`] under the omo config's Fable execution gate: a pin the gate blocks is
+/// refused with the setting named, exactly like an excluded pin.
+pub fn resolve_gated_explicit_pin(
+    pin: &str,
+    registry: Option<&dyn SenpiModelRegistry>,
+    resolve_default_route: Option<&ResolveDefaultRoute>,
+    exclude_models: Option<&[String]>,
+    config: &Value,
+) -> ExplicitPinResolution {
+    let resolution = resolve_explicit_pin(pin, registry, resolve_default_route, exclude_models);
+    let ExplicitPinResolution::Resolved { canonical, .. } = &resolution else {
+        return resolution;
+    };
+    match blocked_model_refusal(canonical, config) {
+        Some(message) => ExplicitPinResolution::Error(ExplicitPinError {
+            code: ExplicitPinCode::ModelUnavailable,
+            message,
+        }),
+        None => resolution,
+    }
+}
+
 fn resolve_live_pin(
     pin: &str,
     registry: Option<&dyn SenpiModelRegistry>,
@@ -244,6 +267,47 @@ mod tests {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+        }
+    }
+
+    #[test]
+    fn a_fable_pin_is_refused_while_the_execution_gate_is_on_and_resolves_once_it_is_off() {
+        let registry = Registry {
+            models: ["anthropic/claude-fable-5-2"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        };
+        match resolve_gated_explicit_pin(
+            "anthropic/claude-fable-5-2",
+            Some(&registry),
+            None,
+            None,
+            &json!({}),
+        ) {
+            ExplicitPinResolution::Error(error) => {
+                assert_eq!(error.code, ExplicitPinCode::ModelUnavailable);
+                assert!(
+                    error.message.contains("model_policy.block_fable"),
+                    "{}",
+                    error.message
+                );
+            }
+            ExplicitPinResolution::Resolved { .. } => {
+                panic!("a Fable pin must be refused while the gate is on")
+            }
+        }
+        match resolve_gated_explicit_pin(
+            "anthropic/claude-fable-5-2",
+            Some(&registry),
+            None,
+            None,
+            &json!({ "model_policy": { "block_fable": false } }),
+        ) {
+            ExplicitPinResolution::Resolved { canonical, .. } => {
+                assert_eq!(canonical, "anthropic/claude-fable-5-2");
+            }
+            ExplicitPinResolution::Error(error) => panic!("unexpected refusal: {}", error.message),
         }
     }
 

@@ -52,6 +52,34 @@ The following settings can be configured in `~/.omo/agent/settings.json` (or `.o
 | `sessionRetentionDays` | integer | unset | Days to retain idle session transcripts before automatic pruning at startup (1 to 36500). Unset means keep forever. |
 | `enableInstallTelemetry` | boolean | `false` | Opt-in flag to enable install telemetry. When false (default), no install telemetry is sent. |
 
+## Claude Fable execution gate
+
+mhc ships the Claude Fable models the way upstream does: catalog rows, prompt presets, and the Fable
+rungs in the builtin category, agent and model-profile chains (the `architect` category defaults to
+Claude Fable 5.2 at `xhigh`). By default none of them runs. The gate is one omo.json(c) setting:
+
+```jsonc
+{
+  "model_policy": {
+    "block_fable": true // the default; set false to let Fable models run
+  }
+}
+```
+
+While it is on:
+
+- A routing chain (task categories, builtin agents, model profiles, round-robin `models`, and the
+  runtime retry chain) treats a Fable rung like a model whose provider has no login and moves to the
+  next rung. A chain made only of Fable rungs, such as the builtin `architect` category, is
+  unavailable until the gate is off or `categories.architect.model` names another model.
+- A direct selection is refused with a one-line message naming `model_policy.block_fable`: `/model`
+  and model cycling, a task `model` pin, and an omo.json `model` that points at a Fable id.
+- A request that still reaches a Fable model (for example a session started with `--model` on one)
+  fails before any provider is contacted, with the same message.
+
+The setting follows the usual omo.json(c) layering (user, project, `[senpi]`, profile). mhc reads it
+when it loads the omo config at session start and on each live reload.
+
 ## Environment variables
 
 Prefixed variables are looked up as `MAHO_<NAME>`, then `SENPI_<NAME>`, then `PI_<NAME>`, then `OMO_<NAME>`; the first

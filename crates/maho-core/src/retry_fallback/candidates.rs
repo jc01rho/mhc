@@ -86,6 +86,12 @@ fn scan_candidates(
             (filters.skip)(raw, "self");
             continue;
         }
+        if maho_ai::model_execution_gate::execution_refusal(&selector.provider, &selector.id)
+            .is_some()
+        {
+            (filters.skip)(raw, "execution-gate");
+            continue;
+        }
         if avoid_provider(&selector.provider) {
             (filters.skip)(raw, "account-limit");
             continue;
