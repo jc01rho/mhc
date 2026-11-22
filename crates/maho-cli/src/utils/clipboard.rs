@@ -70,6 +70,11 @@ pub async fn read_clipboard_text() -> Option<String> {
         .flatten()
         .filter(|text| !text.is_empty())
 }
+pub fn is_remote_session_with(mut present: impl FnMut(&str) -> bool) -> bool {
+    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"]
+        .into_iter()
+        .any(&mut present)
+}
 pub fn osc52_sequence(text: &str) -> Option<String> {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(text);
@@ -103,10 +108,8 @@ pub async fn copy_to_clipboard(text: &str) -> Result<(), String> {
             }
         }
     }
-    if (["SSH_CONNECTION", "SSH_CLIENT", "MOSH_CONNECTION"]
-        .into_iter()
-        .any(present)
-        || !copied)
+    let terminal_viewer = copied && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    if (is_remote_session_with(present) || terminal_viewer || !copied)
         && let Some(sequence) = osc52_sequence(text)
     {
         use std::io::Write;
