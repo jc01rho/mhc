@@ -59,6 +59,7 @@ pub fn create_eval_tool(options: Arc<CreateEvalToolOptions>) -> Result<ToolDefin
     };
     let parameters =
         create_eval_input_schema(&settings.languages, &deadlines).map_err(str::to_owned)?;
+    super::eval_argument_validator::register_eval_argument_validator(&parameters);
     let max_detached_cells = options
         .cell_manager
         .lock()

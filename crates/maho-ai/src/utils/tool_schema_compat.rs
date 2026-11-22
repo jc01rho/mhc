@@ -182,6 +182,46 @@ fn merge_root_object_combiner(
             }
         }
     }
+    let hints: Vec<String> = if selected == "allOf" {
+        Vec::new()
+    } else {
+        object_branches
+            .iter()
+            .zip(branch_required.iter())
+            .enumerate()
+            .flat_map(|(index, (branch, names))| {
+                let own: Vec<&str> = names
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|name| !required.contains(name))
+                    .collect();
+                if own.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![format!(
+                        "REQUIRED for {}: {}.",
+                        describe_branch(branch, index),
+                        own.join(", ")
+                    )]
+                }
+            })
+            .collect()
+    };
+    let merged_description = if hints.is_empty() {
+        None
+    } else {
+        let base = schema
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        Some(
+            std::iter::once(base)
+                .filter(|part| !part.is_empty())
+                .chain(hints.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    };
     let mut result: Map<String, Value> = schema
         .iter()
         .filter(|(k, _)| match combiner {
@@ -190,6 +230,9 @@ fn merge_root_object_combiner(
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+    if let Some(description) = merged_description {
+        result.insert("description".into(), Value::String(description));
+    }
     result.insert("type".into(), Value::String("object".into()));
     result.insert("properties".into(), Value::Object(properties));
     if !required.is_empty() {
@@ -199,6 +242,51 @@ fn merge_root_object_combiner(
         );
     }
     Some(result)
+}
+
+fn literal_values(schema: &Value) -> Vec<String> {
+    let Some(object) = schema.as_object() else {
+        return Vec::new();
+    };
+    if let Some(value) = object.get("const") {
+        return vec![match value {
+            Value::String(text) => text.clone(),
+            Value::Null => "null".into(),
+            Value::Bool(flag) => flag.to_string(),
+            Value::Number(number) => number.to_string(),
+            _ => "[object Object]".into(),
+        }];
+    }
+    if let Some(Value::Array(values)) = object.get("enum") {
+        return values
+            .iter()
+            .map(|value| match value {
+                Value::String(text) => text.clone(),
+                _ => value.to_string(),
+            })
+            .collect();
+    }
+    let Some(Value::Array(branches)) = object.get("anyOf") else {
+        return Vec::new();
+    };
+    let values: Vec<Vec<String>> = branches.iter().map(literal_values).collect();
+    if values.iter().all(|value| value.len() == 1) {
+        values.into_iter().flatten().collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn describe_branch(branch: &Map<String, Value>, index: usize) -> String {
+    if let Some(Value::Object(properties)) = branch.get("properties") {
+        for (name, property) in properties {
+            let values = literal_values(property);
+            if !values.is_empty() {
+                return format!("{name}={}", values.join("|"));
+            }
+        }
+    }
+    format!("option {}", index + 1)
 }
 
 fn map_children(node: &mut Map<String, Value>, visit: &dyn Fn(Value) -> Value) {
@@ -374,7 +462,7 @@ mod tests {
         }));
         assert_eq!(
             Value::Object(resolve_root_object_schema(&schema)),
-            json!({"description": "d", "type": "object", "properties": {
+            json!({"description": "d REQUIRED for option 1: b.", "type": "object", "properties": {
                 "a": {"type": "string"}, "b": {"anyOf": [{"type": "number"}, {"type": "string"}]}
             }, "required": ["a"]})
         );
@@ -386,6 +474,36 @@ mod tests {
             normalize_tool_parameters_for_openai_compat(&mixed),
             expected
         );
+    }
+
+    #[test]
+    fn branch_only_required_fields_survive_as_description_hints() {
+        let schema = obj(json!({
+            "description": "Run code or control cells.",
+            "properties": {"action": {"type": "string"}},
+            "anyOf": [
+                {"type": "object", "properties": {
+                    "action": {"type": "string", "const": "run"},
+                    "language": {"type": "string"},
+                    "code": {"type": "string"}
+                }, "required": ["language", "code"]},
+                {"type": "object", "properties": {"action": {"type": "string", "const": "list"}}},
+                {"type": "object", "properties": {
+                    "action": {"anyOf": [
+                        {"type": "string", "const": "peek"},
+                        {"type": "string", "const": "stop"}
+                    ]},
+                    "cell_id": {"type": "string"}
+                }, "required": ["action", "cell_id"]}
+            ]
+        }));
+        let normalized = normalize_tool_parameters_for_openai_compat(&schema);
+        assert!(normalized["required"].is_null());
+        let description = normalized["description"].as_str().expect("description");
+        assert!(description.contains("Run code or control cells."));
+        assert!(description.contains("REQUIRED for action=run: language, code."));
+        assert!(description.contains("REQUIRED for action=peek|stop: action, cell_id."));
+        assert!(!description.contains("action=list"));
     }
 
     #[test]
