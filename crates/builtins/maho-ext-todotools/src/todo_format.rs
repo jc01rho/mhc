@@ -169,7 +169,9 @@ pub fn gpt_handoff_cue_text(moment: HandoffMoment) -> String {
         HandoffMoment::PhaseClosed => format!(
             "Handoff due: a phase closed. Before your next tool call, write the {GPT_HANDOFF_LABELS} handoff block."
         ),
-        HandoffMoment::AllClosed => "Handoff due: every task is closed. Your final message is the Outcome so far / You need / Now / Next handoff block, with Now and Next saying no task remains; any other report an instruction asks for (a self-review, a checklist, a summary) goes inside You need.".to_owned(),
+        HandoffMoment::AllClosed => format!(
+            "Handoff due: every task is closed. Your final message is the {GPT_HANDOFF_LABELS} handoff block, with Now and Next saying no task remains; any other report an instruction asks for (a self-review, a checklist, a summary) goes inside You need."
+        ),
     }
 }
 
@@ -394,6 +396,8 @@ mod tests {
             );
         }
         assert_eq!(preset_handoff_cue_kind(None), HandoffCueKind::Default);
+        let labels: Vec<&str> = GPT_HANDOFF_LABELS.split(" / ").collect();
+        assert_eq!(labels, vec!["Outcome so far", "You need", "Now", "Next"]);
         for id in ["gpt-5.5", "gpt-5.6", "gpt-6-astra"] {
             let prompt = resolve_preset(
                 ModelMetadata {
@@ -407,15 +411,17 @@ mod tests {
             )
             .expect("gpt preset")
             .prompt;
-            assert!(prompt.contains("[Outcome so far] toward"), "{id}");
-            assert!(prompt.contains("You need:"), "{id}");
-            assert!(prompt.contains("Now:"), "{id}");
-            assert!(prompt.contains("Next:"), "{id}");
+            for label in &labels {
+                assert!(prompt.contains(label), "{id}: {label}");
+            }
         }
-        for moment in [HandoffMoment::ListCreated, HandoffMoment::PhaseClosed] {
+        for moment in [
+            HandoffMoment::ListCreated,
+            HandoffMoment::PhaseClosed,
+            HandoffMoment::AllClosed,
+        ] {
             assert!(gpt_handoff_cue_text(moment).contains(GPT_HANDOFF_LABELS));
         }
-        assert!(gpt_handoff_cue_text(HandoffMoment::AllClosed).contains("goes inside You need"));
     }
     #[test]
     fn result_counts_only_open_tasks() {
