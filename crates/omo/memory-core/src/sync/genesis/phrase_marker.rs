@@ -268,7 +268,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let place = place(dir.path());
         assert!(!genesis_lock_held_by_live_owner(&place)?);
-        resilient::create_dir_all(dir.path().join("genesis-intent"))?;
+        resilient::create_dir_all(&dir.path().join("genesis-intent"))?;
         resilient::write(&beside(&place, ".lock"), b"corrupt-lock")?;
         assert!(genesis_lock_held_by_live_owner(&place)?);
         let live = crate::locks::create_lock_record(
