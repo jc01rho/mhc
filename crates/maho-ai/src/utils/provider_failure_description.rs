@@ -258,7 +258,7 @@ mod tests {
             )
         );
         let direct = describe_provider_failure_for_user(
-            Some("Third-party apps now draw from extra usage, not plan limits. Your extra usage balance is exhausted."),
+            Some("Third-party apps now draw from your extra usage, not your plan limits. Your extra usage balance is exhausted."),
             &ProviderStallDescriptionOptions {
                 model: Some("anthropic/claude-sonnet-4-5".into()),
                 ..Default::default()
