@@ -2709,6 +2709,18 @@ impl HostCore {
             session_start_reason: None,
         };
         let retain = retain_on_disconnect.unwrap_or(false);
+        // senpi#6686: a folder that exists but is a file (or a socket) is refused, typed, before anything is opened
+        // or created. A missing folder, or one this host cannot stat, keeps today's answer from the registry.
+        if tokio::fs::metadata(&profile.runtime.cwd)
+            .await
+            .is_ok_and(|metadata| !metadata.is_dir())
+        {
+            return Err(OpenRefusal::with_data(
+                crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY,
+                crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY,
+                serde_json::json!({"cwd": profile.runtime.cwd}),
+            ));
+        }
         let opened = self
             .open_admitted(connection, profile, retain, overlay, attach_only)
             .await;
@@ -7016,6 +7028,34 @@ mod tests {
             "invalid_launch_profile: provider and modelId must be given together"
         );
     }
+    #[tokio::test]
+    async fn open_session_rejects_a_cwd_that_is_a_file_before_creating_anything() {
+        let (core, _, directory) = test_core();
+        let file_cwd = directory.path().join("hostname");
+        std::fs::write(&file_cwd, "a file, not a folder\n").expect("file cwd");
+        let command: crate::rpc_types::RpcCommand = serde_json::from_value(serde_json::json!({
+            "type":"open_session",
+            "cwd":file_cwd.to_string_lossy(),
+            "sessionPath":directory.path().join("file-cwd.jsonl").to_string_lossy()
+        }))
+        .unwrap();
+        let refusal = core
+            .open_session_inner(None, &command.body, None)
+            .await
+            .err()
+            .expect("a file cwd is refused");
+        assert_eq!(
+            refusal.code.as_deref(),
+            Some(crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY)
+        );
+        assert_eq!(
+            refusal.data.unwrap()["cwd"],
+            serde_json::json!(file_cwd.to_string_lossy())
+        );
+        assert!(core.registry.lock().await.list_sessions(true).is_empty());
+        assert!(!directory.path().join("file-cwd.jsonl").exists());
+    }
+
     #[tokio::test]
     async fn open_session_rejects_explicit_null_host_instance() {
         let (core, _, _directory) = test_core();

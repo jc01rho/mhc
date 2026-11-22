@@ -887,6 +887,20 @@ fn session_switch_failure(
     kind: &str,
     error: maho_core::agent_session::SessionSwitchFailure,
 ) -> RpcResponse {
+    // senpi#6686: a cwd that exists but is not a folder is its own typed refusal naming the path.
+    if let Some(not_directory) = error.not_directory {
+        return RpcResponse {
+            id: command.id.clone(),
+            record_type: ResponseRecordType::Response,
+            command: kind.into(),
+            session_id: command.session_id.clone(),
+            result: RpcResponseResult::Error {
+                error: error.message,
+                error_code: Some(crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY.to_owned()),
+                error_data: Some(serde_json::json!({"cwd": not_directory.issue.session_cwd})),
+            },
+        };
+    }
     let error_data=error.missing_cwd.map(|missing|{
         let mut data=serde_json::json!({"sessionCwd":missing.issue.session_cwd,"fallbackCwd":missing.issue.fallback_cwd});
         if let Some(file)=missing.issue.session_file{data["sessionFile"]=file.into();}

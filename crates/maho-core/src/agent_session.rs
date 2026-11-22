@@ -242,17 +242,20 @@ impl From<String> for MessageEditFailure {
 }
 
 /// A failed session switch or import; `missing_cwd` carries senpi's `MissingSessionCwdError` so a
-/// host can offer the continue-in-current-cwd prompt (RPC `errorData`).
+/// host can offer the continue-in-current-cwd prompt (RPC `errorData`), and `not_directory`
+/// carries senpi's `SessionCwdNotDirectoryError` for a cwd that exists but is not a folder (senpi#6686).
 #[derive(Debug, Clone)]
 pub struct SessionSwitchFailure {
     pub message: String,
     pub missing_cwd: Option<crate::session_cwd::MissingSessionCwdError>,
+    pub not_directory: Option<crate::session_cwd::SessionCwdNotDirectoryError>,
 }
 impl From<String> for SessionSwitchFailure {
     fn from(message: String) -> Self {
         Self {
             message,
             missing_cwd: None,
+            not_directory: None,
         }
     }
 }
@@ -266,6 +269,16 @@ impl From<crate::session_cwd::MissingSessionCwdError> for SessionSwitchFailure {
         Self {
             message: error.to_string(),
             missing_cwd: Some(error),
+            not_directory: None,
+        }
+    }
+}
+impl From<crate::session_cwd::SessionCwdNotDirectoryError> for SessionSwitchFailure {
+    fn from(error: crate::session_cwd::SessionCwdNotDirectoryError) -> Self {
+        Self {
+            message: error.to_string(),
+            missing_cwd: None,
+            not_directory: Some(error),
         }
     }
 }
@@ -12568,6 +12581,9 @@ impl AgentSession {
             None,
         )?;
         crate::session_cwd::assert_session_cwd_exists(&target, &self.cwd())?;
+        if let Some(not_directory) = crate::session_cwd::session_cwd_not_directory(&target).await {
+            return Err(not_directory.into());
+        }
         self.ensure_extension_recreation().await?;
         self.abort().await;
         let previous = self.session_file();

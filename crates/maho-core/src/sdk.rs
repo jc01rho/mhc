@@ -286,6 +286,9 @@ pub async fn create_agent_session(
         .unwrap_or_else(|| SessionManager::create(&cwd, None, None));
     crate::session_cwd::assert_session_cwd_exists(&manager, &cwd)
         .map_err(|error| error.to_string())?;
+    if let Some(error) = crate::session_cwd::session_cwd_not_directory(&manager).await {
+        return Err(error.to_string());
+    }
     let context = manager.current_context();
     let mut model_fallback_message: Option<String> = None;
     let mut model = options.model.take();
