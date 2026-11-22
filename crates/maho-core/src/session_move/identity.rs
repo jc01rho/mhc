@@ -53,19 +53,34 @@ fn session_file_inside(sessions_root: &Path, session_path: &Path) -> Result<Path
 }
 
 fn open_session_file(path: &Path) -> Result<std::fs::File, String> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let symlink_meta = std::fs::symlink_metadata(path).map_err(|_| UNREADABLE_MSG.to_owned())?;
+    if !symlink_meta.file_type().is_file() {
+        return Err(UNREADABLE_MSG.to_owned());
     }
-    let file = opts.open(path).map_err(|_| UNREADABLE_MSG.to_owned())?;
+    let file = std::fs::File::open(path).map_err(|_| UNREADABLE_MSG.to_owned())?;
     let meta = file.metadata().map_err(|_| UNREADABLE_MSG.to_owned())?;
     if !meta.is_file() {
         return Err(UNREADABLE_MSG.to_owned());
     }
     Ok(file)
+}
+
+fn take_line(
+    line: &[u8],
+    header: &mut bool,
+    recorded: &mut Option<RepositoryIdentity>,
+) -> Result<(), String> {
+    if *header {
+        if let Some(found) = identity_in(line) {
+            *recorded = Some(found);
+        }
+    } else if !line.is_empty() {
+        if !is_session_header(line) {
+            return Err(UNREADABLE_MSG.to_owned());
+        }
+        *header = true;
+    }
+    Ok(())
 }
 
 fn scan_file(mut file: std::fs::File) -> Result<Option<RepositoryIdentity>, String> {
@@ -75,20 +90,6 @@ fn scan_file(mut file: std::fs::File) -> Result<Option<RepositoryIdentity>, Stri
     let mut header = false;
     let mut recorded: Option<RepositoryIdentity> = None;
     let mut position = 0usize;
-
-    let mut take = |line: &[u8]| -> Result<(), String> {
-        if header {
-            if let Some(found) = identity_in(line) {
-                recorded = Some(found);
-            }
-        } else if !line.is_empty() {
-            if !is_session_header(line) {
-                return Err(UNREADABLE_MSG.to_owned());
-            }
-            header = true;
-        }
-        Ok(())
-    };
 
     loop {
         let bytes_read = file
@@ -117,10 +118,10 @@ fn scan_file(mut file: std::fs::File) -> Result<Option<RepositoryIdentity>, Stri
                     continue;
                 }
                 if carry.is_empty() {
-                    take(piece)?;
+                    take_line(piece, &mut header, &mut recorded)?;
                 } else {
                     carry.extend_from_slice(piece);
-                    take(&carry)?;
+                    take_line(&carry, &mut header, &mut recorded)?;
                     carry.clear();
                 }
             } else {
@@ -136,7 +137,7 @@ fn scan_file(mut file: std::fs::File) -> Result<Option<RepositoryIdentity>, Stri
         }
     }
     if !carry.is_empty() && !dropping {
-        take(&carry)?;
+        take_line(&carry, &mut header, &mut recorded)?;
     }
     if !header {
         return Err(UNREADABLE_MSG.to_owned());
