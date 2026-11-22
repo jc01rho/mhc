@@ -79,23 +79,38 @@ async fn header_of(file: &Path) -> Option<(String, String)> {
     Some((id.to_owned(), cwd.to_owned()))
 }
 
-/// Every session file of this host, counted before any of them is opened.
+/// Every session file of this host, counted before any of them is opened: the files in each folder of `sessions/`
+/// and the files directly in it, where a session started with that folder as its session dir keeps its file
+/// (senpi#7017).
 async fn session_files(agent_dir: &Path, limit: usize) -> Result<Vec<PathBuf>, TooMany> {
     let root = agent_dir.join("sessions");
     let mut files = Vec::new();
-    let Ok(mut folders) = tokio::fs::read_dir(&root).await else {
+    let Ok(mut entries) = tokio::fs::read_dir(&root).await else {
         return Ok(files);
     };
-    while let Ok(Some(folder)) = folders.next_entry().await {
-        if !folder.file_type().await.is_ok_and(|kind| kind.is_dir()) {
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let Ok(kind) = entry.file_type().await else {
+            continue;
+        };
+        if kind.is_file() {
+            if !entry.file_name().to_string_lossy().ends_with(".jsonl") {
+                continue;
+            }
+            if files.len() >= limit {
+                return Err(TooMany { limit });
+            }
+            files.push(entry.path());
             continue;
         }
-        let folder_path = folder.path();
+        if !kind.is_dir() {
+            continue;
+        }
+        let folder_path = entry.path();
         let Ok(mut names) = tokio::fs::read_dir(&folder_path).await else {
             continue;
         };
-        while let Ok(Some(entry)) = names.next_entry().await {
-            let name = entry.file_name();
+        while let Ok(Some(name)) = names.next_entry().await {
+            let name = name.file_name();
             if !name.to_string_lossy().ends_with(".jsonl") {
                 continue;
             }
@@ -298,6 +313,25 @@ mod tests {
 
         assert_eq!(answered["data"], json!({"ambiguous": true}));
         assert!(!answered.to_string().contains(".jsonl"));
+    }
+
+    // senpi#7017: a session started with `sessions/` itself as its session dir keeps its file directly in it, so a
+    // root file is a candidate like a folder's.
+    #[tokio::test]
+    async fn a_session_file_directly_under_the_session_root_is_found() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("sessions");
+        std::fs::create_dir_all(&root).expect("session root");
+        let file = root.join(format!("2026-11-11T00-00-00-000Z_{ID}.jsonl"));
+        let header = json!({"type":"session","version":3,"id":ID,"cwd":root});
+        std::fs::write(&file, format!("{header}\n")).expect("session file");
+
+        let answered = find_session(Some(temp.path()), &[], &request(json!(ID))).await;
+
+        assert_eq!(
+            answered["data"],
+            json!({"found": {"sessionPath": file, "cwd": root, "open": false}})
+        );
     }
 
     #[tokio::test]

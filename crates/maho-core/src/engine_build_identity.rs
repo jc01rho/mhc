@@ -118,9 +118,36 @@ pub fn engine_build_identity() -> &'static EngineBuildIdentity {
     built()
 }
 
+/// No senpi release predates 2000, so a CalVer ordinal's first part is a year at or after it (senpi#7040).
+pub const FIRST_CALVER_YEAR: i64 = 2000;
+
+/// Whether both ordinals are senpi CalVer, the only vocabulary two builds are ordered in (senpi#7040).
+pub fn comparable_engines(a: &EngineBuildIdentity, b: &EngineBuildIdentity) -> bool {
+    a.ordinal[0] >= FIRST_CALVER_YEAR && b.ordinal[0] >= FIRST_CALVER_YEAR
+}
+
+/// A host's advertised version text and ordinal as an identity (senpi `engineIdentityOf`). The scheme follows the
+/// epoch, as a built identity's does.
+pub fn engine_identity_of(text: &str, ordinal: [f64; 5]) -> EngineBuildIdentity {
+    let ordinal = ordinal.map(|part| part as i64);
+    EngineBuildIdentity {
+        text: text.to_owned(),
+        ordinal,
+        scheme: if ordinal[4] > 0 {
+            EngineOrdinalScheme::Epoch
+        } else {
+            EngineOrdinalScheme::Nodef
+        },
+    }
+}
+
 /// Orders two builds: -1 older, 1 newer, 0 equal OR uncomparable. The build epoch breaks a tie ONLY
 /// when BOTH sides carry one, so a build of unknown age can never outrank a known one.
+/// A pair with an ordinal outside senpi CalVer (an omo version, an unparseable version) is uncomparable (senpi#7040).
 pub fn compare_engine_ordinal(a: &EngineBuildIdentity, b: &EngineBuildIdentity) -> i32 {
+    if !comparable_engines(a, b) {
+        return 0;
+    }
     for index in 0..4 {
         if a.ordinal[index] != b.ordinal[index] {
             return if a.ordinal[index] > b.ordinal[index] {
@@ -137,6 +164,31 @@ pub fn compare_engine_ordinal(a: &EngineBuildIdentity, b: &EngineBuildIdentity) 
         return 0;
     }
     if a.ordinal[4] > b.ordinal[4] { 1 } else { -1 }
+}
+
+/// Why handing `running` over to `successor` would DOWNGRADE it (senpi#7018), or `None` when it would not:
+/// the successor is strictly older by [`compare_engine_ordinal`]. Equal builds, and builds uncomparable only for a
+/// missing build epoch, are not older. A pair outside senpi CalVer cannot be proven not older, so it is refused
+/// (senpi#7040): the running host keeps its engine, and an explicit downgrade is the only way past it.
+pub fn older_engine_detail(
+    successor: &EngineBuildIdentity,
+    running: &EngineBuildIdentity,
+) -> Option<String> {
+    if !comparable_engines(successor, running) {
+        return Some(format!(
+            "the successor's engine {} [{}] cannot be ordered against the running host's {} [{}]: only two senpi CalVer engine ordinals are comparable",
+            successor.text,
+            successor.ordinal.map(|n| n.to_string()).join(","),
+            running.text,
+            running.ordinal.map(|n| n.to_string()).join(","),
+        ));
+    }
+    (compare_engine_ordinal(successor, running) < 0).then(|| {
+        format!(
+            "the successor's engine {} is older than the running host's {}",
+            successor.text, running.text
+        )
+    })
 }
 
 #[cfg(test)]
@@ -200,6 +252,52 @@ mod tests {
         let post = identity("2026.9.16-3", None, None);
         assert_eq!(compare_engine_ordinal(&base, &post), -1);
         assert_eq!(compare_engine_ordinal(&post, &base), 1);
+    }
+
+    // senpi#7040: an ordinal outside this scheme is never ordered against one inside it.
+    #[test]
+    fn an_ordinal_outside_the_scheme_is_uncomparable() {
+        let omo = engine_identity_of("5.1.78", [5., 1., 78., 0., 0.]);
+        let senpi = identity("2026.11.21-2", None, None);
+        assert!(!comparable_engines(&senpi, &omo));
+        assert!(!comparable_engines(&omo, &senpi));
+        assert!(comparable_engines(
+            &senpi,
+            &identity("2026.9.16", None, None)
+        ));
+        assert_eq!(compare_engine_ordinal(&senpi, &omo), 0);
+        assert_eq!(compare_engine_ordinal(&omo, &senpi), 0);
+        assert_eq!(
+            compare_engine_ordinal(&identity("5.1.79", None, None), &omo),
+            0
+        );
+        assert!(
+            older_engine_detail(&senpi, &omo)
+                .as_deref()
+                .is_some_and(|detail| detail.contains("5.1.78"))
+        );
+        assert!(
+            older_engine_detail(&omo, &senpi)
+                .as_deref()
+                .is_some_and(|detail| detail.contains("5.1.78"))
+        );
+        assert!(older_engine_detail(&senpi, &identity("2026.9.16", None, None)).is_none());
+        assert!(
+            older_engine_detail(&identity("2026.9.16", None, None), &senpi)
+                .as_deref()
+                .is_some_and(|detail| detail.contains("is older than"))
+        );
+    }
+
+    #[test]
+    fn a_host_ordinal_becomes_an_identity_with_the_epoch_scheme() {
+        let epoch = engine_identity_of("2026.9.16+1000", [2026., 9., 16., 0., 1000.]);
+        assert_eq!(epoch.ordinal, [2026, 9, 16, 0, 1000]);
+        assert_eq!(epoch.scheme, EngineOrdinalScheme::Epoch);
+        assert_eq!(
+            engine_identity_of("2026.9.16", [2026., 9., 16., 0., 0.]).scheme,
+            EngineOrdinalScheme::Nodef
+        );
     }
 
     #[test]

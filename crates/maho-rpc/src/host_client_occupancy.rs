@@ -11,7 +11,9 @@
 //! ADAPTATION: upstream subscribes to each `Duplex`'s `data` event and destroys the streams itself. Here a client is
 //! any hashable key; the transport feeds every chunk it reads through [`ClientOccupancy::data`] until the client is
 //! classified, and [`ClientOccupancy::destroy_all`] hands back the clients the caller must close.
-use crate::host_observe_request::{is_observing_request, request_origin_host_instance};
+use crate::host_observe_request::{
+    is_observing_request, observing_hold_change, request_origin_host_instance,
+};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
@@ -23,6 +25,7 @@ pub struct ClientOccupancy<K> {
     clients: HashMap<K, Vec<u8>>,
     observers: HashSet<K>,
     attached: HashSet<K>,
+    held: HashSet<K>,
     dependents: HashSet<K>,
     on_attach: Box<dyn FnMut() + Send>,
     own_instance: Option<String>,
@@ -35,6 +38,7 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
             clients: HashMap::new(),
             observers: HashSet::new(),
             attached: HashSet::new(),
+            held: HashSet::new(),
             dependents: HashSet::new(),
             on_attach: Box::new(on_attach),
             own_instance,
@@ -42,8 +46,22 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
         }
     }
 
+    /// Occupancy: attached clients plus observers holding the host (senpi#5626).
     pub fn attached_count(&self) -> usize {
-        self.attached.len()
+        self.attached.len() + self.held.len()
+    }
+
+    /// Occupancy when the host reported `session_holders` (its attached connections that still occupy it,
+    /// oh-my-openagent#14272): held observers plus at most that many attached clients.
+    pub fn occupancy(&self, session_holders: Option<usize>) -> usize {
+        let attached = session_holders.map_or(self.attached.len(), |holders| {
+            self.attached.len().min(holders)
+        });
+        attached + self.held.len()
+    }
+
+    pub fn is_attached(&self, client: &K) -> bool {
+        self.attached.contains(client)
     }
 
     pub fn unclassified_count(&self) -> usize {
@@ -82,6 +100,18 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
                 return;
             }
             self.observers.insert(client.clone());
+            match observing_hold_change(&line) {
+                Some(true) => {
+                    let newly_held = self.held.insert(client.clone());
+                    if newly_held {
+                        (self.on_attach)();
+                    }
+                }
+                Some(false) => {
+                    self.held.remove(client);
+                }
+                None => {}
+            }
         }
         if self
             .clients
@@ -95,6 +125,7 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
     fn attach(&mut self, client: &K) {
         self.clients.remove(client);
         self.observers.remove(client);
+        self.held.remove(client);
         self.attached.insert(client.clone());
         (self.on_attach)();
     }
@@ -102,6 +133,7 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
     fn depend(&mut self, client: &K) {
         self.clients.remove(client);
         self.observers.remove(client);
+        self.held.remove(client);
         self.dependents.insert(client.clone());
     }
 
@@ -110,6 +142,7 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
         let unclassified = self.clients.contains_key(client) && !self.observers.contains(client);
         self.clients.remove(client);
         self.observers.remove(client);
+        self.held.remove(client);
         self.attached.remove(client);
         self.dependents.remove(client);
         unclassified
@@ -224,6 +257,39 @@ mod tests {
             (occupancy.attached_count(), occupancy.unclassified_count()),
             (0, 0)
         );
+    }
+
+    /// senpi#5626 & oh-my-openagent#14272: an observer with `hold_host: true` counts as occupancy and resets the
+    /// attach callback until `hold_host: false` or release; `occupancy(session_holders)` caps attached clients while
+    /// keeping held observers.
+    #[test]
+    fn an_observer_hold_lease_counts_as_occupancy_until_released() {
+        let (mut occupancy, attached) = counting(None);
+        occupancy.admit(1);
+        send(
+            &mut occupancy,
+            1,
+            json!({"type":"get_protocol_info","observe":true,"hold_host":true}),
+        );
+        assert_eq!(occupancy.attached_count(), 1);
+        assert_eq!(occupancy.occupancy(Some(0)), 1);
+        assert!(!occupancy.is_attached(&1));
+        assert_eq!(attached.load(Ordering::SeqCst), 1);
+
+        send(
+            &mut occupancy,
+            1,
+            json!({"type":"get_protocol_info","observe":true,"hold_host":false}),
+        );
+        assert_eq!(occupancy.attached_count(), 0);
+        assert_eq!(occupancy.occupancy(Some(0)), 0);
+
+        occupancy.admit(2);
+        send(&mut occupancy, 2, json!({"type":"open_session"}));
+        assert!(occupancy.is_attached(&2));
+        assert_eq!(occupancy.occupancy(None), 1);
+        assert_eq!(occupancy.occupancy(Some(0)), 0);
+        assert_eq!(occupancy.occupancy(Some(3)), 1);
     }
 
     /// host-lifecycle.test.ts "observing read keeps attachedCount 0 and never resets the idle window" (virtual clock).

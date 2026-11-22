@@ -85,6 +85,8 @@ pub(crate) struct IndexState {
     pub(crate) overrides: IndexRoot<Override>,
     pub(crate) pages: Vec<IndexPage>,
     pub(crate) pending: CompactCommitDependencies<String>,
+    /// Overlay keys with no pending reference, oldest first: the compactor selects only from these (senpi#4575).
+    pub(crate) ready: Vec<String>,
     tombstones: i64,
     mask_units: i64,
 }
@@ -163,6 +165,7 @@ where
                 overrides: None,
                 pages: Vec::new(),
                 pending: CompactCommitDependencies::default(),
+                ready: Vec::new(),
                 tombstones: 0,
                 mask_units: 0,
             }),
@@ -176,7 +179,16 @@ where
         let weak = Arc::downgrade(&index.0);
         store.subscribe_committed(move |id| {
             if let Some(inner) = weak.upgrade() {
-                let ready = !lock(&inner.state).pending.committed(id).is_empty();
+                let ready = {
+                    let mut state = lock(&inner.state);
+                    let keys = state.pending.committed(id);
+                    for key in &keys {
+                        if !state.ready.iter().any(|existing| existing == key) {
+                            state.ready.push(key.clone());
+                        }
+                    }
+                    !keys.is_empty()
+                };
                 if ready {
                     CompactContentIndex(inner).maybe_compact();
                 }
@@ -400,6 +412,7 @@ where
         self.0.overlays.adjust(&state.overrides, -1, 0)?;
         state.overrides = next;
         state.pending.delete(&key.to_owned());
+        state.ready.retain(|existing| existing != key);
         Ok(())
     }
 
@@ -442,7 +455,12 @@ where
                 .copied()
                 .filter(|id| !self.0.store.is_committed(*id))
                 .collect();
-            state.pending.set(key.to_owned(), uncommitted);
+            let owned_key = key.to_owned();
+            state.pending.set(owned_key.clone(), uncommitted);
+            if !state.pending.has(&owned_key) && !state.ready.iter().any(|existing| existing == key)
+            {
+                state.ready.push(owned_key);
+            }
         }
         self.0.store.adjust(owner, -1, 0)?;
         if let Some(value) = patch_value {

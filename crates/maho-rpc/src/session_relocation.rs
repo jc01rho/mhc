@@ -423,6 +423,14 @@ impl RpcSessionRelocation {
                 }
             }
             RelocationRunEvent::AgentSettled => {
+                // A user abort can also join the agent_end boundary after agent_end was seen (senpi#4129): read it
+                // again here, or the move would be announced for a run the user stopped.
+                if self.deps.session.stopped_by_user()
+                    && let Some(due) = lock(&self.scheduled).as_mut()
+                    && due.drop_reason.is_none()
+                {
+                    due.drop_reason = Some(DropReason::Aborted);
+                }
                 let due = lock(&self.scheduled).clone();
                 let Some(due) = due else {
                     return;
@@ -1035,6 +1043,34 @@ mod tests {
                 "The session will not continue on laptop (aborted). The session stays on this computer; keep working here."
             )
         );
+        assert_eq!(
+            messages[0]["details"],
+            json!({"status":"dropped","reason":"aborted","moveId":"m-1","target":"laptop"})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_user_abort_that_joins_at_settlement_still_drops_the_move() {
+        let session = FakeSession::saved();
+        let (host, wire) = setup(Arc::clone(&session), Some(offering()));
+        wire.answer_with(accepted());
+        assert!(matches!(
+            host.request(move_request(), None).await,
+            RelocationRequestResult::Scheduled { .. }
+        ));
+        // The run ends while the user has not stopped it, then the abort lands before settlement.
+        session.publish(RelocationRunEvent::AgentEnd);
+        session.stopped_by_user.store(true, Ordering::SeqCst);
+        session.publish(RelocationRunEvent::AgentSettled);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.messaged.notified(),
+        )
+        .await
+        .expect("the dropped move is written to the session");
+        assert!(wire.events.lock().unwrap().is_empty());
+        let messages = session.messages.lock().unwrap().clone();
+        assert_eq!(messages.len(), 1);
         assert_eq!(
             messages[0]["details"],
             json!({"status":"dropped","reason":"aborted","moveId":"m-1","target":"laptop"})

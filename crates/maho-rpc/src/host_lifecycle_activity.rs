@@ -49,6 +49,9 @@ pub struct SupervisorActivity {
     pub decider: crate::host_lifecycle::IdleExitDecider,
     runs: crate::host_run_activity::SessionRunActivity,
     observer: crate::observer_link::ObserverLink,
+    /// The host's last `host_occupancy` on the current observer connection; `None` until it answers
+    /// (oh-my-openagent#14272).
+    session_holders: Option<u64>,
     attached: u64,
     unclassified: u64,
 }
@@ -60,6 +63,7 @@ impl SupervisorActivity {
             decider: crate::host_lifecycle::IdleExitDecider::new(idle_exit_ms),
             runs: Default::default(),
             observer: Default::default(),
+            session_holders: None,
             attached: 0,
             unclassified: 0,
         }
@@ -75,10 +79,17 @@ impl SupervisorActivity {
         self.unclassified
     }
 
-    /// senpi `current`: an unhealthy observer counts as busy for one idle window, never longer.
+    /// senpi `current`: an unhealthy observer counts as busy for one idle window, never longer. Without a healthy
+    /// observer the host's holder count is unknown, and every attached client counts (oh-my-openagent#14272).
     pub fn current(&self, now: f64) -> crate::host_lifecycle::HostActivity {
+        let connections = if self.observer.healthy() {
+            self.session_holders
+                .map_or(self.attached, |holders| self.attached.min(holders))
+        } else {
+            self.attached
+        };
         crate::host_lifecycle::HostActivity {
-            connections: self.attached,
+            connections,
             active_turns: crate::observer_link::active_turns_for_idle_decision(
                 &crate::observer_link::UnknownActivityInput {
                     healthy: self.observer.healthy(),
@@ -114,18 +125,25 @@ impl SupervisorActivity {
             && self.unclassified == 0
     }
 
-    /// senpi `observeHostEvent`: `true` when the line changed a run and the decision must be re-read.
+    /// senpi `observeHostEvent`: `true` when the line changed a run or the host's occupancy and the decision must be
+    /// re-read.
     pub fn observe_host_event(&mut self, line: &str) -> bool {
+        if let Some(holders) = crate::host_observe_request::host_occupancy_holders(line) {
+            self.session_holders = Some(holders as u64);
+            return true;
+        }
         self.runs.observe(line)
     }
 
     /// The observer connection `socket` opened.
     pub fn observer_opened(&mut self, socket: u64) {
+        self.session_holders = None;
         self.observer.opened(socket);
     }
 
     /// The observer connection `socket` was lost; `true` when a retry should be armed.
     pub fn observer_lost(&mut self, socket: u64, settled: bool, now: f64) -> bool {
+        self.session_holders = None;
         self.observer.lost(socket, settled, now)
     }
 
@@ -736,6 +754,12 @@ mod activity_tests {
         assert!(!activity.quiescent());
         activity.set_clients(1, 0);
         assert_eq!(activity.current(0.).connections, 1);
+        // oh-my-openagent#14272: a healthy observer's `host_occupancy` caps the attached count when all sessions on
+        // that connection closed, and losing the observer restores the full attached count.
+        assert!(activity.observe_host_event(r#"{"type":"host_occupancy","holders":0}"#));
+        assert_eq!(activity.current(0.).connections, 0);
+        activity.observer_lost(1, false, 100.);
+        assert_eq!(activity.current(100.).connections, 1);
     }
 
     fn owner_record(dir: &std::path::Path, owner: serde_json::Value) {

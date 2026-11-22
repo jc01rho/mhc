@@ -68,6 +68,8 @@ pub fn accept_drain_requests(
     watch
 }
 
+type OverdueCallback = Box<dyn Fn(f64) + Send + Sync>;
+
 /// senpi `SupervisorDrain`: asks the child to announce and park attached sessions as turns settle. The supervisor
 /// owns the soft grace from the drain on; its expiry re-asks but NEVER kills busy sessions. Child exit ends the
 /// supervisor regardless of clients that keep their connections open.
@@ -80,6 +82,8 @@ pub struct SupervisorDrain {
     relay: Option<DrainRelay>,
     windows: bool,
     grace: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Hears every grace period the child is still draining (senpi#7098).
+    overdue: std::sync::Mutex<Option<OverdueCallback>>,
 }
 
 impl SupervisorDrain {
@@ -102,7 +106,16 @@ impl SupervisorDrain {
             relay,
             windows,
             grace: std::sync::Mutex::new(None),
+            overdue: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Reports every grace period that expired while the child still drains (senpi#7098): nothing is ever cut short.
+    pub fn set_overdue(&self, overdue: impl Fn(f64) + Send + Sync + 'static) {
+        *self
+            .overdue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(overdue));
     }
 
     pub fn active(&self) -> bool {
@@ -118,19 +131,41 @@ impl SupervisorDrain {
         (self.begin_stopping)();
         supervisor_log("draining into the next generation");
         let grace_ms = crate::host_lifecycle::resolve_handoff_grace_ms(&std::env::vars().collect());
+        self.arm_grace(grace_ms, grace_ms);
+        self.request_child_drain();
+    }
+
+    /// Every expiry while the child still runs is reported and re-asks for a drain; nothing is ever cut short
+    /// (senpi#7098).
+    fn arm_grace(self: &Arc<Self>, grace_ms: f64, draining_for_ms: f64) {
         let this = Arc::clone(self);
         *self
             .grace
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs_f64(grace_ms / 1000.)).await;
+            if (this.shutting_down)() || !this.child_running.load(Ordering::SeqCst) {
+                return;
+            }
             supervisor_log(
-                &serde_json::json!({"event": "handoff_grace_expired", "graceMs": grace_ms})
-                    .to_string(),
+                &serde_json::json!({
+                    "event": "handoff_grace_expired",
+                    "graceMs": grace_ms,
+                    "drainingForMs": draining_for_ms,
+                })
+                .to_string(),
             );
+            if let Some(overdue) = this
+                .overdue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                overdue(draining_for_ms);
+            }
             this.request_child_drain();
+            this.arm_grace(grace_ms, draining_for_ms + grace_ms);
         }));
-        self.request_child_drain();
     }
 
     /// senpi `stop`: cancels the grace.
@@ -176,6 +211,20 @@ impl SupervisorDrain {
             self.windows,
         );
     }
+}
+
+/// The alarm a drain past its grace leaves beside the generation's crash records, which host alarms read
+/// (senpi#7098).
+pub fn record_drain_overdue(daemon_dir: &std::path::Path, generation: &str, draining_for_ms: f64) {
+    crate::host_crash_record::record_host_crash(
+        daemon_dir,
+        &serde_json::json!({
+            "at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "kind": "rpc-host-drain-overdue",
+            "generation": generation,
+            "drainingForMs": draining_for_ms as u64,
+        }),
+    );
 }
 
 /// senpi `drainOnPublicSocketLoss`: losing the public entry IS a drain request - nothing can reach this supervisor by
@@ -404,6 +453,47 @@ mod tests {
         grace.await.unwrap();
         let second = crate::host_stop_intent::read_drain_request(&file).unwrap();
         assert_ne!(first.nonce, second.nonce);
+        drain.stop();
+    }
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn every_overdue_grace_period_records_an_alarm_and_re_arms_until_the_child_exits() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon_dir = temp.path().join("daemon");
+        let dir = daemon_dir.clone();
+        let running = Arc::new(AtomicBool::new(true));
+        let drain = SupervisorDrain::new(
+            0,
+            Arc::clone(&running),
+            || false,
+            || {},
+            Some(supervisor_relay(&temp)),
+            true,
+        );
+        drain.set_overdue(move |draining_for_ms| {
+            record_drain_overdue(&dir, "gen-1", draining_for_ms);
+        });
+        drain.drain();
+        let first = drain.grace.lock().unwrap().take().unwrap();
+        first.await.unwrap();
+        let second = drain.grace.lock().unwrap().take().unwrap();
+        second.await.unwrap();
+        let records = crate::host_crash_record::read_host_crash_records(&daemon_dir);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["kind"], "rpc-host-drain-overdue");
+        assert_eq!(records[0]["generation"], "gen-1");
+        assert!(
+            records[1]["drainingForMs"].as_u64().unwrap()
+                > records[0]["drainingForMs"].as_u64().unwrap()
+        );
+        assert!(!crate::host_crash_record::is_host_crash(&records[0]));
+        running.store(false, Ordering::SeqCst);
+        let third = drain.grace.lock().unwrap().take().unwrap();
+        third.await.unwrap();
+        assert_eq!(
+            crate::host_crash_record::read_host_crash_records(&daemon_dir).len(),
+            2
+        );
     }
     #[cfg(unix)]
     #[tokio::test(start_paused = true)]

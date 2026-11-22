@@ -36,6 +36,7 @@ fn opening_owner(session_path: &str) -> SessionPathOwner {
         session_path: session_path.to_owned(),
         attached: Some(true),
         current: Some(true),
+        strict_transfer: Some(true),
     }
 }
 

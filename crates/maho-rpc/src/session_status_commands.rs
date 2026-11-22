@@ -218,6 +218,7 @@ mod tests {
                     kind: "interactive",
                     cwd: "/w".into(),
                     attachments: 0,
+                    last_activity_at: None,
                     durable_session_id: None,
                     session_path: None,
                     name: None,
