@@ -31,7 +31,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -125,6 +125,9 @@ impl ToolDispatcherOptions {
 #[async_trait]
 pub trait ToolDispatcher: Send + Sync {
     fn kind(&self) -> ToolRuntimeKind;
+    fn executing(&self) -> usize {
+        0
+    }
     async fn run<'a>(&self, call: ToolDispatchCall<'a>) -> Result<ToolResult, BoxError>;
     fn bash_operations(&self, shell_path: Option<&str>) -> Arc<dyn BashOperations>;
     /// Subscribes `observer`; the returned closure unsubscribes it.
@@ -166,9 +169,18 @@ pub fn resolve_tool_placement(info: &ToolPlacementInfo, runtime: ToolRuntimeKind
     ToolPlacement::Child
 }
 
+struct ExecutingGuard<'a>(&'a AtomicUsize);
+
+impl Drop for ExecutingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// What `BaseToolDispatcher` holds for every dispatcher kind.
 struct BaseToolDispatcher {
     kind: ToolRuntimeKind,
+    executing: AtomicUsize,
     observers: Arc<Mutex<Vec<(u64, ToolDispatchObserver)>>>,
     next_observer: AtomicU64,
     pin_notified: Mutex<HashSet<String>>,
@@ -179,11 +191,21 @@ impl BaseToolDispatcher {
     fn new(kind: ToolRuntimeKind, notify: Option<ToolDispatchNotify>) -> Self {
         Self {
             kind,
+            executing: AtomicUsize::new(0),
             observers: Arc::default(),
             next_observer: AtomicU64::new(0),
             pin_notified: Mutex::default(),
             notify_sink: notify,
         }
+    }
+
+    fn executing(&self) -> usize {
+        self.executing.load(Ordering::SeqCst)
+    }
+
+    fn begin_executing(&self) -> ExecutingGuard<'_> {
+        self.executing.fetch_add(1, Ordering::SeqCst);
+        ExecutingGuard(&self.executing)
     }
 
     fn on_dispatched(&self, observer: ToolDispatchObserver) -> Box<dyn FnOnce() + Send + Sync> {
@@ -285,7 +307,12 @@ impl ToolDispatcher for InProcessToolDispatcher {
         ToolRuntimeKind::InProcess
     }
 
+    fn executing(&self) -> usize {
+        self.base.executing()
+    }
+
     async fn run<'a>(&self, call: ToolDispatchCall<'a>) -> Result<ToolResult, BoxError> {
+        let _executing = self.base.begin_executing();
         self.base.run_on_server(call).await
     }
 
@@ -517,7 +544,12 @@ impl ToolDispatcher for ChildToolDispatcher {
         ToolRuntimeKind::Child
     }
 
+    fn executing(&self) -> usize {
+        self.base.executing()
+    }
+
     async fn run<'a>(&self, call: ToolDispatchCall<'a>) -> Result<ToolResult, BoxError> {
+        let _executing = self.base.begin_executing();
         if self.base.placement_for(&call.placement) == ToolPlacement::Server {
             return self.base.run_on_server(call).await;
         }

@@ -50,6 +50,9 @@ pub trait UnloadableSession: ReleasableSession {
     fn pending_dialogs(&self) -> usize {
         0
     }
+    fn executing_tools(&self) -> usize {
+        0
+    }
 }
 
 /// What the router lends a live entry.
@@ -300,6 +303,7 @@ async fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded
     let parked = activity.is_streaming
         && !activity.is_compacting
         && !activity.has_session_work
+        && session.executing_tools() == 0
         && session.pending_dialogs() > 0;
     if parked {
         found.push(Refusal {
@@ -544,6 +548,7 @@ mod tests {
         pending: Mutex<Vec<String>>,
         effects: Mutex<Option<Arc<FakeSession>>>,
         dialogs: AtomicUsize,
+        executing: AtomicUsize,
     }
 
     struct Handle(Arc<Live>);
@@ -622,6 +627,9 @@ mod tests {
         }
         fn pending_dialogs(&self) -> usize {
             self.0.dialogs.load(Ordering::SeqCst)
+        }
+        fn executing_tools(&self) -> usize {
+            self.0.executing.load(Ordering::SeqCst)
         }
     }
 
@@ -990,5 +998,18 @@ mod tests {
         assert_eq!(port.live.aborts.load(Ordering::SeqCst), 1);
         assert_eq!(port.live.dialogs.load(Ordering::SeqCst), 0);
         assert_eq!(port.torn_down.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn unload_session_without_interrupt_refuses_turn_active_while_a_tool_body_executes() {
+        let port = port();
+        port.live.activity.lock().unwrap().is_streaming = true;
+        port.live.dialogs.store(1, Ordering::SeqCst);
+        port.live.executing.store(1, Ordering::SeqCst);
+        let refused = unload_session(&port, &unload(json!({}))).await;
+        assert_eq!(refused["data"]["outcome"], "refused");
+        assert_eq!(refused["data"]["reason"], "turn_active");
+        assert_eq!(port.live.aborts.load(Ordering::SeqCst), 0);
+        assert_eq!(port.torn_down.load(Ordering::SeqCst), 0);
     }
 }

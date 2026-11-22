@@ -254,4 +254,8 @@ impl crate::session_unload::UnloadableSession for AgentSessionRelease {
                 .len()
         })
     }
+
+    fn executing_tools(&self) -> usize {
+        self.session.tool_dispatcher().executing()
+    }
 }
