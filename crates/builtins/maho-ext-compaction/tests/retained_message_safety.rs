@@ -67,8 +67,16 @@ fn supported_custom_bash_and_summary_envelopes_are_safe() {
     assert!(!has_unsafe_retained_content(&[
         json!({"role":"custom","customType":"restore","display":false,"timestamp":1,"content":"restore"}),
         json!({"role":"bashExecution","command":"ls","output":"file","cancelled":false,"truncated":false,"timestamp":1}),
-        json!({"role":"compactionSummary","summary":"summary","tokensBefore":100,"timestamp":1})
+        json!({"role":"compactionSummary","summary":"summary","tokensBefore":100,"timestamp":1}),
+        json!({"role":"configurationUpdate","effort":"high","content":[],"timestamp":1})
     ]));
+    for invalid in [
+        json!({"role":"configurationUpdate","effort":"turbo","content":[],"timestamp":1}),
+        json!({"role":"configurationUpdate","effort":"high","content":["extra"],"timestamp":1}),
+        json!({"role":"configurationUpdate","effort":"high","timestamp":1}),
+    ] {
+        assert!(has_unsafe_retained_content(&[invalid]));
+    }
 }
 #[test]
 fn unknown_role_and_provider_native_content_are_unsafe() {

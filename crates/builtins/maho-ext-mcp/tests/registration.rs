@@ -568,6 +568,63 @@ fn active_set_registration_sorts_definitions_without_activating_them() {
 }
 
 #[test]
+fn direct_mode_mcp_tools_keep_one_order_whichever_server_connects_first_and_utilities_lead() {
+    let run_order = |order: &[&str], with_utilities: bool| -> Vec<String> {
+        let registrar = RecordingRegistrar::default();
+        registrar
+            .set_active_tools(vec!["read".into(), "bash".into()])
+            .expect("seed active");
+        let registrar = Arc::new(registrar);
+        let mut search = search_service(registrar.clone());
+        let mut registry = McpTierBRegistry::default();
+        let mut connected = Vec::new();
+        for server in order {
+            connected.push(entry(server, "tool_1"));
+            let mut reg_input = input(connected.clone(), connected.clone(), false, Vec::new());
+            if with_utilities {
+                reg_input.utility_tools =
+                    maho_ext_mcp::resources::create_mcp_resource_tools(Arc::new(Vec::new));
+            }
+            register_mcp_tier_b_tools(
+                registrar.clone(),
+                reg_input,
+                Some(&mut search),
+                &mut registry,
+                None,
+            )
+            .expect("register");
+        }
+        registrar.get_active_tools().expect("active")
+    };
+    let http_first = run_order(&["fxhttp", "fxstdio"], false);
+    let stdio_first = run_order(&["fxstdio", "fxhttp"], false);
+    assert_eq!(stdio_first, http_first);
+    assert_eq!(
+        http_first,
+        vec![
+            "read".to_owned(),
+            "bash".to_owned(),
+            "mcp_fxhttp_tool_1".to_owned(),
+            "mcp_fxstdio_tool_1".to_owned()
+        ]
+    );
+    let http_with_util = run_order(&["fxhttp", "fxstdio"], true);
+    let stdio_with_util = run_order(&["fxstdio", "fxhttp"], true);
+    assert_eq!(stdio_with_util, http_with_util);
+    assert_eq!(
+        http_with_util,
+        vec![
+            "read".to_owned(),
+            "bash".to_owned(),
+            "mcp_list_resources".to_owned(),
+            "mcp_read_resource".to_owned(),
+            "mcp_fxhttp_tool_1".to_owned(),
+            "mcp_fxstdio_tool_1".to_owned()
+        ]
+    );
+}
+
+#[test]
 fn cloned_native_gate_observes_settings_changes_and_reset() {
     use maho_ext_mcp::{config_schema::NativeToolSearch, service::McpNativeToolSearchGate};
     let gate = McpNativeToolSearchGate::default();

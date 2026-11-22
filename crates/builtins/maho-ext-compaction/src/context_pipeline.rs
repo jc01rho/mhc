@@ -147,9 +147,13 @@ pub fn build_compaction_context(
     } else {
         input.prompt_context_window
     };
+    let emergency_outcome = if input.append_only_transcript {
+        None
+    } else {
+        engaged_emergency_prune(&source, emergency_window, Some(input.emergency_prune_latch))
+    };
     let (pruned, entry_ids, emergency_prune_tokens, aggressive, pruned_changed) =
-        match engaged_emergency_prune(&source, emergency_window, Some(input.emergency_prune_latch))
-        {
+        match emergency_outcome {
             None => (source.clone(), source_entry_ids, None, false, false),
             Some(emergency) => {
                 let tokens = (emergency.needs_aggressive_compaction
@@ -308,6 +312,47 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&output.messages[0]).expect("message serializes")["content"],
             "keep this transcript"
+        );
+    }
+
+    #[test]
+    fn append_only_transcript_skips_hard_limit_emergency_prune() {
+        let oversized = "x".repeat(40_000);
+        let messages = [
+            json!({"role":"user","content":"task","timestamp":1}),
+            json!({"role":"assistant","content":[{"type":"toolCall","id":"c","name":"read","arguments":{}}],"api":"a","provider":"p","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":2}),
+            json!({"role":"toolResult","toolCallId":"c","toolName":"read","content":[{"type":"text","text":oversized}],"isError":false,"timestamp":3}),
+        ];
+        let mut latch = EmergencyPruneLatch::default();
+        let output = build_compaction_context(CompactionContextInput {
+            messages: &messages,
+            entry_ids: &[None, None, None],
+            model: None,
+            branch_entries: &[],
+            tools: &[],
+            context_window: 12_000,
+            prompt_context_window: 12_000,
+            usage_tokens: None,
+            provider_native_path: false,
+            tool_admission_enabled: false,
+            breaker_fallback: false,
+            lane_owns_compaction: false,
+            append_only_transcript: true,
+            context_reduction_state: None,
+            unreduced_messages: None,
+            context_overhead_tokens: 0,
+            reduction_ceiling_tokens: None,
+            reduction_block_budget_ratio: None,
+            emergency_prune_latch: &mut latch,
+            reminder: None,
+            now: 0,
+        })
+        .expect("valid context");
+        assert!(output.emergency_prune_tokens.is_none());
+        assert!(!latch.engaged);
+        assert_eq!(
+            serde_json::to_value(&output.messages[2]).expect("message serializes")["content"][0]["text"],
+            oversized
         );
     }
 }
