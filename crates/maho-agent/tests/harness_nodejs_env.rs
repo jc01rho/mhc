@@ -1454,12 +1454,15 @@ async fn lists_sessions_while_another_owner_releases_a_session_lock_directory() 
         )
         .await
         .expect("create session");
-    let session_path = session
-        .metadata()
-        .path
-        .clone()
-        .expect("session metadata path");
     session.close(&context).await;
+    let session_path = repo
+        .list(None, &context)
+        .await
+        .expect("initial repo list")
+        .into_iter()
+        .next()
+        .expect("created session metadata")
+        .path;
     let lock_directory = PathBuf::from(format!("{session_path}.lock"));
     std::fs::create_dir_all(&lock_directory).expect("create lock directory");
     let removed = remove_before_first_stat(lock_directory);
