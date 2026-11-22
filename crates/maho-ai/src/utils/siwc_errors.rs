@@ -1,3 +1,6 @@
+pub use crate::utils::provider_diagnostic_carrier::{
+    SIWC_ERRORS, siwc_error_for_code, siwc_recovery_from_diagnostic,
+};
 use regex::{Regex, RegexBuilder};
 use std::sync::LazyLock;
 

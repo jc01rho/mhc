@@ -340,6 +340,7 @@ pub struct ProviderAuthInteraction {
     pub signal: crate::utils::abort::AbortSignal,
     inner: Arc<dyn AuthInteraction>,
     device_id: Option<String>,
+    app_name: Option<String>,
 }
 
 impl ProviderAuthInteraction {
@@ -348,6 +349,7 @@ impl ProviderAuthInteraction {
             signal,
             inner,
             device_id: None,
+            app_name: None,
         }
     }
 
@@ -360,6 +362,15 @@ impl ProviderAuthInteraction {
 
     pub fn device_id(&self) -> Option<&str> {
         self.device_id.as_deref()
+    }
+
+    pub fn with_app_name(mut self, app_name: impl Into<String>) -> Self {
+        self.app_name = Some(app_name.into());
+        self
+    }
+
+    pub fn app_name(&self) -> Option<&str> {
+        self.app_name.as_deref()
     }
 
     pub async fn prompt(&self, prompt: AuthPrompt) -> anyhow::Result<String> {

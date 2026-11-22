@@ -36,6 +36,7 @@ struct AuthorizationResult {
 struct CallbackServer {
     task: JoinHandle<()>,
     result: mpsc::UnboundedReceiver<anyhow::Result<AuthorizationResult>>,
+    redirect_uri: String,
     #[cfg(test)]
     port: u16,
 }
@@ -91,12 +92,13 @@ fn authorization_result_from_callback(
 fn authorization_result_from_manual_input(
     input: &str,
     state: &str,
+    redirect_uri: &str,
 ) -> anyhow::Result<AuthorizationResult> {
     let url = Url::parse(input.trim())
         .map_err(|_| anyhow::anyhow!("Paste the full callback URL from the browser"))?;
-    let expected = Url::parse(REDIRECT_URI)?;
+    let expected = Url::parse(redirect_uri)?;
     if url.origin() != expected.origin() || url.path() != expected.path() {
-        anyhow::bail!("The pasted callback URL must start with {REDIRECT_URI}");
+        anyhow::bail!("The pasted callback URL must start with {redirect_uri}");
     }
     if let Some((_, error)) = url
         .query_pairs()
@@ -142,10 +144,23 @@ fn callback_response(
     }
 }
 
-async fn start_callback_server(state: String, port: u16) -> anyhow::Result<CallbackServer> {
-    let listener = TcpListener::bind((super::loopback::callback_host().as_str(), port)).await?;
+async fn start_callback_server(
+    state: String,
+    preferred_port: u16,
+) -> anyhow::Result<CallbackServer> {
+    let host = super::loopback::callback_host();
+    let listener = match TcpListener::bind((host.as_str(), preferred_port)).await {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && preferred_port != 0 => {
+            TcpListener::bind((host.as_str(), 0)).await?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let bound_port = listener.local_addr()?.port();
+    let redirect_uri = format!("http://127.0.0.1:{bound_port}{CALLBACK_PATH}");
+    let redirect_uri_for_task = redirect_uri.clone();
     #[cfg(test)]
-    let port = listener.local_addr()?.port();
+    let port = bound_port;
     let (sender, result) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         // Dropping the owner aborts every connection, including browser preconnections.
@@ -159,6 +174,7 @@ async fn start_callback_server(state: String, port: u16) -> anyhow::Result<Callb
                     };
                     let sender = sender.clone();
                     let state = state.clone();
+                    let redirect_uri = redirect_uri_for_task.clone();
                     connections.spawn(async move {
                         let mut buffer = Vec::new();
                         let mut chunk = [0u8; 1024];
@@ -173,7 +189,7 @@ async fn start_callback_server(state: String, port: u16) -> anyhow::Result<Callb
                         }
                         let head = String::from_utf8_lossy(&buffer);
                         let target = head.lines().next().and_then(|line| line.split_whitespace().nth(1)).unwrap_or("/");
-                        let (status, body, outcome) = match Url::parse(REDIRECT_URI).and_then(|base| base.join(target)) {
+                        let (status, body, outcome) = match Url::parse(&redirect_uri).and_then(|base| base.join(target)) {
                             Ok(url) => callback_response(&url, &state),
                             Err(_) => (500, oauth_error_html("Internal error while processing the callback.", None), None),
                         };
@@ -197,6 +213,7 @@ async fn start_callback_server(state: String, port: u16) -> anyhow::Result<Callb
     Ok(CallbackServer {
         task,
         result,
+        redirect_uri,
         #[cfg(test)]
         port,
     })
@@ -296,6 +313,7 @@ async fn exchange_authorization_code(
     transport: &dyn OAuthTransport,
     result: AuthorizationResult,
     verifier: &str,
+    redirect_uri: &str,
     signal: &AbortSignal,
 ) -> anyhow::Result<OAuthCredential> {
     let token = request_token(
@@ -305,7 +323,7 @@ async fn exchange_authorization_code(
             ("client_id", &result.client_id),
             ("code", &result.code),
             ("code_verifier", verifier),
-            ("redirect_uri", REDIRECT_URI),
+            ("redirect_uri", redirect_uri),
             ("resource", RESOURCE),
         ],
         signal,
@@ -338,14 +356,19 @@ fn authorization_url(
     challenge: &str,
     state: &str,
     nonce: &str,
+    redirect_uri: &str,
+    app_name: Option<&str>,
 ) -> anyhow::Result<Url> {
     let mut url = Url::parse(AUTHORIZE_URL)?;
+    let hint = app_name
+        .map(str::to_owned)
+        .unwrap_or_else(crate::wire_identity::get_wire_identity);
     url.query_pairs_mut().extend_pairs([
         ("client_id", DYNAMIC_CLIENT_ID),
-        ("agent_name_hint", "Pi"),
+        ("agent_name_hint", hint.as_str()),
         ("ext_agent_host_id", host_id),
         ("response_type", "code"),
-        ("redirect_uri", REDIRECT_URI),
+        ("redirect_uri", redirect_uri),
         ("resource", RESOURCE),
         ("scope", SCOPE),
         ("state", state),
@@ -391,9 +414,24 @@ impl OAuthAuth for OpenAIChatGPTOAuth {
                 None
             }
         };
-        interaction.notify(AuthEvent::AuthUrl { url: authorization_url(&host_id, &pkce.challenge, &state, &nonce)?.into(),
-            instructions: Some("Complete sign-in in your browser. If the callback does not complete, paste the final redirect URL here.".into()) });
+        let redirect_uri = callback
+            .as_ref()
+            .map(|c| c.redirect_uri.clone())
+            .unwrap_or_else(|| REDIRECT_URI.to_owned());
+        let raw_auth_url = authorization_url(
+            &host_id,
+            &pkce.challenge,
+            &state,
+            &nonce,
+            &redirect_uri,
+            interaction.app_name(),
+        )?;
+        interaction.notify(AuthEvent::AuthUrl {
+            url: crate::utils::oauth_url::redact_oauth_url(raw_auth_url.as_str())?,
+            instructions: Some("Complete sign-in in your browser. If the callback does not complete, paste the final redirect URL here.".into()),
+        });
         let manual_abort = ManualPromptCancellation(AbortController::new());
+        let manual_redirect = redirect_uri.clone();
         let manual = async {
             let input = interaction
                 .prompt(AuthPrompt {
@@ -401,12 +439,12 @@ impl OAuthAuth for OpenAIChatGPTOAuth {
                         message:
                             "Complete login in your browser, or paste the final redirect URL here:"
                                 .into(),
-                        placeholder: Some(REDIRECT_URI.into()),
+                        placeholder: Some(manual_redirect.clone()),
                     },
                     signal: Some(manual_abort.0.signal()),
                 })
                 .await?;
-            authorization_result_from_manual_input(&input, &state)
+            authorization_result_from_manual_input(&input, &state, &manual_redirect)
         };
         let result = async {
             let authorization = tokio::select! {
@@ -424,7 +462,7 @@ impl OAuthAuth for OpenAIChatGPTOAuth {
             tokio::select! {
                 biased;
                 () = interaction.signal.cancelled() => anyhow::bail!("Login cancelled"),
-                result = exchange_authorization_code(self.transport.as_ref(), authorization, &pkce.verifier, &interaction.signal) => result,
+                result = exchange_authorization_code(self.transport.as_ref(), authorization, &pkce.verifier, &redirect_uri, &interaction.signal) => result,
             }
         }.await;
         drop(manual_abort);
@@ -479,7 +517,7 @@ mod tests {
     #[test]
     fn dynamic_registration_binds_host_pkce_nonce_and_resource() -> anyhow::Result<()> {
         let host = agent_host_id(Some("ABCDEF00-1234-5678-90AB-ABCDEF123456"))?;
-        let url = authorization_url(&host, "challenge", "state", "nonce")?;
+        let url = authorization_url(&host, "challenge", "state", "nonce", REDIRECT_URI, None)?;
         let query = url
             .query_pairs()
             .collect::<std::collections::HashMap<_, _>>();
@@ -506,6 +544,7 @@ mod tests {
         let result = authorization_result_from_manual_input(
             &format!("{REDIRECT_URI}?code=c&state=s&client_id=issued"),
             "s",
+            REDIRECT_URI,
         )?;
         assert_eq!(
             result,
@@ -521,7 +560,7 @@ mod tests {
             format!("{REDIRECT_URI}?error=access_denied"),
             "c".into(),
         ] {
-            assert!(authorization_result_from_manual_input(&url, "s").is_err());
+            assert!(authorization_result_from_manual_input(&url, "s", REDIRECT_URI).is_err());
         }
         Ok(())
     }
@@ -572,6 +611,7 @@ mod tests {
                 client_id: "issued".into(),
             },
             "verifier",
+            REDIRECT_URI,
             &signal,
         )
         .await?;
@@ -677,6 +717,7 @@ mod tests {
                     client_id: "issued".into()
                 },
                 "v",
+                REDIRECT_URI,
                 &signal
             )
             .await
