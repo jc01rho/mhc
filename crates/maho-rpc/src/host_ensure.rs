@@ -640,6 +640,11 @@ async fn discover_host(
     });
     let protocol = crate::host_probe::probe_protocol_info(socket, 2000).await;
     let mut decision = crate::host_decision::decide_host_action(client, protocol.as_ref(), policy);
+    if policy == crate::host_decision::HostDecisionPolicy::Upgrade
+        && !matches!(decision, crate::host_decision::HostDecision::Handoff { .. })
+    {
+        crate::host_ensure_client::report_uncomparable_engine(&client.identity, protocol.as_ref());
+    }
     if matches!(
         decision,
         crate::host_decision::HostDecision::Fallback { .. }

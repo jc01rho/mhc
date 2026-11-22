@@ -297,6 +297,13 @@ impl<'a> From<&'a [u8]> for StdinInput<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeldLineBreakKind {
+    Keystroke,
+    Paste,
+    Enter,
+}
+
 pub struct StdinBuffer {
     buffer: String,
     deadline: Option<u64>,
@@ -306,8 +313,9 @@ pub struct StdinBuffer {
     burst_window_ms: u64,
     last_input_at: Option<u64>,
     held_newline: String,
-    held_newline_ends_paste: bool,
+    held_newline_kind: HeldLineBreakKind,
     last_burst_paste_at: Option<u64>,
+    last_burst_paste_uses_cr_line_breaks: bool,
     mouse_fragment_started_at: Option<u64>,
     discarding_mouse_fragment: bool,
     paste_mode: bool,
@@ -332,8 +340,9 @@ impl StdinBuffer {
             burst_window_ms: options.burst_window_ms.unwrap_or(DEFAULT_BURST_WINDOW_MS),
             last_input_at: None,
             held_newline: String::new(),
-            held_newline_ends_paste: false,
+            held_newline_kind: HeldLineBreakKind::Keystroke,
             last_burst_paste_at: None,
+            last_burst_paste_uses_cr_line_breaks: false,
             mouse_fragment_started_at: None,
             discarding_mouse_fragment: false,
             paste_mode: false,
@@ -461,12 +470,15 @@ impl StdinBuffer {
         if !self.held_newline.is_empty() {
             // The clock decides, not timer delivery: a read outside the window means the held line
             // break was an Enter, even when its release timer has not fired yet (a stalled loop).
-            if burst_gap.is_some_and(|gap| gap >= self.burst_window_ms) {
+            if burst_gap.is_some_and(|gap| gap >= self.burst_window_ms)
+                || (self.held_newline_kind == HeldLineBreakKind::Enter
+                    && !self.buffer.starts_with('\n'))
+            {
                 self.release_held_newline(events);
             } else {
                 self.buffer = format!("{}{}", self.held_newline, self.buffer);
                 self.held_newline.clear();
-                self.held_newline_ends_paste = false;
+                self.held_newline_kind = HeldLineBreakKind::Keystroke;
             }
         }
 
@@ -480,7 +492,7 @@ impl StdinBuffer {
 
         if self.buffer.find(BRACKETED_PASTE_START).is_some() {
             self.held_newline.clear();
-            self.held_newline_ends_paste = false;
+            self.held_newline_kind = HeldLineBreakKind::Keystroke;
         }
 
         if let Some(start_index) = self.buffer.find(BRACKETED_PASTE_START) {
@@ -561,6 +573,14 @@ impl StdinBuffer {
             return false;
         }
         let has_text = text.chars().any(|ch| ch != '\r' && ch != '\n');
+        let trailing_start = text
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| *ch != '\r' && *ch != '\n')
+            .map_or(0, |(i, ch)| i + ch.len_utf8());
+        let has_trailing = trailing_start < text.len();
+        let trailing_ends_with_cr = has_trailing && text.ends_with('\r');
+        let cr_only_paste_burst = trailing_ends_with_cr && !text.contains('\n') && has_text;
         let mut seen_break = false;
         let mut newline_before_text = false;
         let mut previous_cr = false;
@@ -578,17 +598,20 @@ impl StdinBuffer {
             previous_cr = ch == '\r';
         }
         if (breaks >= 2 || newline_before_text) && has_text {
-            let paste = std::mem::take(&mut self.buffer);
+            let ends_with_enter = trailing_ends_with_cr && !cr_only_paste_burst;
+            let mut paste = std::mem::take(&mut self.buffer);
+            if ends_with_enter {
+                paste.pop();
+            }
             self.last_burst_paste_at = self.last_input_at;
+            self.last_burst_paste_uses_cr_line_breaks = !paste.contains('\n');
             events.push(StdinEvent::Paste(paste));
+            if ends_with_enter {
+                self.hold_trailing_newline("\r".to_string(), HeldLineBreakKind::Enter);
+            }
             return true;
         }
-        let trailing_start = text
-            .char_indices()
-            .rev()
-            .find(|(_, ch)| *ch != '\r' && *ch != '\n')
-            .map_or(0, |(i, ch)| i + ch.len_utf8());
-        if trailing_start == text.len() || burst_gap.is_none_or(|gap| gap >= self.burst_window_ms) {
+        if !has_trailing || burst_gap.is_none_or(|gap| gap >= self.burst_window_ms) {
             return false;
         }
         let head = self.buffer[..trailing_start].to_string();
@@ -597,17 +620,29 @@ impl StdinBuffer {
             .last_burst_paste_at
             .zip(self.last_input_at)
             .is_some_and(|(paste, now)| now.saturating_sub(paste) < self.burst_window_ms);
-        if head.is_empty() && !ends_paste {
+        let cr_continues_paste = ends_paste && self.last_burst_paste_uses_cr_line_breaks;
+        if (trailing_ends_with_cr && !cr_continues_paste) || (head.is_empty() && !ends_paste) {
             return false;
         }
         for ch in head.chars() {
             self.emit_data_sequence(ch.to_string(), events);
         }
         self.buffer.clear();
-        self.held_newline = trailing;
-        self.held_newline_ends_paste = ends_paste;
-        self.set_timer(self.burst_window_ms, true);
+        self.hold_trailing_newline(
+            trailing,
+            if ends_paste {
+                HeldLineBreakKind::Paste
+            } else {
+                HeldLineBreakKind::Keystroke
+            },
+        );
         true
+    }
+
+    fn hold_trailing_newline(&mut self, run: String, kind: HeldLineBreakKind) {
+        self.held_newline = run;
+        self.held_newline_kind = kind;
+        self.set_timer(self.burst_window_ms, true);
     }
 
     fn restore_held_release_deadline(&mut self, deadline: Option<u64>) {
@@ -631,8 +666,8 @@ impl StdinBuffer {
             return;
         }
         let held = std::mem::take(&mut self.held_newline);
-        let ends_paste = std::mem::replace(&mut self.held_newline_ends_paste, false);
-        if ends_paste {
+        let kind = std::mem::replace(&mut self.held_newline_kind, HeldLineBreakKind::Keystroke);
+        if kind == HeldLineBreakKind::Paste {
             events.push(StdinEvent::Paste(held));
         } else {
             for ch in held.chars() {
@@ -709,8 +744,9 @@ impl StdinBuffer {
         self.buffer.clear();
         self.last_input_at = None;
         self.held_newline.clear();
-        self.held_newline_ends_paste = false;
+        self.held_newline_kind = HeldLineBreakKind::Keystroke;
         self.last_burst_paste_at = None;
+        self.last_burst_paste_uses_cr_line_breaks = false;
         self.paste_mode = false;
         self.paste_buffer.clear();
         self.mouse_fragment_started_at = None;

@@ -168,4 +168,43 @@ mod tests {
             Err(GenesisEnableError::CorruptIntent)
         );
     }
+
+    #[test]
+    fn a_stored_phrase_intent_round_trips_and_corrupt_json_is_refused()
+    -> Result<(), GenesisEnableError> {
+        let pins = tempfile::tempdir().expect("temp");
+        let location = genesis_intent_location(pins.path(), "acct", "device-1");
+        let phrase_intent = json!({
+            "genesisDigest": "phrase-root-1",
+            "account": "acct",
+            "request": {
+                "record": {
+                    "kind": "genesis",
+                    "bootstrap": {
+                        "recovery_key": {
+                            "rp_id": crate::sync::crypto::recovery_kind::PHRASE_RECOVERY_RP_ID,
+                            "survivable": "phrase",
+                        }
+                    }
+                }
+            }
+        });
+        store_genesis_intent(&location, &phrase_intent)?;
+        let loaded = load_genesis_intent(&location)?.expect("loaded");
+        assert_eq!(
+            loaded["request"]["record"]["bootstrap"]["recovery_key"]["survivable"],
+            "phrase"
+        );
+        resilient::write(&intent_file(&location), b"{broken").expect("corrupt write");
+        assert_eq!(
+            load_genesis_intent(&location),
+            Err(GenesisEnableError::CorruptIntent)
+        );
+        let without_digest_loc = genesis_intent_location(pins.path(), "acct", "device-2");
+        assert_eq!(
+            store_genesis_intent(&without_digest_loc, &json!({"account": "acct"})),
+            Err(GenesisEnableError::CorruptIntent)
+        );
+        Ok(())
+    }
 }

@@ -7,6 +7,7 @@ pub enum SdkErrorKind {
     RateLimit,
     Overloaded,
     AuthError,
+    LoginUnreadable,
     Billing,
     OrgNotAllowed,
     Entitlement,
@@ -140,6 +141,9 @@ pub fn classify_sdk_error(error: &Value) -> SdkErrorClassification {
         &text,
     ) {
         return result(LongContextUnavailable, true);
+    }
+    if matches(r"(?-u)\bnot logged in\b", &text) {
+        return result(LoginUnreadable, true);
     }
     if matches(
         r"(?-u)\b(enotfound|eai_again|econnreset|econnrefused|etimedout|enetunreach|ehostunreach|und_err_connect_timeout|und_err_socket)\b|fetch failed|socket hang up|connection reset by peer",
@@ -354,6 +358,13 @@ mod tests {
         );
         assert!(!classify_sdk_error(&json!("model_not_found")).retryable);
         assert!(!classify_sdk_error(&json!("unknown error")).retryable);
+        assert_eq!(
+            classify_sdk_error(&json!("Not logged in · Please run /login")),
+            SdkErrorClassification {
+                kind: SdkErrorKind::LoginUnreadable,
+                retryable: true,
+            }
+        );
     }
     #[test]
     fn classifies_errors_wrapped_by_failover() {

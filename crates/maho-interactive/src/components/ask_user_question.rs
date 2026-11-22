@@ -398,7 +398,7 @@ impl AskUserQuestionComponent {
         let lines = if self.state.focus == QuestionFocus::Submit {
             render_submit_summary(&self.theme, &self.state)
         } else {
-            render_question_list(&self.theme, &self.state)
+            render_question_list(&self.theme, &self.state, self.focused)
         };
         let option_count = self.state.active_question().options.len();
         let option_descriptions: Vec<bool> = self
@@ -539,7 +539,7 @@ impl Component for AskUserQuestionComponent {
 
     fn focusable_set(&mut self, focused: bool) {
         self.focused = focused;
-        self.apply_focus_flags();
+        self.update_all();
     }
 
     fn invalidate(&mut self) {
@@ -562,6 +562,6 @@ impl Focusable for AskUserQuestionComponent {
 
     fn set_focused(&mut self, value: bool) {
         self.focused = value;
-        self.apply_focus_flags();
+        self.update_all();
     }
 }

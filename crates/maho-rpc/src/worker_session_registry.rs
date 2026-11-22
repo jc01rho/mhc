@@ -327,8 +327,36 @@ impl WorkerSessionRegistry {
                     &identities,
                 )?;
             }
-            if let Some(path) = &profile.session_path
-                && let Some(key) = state.known_reservation_key(path)
+            let known_key = profile
+                .session_path
+                .as_deref()
+                .and_then(|path| state.known_reservation_key(path));
+            for entry in state.entries.values() {
+                if entry.close.state != RpcSessionState::Quarantined {
+                    continue;
+                }
+                let same_path = profile.session_path.as_deref().is_some_and(|path| {
+                    entry.session_path.as_deref() == Some(path)
+                        || (known_key.is_some() && entry.close.reservation_key == known_key)
+                });
+                let same_id = profile
+                    .durable_session_id
+                    .as_deref()
+                    .is_some_and(|id| entry.durable_session_id.as_deref() == Some(id));
+                if !same_path && !same_id {
+                    continue;
+                }
+                return Err(RpcSessionRegistryError::new(
+                    "session_path_in_use",
+                    None,
+                    Some(serde_json::json!({
+                        "reason": "session_quarantined",
+                        "action": "retry",
+                        "retry_after_ms": crate::host_reservations::SESSION_PATH_RETRY_AFTER_MS,
+                    })),
+                ));
+            }
+            if let Some(key) = known_key
                 && let Some(owner) = state.ownership.reservations.owner(&key).map(str::to_owned)
             {
                 return state.attach(&owner, &key, retain, now);
@@ -760,6 +788,45 @@ mod tests {
         );
         registry
     }
+    #[tokio::test]
+    async fn an_open_naming_a_quarantined_session_is_refused_with_retry_detail() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().to_string_lossy().into_owned();
+        let session_path = root.path().join("s.jsonl").to_string_lossy().into_owned();
+        let registry = registry_with_entry(RpcSessionState::Quarantined, 1);
+        {
+            let mut state = lock(&registry.state);
+            let entry = state.entries.get_mut("rpc-1").unwrap();
+            entry.session_path = Some(session_path.clone());
+            entry.close.reservation_key = Some(session_path.clone());
+            entry.durable_session_id = Some("0199f0d4-6452-7000-8000-000000000001".into());
+            state
+                .ownership
+                .reservations
+                .reserve("rpc-1", &session_path, None);
+        }
+        let mut profile = RpcSessionLaunchProfile::default();
+        profile.runtime.cwd = cwd;
+        profile.session_path = Some(session_path.clone());
+        let error = registry
+            .open_session(profile.clone(), false, 0., false, |_| {
+                panic!("a quarantined session refusal must not allocate routes")
+            })
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "session_path_in_use");
+        assert_eq!(
+            error.detail,
+            Some(serde_json::json!({
+                "reason": "session_quarantined",
+                "action": "retry",
+                "retry_after_ms": crate::host_reservations::SESSION_PATH_RETRY_AFTER_MS,
+            }))
+        );
+        assert_eq!(registry.reservation_count("rpc-1"), 1);
+    }
+
     #[tokio::test]
     async fn attach_only_refuses_before_spawning_or_allocating_an_entry() {
         let root = tempfile::tempdir().unwrap();

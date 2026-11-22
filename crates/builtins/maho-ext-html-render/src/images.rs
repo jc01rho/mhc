@@ -1,9 +1,9 @@
 //! Local-image preparation, mirroring the desktop's apps/server/src/htmlRender/HtmlRender.ts
 //! (upstream t3code #15968): absolute-path images are inlined as data URIs only after a magic-byte/SVG-root
 //! check, so a renamed secret is refused, and the page stays within the size caps.
+use crate::image_references::{IMAGE_MIME_TYPES, find_local_images};
 use base64::Engine;
-use fancy_regex::Regex;
-use std::{collections::HashMap, sync::OnceLock};
+use std::collections::HashMap;
 
 const MIB: u64 = 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 10 * MIB;
@@ -41,51 +41,6 @@ impl std::fmt::Display for HtmlRenderImagesError {
 }
 
 impl std::error::Error for HtmlRenderImagesError {}
-
-const IMAGE_MIME_TYPES: [(&str, &str); 9] = [
-    ("png", "image/png"),
-    ("jpg", "image/jpeg"),
-    ("jpeg", "image/jpeg"),
-    ("gif", "image/gif"),
-    ("webp", "image/webp"),
-    ("avif", "image/avif"),
-    ("svg", "image/svg+xml"),
-    ("bmp", "image/bmp"),
-    ("ico", "image/x-icon"),
-];
-
-fn local_image_pattern() -> &'static Regex {
-    static PATTERN: OnceLock<Regex> = OnceLock::new();
-    PATTERN.get_or_init(|| {
-        let extensions = IMAGE_MIME_TYPES.map(|(extension, _)| extension).join("|");
-        let absolute = r"(?:/(?!/)|[a-z]:[\\/])";
-        Regex::new(&format!(
-            r#"(?i)(["'\x60])({absolute}(?:(?!\1)[^\r\n]){{0,2048}}?\.(?:{extensions}))\1|url\(\s*({absolute}[^\s"'\x60()]{{0,2048}}?\.(?:{extensions}))\s*\)"#
-        ))
-        .unwrap_or_else(|error| panic!("invalid local image pattern: {error}"))
-    })
-}
-
-struct ImageReference {
-    start: usize,
-    end: usize,
-    path: String,
-}
-
-fn find_local_images(html: &str) -> Vec<ImageReference> {
-    local_image_pattern()
-        .captures_iter(html)
-        .flatten()
-        .filter_map(|captures| {
-            let span = captures.get(2).or_else(|| captures.get(3))?;
-            Some(ImageReference {
-                start: span.start(),
-                end: span.end(),
-                path: span.as_str().to_owned(),
-            })
-        })
-        .collect()
-}
 
 fn file_path_for(reference: &str) -> String {
     let mut bytes = reference.bytes();
@@ -324,7 +279,7 @@ mod tests {
     #[test]
     fn local_image_references_cover_quotes_and_url_functions() {
         let found = find_local_images(
-            r#"<img src="/a/b.PNG"> body{background:url( /c/d.svg )} "//cdn/x.png""#,
+            r#"<img src="/a/b.PNG"><style>body{background:url( /c/d.svg )}</style> "//cdn/x.png""#,
         );
         assert_eq!(
             found
@@ -333,5 +288,104 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["/a/b.PNG", "/c/d.svg"]
         );
+    }
+
+    #[tokio::test]
+    async fn only_a_loading_context_loads_a_local_image_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chart = dir.path().join("chart.png");
+        let other = dir.path().join("other.png");
+        let missing = dir.path().join("missing.png");
+        std::fs::write(&chart, PNG).expect("chart");
+        std::fs::write(&other, PNG).expect("other");
+        let chart_s = chart.display().to_string();
+        let other_s = other.display().to_string();
+        let missing_s = missing.display().to_string();
+        let data_uri = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(PNG)
+        );
+
+        let shown = inline_local_images(&format!(r#"<!--><img src="{chart_s}">"#))
+            .await
+            .expect("empty comment");
+        assert_eq!(
+            shown,
+            (
+                format!(r#"<!--><img src="{data_uri}">"#),
+                Vec::<String>::new()
+            )
+        );
+        let broken = inline_local_images(&format!(r#"<!---><img src="{missing_s}">"#))
+            .await
+            .expect("dash empty comment");
+        assert_eq!(broken.1, vec![missing_s.clone()]);
+
+        let apostrophe =
+            format!(r#"<p title=don't>Saved to "{missing_s}".</p><img alt=it's src="{chart_s}">"#);
+        let (inlined, unread) = inline_local_images(&apostrophe).await.expect("apostrophe");
+        assert!(unread.is_empty());
+        assert_eq!(inlined, apostrophe.replacen(&chart_s, &data_uri, 1));
+
+        let ignored_missing =
+            inline_local_images(&format!(r#"<img src="{chart_s}" SRC="{missing_s}">"#))
+                .await
+                .expect("dup attr 1");
+        assert_eq!(
+            ignored_missing,
+            (
+                format!(r#"<img src="{data_uri}" SRC="{missing_s}">"#),
+                Vec::<String>::new()
+            )
+        );
+        let first_missing =
+            inline_local_images(&format!(r#"<img src="{missing_s}" src="{chart_s}">"#))
+                .await
+                .expect("dup attr 2");
+        assert_eq!(
+            first_missing,
+            (
+                format!(r#"<img src="{missing_s}" src="{chart_s}">"#),
+                vec![missing_s.clone()]
+            )
+        );
+
+        for non_loading in [
+            format!(r#"<img alt="{missing_s}">"#),
+            format!(r#"<a title="{missing_s}">chart</a>"#),
+            format!(r#"<input value="{missing_s}">"#),
+            format!(r#"<div data-shot="{missing_s}"></div>"#),
+            format!(r#"<xmp><img src="{missing_s}"></xmp>"#),
+            format!(r#"<noscript><img src="{missing_s}"></noscript>"#),
+            format!(r#"<![CDATA[<img src="{missing_s}">]]>"#),
+            format!(r#"<svg><![CDATA[ a > <image href="{missing_s}"/> ]]></svg>"#),
+        ] {
+            let html = format!(r#"{non_loading}<img src="{chart_s}">"#);
+            let result = inline_local_images(&html).await.expect("non-loading");
+            assert_eq!(
+                result,
+                (html.replacen(&chart_s, &data_uri, 1), Vec::<String>::new())
+            );
+        }
+
+        for loading in [
+            format!(r#"<img src={chart_s}>"#),
+            format!(r#"<img srcset="{chart_s} 1x, {other_s} 2x">"#),
+            format!(r#"<video poster="{chart_s}"></video>"#),
+            format!(r#"<div style="background: url('{chart_s}')"></div>"#),
+            format!(
+                r#"<style>a{{background:url("{chart_s}")}}b{{background:url({other_s})}}</style>"#
+            ),
+            format!(r#"<svg><image href="{chart_s}"/><image xlink:href="{other_s}"/></svg>"#),
+            format!(r#"<object data="{chart_s}"></object>"#),
+            format!(r#"<table background="{chart_s}"></table>"#),
+            format!(r#"<img onerror="this.src='{chart_s}'" src="x">"#),
+            format!(r#"<![CDATA[ a > <img src="{chart_s}"> ]]>"#),
+        ] {
+            let (inlined, missing_paths) = inline_local_images(&loading).await.expect("loading");
+            assert!(missing_paths.is_empty(), "{loading}");
+            assert!(!inlined.contains(&chart_s), "{loading}");
+            assert!(inlined.contains(&data_uri), "{loading}");
+        }
     }
 }

@@ -38,11 +38,20 @@ Blocked audit - run this before deciding the goal is blocked:
 - Once all three hold, call update_goal with status "blocked" and a specific reason."###;
 // The GPT-6 Astra ids whose continuation prompt drops the audits. Sol and Luna share Astra's
 // preset but not the over-verification the audits amplify, so they keep the full prompt.
-const GPT6_ASTRA_RECEIVER_IDS: &[&str] = &["gpt-6-astra", "gpt-6-astra-fast"];
 pub fn is_gpt6_astra_receiver(model_id: Option<&str>) -> bool {
+    static PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?:^|[/@:._-])gpt[._-]?6(?:[._-]\d+|\d)*[._-]astra(?:[._-](?:fast|ultrafast))?(?:$|:)",
+        )
+        .expect("astra receiver regex")
+    });
     model_id.is_some_and(|id| {
-        let bare = id.rsplit('/').next().unwrap_or(id).to_lowercase();
-        GPT6_ASTRA_RECEIVER_IDS.contains(&bare.as_str())
+        let normalized: String = id
+            .to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("-");
+        PATTERN.is_match(&normalized)
     })
 }
 fn escape_xml_text(text: &str) -> String {
@@ -211,14 +220,23 @@ mod refusal_tests {
             build_continuation_prompt(&goal())
                 .contains("it is final for what that call was meant to do")
         );
-        for id in ["gpt-6-astra", "openai/gpt-6-astra-fast"] {
+        for id in [
+            "gpt-6-astra",
+            "openai/gpt-6-astra-fast",
+            "gpt-6.2-astra",
+            "openai/gpt-6.2-astra-ultrafast",
+            "openai-gpt-62-astra",
+            "gpt-6.2-astra:high",
+        ] {
             let prompt = build_continuation_prompt_for(&goal(), Some(id));
             assert!(prompt.contains("final for what that call was meant to do"));
-            assert!(!prompt.contains("Completion audit"));
+            assert!(!prompt.contains("Completion audit"), "{id}");
         }
-        assert!(
-            build_continuation_prompt_for(&goal(), Some("gpt-6.1-sol"))
-                .contains("Completion audit")
-        );
+        for id in ["gpt-6.1-sol", "gpt-6.2-sol", "gpt-6.2-astra-preview"] {
+            assert!(
+                build_continuation_prompt_for(&goal(), Some(id)).contains("Completion audit"),
+                "{id}"
+            );
+        }
     }
 }

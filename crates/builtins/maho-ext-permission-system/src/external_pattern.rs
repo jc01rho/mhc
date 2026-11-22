@@ -108,6 +108,27 @@ fn list_directory(directory: &str) -> io::Result<Vec<String>> {
         .collect()
 }
 
+fn swap_case(name: &str) -> String {
+    let mut swapped = String::with_capacity(name.len());
+    for ch in name.chars() {
+        let upper: String = ch.to_uppercase().collect();
+        if upper == ch.to_string() {
+            swapped.extend(ch.to_lowercase());
+        } else {
+            swapped.push_str(&upper);
+        }
+    }
+    swapped
+}
+
+fn may_have_other_case(parent: &str, part: &str, identity: Identity) -> bool {
+    let swapped = swap_case(part);
+    if swapped == part {
+        return false;
+    }
+    lstat_identity(&join_sep(parent, &swapped)).is_ok_and(|other| other == identity)
+}
+
 /// Recover on-disk case without replacing any lexical ancestor with its symlink target.
 pub fn canonical_path_case(value: &str) -> String {
     canonical_path_case_with(value, &mut list_directory)
@@ -129,9 +150,13 @@ pub(crate) fn canonical_path_case_with(
     let mut parent = root;
     for index in 0..parts.len() {
         let attempt = (|| -> io::Result<()> {
-            let entries = list(&parent)?;
+            let identity = lstat_identity(&join_sep(&parent, &parts[index]))?;
+            let entries = if may_have_other_case(&parent, &parts[index], identity) {
+                list(&parent)?
+            } else {
+                vec![parts[index].clone()]
+            };
             if !entries.contains(&parts[index]) {
-                let identity = lstat_identity(&join_sep(&parent, &parts[index]))?;
                 let mut spelling = None;
                 for entry in &entries {
                     if entry.to_lowercase() != parts[index].to_lowercase() {
@@ -405,4 +430,35 @@ fn matches_suffix(parent: &str, parts: &[String], pattern: &str) -> bool {
         parent = join_sep(&parent, value);
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swap_case_inverts_letters_and_preserves_caseless_names() {
+        assert_eq!(swap_case("Work"), "wORK");
+        assert_eq!(swap_case("123_-"), "123_-");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_path_case_does_not_open_case_sensitive_ancestors() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nested = temp.path().join("Mount").join("Child");
+        std::fs::create_dir_all(&nested).expect("create nested");
+        let path_str = nested.to_string_lossy().into_owned();
+        let swapped_mount = temp.path().join("mOUNT");
+        let case_sensitive = !swapped_mount.exists();
+        let mut opened = Vec::new();
+        let resolved = canonical_path_case_with(&path_str, &mut |dir| {
+            opened.push(dir.to_owned());
+            Err(io::Error::other("EWEDGED"))
+        });
+        assert_eq!(resolved, path_str);
+        if case_sensitive {
+            assert!(opened.is_empty());
+        }
+    }
 }

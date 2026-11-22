@@ -326,6 +326,35 @@ fn unknown_values_preserve_equals_and_boolean_forms() {
     assert!(value.unknown_flags.get("three") == Some(&FlagValue::String("string".to_owned())));
 }
 #[test]
+fn registered_boolean_extension_flags_preserve_positional_messages_in_order() {
+    let boolean_flags = std::collections::BTreeSet::from(["quiet-addon".to_owned()]);
+    let argv = [
+        "first",
+        "--quiet-addon",
+        "second",
+        "--format-addon",
+        "short",
+        "--quiet-addon",
+        "third",
+    ]
+    .iter()
+    .map(|value| (*value).to_owned())
+    .collect::<Vec<_>>();
+    let parsed = parse_args_with_options(
+        &argv,
+        ParseArgsOptions {
+            grok_neo_enabled: false,
+            boolean_extension_flags: Some(&boolean_flags),
+        },
+    )
+    .expect("parse");
+    assert_eq!(parsed.messages, ["first", "second", "third"]);
+    assert!(parsed.unknown_flags.get("quiet-addon") == Some(&FlagValue::Boolean(true)));
+    assert!(
+        parsed.unknown_flags.get("format-addon") == Some(&FlagValue::String("short".to_owned()))
+    );
+}
+#[test]
 fn legacy_provider_ids_are_rejected_when_typed() {
     for id in ["openai-codex", "claude-sdk-oauth"] {
         assert!(parse_args(&["--provider".to_owned(), id.to_owned()], false).is_err());

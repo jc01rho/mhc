@@ -8,7 +8,11 @@ pub fn host_crash_record_file(daemon_dir: &Path) -> PathBuf {
 }
 /// Returns only terminal crash records, excluding clean engine stops and watchdog evidence.
 pub fn is_host_crash(record: &Value) -> bool {
-    record.get("kind").and_then(Value::as_str) != Some("rpc-host-watchdog")
+    // senpi#7098: only a terminal `rpc-host` record is a death; a watchdog or drain-overdue alarm is evidence, not one.
+    record
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_none_or(|kind| kind == "rpc-host")
         && record.get("detection").and_then(Value::as_str) != Some("engine_stop")
 }
 pub fn read_host_crash_records(daemon_dir: &Path) -> Vec<Value> {
@@ -132,5 +136,9 @@ mod tests {
             &json!({"kind":"rpc-host","detection":"supervisor"})
         ));
         assert!(is_host_crash(&json!({"at":"legacy"})));
+        // senpi#7098: a drain still running past its grace is an alarm beside the crash records, not a death.
+        assert!(!is_host_crash(
+            &json!({"kind":"rpc-host-drain-overdue","drainingForMs":60000})
+        ));
     }
 }

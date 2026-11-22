@@ -156,6 +156,7 @@ impl Extension for CursorCliExtension {
         let settings = self.settings.clone();
         let config = ProviderConfig {
             owns_account_selection: true,
+            local_only: true,
             name: Some(crate::oauth_login::PROVIDER_NAME.into()),
             base_url: Some(crate::oauth_login::PROVIDER_ID.into()),
             api: Some(crate::oauth_login::PROVIDER_ID.into()),

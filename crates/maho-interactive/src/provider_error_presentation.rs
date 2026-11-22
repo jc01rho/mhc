@@ -15,6 +15,95 @@ static NETWORK: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
     )
     .ok()
 });
+static STATUS_LEAD: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)^(?:Error:\s*)?(\d{3})(?:\s*(?:[:<{(]|$)|\s+status code\b|\s+(?:bad request|unauthorized|forbidden|not found|request timeout|too many requests|internal server error|bad gateway|service unavailable|gateway timeout|overloaded)\b)",
+    )
+    .ok()
+});
+static STATUS_TITLE: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)<title>\s*(\d{3})\b").ok());
+static STATUS_HTTP: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)\bHTTP(?:/\d(?:\.\d)?)?\s+(\d{3})\b").ok());
+static STATUS_JSON: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
+    regex::Regex::new(r#"(?i)"(?:code|status|status_code)"\s*:\s*"?(\d{3})\b"#).ok()
+});
+static REASON_RATE_LIMIT: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)rate.?limit|too many requests|throttl").ok());
+static REASON_OVERLOADED: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)overloaded").ok());
+static REASON_UNAVAILABLE: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)service unavailable").ok());
+static REASON_NETWORK: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)network error|connection (?:error|lost|reset)|fetch failed|ECONNRESET|ECONNREFUSED|socket hang up",
+    )
+    .ok()
+});
+
+fn http_status(raw: &str) -> Option<u16> {
+    for source in [
+        STATUS_LEAD.as_ref(),
+        STATUS_TITLE.as_ref(),
+        STATUS_HTTP.as_ref(),
+        STATUS_JSON.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(status) = source
+            .captures(raw)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse::<u16>().ok())
+            .filter(|s| (400..=599).contains(s))
+        {
+            return Some(status);
+        }
+    }
+    None
+}
+
+fn status_phrase(status: u16) -> &'static str {
+    match status {
+        408 => "request timeout",
+        429 => "rate limited",
+        500 => "internal server error",
+        502 => "bad gateway",
+        503 => "service unavailable",
+        504 => "gateway timeout",
+        529 => "overloaded",
+        s if s >= 500 => "server error",
+        _ => "request failed",
+    }
+}
+
+/// A few words naming why a provider request failed (`"429 rate limited"`, `"502 bad gateway"`),
+/// read from the raw error text a gateway returns, so the retry status and the final notice never
+/// carry the raw body (senpi#6012).
+const TURN_RETRY_SUPPRESSION_PREFIX: &str = "senpi:no-turn-retry:";
+
+pub fn provider_error_reason(error_message: Option<&str>) -> Option<String> {
+    let raw = error_message.filter(|s| !s.is_empty())?;
+    let raw = raw
+        .strip_prefix(TURN_RETRY_SUPPRESSION_PREFIX)
+        .unwrap_or(raw);
+    if let Some(status) = http_status(raw) {
+        return Some(format!("{status} {}", status_phrase(status)));
+    }
+    if REASON_RATE_LIMIT.as_ref().is_some_and(|r| r.is_match(raw)) {
+        return Some("rate limited".into());
+    }
+    if REASON_OVERLOADED.as_ref().is_some_and(|r| r.is_match(raw)) {
+        return Some("overloaded".into());
+    }
+    if REASON_UNAVAILABLE.as_ref().is_some_and(|r| r.is_match(raw)) {
+        return Some("service unavailable".into());
+    }
+    if REASON_NETWORK.as_ref().is_some_and(|r| r.is_match(raw)) {
+        return Some("network error".into());
+    }
+    None
+}
 /// senpi `isRetryableProviderError`: any transient provider failure (network drop, 429, 5xx), and
 /// never a hard auth/quota/billing failure.
 pub fn is_retryable_provider_error(raw: Option<&str>) -> bool {
@@ -112,6 +201,7 @@ pub struct ProviderErrorPresentation {
     current: Option<usize>,
     pending: bool,
     retry_awaiting_finish: bool,
+    last_reason: Option<String>,
 }
 impl ProviderErrorPresentation {
     pub fn new() -> Self {
@@ -136,6 +226,9 @@ impl ProviderErrorPresentation {
         if !self.notices[index].details.iter().any(|d| d == raw) {
             self.notices[index].details.push(raw.into());
         }
+        if let Some(reason) = provider_error_reason(Some(raw)) {
+            self.last_reason = Some(reason);
+        }
     }
     pub fn retrying(&mut self, raw: &str, expanded: bool) {
         self.record(raw, expanded);
@@ -149,6 +242,7 @@ impl ProviderErrorPresentation {
     pub fn clear(&mut self) {
         self.pending = false;
         self.retry_awaiting_finish = false;
+        self.last_reason = None;
         self.hide_summary();
     }
     pub fn clear_transient(&mut self) {
@@ -171,15 +265,20 @@ impl ProviderErrorPresentation {
         self.pending = false;
         self.retry_awaiting_finish = false;
         let count = attempts.map_or_else(String::new, |n| format!(" after {n} retries"));
+        let reason = self
+            .last_reason
+            .as_deref()
+            .map_or_else(String::new, |r| format!(" ({r})"));
         if let Some(i) = self.current {
             self.notices[i].summary = Some(format!(
-                "The model provider could not complete the request{count}. Try again or choose another model with /model."
+                "The model provider could not complete the request{count}{reason}. Try again or choose another model with /model."
             ));
         }
     }
     pub fn new_turn(&mut self) {
         self.finish(None, None);
         self.current = None;
+        self.last_reason = None;
     }
 }
 
@@ -201,7 +300,31 @@ mod retry_episode_tests {
             state.notices[0]
                 .summary
                 .as_deref()
-                .is_some_and(|s| s.contains("after 2 retries"))
+                .is_some_and(|s| s.contains("after 2 retries (network error)"))
+        );
+    }
+
+    #[test]
+    fn extracts_short_provider_error_reasons_from_gateway_bodies() {
+        assert_eq!(
+            provider_error_reason(Some("429 Too Many Requests")).as_deref(),
+            Some("429 rate limited")
+        );
+        assert_eq!(
+            provider_error_reason(Some(
+                "<html><head><title>502 Bad Gateway</title></head></html>"
+            ))
+            .as_deref(),
+            Some("502 bad gateway")
+        );
+        assert_eq!(
+            provider_error_reason(Some(r#"{"error":{"code":503,"message":"unavailable"}}"#))
+                .as_deref(),
+            Some("503 service unavailable")
+        );
+        assert_eq!(
+            provider_error_reason(Some("fetch failed: ECONNRESET")).as_deref(),
+            Some("network error")
         );
     }
 }

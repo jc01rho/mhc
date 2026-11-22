@@ -85,6 +85,7 @@ impl TerminalStatusSource {
             kind: "interactive",
             cwd: session.with_session_manager(|manager| manager.cwd().to_owned()),
             attachments: i64::try_from(attachments).unwrap_or(i64::MAX),
+            last_activity_at: None,
             durable_session_id: Some(session.session_id()),
             session_path: session.session_file(),
             name: session.session_name(),

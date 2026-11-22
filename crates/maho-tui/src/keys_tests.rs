@@ -474,16 +474,22 @@ fn should_parse_legacy_alt_prefixed_sequences_when_kitty_inactive() {
     assert_eq!(parse_key("\x1bB"), None);
     assert!(!matches_key("\x1bF", "alt+right"));
     assert_eq!(parse_key("\x1bF"), None);
-    assert!(!matches_key("\x1ba", "alt+a"));
-    assert_eq!(parse_key("\x1ba"), None);
-    assert!(!matches_key("\x1b1", "alt+1"));
-    assert_eq!(parse_key("\x1b1"), None);
-    assert!(!matches_key("\x1b,", "alt+,"));
-    assert_eq!(parse_key("\x1b,"), None);
-    assert!(!matches_key("\x1b.", "alt+."));
-    assert_eq!(parse_key("\x1b."), None);
-    assert!(!matches_key("\x1by", "alt+y"));
-    assert_eq!(parse_key("\x1by"), None);
+    assert!(matches_key("\x1ba", "alt+a"));
+    assert_eq!(parse_key("\x1ba").as_deref(), Some("alt+a"));
+    assert!(matches_key("\x1b1", "alt+1"));
+    assert_eq!(parse_key("\x1b1").as_deref(), Some("alt+1"));
+    assert!(matches_key("\x1b,", "alt+,"));
+    assert_eq!(parse_key("\x1b,").as_deref(), Some("alt+,"));
+    assert!(matches_key("\x1b.", "alt+."));
+    assert_eq!(parse_key("\x1b.").as_deref(), Some("alt+."));
+    assert!(matches_key("\x1by", "alt+y"));
+    assert_eq!(parse_key("\x1by").as_deref(), Some("alt+y"));
+    assert!(matches_key("\x1bq", "alt+q"));
+    assert_eq!(parse_key("\x1bq").as_deref(), Some("alt+q"));
+    assert!(matches_key("\x1bv", "alt+v"));
+    assert_eq!(parse_key("\x1bv").as_deref(), Some("alt+v"));
+    assert!(matches_key("\x1bz", "alt+z"));
+    assert_eq!(parse_key("\x1bz").as_deref(), Some("alt+z"));
     set_kitty_protocol_active(false);
 }
 

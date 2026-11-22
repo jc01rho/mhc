@@ -83,6 +83,7 @@ mod tests {
                 path: "/tmp/CHANGELOG.md".into(),
                 version: Some("1.2.3".into()),
             }),
+            extensions: None,
         };
         let source = brand_source(&brand);
         assert_eq!(source.id, "omo");
@@ -104,6 +105,7 @@ mod tests {
             originator: None,
             update: None,
             changelog: None,
+            extensions: None,
         };
         let source = brand_source(&brand);
         assert_eq!(source.id, "tau");

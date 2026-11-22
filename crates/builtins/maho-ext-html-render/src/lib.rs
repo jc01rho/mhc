@@ -1,5 +1,6 @@
 //! Port of senpi core/extensions/builtin/html-render (index.ts, tool.ts, bootstrap.ts, images.ts).
 pub mod bootstrap;
+pub mod image_references;
 pub mod images;
 pub mod tool;
 

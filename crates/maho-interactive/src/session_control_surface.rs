@@ -122,10 +122,15 @@ impl TuiSessionControls for InteractiveControlSurface {
 
 impl TuiControlSurface for InteractiveControlSurface {
     fn draft_hold(&self) -> Option<String> {
-        if (self.submission_in_flight)() {
-            return Some("draft".into());
-        }
-        lock(&self.published).composer_hold.clone()
+        self.submission_in_flight().then(|| "draft".into())
+    }
+
+    fn submission_in_flight(&self) -> bool {
+        (self.submission_in_flight)()
+    }
+
+    fn has_draft(&self) -> bool {
+        lock(&self.published).composer_hold.is_some()
     }
 
     fn blocking_question(&self) -> bool {
@@ -215,10 +220,14 @@ mod tests {
     #[test]
     fn an_open_submission_holds_admission_as_a_draft() {
         let (surface, _actions) = InteractiveControlSurface::new(Box::new(|| true));
+        assert!(surface.submission_in_flight());
         assert_eq!(surface.draft_hold().as_deref(), Some("draft"));
         let (surface, _actions) = InteractiveControlSurface::new(Box::new(|| false));
+        assert!(!surface.submission_in_flight());
         assert_eq!(surface.draft_hold(), None);
         surface.publish(|published| published.composer_hold = Some("attachment".into()));
-        assert_eq!(surface.draft_hold().as_deref(), Some("attachment"));
+        assert!(!surface.submission_in_flight());
+        assert!(surface.has_draft());
+        assert_eq!(surface.draft_hold(), None);
     }
 }

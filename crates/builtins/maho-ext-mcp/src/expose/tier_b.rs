@@ -232,6 +232,7 @@ pub fn register_mcp_tier_b_tools(
             .collect(),
     );
     let mut gateway_names: Vec<String> = Vec::new();
+    let mut server_gateway_names: Vec<String> = Vec::new();
     for (server, entries) in &input.proxy_gateways {
         let tool = create_mcp_proxy_tool(
             server,
@@ -242,6 +243,7 @@ pub fn register_mcp_tier_b_tools(
         );
         let renderers = mcp_proxy_renderers(&tool.name);
         registrar.register_tool_with_renderers(tool.clone(), renderers)?;
+        server_gateway_names.push(tool.name.clone());
         gateway_names.push(tool.name);
     }
     for tool in &input.utility_tools {
@@ -321,6 +323,15 @@ pub fn register_mcp_tier_b_tools(
         )?;
         for document in service.get_catalog()? {
             poisoned(&catalog_names).insert(document.name);
+        }
+    }
+    {
+        let mut catalog = poisoned(&catalog_names);
+        for definition in &full_defs {
+            catalog.insert(definition.name.clone());
+        }
+        for name in &server_gateway_names {
+            catalog.insert(name.clone());
         }
     }
     let reference = registrar.get_active_tools()?;

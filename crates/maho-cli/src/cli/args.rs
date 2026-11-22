@@ -85,6 +85,13 @@ pub struct Args {
     pub file_args: Vec<String>,
     pub unknown_flags: BTreeMap<String, FlagValue>,
     pub diagnostics: Vec<Diagnostic>,
+    pub raw_args: Vec<String>,
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct ParseArgsOptions<'a> {
+    pub grok_neo_enabled: bool,
+    pub boolean_extension_flags: Option<&'a std::collections::BTreeSet<String>>,
 }
 pub fn normalize_session_name(value: &str) -> Option<&str> {
     let name = value.trim();
@@ -133,7 +140,24 @@ fn positional(result: &mut Args, value: &str) {
     }
 }
 pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, String> {
-    let mut result = Args::default();
+    parse_args_with_options(
+        args,
+        ParseArgsOptions {
+            grok_neo_enabled,
+            boolean_extension_flags: None,
+        },
+    )
+}
+
+pub fn parse_args_with_options(
+    args: &[String],
+    options: ParseArgsOptions<'_>,
+) -> Result<Args, String> {
+    let grok_neo_enabled = options.grok_neo_enabled;
+    let mut result = Args {
+        raw_args: args.to_vec(),
+        ..Default::default()
+    };
     if args.first().is_some_and(|arg| arg == "app-server") {
         result.diagnostic(true, format!("The app-server command has been removed. Use \"{} --mode rpc\" for process integration.", maho_core::config::app_name()));
         return Ok(result);
@@ -387,8 +411,10 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
                     result
                         .unknown_flags
                         .insert(name.to_owned(), FlagValue::String(value.to_owned()));
-                } else if let Some(value) =
-                    next.filter(|v| !v.starts_with('-') && !v.starts_with('@'))
+                } else if !options
+                    .boolean_extension_flags
+                    .is_some_and(|flags| flags.contains(name))
+                    && let Some(value) = next.filter(|v| !v.starts_with('-') && !v.starts_with('@'))
                 {
                     result
                         .unknown_flags

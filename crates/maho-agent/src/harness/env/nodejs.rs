@@ -26,6 +26,16 @@ const MAX_TIMEOUT_MS: u64 = 2_147_483_647;
 const MAX_TIMEOUT_SECONDS: f64 = MAX_TIMEOUT_MS as f64 / 1000.0;
 const EXIT_STDIO_GRACE_MS: u64 = 100;
 
+type BeforeStatMap = Mutex<std::collections::HashMap<String, Box<dyn FnOnce() + Send>>>;
+static BEFORE_LIST_DIR_STAT: std::sync::OnceLock<BeforeStatMap> = std::sync::OnceLock::new();
+
+#[doc(hidden)]
+pub fn register_before_list_dir_stat_hook(target: String, hook: Box<dyn FnOnce() + Send>) {
+    if let Ok(mut hooks) = BEFORE_LIST_DIR_STAT.get_or_init(Mutex::default).lock() {
+        hooks.insert(normalize_path(Path::new(&target)), hook);
+    }
+}
+
 #[cfg(windows)]
 static OWNED_CHILDREN: std::sync::OnceLock<
     Mutex<std::collections::HashMap<u32, Arc<Mutex<Child>>>>,
@@ -1084,11 +1094,24 @@ impl FileSystem for NodeExecutionEnv {
                     Err(error) => return err(to_file_error(&error, Some(&resolved))),
                 };
                 let entry_path = normalize_path(&entry.path());
+                if let Some(hooks) = BEFORE_LIST_DIR_STAT.get()
+                    && let Some(hook) = hooks
+                        .lock()
+                        .ok()
+                        .and_then(|mut map| map.remove(&entry_path))
+                {
+                    hook();
+                }
                 match std::fs::symlink_metadata(&entry_path) {
                     Ok(metadata) => {
                         if let Ok(info) = file_info_from_metadata(&entry_path, &metadata) {
                             infos.push(info);
                         }
+                    }
+                    // Another process can remove an entry after read_dir listed it (a released lock
+                    // directory, a renamed staging file); the listing omits it as if read_dir had run later.
+                    Err(error) if to_file_error(&error, None).code == FileErrorCode::NotFound => {
+                        continue;
                     }
                     Err(error) => return err(to_file_error(&error, Some(&entry_path))),
                 }

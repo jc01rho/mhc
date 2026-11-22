@@ -33,6 +33,30 @@ pub fn failed_stream(model: &Model, at: i64, message: &str) -> AssistantMessageE
     mapper.stream.end(None);
     mapper.stream
 }
+pub fn cursor_cli_diagnostic(
+    blocked: &crate::affinity::AllCursorAccountsBlockedError,
+) -> Option<maho_ai::types::ProviderDiagnostic> {
+    use maho_ai::types::{
+        ProviderDiagnostic, ProviderDiagnosticCategory, ProviderDiagnosticEvidence,
+        sanitize_provider_diagnostic,
+    };
+    match blocked.soonest_unblock_at {
+        None => sanitize_provider_diagnostic(&ProviderDiagnostic {
+            category: ProviderDiagnosticCategory::Auth,
+            http_status: None,
+            code: Some("account_pool_auth_blocked".into()),
+            evidence: ProviderDiagnosticEvidence::StructuredCode,
+            resets_at: None,
+        }),
+        Some(until) => sanitize_provider_diagnostic(&ProviderDiagnostic {
+            category: ProviderDiagnosticCategory::RateLimit,
+            http_status: None,
+            code: Some("account_pool_blocked".into()),
+            evidence: ProviderDiagnosticEvidence::StructuredCode,
+            resets_at: Some(until as i64),
+        }),
+    }
+}
 fn user_message_text(content: &maho_ai::types::UserContent) -> String {
     match content {
         maho_ai::types::UserContent::Text(s) => s.clone(),
@@ -183,7 +207,7 @@ pub fn stream_cursor_cli(
                     if let Err(error)=result {let _=sender.send(Err(error));}
                 });async move {Ok(receiver)}
             },||(deps.now)() as f64,|event|mapper.apply(&event,&model,emitted_tokens.load(std::sync::atomic::Ordering::Relaxed))).await;
-            outcome.map_err(|error|match error {crate::failover::RunError::Attempt(e)=>e.original,crate::failover::RunError::Store(e)=>json!({"message":e.to_string()}),crate::failover::RunError::AllBlocked(e)=>json!({"message":e.to_string()})})
+            outcome.map_err(|error|match error {crate::failover::RunError::Attempt(e)=>e.original,crate::failover::RunError::Store(e)=>json!({"message":e.to_string()}),crate::failover::RunError::AllBlocked(e)=>{let mut payload=json!({"message":e.to_string()});if let Some(diag)=cursor_cli_diagnostic(&e)&&let Ok(val)=serde_json::to_value(diag){payload["providerDiagnostic"]=val;}payload}})
         }.await;
         match result {
             Ok(()) => mapper.finish(),
@@ -198,6 +222,13 @@ pub fn stream_cursor_cli(
                 } else {
                     StopReason::Error
                 };
+                if mapper.output.stop_reason == StopReason::Error
+                    && let Some(diag) = error
+                        .get("providerDiagnostic")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                {
+                    mapper.output.provider_diagnostic = Some(diag);
+                }
                 mapper.output.error_message = Some(
                     error["message"]
                         .as_str()
@@ -612,5 +643,20 @@ mod tests {
             turn_prompt(&resolved.messages).as_deref(),
             Some("request\n\n<reminder/>")
         );
+    }
+    #[test]
+    fn cursor_cli_diagnostic_classifies_auth_and_rate_limit_pool_refusals() {
+        let auth = cursor_cli_diagnostic(&crate::affinity::AllCursorAccountsBlockedError {
+            soonest_unblock_at: None,
+        })
+        .expect("auth diagnostic");
+        assert_eq!(auth.code.as_deref(), Some("account_pool_auth_blocked"));
+        let reset = 1_800_000_000_000.0;
+        let rate = cursor_cli_diagnostic(&crate::affinity::AllCursorAccountsBlockedError {
+            soonest_unblock_at: Some(reset),
+        })
+        .expect("rate limit diagnostic");
+        assert_eq!(rate.code.as_deref(), Some("account_pool_blocked"));
+        assert_eq!(rate.resets_at, Some(1_800_000_000_000));
     }
 }

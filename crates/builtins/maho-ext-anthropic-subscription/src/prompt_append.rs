@@ -63,6 +63,51 @@ pub fn project_rules(prompt: Option<&str>) -> Option<&str> {
     }
     None
 }
+fn claude_skills_path(
+    path: &str,
+    global_root: &std::path::Path,
+    project_root: &std::path::Path,
+) -> String {
+    let real_source = std::fs::canonicalize(path).ok();
+    let global_claude = global_root
+        .parent()
+        .and_then(|p| p.parent())
+        .or_else(|| global_root.parent())
+        .map(|h| h.join(".claude").join("skills"));
+    let project_claude = project_root
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|c| c.join(".claude").join("skills"));
+    for (root, claude_display, claude_fs) in [
+        (global_root, "~/.claude/skills", global_claude),
+        (project_root, ".claude/skills", project_claude),
+    ] {
+        let Ok(inside) = std::path::Path::new(path).strip_prefix(root) else {
+            continue;
+        };
+        let suffix = inside
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_owned();
+        if let (Some(real_src), Some(claude_base)) = (&real_source, &claude_fs) {
+            let candidate_fs = if suffix.is_empty() {
+                claude_base.clone()
+            } else {
+                claude_base.join(&suffix)
+            };
+            if std::fs::canonicalize(&candidate_fs).ok().as_ref() != Some(real_src) {
+                return path.to_owned();
+            }
+        }
+        return if suffix.is_empty() {
+            claude_display.to_owned()
+        } else {
+            format!("{claude_display}/{suffix}")
+        };
+    }
+    path.to_owned()
+}
 pub fn skills(
     prompt: Option<&str>,
     global_root: &std::path::Path,
@@ -73,27 +118,32 @@ pub fn skills(
         prompt.find("The following skills provide specialized instructions for specific tasks.")?;
     let end = start + prompt[start..].find("</available_skills>")? + "</available_skills>".len();
     let block = prompt[start..end].trim();
+    static ROOTS_TABLE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?s)<skill_roots>.*?</skill_roots>").expect("skill_roots regex")
+    });
+    static ROOT_ROW: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"<(r\d+)>([^<]+)</(r\d+)>").expect("root row regex")
+    });
     static LOCATION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"<location>([^<]+)</location>").expect("location regex")
     });
-    let regex = &*LOCATION;
-    Some(
-        regex
-            .replace_all(block, |capture: &regex::Captures<'_>| {
-                let location = &capture[1];
-                for (root, prefix) in [
-                    (global_root, "~/.claude/skills/"),
-                    (project_root, ".claude/skills/"),
-                ] {
-                    let root = root.to_string_lossy();
-                    if location.starts_with(root.as_ref()) {
-                        let suffix = location[root.len()..]
-                            .trim_start_matches('/')
-                            .trim_start_matches('.');
-                        return format!("<location>{prefix}{suffix}</location>");
-                    }
+    let with_roots = ROOTS_TABLE.replace_all(block, |table: &regex::Captures<'_>| {
+        ROOT_ROW
+            .replace_all(&table[0], |row: &regex::Captures<'_>| {
+                if row[1] != row[3] {
+                    return row[0].to_owned();
                 }
-                capture[0].to_owned()
+                let alias = &row[1];
+                let rewritten = claude_skills_path(&row[2], global_root, project_root);
+                format!("<{alias}>{rewritten}</{alias}>")
+            })
+            .into_owned()
+    });
+    Some(
+        LOCATION
+            .replace_all(&with_roots, |capture: &regex::Captures<'_>| {
+                let rewritten = claude_skills_path(&capture[1], global_root, project_root);
+                format!("<location>{rewritten}</location>")
             })
             .into_owned(),
     )
@@ -152,5 +202,32 @@ mod tests {
             )
             .is_none()
         );
+    }
+    #[test]
+    fn skill_roots_table_rewrites_only_when_target_is_not_a_divergent_real_file() {
+        let prompt = "The following skills provide specialized instructions for specific tasks.\n<skill_roots>\n  <r0>/global/skills</r0>\n  <r1>/project/.senpi/skills</r1>\n</skill_roots>\n<available_skills><location>r0/demo/SKILL.md</location></available_skills>";
+        let result = skills(
+            Some(prompt),
+            std::path::Path::new("/global/skills"),
+            std::path::Path::new("/project/.senpi/skills"),
+        )
+        .expect("skills");
+        assert!(result.contains("<r0>~/.claude/skills</r0>"));
+        assert!(result.contains("<r1>.claude/skills</r1>"));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project_skills = dir.path().join(".omo").join("skills");
+        std::fs::create_dir_all(&project_skills).expect("create project skills");
+        let real_prompt = format!(
+            "The following skills provide specialized instructions for specific tasks.\n<skill_roots>\n  <r0>{}</r0>\n</skill_roots>\n<available_skills><location>r0/a/SKILL.md</location></available_skills>",
+            project_skills.display()
+        );
+        let kept = skills(
+            Some(&real_prompt),
+            std::path::Path::new("/nonexistent/global/skills"),
+            &project_skills,
+        )
+        .expect("skills");
+        assert!(kept.contains(&format!("<r0>{}</r0>", project_skills.display())));
     }
 }

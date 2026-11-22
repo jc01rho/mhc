@@ -163,6 +163,9 @@ pub fn resolve_preset_name(model: ContractModel<'_>) -> Option<PromptPresetName>
     if is_fable55_model_id(id) {
         return Some(P::ClaudeFable55);
     }
+    if crate::matchers::is_claude_fable52_model(id) {
+        return Some(P::ClaudeFable52);
+    }
     if any_marker(id, &["fable-5-1", "fable-5.1", "mythos-5-1", "mythos-5.1"]) {
         return Some(P::ClaudeFable51);
     }
@@ -269,6 +272,7 @@ pub const PROMPT_PRESET_MODEL_CASES: &[PromptPresetModelCase] = {
         case("deepseek", "deepseek-v4-pro", P::DeepseekV4Pro),
         case("anthropic", "claude-fable-5", P::ClaudeFable5),
         case("anthropic", "claude-fable-5.1", P::ClaudeFable51),
+        case("anthropic", "claude-fable-5.2", P::ClaudeFable52),
         case("anthropic", "claude-fable-5-5", P::ClaudeFable55),
         case("anthropic", "claude-opus-5.5", P::ClaudeOpus55),
         case("anthropic", "claude-opus-5", P::ClaudeOpus5),
@@ -312,6 +316,7 @@ pub const AUTO_RESOLVED_PRESET_NAMES: &[PromptPresetName] = {
         P::Grok45,
         P::ClaudeFable5,
         P::ClaudeFable51,
+        P::ClaudeFable52,
         P::ClaudeFable55,
         P::ClaudeOpus55,
         P::ClaudeOpus5,
@@ -445,6 +450,32 @@ mod tests {
         }
         assert!(!is_fable55_model_id("claude-fable-5-50"));
         assert!(!is_fable55_model_id("claude-fable-5"));
+        for id in [
+            "claude-fable-5-2",
+            "anthropic/claude-fable-5.2",
+            "us.anthropic.claude-fable-5-2",
+            "claude-fable-5-2-fast",
+            "claude-fable-5-2-20261109",
+            "Claude Fable 5.2",
+            "claude-mythos-5-2",
+            "Claude Mythos 5.2",
+        ] {
+            assert_eq!(
+                runtime("anthropic", id),
+                Some(PromptPresetName::ClaudeFable52),
+                "{id}"
+            );
+        }
+        for id in [
+            "claude-fable-5-20260601",
+            "us.anthropic.claude-mythos-5-20260601-v1:0",
+        ] {
+            assert_eq!(
+                runtime("anthropic", id),
+                Some(PromptPresetName::ClaudeFable5),
+                "{id}"
+            );
+        }
     }
 
     #[test]

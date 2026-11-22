@@ -946,21 +946,33 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     ));
     owner_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // senpi `SupervisorDrain`: `admission.stop()` refuses opens from the drain on (senpi `beginStopping`).
-    let supervisor_drain = crate::host_lifecycle_drain::SupervisorDrain::new(
-        child_pid,
-        child_running.clone(),
-        || false,
-        {
-            #[cfg(unix)]
-            let admission = admission.clone();
-            move || {
+    let supervisor_drain = {
+        let daemon_dir = paths.dir.clone();
+        let generation_id = instance_id.clone();
+        let drain = crate::host_lifecycle_drain::SupervisorDrain::new(
+            child_pid,
+            child_running.clone(),
+            || false,
+            {
                 #[cfg(unix)]
-                admission.stop();
-            }
-        },
-        Some(drain_relay),
-        std::env::consts::OS == "windows",
-    );
+                let admission = admission.clone();
+                move || {
+                    #[cfg(unix)]
+                    admission.stop();
+                }
+            },
+            Some(drain_relay),
+            std::env::consts::OS == "windows",
+        );
+        drain.set_overdue(move |draining_for_ms| {
+            crate::host_lifecycle_drain::record_drain_overdue(
+                &daemon_dir,
+                &generation_id,
+                draining_for_ms,
+            );
+        });
+        drain
+    };
     // Only proxy/idle completion, the child exiting, or a shutdown signal ends the supervisor. A
     // drain starts the grace and loops again, so busy sessions keep running until the child exits.
     loop {
@@ -1499,6 +1511,10 @@ impl IdleExitDecider {
             idle_exit_ms,
             idle_since: None,
         }
+    }
+    /// A client attached: the window starts over, even while it holds nothing yet (oh-my-openagent#14272).
+    pub fn restart(&mut self) {
+        self.idle_since = None;
     }
     pub fn update(&mut self, connections: u64, active_turns: u64, now: f64) -> IdleExitDecision {
         if connections > 0 || active_turns > 0 {

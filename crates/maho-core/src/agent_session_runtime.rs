@@ -93,6 +93,7 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
             oauth: config.oauth,
             fallback_eligible: config.fallback_eligible,
             owns_account_selection: config.owns_account_selection,
+            local_only: config.local_only,
             refresh_models,
             retry_policy,
             ambient_auth: config.ambient_auth,
@@ -187,6 +188,8 @@ pub enum AgentSessionRuntimeError {
     ImportFileNotFound(SessionImportFileNotFoundError),
     /// senpi `MissingSessionCwdError` from `assertSessionCwdExists`.
     MissingSessionCwd(crate::session_cwd::MissingSessionCwdError),
+    /// senpi `SessionCwdNotDirectoryError` from `assertSessionCwdExists` (senpi#6686).
+    SessionCwdNotDirectory(crate::session_cwd::SessionCwdNotDirectoryError),
     /// Any other upstream `Error` (for example `Invalid entry ID for forking`).
     Other(String),
 }
@@ -196,6 +199,7 @@ impl std::fmt::Display for AgentSessionRuntimeError {
         match self {
             Self::ImportFileNotFound(error) => error.fmt(formatter),
             Self::MissingSessionCwd(error) => error.fmt(formatter),
+            Self::SessionCwdNotDirectory(error) => error.fmt(formatter),
             Self::Other(message) => formatter.write_str(message),
         }
     }
@@ -211,6 +215,11 @@ impl From<SessionImportFileNotFoundError> for AgentSessionRuntimeError {
 impl From<crate::session_cwd::MissingSessionCwdError> for AgentSessionRuntimeError {
     fn from(error: crate::session_cwd::MissingSessionCwdError) -> Self {
         Self::MissingSessionCwd(error)
+    }
+}
+impl From<crate::session_cwd::SessionCwdNotDirectoryError> for AgentSessionRuntimeError {
+    fn from(error: crate::session_cwd::SessionCwdNotDirectoryError) -> Self {
+        Self::SessionCwdNotDirectory(error)
     }
 }
 impl From<String> for AgentSessionRuntimeError {
@@ -711,6 +720,12 @@ impl AgentSessionRuntime {
         )?;
         self.check_switch_target(&manager)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;
+        if let Some(error) =
+            crate::session_cwd::session_cwd_not_directory(manager.cwd(), manager.session_file())
+                .await
+        {
+            return Err(error.into());
+        }
         let cwd = manager.cwd().to_owned();
         self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Resume)
             .await?;
@@ -944,6 +959,12 @@ impl AgentSessionRuntime {
         )?;
         self.check_switch_target(&manager)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;
+        if let Some(error) =
+            crate::session_cwd::session_cwd_not_directory(manager.cwd(), manager.session_file())
+                .await
+        {
+            return Err(error.into());
+        }
         let cwd = manager.cwd().to_owned();
         self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Resume)
             .await?;
@@ -2209,6 +2230,28 @@ mod tests {
         assert!(matches!(
             error,
             AgentSessionRuntimeError::MissingSessionCwd(_)
+        ));
+        let file_cwd = dir.path().join("hostname");
+        std::fs::write(&file_cwd, "a file, not a folder\n").expect("file cwd");
+        let file_session = dir.path().join("stored-file.jsonl");
+        std::fs::write(
+            &file_session,
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"session","version":3,"id":"file-cwd","timestamp":"2026-10-01T00:00:00.000Z","cwd":file_cwd})
+            ),
+        )
+        .expect("file session");
+        let not_dir = runtime
+            .switch_session(
+                &file_session.to_string_lossy(),
+                SwitchSessionOptions::default(),
+            )
+            .await
+            .expect_err("not directory cwd");
+        assert!(matches!(
+            not_dir,
+            AgentSessionRuntimeError::SessionCwdNotDirectory(_)
         ));
         let cwd = runtime.cwd().to_owned();
         assert!(

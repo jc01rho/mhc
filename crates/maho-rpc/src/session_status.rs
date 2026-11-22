@@ -54,6 +54,8 @@ pub struct SessionStatusEntryView {
     pub kind: &'static str,
     pub cwd: String,
     pub attachments: i64,
+    /// Milliseconds since the Unix epoch of the holder's last observed activity, if known (senpi#6415).
+    pub last_activity_at: Option<f64>,
     pub durable_session_id: Option<String>,
     pub session_path: Option<String>,
     pub name: Option<String>,
@@ -190,6 +192,7 @@ pub fn cause_of_record(record: &Value) -> Option<SessionStatusCause> {
         "queue_update" => "queue",
         "model_changed" | "thinking_level_changed" => "set_model",
         "session_replaced" => "replace",
+        "session_info_changed" => "rename",
         "session_parked" => "park",
         "session_closed" => "close",
         "question_resolved" => "question",
@@ -209,6 +212,7 @@ mod tests {
             kind: "interactive",
             cwd: "/w".into(),
             attachments: -1,
+            last_activity_at: None,
             durable_session_id: Some("d1".into()),
             session_path: None,
             name: None,
@@ -275,6 +279,11 @@ mod tests {
         assert_eq!(
             cause_of_record(&json!({"type":"extension_ui_request","method":"confirm"})),
             None
+        );
+        // senpi#6672: a rename publishes a status change under its own cause.
+        assert_eq!(
+            cause_of_record(&json!({"type":"session_info_changed"})),
+            Some("rename")
         );
     }
 }

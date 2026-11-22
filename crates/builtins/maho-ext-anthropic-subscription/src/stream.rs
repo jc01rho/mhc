@@ -243,6 +243,8 @@ pub fn stream_anthropic_subscription(
             let mut query = None;
             let mut selected = None;
             let mut visible = false;
+            // senpi `onAttemptStart` (senpi#4152): identity and usage belong to the attempt that produced them.
+            mapper.begin_attempt();
             attempt_account = None;
             let outcome: anyhow::Result<()> = async {
             if let Some(error) = pool_error.take() { return Err(error); }

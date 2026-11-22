@@ -23,6 +23,23 @@ pub fn format_version_check_error(root_message: &str, causes: &[VersionCheckCaus
     }
     root_message.to_owned()
 }
+/// Version of the latest GitHub Release, from its tag; drafts and prereleases are not installable
+/// (senpi#6633, senpi#6634).
+pub fn read_latest_release_version(payload: &serde_json::Value) -> Option<String> {
+    let release = payload.as_object()?;
+    if release.get("draft").and_then(serde_json::Value::as_bool) == Some(true)
+        || release
+            .get("prerelease")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    {
+        return None;
+    }
+    let tag = release.get("tag_name")?.as_str()?.trim();
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    (!version.is_empty()).then(|| version.to_owned())
+}
+
 pub fn read_available_version(
     payload: &serde_json::Value,
     dist_tag: Option<&str>,
@@ -35,9 +52,28 @@ pub fn read_available_version(
         .filter(|version| !version.is_empty())
         .map(str::to_owned)
 }
+
+fn canonical_calver(captures: regex::Captures<'_>) -> Option<String> {
+    let year: u64 = captures.get(1)?.as_str().parse().ok()?;
+    let month: u64 = captures.get(2)?.as_str().parse().ok()?;
+    let day: u64 = captures.get(3)?.as_str().parse().ok()?;
+    let revision: u64 = captures
+        .get(4)
+        .map_or(Ok(1), |value| value.as_str().parse())
+        .ok()?;
+    Some(if revision > 1 {
+        format!("{year}.{month}.{day}-{revision}")
+    } else {
+        format!("{year}.{month}.{day}")
+    })
+}
+
 pub fn compare_package_versions(left: &str, right: &str) -> Option<i8> {
     static CALVER: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-([2-9]\d*))?$").expect("calver regex")
+        // Month and day may be zero-padded (`2026.11.02-1` as stamped in package.json) or not
+        // (npm's normalized `2026.11.2-1`), and a `-1` revision is the same release as the bare date
+        // (senpi#5406, senpi#5411).
+        regex::Regex::new(r"^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-([1-9]\d*))?$").expect("calver regex")
     });
     let left = left.trim();
     let right = right.trim();
@@ -55,9 +91,19 @@ pub fn compare_package_versions(left: &str, right: &str) -> Option<i8> {
             };
             parts(left)?.cmp(&parts(right)?)
         } else {
-            semver::Version::parse(left.strip_prefix('v').unwrap_or(left))
+            // A padded CalVer version compared with a plain semver one goes in its canonical unpadded
+            // form, which semver accepts (senpi#5411).
+            let left = CALVER
+                .captures(left)
+                .and_then(canonical_calver)
+                .unwrap_or_else(|| left.to_owned());
+            let right = CALVER
+                .captures(right)
+                .and_then(canonical_calver)
+                .unwrap_or_else(|| right.to_owned());
+            semver::Version::parse(left.strip_prefix('v').unwrap_or(&left))
                 .ok()?
-                .cmp(&semver::Version::parse(right.strip_prefix('v').unwrap_or(right)).ok()?)
+                .cmp(&semver::Version::parse(right.strip_prefix('v').unwrap_or(&right)).ok()?)
         };
     Some(match ordering {
         std::cmp::Ordering::Less => -1,

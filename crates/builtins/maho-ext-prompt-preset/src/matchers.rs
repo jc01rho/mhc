@@ -220,6 +220,10 @@ fn has_marker(model_id: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| normalized.contains(marker))
 }
 
+pub fn is_claude_fable52_model(model_id: &str) -> bool {
+    static PATTERN: LazyLock<Regex> = LazyLock::new(|| re(r"(?:fable|mythos)-5[.-]2(?:$|[^0-9])"));
+    PATTERN.is_match(&normalize_model_id(model_id))
+}
 pub fn is_claude_fable51_model(model_id: &str) -> bool {
     has_marker(model_id, CLAUDE_FABLE_51_MARKERS)
 }

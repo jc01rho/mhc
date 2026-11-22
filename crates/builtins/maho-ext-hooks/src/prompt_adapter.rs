@@ -16,7 +16,7 @@ pub struct PendingPromptHookContext {
     pub system_messages: Vec<String>,
 }
 pub fn build_user_prompt_hook_input(options: UserPromptHookInputOptions<'_>) -> Value {
-    let mut input = json!({"cwd":options.cwd,"event":"UserPromptSubmit","permission_mode":options.permission_mode,"prompt":options.prompt,"session_id":options.session_id});
+    let mut input = json!({"cwd":options.cwd,"event":"UserPromptSubmit","hook_event_name":"UserPromptSubmit","permission_mode":options.permission_mode,"prompt":options.prompt,"session_id":options.session_id});
     if let Some(path) = options.transcript_path {
         input["transcript_path"] = json!(path);
     }
@@ -87,4 +87,24 @@ pub fn safe_diagnostic_details(diagnostic: &HookDiagnostic) -> Value {
         details["event"] = json!(event);
     }
     details
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_prompt_hook_input_includes_hook_event_name() {
+        let input = build_user_prompt_hook_input(UserPromptHookInputOptions {
+            cwd: "/workspace",
+            permission_mode: "default",
+            prompt: "hello",
+            session_id: "s1",
+            transcript_path: Some("/tmp/s1.jsonl"),
+        });
+        assert_eq!(input["event"], "UserPromptSubmit");
+        assert_eq!(input["hook_event_name"], "UserPromptSubmit");
+        assert_eq!(input["cwd"], "/workspace");
+        assert_eq!(input["transcript_path"], "/tmp/s1.jsonl");
+    }
 }

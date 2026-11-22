@@ -131,6 +131,7 @@ pub struct AssistantMessageComponent {
     has_tool_calls: bool,
     expanded: bool,
     provider_error_owned: bool,
+    owns_turn_notice: bool,
     is_streaming: bool,
     thinking_visibility_overrides: ThinkingVisibilityOverrides,
     handoff_open_overrides: HandoffOpenOverrides,
@@ -164,6 +165,7 @@ impl AssistantMessageComponent {
             has_tool_calls: false,
             expanded: false,
             provider_error_owned: false,
+            owns_turn_notice: false,
             is_streaming: false,
             thinking_visibility_overrides: Vec::new(),
             handoff_open_overrides: Vec::new(),
@@ -202,6 +204,15 @@ impl AssistantMessageComponent {
         self.handoff_open_overrides.clear();
         self.pending_toggle.take();
         self.pending_handoff_toggle.take();
+        self.refresh_content();
+    }
+
+    /// A replayed turn draws in one component, so it shows its own turn-ending notice (senpi#4958).
+    pub fn set_owns_turn_notice(&mut self, owned: bool) {
+        if self.owns_turn_notice == owned {
+            return;
+        }
+        self.owns_turn_notice = owned;
         self.refresh_content();
     }
 
@@ -263,6 +274,7 @@ impl AssistantMessageComponent {
                     .copied()
                     .collect::<BTreeMap<usize, bool>>(),
                 has_tool_calls: self.has_tool_calls,
+                owns_turn_notice: self.owns_turn_notice,
             },
             &self.theme,
         );

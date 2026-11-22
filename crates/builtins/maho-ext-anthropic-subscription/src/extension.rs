@@ -157,6 +157,7 @@ impl Extension for AnthropicSubscriptionExtension {
         // the previous one.
         let config = ProviderConfig {
             owns_account_selection: true,
+            local_only: true,
             base_url: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
             api: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
             models: None,

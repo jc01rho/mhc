@@ -166,6 +166,7 @@ impl PtySession {
             .spawn_command(command)
             .map_err(|error| PtyError::new(error.to_string()))?;
         let pid = child.process_id();
+        crate::oom_score::prefer_as_oom_victim(pid);
         let killer = child.clone_killer();
         let timeout_killer = child.clone_killer();
         #[cfg(unix)]
