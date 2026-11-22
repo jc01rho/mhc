@@ -192,8 +192,8 @@ fn merge_root_object_combiner(
             .flat_map(|(index, (branch, names))| {
                 let own: Vec<&str> = names
                     .iter()
+                    .filter(|name| !required.contains(*name))
                     .map(String::as_str)
-                    .filter(|name| !required.contains(name))
                     .collect();
                 if own.is_empty() {
                     Vec::new()
