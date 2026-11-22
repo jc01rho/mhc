@@ -70,6 +70,13 @@ async fn start(
     harness
 }
 
+/// Lets Fable models run (`model_policy.block_fable: false`, docs/divergences.md GATE-1) for the cases
+/// that exercise a Fable rung the way upstream does.
+fn fable_allowed(mut config: serde_json::Value) -> serde_json::Value {
+    config["model_policy"] = json!({"block_fable": false});
+    config
+}
+
 fn selectors(models: &[maho_ai::model::Model]) -> Vec<String> {
     models
         .iter()
@@ -111,7 +118,7 @@ async fn default_walk_shares_failures_across_lanes_and_keeps_all_failures() {
 #[tokio::test]
 async fn default_walk_keeps_request_failures_scoped_to_the_selector() {
     let harness = start(
-        json!({}),
+        fable_allowed(json!({})),
         Arc::new(
             TestRegistry::new(fixture(&[OPUS, FABLE])).broken_model("anthropic", "claude-opus-5-5"),
         ),
@@ -439,7 +446,7 @@ async fn daily_normal_with_only_the_third_rung_applies_kimi_max_and_names_the_sk
 #[tokio::test]
 async fn daily_heavy_applies_fable_xhigh() {
     let harness = start(
-        json!({"model_profile": "daily-heavy"}),
+        fable_allowed(json!({"model_profile": "daily-heavy"})),
         Arc::new(TestRegistry::new(fixture(&[FABLE, KIMI]))),
         "session-1",
         ExtensionMode::Rpc,
@@ -455,6 +462,31 @@ async fn daily_heavy_applies_fable_xhigh() {
         harness.session_thinking_levels(),
         [ModelThinkingLevel::Xhigh]
     );
+}
+
+#[tokio::test]
+async fn daily_normal_skips_its_fable_rung_while_the_execution_gate_is_on() {
+    for (config, applied) in [
+        (
+            json!({"model_profile": "daily-normal"}),
+            "moonshotai/kimi-k3.1-pro",
+        ),
+        (
+            fable_allowed(json!({"model_profile": "daily-normal"})),
+            "anthropic/claude-fable-5-2",
+        ),
+    ] {
+        let harness = start(
+            config,
+            Arc::new(TestRegistry::new(fixture(&[FABLE_52, KIMI]))),
+            "session-1",
+            ExtensionMode::Rpc,
+            STARTUP,
+            Some("settings"),
+        )
+        .await;
+        assert_eq!(selectors(&harness.session_models()), [applied]);
+    }
 }
 
 #[tokio::test]
@@ -950,7 +982,7 @@ async fn every_provider_failing_credentials_emits_one_unavailable_notice_listing
 #[tokio::test]
 async fn a_failing_model_request_configuration_skips_only_that_candidate_and_the_walk_continues() {
     let harness = start(
-        json!({}),
+        fable_allowed(json!({})),
         Arc::new(
             TestRegistry::new(fixture(&[OPUS, FABLE_52]))
                 .broken_model("anthropic", "claude-opus-5-5"),
@@ -1021,7 +1053,7 @@ async fn rotation_disabled_in_models_json_probes_only_the_flat_credential() {
 async fn a_lane_whose_first_rung_resolves_credentials_applies_after_one_provider_and_one_model_probe()
  {
     let harness = start(
-        json!({"model_profile": "daily-heavy"}),
+        fable_allowed(json!({"model_profile": "daily-heavy"})),
         Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS, KIMI]))),
         "session-1",
         ExtensionMode::Rpc,
@@ -1181,7 +1213,7 @@ async fn an_unknown_reasoning_token_leaves_the_session_level_alone() {
 #[tokio::test]
 async fn the_session_only_setter_is_used_and_the_durable_thinking_level_is_untouched() {
     let harness = start(
-        json!({"model_profile": "daily-heavy"}),
+        fable_allowed(json!({"model_profile": "daily-heavy"})),
         Arc::new(TestRegistry::new(fixture(&[FABLE]))),
         "session-1",
         ExtensionMode::Rpc,
@@ -1372,7 +1404,7 @@ async fn a_registry_reporting_the_runtime_source_turns_rotation_off_so_the_hook_
 #[tokio::test]
 async fn the_applied_notice_is_the_only_message_sent() {
     let harness = start(
-        json!({"model_profile": "daily-heavy"}),
+        fable_allowed(json!({"model_profile": "daily-heavy"})),
         Arc::new(TestRegistry::new(fixture(&[FABLE]))),
         "session-1",
         ExtensionMode::Rpc,
@@ -1389,7 +1421,7 @@ async fn the_applied_notice_is_the_only_message_sent() {
 #[tokio::test]
 async fn a_second_registration_of_the_same_component_still_applies_to_a_fresh_session() {
     let harness = support::harness_in(
-        component(json!({"model_profile": "daily-heavy"})),
+        component(fable_allowed(json!({"model_profile": "daily-heavy"}))),
         Arc::new(TestRegistry::new(fixture(&[FABLE]))),
         "session-1",
         ExtensionMode::Rpc,
@@ -1398,7 +1430,7 @@ async fn a_second_registration_of_the_same_component_still_applies_to_a_fresh_se
     );
     harness.start(STARTUP, Some("settings")).await;
     let reloaded = support::harness_in(
-        component(json!({"model_profile": "daily-heavy"})),
+        component(fable_allowed(json!({"model_profile": "daily-heavy"}))),
         Arc::new(TestRegistry::new(fixture(&[FABLE]))),
         "session-1",
         ExtensionMode::Rpc,
@@ -1412,7 +1444,7 @@ async fn a_second_registration_of_the_same_component_still_applies_to_a_fresh_se
 #[tokio::test]
 async fn a_json_mode_session_applies_the_profile_like_any_headless_run() {
     let harness = start(
-        json!({"model_profile": "daily-heavy"}),
+        fable_allowed(json!({"model_profile": "daily-heavy"})),
         Arc::new(TestRegistry::new(fixture(&[FABLE]))),
         "session-json",
         ExtensionMode::Json,
@@ -1518,7 +1550,7 @@ async fn geeky_normal_with_gpt_6_astra_beside_the_sol_tiers_applies_astra_medium
 #[tokio::test]
 async fn a_lane_without_a_caution_never_renders_the_bold_warning() {
     let harness = start(
-        json!({"model_profile": "daily-heavy"}),
+        fable_allowed(json!({"model_profile": "daily-heavy"})),
         Arc::new(TestRegistry::new(fixture(&[FABLE]))),
         "session-1",
         ExtensionMode::Rpc,
@@ -1533,14 +1565,14 @@ async fn a_lane_without_a_caution_never_renders_the_bold_warning() {
 #[tokio::test]
 async fn an_excluded_first_rung_makes_the_session_apply_the_next_rung() {
     let harness = start(
-        json!({
+        fable_allowed(json!({
             "model_profile": "mine",
             "model_profiles": {"mine": {"models": [
                 format!("{}/{}", FABLE.0, FABLE.1),
                 format!("{}/{}", OPUS.0, OPUS.1)
             ]}},
             "exclude_models": [fable_family_pattern()]
-        }),
+        })),
         Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS]))),
         "session-1",
         ExtensionMode::Rpc,
@@ -1562,10 +1594,10 @@ async fn an_excluded_first_rung_makes_the_session_apply_the_next_rung() {
 #[tokio::test]
 async fn a_literal_pin_that_is_excluded_is_not_applied() {
     let harness = start(
-        json!({
+        fable_allowed(json!({
             "model_profile": format!("{}/{}", FABLE.0, FABLE.1),
             "exclude_models": [fable_family_pattern()]
-        }),
+        })),
         Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS]))),
         "session-1",
         ExtensionMode::Rpc,
