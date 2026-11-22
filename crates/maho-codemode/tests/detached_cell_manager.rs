@@ -282,3 +282,34 @@ async fn deadline_killed_cell_settles_cancelled_not_failed() {
     assert_eq!(snapshot.state, EvalDetachedCellState::Cancelled);
     assert!(snapshot.hard_limit_seconds.is_some());
 }
+
+#[tokio::test]
+async fn unknown_cell_id_suggests_unique_close_match_and_suppresses_ties() {
+    let mut manager = EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
+    let first = manager
+        .create("cell-alpha-1".into(), input(EvalLanguage::Js))
+        .expect("first cell");
+    let second = manager
+        .create("cell-alpha-2".into(), input(EvalLanguage::Js))
+        .expect("second cell");
+    for cell in [&first, &second] {
+        manager.bind_kernel(
+            cell,
+            Arc::new(|| AgentToolResult::text("")),
+            Arc::new(|| (None, vec![])),
+        );
+    }
+    assert!(manager.complete(&second, AgentToolResult::text("done")));
+    assert_eq!(
+        manager.peek("cell-alpha-x").unwrap_err(),
+        "Unknown detached eval cell \"cell-alpha-x\""
+    );
+    assert_eq!(
+        manager.peek("cell-alhpa-1").unwrap_err(),
+        "Unknown detached eval cell \"cell-alhpa-1\"; did you mean \"cell-alpha-1\"?"
+    );
+    assert_eq!(
+        manager.peek("completely-different").unwrap_err(),
+        "Unknown detached eval cell \"completely-different\""
+    );
+}
