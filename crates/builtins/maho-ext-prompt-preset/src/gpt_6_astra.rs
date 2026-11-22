@@ -50,11 +50,22 @@ fn intent_gate_lead(surface: PromptSurface) -> &'static str {
     }
 }
 
+/// A surface variant derived from the terminal wording; an anchor that no longer matches panics instead of leaving a silent copy (senpi#6966).
+fn swap(text: &str, anchor: &str, replacement: &str) -> String {
+    let swapped = text.replacen(anchor, replacement, 1);
+    assert_ne!(
+        swapped, text,
+        "gpt-6-astra: surface anchor not found: {anchor}"
+    );
+    swapped
+}
+
 /// `APP_STEERING`: on the app surface the answer opens with the work, with no routing line to refer back to.
 fn steering(surface: PromptSurface) -> String {
     match surface {
         PromptSurface::Terminal => STEERING.to_owned(),
-        PromptSurface::App | PromptSurface::Chat => STEERING.replace(
+        PromptSurface::App | PromptSurface::Chat => swap(
+            STEERING,
             "keep going under the reading you already declared, so the reply opens with the work rather than another routing line;",
             "keep going under the reading you already settled, so the reply opens with the work;",
         ),
@@ -78,11 +89,16 @@ fn handoff_report(surface: PromptSurface) -> String {
 
 /// `APP_FINAL_MESSAGE_SHAPE`, and the chat variant that swaps the handoff block for the reply.
 fn final_message_shape(surface: PromptSurface) -> String {
-    let app = FINAL_MESSAGE_SHAPE.replace("anything left unverified", GPT_APP_UNVERIFIED_SLOT);
+    let app = swap(
+        FINAL_MESSAGE_SHAPE,
+        "anything left unverified",
+        GPT_APP_UNVERIFIED_SLOT,
+    );
     match surface {
         PromptSurface::Terminal => FINAL_MESSAGE_SHAPE.to_owned(),
         PromptSurface::App => app,
-        PromptSurface::Chat => app.replace(
+        PromptSurface::Chat => swap(
+            &app,
             "The final message of a change is the handoff block and stands alone: the outcome first, then in its You need slot what a reader needs",
             &format!(
                 "{} and stands alone: the outcome first, then what a reader needs",
@@ -326,4 +342,30 @@ pub fn build_gpt6_astra_prompt(mut options: BuildDynamicSystemPromptOptions<'_>)
     options.core_prompt = Some(&build_gpt6_astra_core);
     options.workstation_dialect = Some(WorkstationDialect::Codex);
     build_dynamic_system_prompt(&options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surface_variants_swap_anchors_for_terminal_app_and_chat() {
+        for surface in [
+            PromptSurface::Terminal,
+            PromptSurface::App,
+            PromptSurface::Chat,
+        ] {
+            let prompt = build_gpt6_astra_prompt(BuildDynamicSystemPromptOptions {
+                surface,
+                ..Default::default()
+            });
+            assert!(!prompt.is_empty());
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "gpt-6-astra: surface anchor not found")]
+    fn swap_panics_when_anchor_is_missing() {
+        let _ = swap("hello world", "missing-anchor", "replacement");
+    }
 }
