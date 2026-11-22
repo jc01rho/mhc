@@ -67,9 +67,9 @@ changes touch are `crates/maho-rpc/parity.d/5180r.md` (the new `session_drain_ho
 | #4758 |  | port | `crates/maho-rpc/src/session_drain_hold.rs` + `HostCore::drain_sweep` holds `AgentSession::hold_automatic_turns` once per unattached open session |
 | #5197 |  | n/a | bounded worker secret frames (`WorkerSecretIds`). The worker wire (`SessionWorkerToHost`/`HostToSessionWorker`) has no secret-input lane, so there is no side channel to bound; the bound alone would be unreachable code |
 | #5807 |  | n/a | test-support fix: `peekSession` on the in-process host core plus regression tests for an order-based registry lookup. mhc's rigs read the entry by handle (`registry.get`), so the divergence does not exist |
-| #5809 |  | n/a | delegated connections: every `open_session` on a `declare_delegation` connection is retained. mhc has no delegated connection (`same_account_delegation_v1` unported, `declare_delegation` absent), so every open here is local |
-| #6075 |  | n/a | sealed secret prompt lifecycle follow-ups (`SecretInputPresentations.useSealed`, `WorkerHostSecrets.exited`). The sealed-holder lane does not exist in mhc: `secret_input.rs` covers the extension API's timeout and value rules only |
-| #6281 |  | n/a | `withReceipt` on an applied close reply. `command-authority.ts` (relayExec receipts) was never ported; no mhc response carries an `authority` field |
+| #5809 |  | gap | delegated connections: every `open_session` on a `declare_delegation` connection is retained. mhc has no delegated connection (`same_account_delegation_v1` unported, `declare_delegation` absent), so every open here is local |
+| #6075 |  | gap | sealed secret prompt lifecycle follow-ups (`SecretInputPresentations.useSealed`, `WorkerHostSecrets.exited`). The sealed-holder lane does not exist in mhc: `secret_input.rs` covers the extension API's timeout and value rules only |
+| #6281 |  | gap | `withReceipt` on an applied close reply. `command-authority.ts` (relayExec receipts) was never ported; no mhc response carries an `authority` field |
 | #6449 |  | port | `HostCore::tear_down_released` (and `close_session`, both runtimes) clears every handover-parked record key of the session |
 | #6686 |  | port | `session_cwd_not_directory` refusal: `maho-core` `session_cwd.rs` (`SessionCwdNotDirectoryError`, `session_cwd_not_directory`), `SessionSwitchFailure.not_directory`, `AgentSessionRuntimeError::SessionCwdNotDirectory`, and the `open_session` pre-check in `multi_session_host.rs` |
 | #6815 |  | port | `SessionWorkerRequests::note_progress` re-arms the no-progress deadline on every worker message, `progress_budget_ms` starts a fresh budget after a quiet spell, and `WorkerSessionRegistry::open_session` refuses a quarantined session `session_path_in_use` with `{ reason: session_quarantined, action: retry }` |
@@ -88,3 +88,5 @@ the layer it needs named. The two machine-ops rows (`#5603`, `#6726`) were alrea
   `openSessionFolder` does (`#6427`, ported in round 1 only as far as the profile), so the `session_cwd_not_directory`
   refusal judges the named or launch cwd. A header cwd that is a file is refused later, by the runtime, as
   `open_failed`.
+
+Lead audit (2026-11-22): 3 rows first recorded as `n/a` are re-labelled `gap`: the upstream change is a real capability that mhc lacks because the subsystem it lives in is not ported. The track's own summary line above predates this audit.

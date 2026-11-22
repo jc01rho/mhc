@@ -44,7 +44,7 @@ Summary: **154** rows — `ported`: **58**, `port`: **21**, `n/a`: **75**, `gold
 | #4911 | `aa4168f652` | `n/a` | TS test exit-listener race fix (`packages/coding-agent/test/suite/session-worker-data.test.ts`) |
 | #5027 | `6bcbc2a084` | `ported` | `crates/maho-core/src/credential_pool/failover.rs`, `crates/maho-core/src/credential_pool/rotation_stream.rs` (`acquire_half_open_lease` and probe lease handling) |
 | #5034 | `2e9d20cae0` | `port` | `crates/maho-core/src/credential_pool/classify.rs` (`GUESSED_BACKOFF_CAP_MS` 30-minute cap on guessed exponential backoff in `rate_limit_cooldown`) |
-| #5039 | `f288cd1e96` | `n/a` | Experimental TS `packages/coding-agent/src/subscription-egress/*` schema/executor for remote hand plane; not part of mhc workspace |
+| #5039 | `f288cd1e96` | `gap` | Experimental TS `packages/coding-agent/src/subscription-egress/*` schema/executor for remote hand plane; not part of mhc workspace |
 | #5040 | `4f936ae750` | `port` | `crates/maho-core/src/credential_pool/classify.rs` (`limit_from_provider_code` outranks message prose for structured `rate_limit_exceeded` vs `usage_limit_reached`/`usage_not_included`) |
 | #5041 | `5c35281892` | `ported` | `crates/maho-core/src/retry_fallback/controller.rs`, `crates/maho-core/src/retry_fallback/unusable.rs`, `crates/maho-core/src/provider_account_events.rs` (primary restore honors active hold and account change events clear provider holds) |
 | #5043 | `af11e3ac8e` | `ported` | `crates/maho-core/src/credential_pool/state_store.rs` (`StoredSlotRevisions`, `applicable_stored_state`), `crates/maho-core/src/credential_pool/rotation_stream.rs` (ported in round-1 PR #32) |
@@ -101,10 +101,10 @@ Summary: **154** rows — `ported`: **58**, `port`: **21**, `n/a`: **75**, `gold
 | #5997 | `195fba3c12` | `n/a` | TS kill-guard sleeper test fixture only (`packages/coding-agent/test/kill-guard/*`) |
 | #6019 | `86fad10b8d` | `n/a` | TS runtime-snapshot inventory phase budget test only (`packages/coding-agent/test/runtime-snapshot/inventory.test.ts`) |
 | #6028 | `d32a1a0f6f` | `n/a` | TS test fixture-ready helper only (`packages/coding-agent/test/helpers/fixture-ready.ts`) |
-| #6082 | `9492f7151f` | `n/a` | TS hand-mode socket carrier (`packages/coding-agent/src/modes/hand/*`); mhc does not ship the TS hand mode |
+| #6082 | `9492f7151f` | `gap` | TS hand-mode socket carrier (`packages/coding-agent/src/modes/hand/*`); mhc does not ship the TS hand mode |
 | #6084 | `3146bd275a` | `ported` | `crates/maho-core/src/session_manager.rs` (in-memory / non-persisting sessions never fail write-guard ownership checks) |
 | #6091 | `c21189cff7` | `n/a` | TS runtime-snapshot inventory test only (`packages/coding-agent/test/runtime-snapshot/inventory.test.ts`) |
-| #6130 | `6a98ceb476` | `n/a` | TS hand-mode socket carrier (`packages/coding-agent/src/modes/hand/socket-carrier.ts`); not shipped in mhc |
+| #6130 | `6a98ceb476` | `gap` | TS hand-mode socket carrier (`packages/coding-agent/src/modes/hand/socket-carrier.ts`); not shipped in mhc |
 | #6143 | `f6599da86d` | `n/a` | Windows private-fd test cleanup retry (`packages/coding-agent/test/suite/host-private-fds-proof-gate.test.ts`) |
 | #6146 | `d295cca929` | `n/a` | TS shutdown call-sites regression test only (`packages/coding-agent/test/suite/regressions/3067-shutdown-call-sites.test.ts`) |
 | #6162 | `595014205c` | `n/a` | TS host-cli-presenter EPIPE test helper only (`packages/coding-agent/test/suite/host-cli-presenter-support.ts`) |
@@ -130,7 +130,7 @@ Summary: **154** rows — `ported`: **58**, `port`: **21**, `n/a`: **75**, `gold
 | #6658 | `63f64d68b4` | `ported` | `crates/maho-core/src/agent_session.rs` (`configuration_update` live thinking level projection) |
 | #6660 | `d5153f141f` | `n/a` | TS test flake fix only (`packages/coding-agent/test/suite/regressions/3067-shutdown-call-sites.test.ts`) |
 | #6701 | `1b89946197` | `port` | `crates/maho-core/src/retry_fallback/settings.rs` (`claude-opus-5-5` -> `claude-fable-5-2:medium`, `kimi-k3.1-pro:max`; Fable chains inherit session thinking effort), `crates/maho-core/src/retry_fallback/expansion.rs` (`family_ids` `k\d` -> `kimi-` alias and `exactness`), `crates/maho-core/src/retry_fallback/chains.rs` (deduplicate expanded rungs), `crates/maho-core/src/retry_fallback/controller.rs` (active episode `chain_key` precedence) |
-| #6713 | `46f9757aab` | `n/a` | Experimental `OMO_TOOLS_VIA_DAEMON` device bash routing (`packages/coding-agent/src/core/tools/bash.ts`); mhc executes bash natively via `maho-tools` / `maho-tool-child` |
+| #6713 | `46f9757aab` | `gap` | Experimental `OMO_TOOLS_VIA_DAEMON` device bash routing (`packages/coding-agent/src/core/tools/bash.ts`); mhc executes bash natively via `maho-tools` / `maho-tool-child` |
 | #6772 | `147a0df07e` | `ported` | `crates/maho-ext-api/src/types.rs` (`CompactionRejectionCause::TransientFailure`), `crates/maho-core/src/agent_session.rs` (ported in round-1 PR #32) |
 | #6776 | `7e573378c4` | `n/a` | TS bundle import-order fix in `packages/coding-agent/src/private-fds.ts`; not applicable to native Rust binary |
 | #6814 | `0d818b089b` | `port` | `crates/maho-core/src/work_obligations.rs` (`sending`, `is_delivery_in_flight`, `end_delivery` recompute on open unconsumed record), `crates/maho-core/src/session_lifecycle.rs` (`delivery_in_flight` excluded from background waits and keeps session running) |
@@ -161,3 +161,5 @@ Summary: **154** rows — `ported`: **58**, `port`: **21**, `n/a`: **75**, `gold
 | #7066 | `63d1680ed6` | `n/a` | Upstream markdown documentation only (`packages/coding-agent/docs/compaction*.md`, `docs/settings.md`) |
 | #7078 | `3099ce9cb0` | `n/a` | Upstream markdown documentation nits only (`packages/coding-agent/docs/compaction*.md`, `docs/settings.md`) |
 | #7135 | `0a1a4aa71e` | `ported` | `crates/maho-core/src/agent_session.rs` (retry wait drain emits `AutoRetryEnd` for both cancelled and continued outcomes) |
+
+Lead audit (2026-11-22): 4 rows first recorded as `n/a` are re-labelled `gap`: the upstream change is a real capability that mhc lacks because the subsystem it lives in is not ported. The track's own summary line above predates this audit.
