@@ -417,3 +417,88 @@ fn signed_append_over_the_empty_head_matches_the_built_request() {
         &signed.record_sig
     ));
 }
+
+#[test]
+fn validate_bootstrap_accepts_a_phrase_key_and_the_walk_keeps_phrase_kind() {
+    use crate::sync::crypto::parse::{RecoveryKey, Survivable};
+    use crate::sync::crypto::recovery_kind::PHRASE_RECOVERY_RP_ID;
+    use crate::sync::recovery::phrase::{ENTROPY_BYTES, RecoveryPhrase, derive_phrase_keys};
+
+    let v = vector();
+    let phrase = RecoveryPhrase::from_entropy([0x11; ENTROPY_BYTES]);
+    let nonce = [0x22; 32];
+    let keys = derive_phrase_keys(&phrase, ACCOUNT, &nonce).expect("phrase keys");
+    let (sealing_public_key, signing_public_key) = keys.public_key_text();
+
+    let mut bootstrap = v.bootstrap.clone();
+    bootstrap.recovery_key = RecoveryKey {
+        credential_id: b64(&[6; 16]),
+        rp_id: PHRASE_RECOVERY_RP_ID.into(),
+        enrollment_nonce: b64(&nonce),
+        sealing_public_key,
+        signing_public_key,
+        survivable: Survivable::Phrase,
+    };
+    let capabilities = VectorCapabilities {
+        sign_seed: keys.sign_seed().try_into().expect("32-byte sign seed"),
+        seal_calls: Cell::new(0),
+        countersign_calls: Cell::new(0),
+    };
+    let prepared = prepare_genesis(&bootstrap, &capabilities).expect("phrase prepared");
+    let (request, _) = build_genesis(ACCOUNT, &v.keyring, &prepared).expect("phrase built");
+    let AppendOutcome::Accepted { state, .. } = walk(&request, &v.keyring, &v.keyring) else {
+        panic!("phrase genesis was rejected")
+    };
+    assert_eq!(
+        state
+            .authority()
+            .expect("authority")
+            .registry
+            .get(&bootstrap.recovery_key.credential_id),
+        Some(&bootstrap.recovery_key)
+    );
+}
+
+#[test]
+fn validate_bootstrap_refuses_invalid_kind_pairs_and_credential_lengths() {
+    use crate::sync::crypto::parse::Survivable;
+    use crate::sync::crypto::recovery_kind::PHRASE_RECOVERY_RP_ID;
+
+    let v = vector();
+    let invalid_pairs = [
+        (Survivable::Phrase, "recovery.omo.dev"),
+        (Survivable::Synced, PHRASE_RECOVERY_RP_ID),
+        (Survivable::Roaming, PHRASE_RECOVERY_RP_ID),
+        (Survivable::Synced, "omo-sync/v2/other"),
+        (Survivable::Roaming, "omo-sync/"),
+    ];
+    for (survivable, rp_id) in invalid_pairs {
+        let mut bootstrap = v.bootstrap.clone();
+        bootstrap.recovery_key.survivable = survivable;
+        bootstrap.recovery_key.rp_id = rp_id.into();
+        assert_eq!(
+            validate_bootstrap(&bootstrap),
+            Err(GenesisBuildError::BadBootstrap),
+            "{survivable:?} / {rp_id}"
+        );
+    }
+
+    for len in [15usize, 17, 32] {
+        let mut bootstrap = v.bootstrap.clone();
+        bootstrap.recovery_key.survivable = Survivable::Phrase;
+        bootstrap.recovery_key.rp_id = PHRASE_RECOVERY_RP_ID.into();
+        bootstrap.recovery_key.credential_id = b64(&vec![7u8; len]);
+        let capabilities = VectorCapabilities {
+            sign_seed: v.capabilities.sign_seed,
+            seal_calls: Cell::new(0),
+            countersign_calls: Cell::new(0),
+        };
+        assert_eq!(
+            prepare_genesis(&bootstrap, &capabilities).unwrap_err(),
+            GenesisBuildError::BadBootstrap,
+            "{len}-byte phrase credential_id"
+        );
+        assert_eq!(capabilities.seal_calls.get(), 0);
+        assert_eq!(capabilities.countersign_calls.get(), 0);
+    }
+}

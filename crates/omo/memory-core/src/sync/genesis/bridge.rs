@@ -106,3 +106,35 @@ impl std::fmt::Display for GenesisEnableError {
 }
 
 impl std::error::Error for GenesisEnableError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct PasskeyOnlyBridge;
+    impl GenesisBridge for PasskeyOnlyBridge {
+        fn prf_supported(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_bridge_without_a_phrase_surface_refuses_phrase_genesis() {
+        let bridge = PasskeyOnlyBridge;
+        assert!(bridge.prf_supported());
+        assert!(!bridge.phrase_supported());
+        let outcome = bridge.create_phrase_genesis(PhraseGenesisBridgeRequest {
+            account: "acct".into(),
+            first_device: Principal {
+                kind: "device".into(),
+                id: "dev".into(),
+                sealing_public_key: "seal".into(),
+                signing_public_key: "sign".into(),
+            },
+        });
+        assert_eq!(
+            outcome,
+            GenesisBridgeResult::Refused(GenesisBridgeRefusal::Unavailable)
+        );
+    }
+}

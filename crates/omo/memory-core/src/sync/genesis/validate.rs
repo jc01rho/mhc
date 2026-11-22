@@ -1,5 +1,5 @@
 use super::types::{GenesisBootstrap, GenesisBuildError, GenesisPrepared};
-use crate::sync::crypto::{parse::parse_body, signatures::*};
+use crate::sync::crypto::{parse::parse_body, recovery_kind::recovery_kind_of, signatures::*};
 use serde_json::{Value, json};
 use unicode_normalization::UnicodeNormalization;
 
@@ -30,6 +30,12 @@ pub fn validate_bootstrap(bootstrap: &GenesisBootstrap) -> Result<(), GenesisBui
         && decode_b64(&recovery.enrollment_nonce, Some(32)).is_some()
         && decode_b64(&recovery.sealing_public_key, Some(32)).is_some()
         && is_strong_key_text(&recovery.signing_public_key)
+        && recovery_kind_of(
+            Some(recovery.survivable.as_str()),
+            &recovery.rp_id,
+            &recovery.credential_id,
+        )
+        .is_some()
         && device_id_of(&first.signing_public_key).as_deref() == Some(first.id.as_str());
     if valid {
         Ok(())

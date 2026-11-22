@@ -242,8 +242,45 @@ mod tests {
             genesis_phrase_state(&place, &facts(false, Some("other-root"), false))?,
             GenesisPhraseState::Void
         );
+        assert_eq!(
+            genesis_phrase_state(&place, &facts(false, None, false))?,
+            GenesisPhraseState::Void
+        );
         delete_phrase_genesis_marker(&place)?;
         assert!(!marker_path(&place).exists());
+        assert_eq!(
+            genesis_phrase_state(&place, &facts(false, None, false))?,
+            GenesisPhraseState::None
+        );
+        assert!(!genesis_intent_present(&place)?);
+
+        write_phrase_genesis_marker(&place, &marker(None))?;
+        assert_eq!(
+            genesis_phrase_state(&place, &facts(false, None, true))?,
+            GenesisPhraseState::Void
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn genesis_lock_liveness_treats_corrupt_lock_as_live_and_absent_as_free() -> std::io::Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let place = place(dir.path());
+        assert!(!genesis_lock_held_by_live_owner(&place)?);
+        resilient::create_dir_all(&dir.path().join("genesis-intent"))?;
+        resilient::write(&beside(&place, ".lock"), b"corrupt-lock")?;
+        assert!(genesis_lock_held_by_live_owner(&place)?);
+        let live = crate::locks::create_lock_record(
+            "sync-genesis",
+            crate::locks::CreateLockRecordOptions::default(),
+        )
+        .expect("lock record");
+        resilient::write(
+            &beside(&place, ".lock"),
+            serde_json::to_vec(&live).expect("json").as_slice(),
+        )?;
+        assert!(genesis_lock_held_by_live_owner(&place)?);
         Ok(())
     }
 
