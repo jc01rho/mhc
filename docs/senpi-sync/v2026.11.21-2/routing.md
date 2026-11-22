@@ -82,6 +82,8 @@ providers (`maho-omo-task` `tests/category_warning.rs`, `maho-omo-memory`
   unavailable, direct pin refused, gate off selects Fable, plan-consultant),
   `crates/omo/components/maho-omo-task/src/planner_explicit_pin.rs` (task pin refused / allowed),
   `crates/maho-core/src/model_runtime.rs` (no provider call for a blocked model),
+  `crates/maho-core/src/retry_fallback/candidates.rs` (the default Opus 5.5 retry chain from #57 skips
+  its `claude-fable-5-2:medium` rung for `kimi-k3.1-pro:max`),
   `crates/omo/components/maho-omo-model-profile/tests/index.rs` (Fable pin refused, lane skips a Fable
   rung), `crates/omo/components/maho-omo-fallback-architect/tests/architect_gate.rs` (Fable-only
   architect gate shut while the gate is on), `crates/maho-model-select/tests/select.rs`.

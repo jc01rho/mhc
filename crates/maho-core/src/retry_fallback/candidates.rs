@@ -298,6 +298,71 @@ mod tests {
         );
     }
 
+    /// GATE-1 (docs/divergences.md): the default Claude Opus 5.5 chain steps to Claude Fable 5.2; the
+    /// execution gate, on by default, skips that rung for the next one.
+    #[test]
+    fn the_execution_gate_skips_the_default_opus_chains_fable_rung_for_the_next_one() {
+        let template = maho_ai::providers::all::get_builtin_models("openai").remove(0);
+        let model = |provider: &str, id: &str| {
+            let mut model = template.clone();
+            model.provider = provider.into();
+            model.id = id.into();
+            model
+        };
+        let models = vec![
+            model("anthropic", "claude-opus-5-5"),
+            model("anthropic", "claude-fable-5-2"),
+            model("moonshotai", "kimi-k3.1-pro"),
+        ];
+        let chains = super::super::chains::canonicalize_fallback_chains(
+            &super::super::settings::default_fallback_chains(),
+            &models,
+            &super::super::expansion::FallbackAuthTiers {
+                is_using_oauth: &|_| false,
+                has_configured_auth: None,
+                is_fallback_eligible: None,
+            },
+        );
+        let key = super::super::chains::resolve_chain_key(&models[0], None, &chains)
+            .expect("the default Opus 5.5 chain");
+        let entries = &chains[&key];
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.contains("claude-fable-5-2")),
+            "{entries:?}"
+        );
+        let tried = HashSet::new();
+        let mut skipped: Vec<(String, String)> = Vec::new();
+        let mut is_suppressed = |_: &str| false;
+        let mut skip = |raw: &str, reason: &str| skipped.push((raw.to_owned(), reason.to_owned()));
+        let mut filters = CandidateFilters {
+            models: &models,
+            tried: &tried,
+            is_suppressed: &mut is_suppressed,
+            is_auth_available: &|_| true,
+            is_circuit_open: &|_| false,
+            is_model_skipped: None,
+            is_provider_spent: None,
+            skip: &mut skip,
+        };
+        let current = CurrentRung {
+            model: &models[0],
+            thinking_level: None,
+        };
+        let found = first_usable_candidate(entries, &current, &mut filters);
+        assert_eq!(
+            found.map(|candidate| format!("{}/{}", candidate.model.provider, candidate.model.id)),
+            Some("moonshotai/kimi-k3.1-pro".to_owned())
+        );
+        assert!(
+            skipped
+                .iter()
+                .any(|(raw, reason)| raw.contains("claude-fable-5-2") && reason == "execution-gate"),
+            "{skipped:?}"
+        );
+    }
+
     #[test]
     fn treats_the_running_model_as_self_and_unknown_entries_as_unknown() {
         let mut probe = Probe {
