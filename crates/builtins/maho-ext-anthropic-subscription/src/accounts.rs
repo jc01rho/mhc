@@ -11,6 +11,8 @@ pub const SENTINEL_EXPIRES: f64 = 4102444800000.0;
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSlot {
+    /// A credential file can hold an account whose name never made it in; it reads as blank and is not listed.
+    #[serde(default)]
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
@@ -56,6 +58,23 @@ fn stored_slots(credential: &OAuthCredential) -> anyhow::Result<Vec<AccountSlot>
 pub fn is_sentinel_slot(slot: &AccountSlot) -> bool {
     slot.access == SENTINEL_TOKEN && slot.refresh == SENTINEL_TOKEN
 }
+/// senpi `isListedStoredSlot`: the one rule every surface applies to decide which stored accounts it shows and counts.
+/// A stored account that names no account cannot be selected, signed into, or affinity-routed (senpi#6116,
+/// omo#12228).
+pub fn is_listed_stored_slot(slot: &AccountSlot) -> bool {
+    !slot.name.trim().is_empty()
+}
+/// senpi `unusableStoredSlotCount`: the stored accounts the listing rule drops, so a lane can refuse the turn instead
+/// of silently falling back to ambient host credentials when every stored account is unusable. A sentinel slot is
+/// hidden on purpose and is not a broken login this rule can report.
+pub fn unusable_stored_slot_count(credential: &OAuthCredential) -> usize {
+    stored_slots(credential).map_or(0, |slots| {
+        slots
+            .iter()
+            .filter(|slot| !is_sentinel_slot(slot) && !is_listed_stored_slot(slot))
+            .count()
+    })
+}
 pub type EnvironmentReader<'a> = dyn Fn(&str) -> Option<String> + 'a;
 pub fn list_accounts(
     credential: &OAuthCredential,
@@ -63,7 +82,7 @@ pub fn list_accounts(
 ) -> anyhow::Result<Vec<AccountSlot>> {
     let mut slots: Vec<_> = stored_slots(credential)?
         .into_iter()
-        .filter(|slot| !is_sentinel_slot(slot))
+        .filter(|slot| !is_sentinel_slot(slot) && is_listed_stored_slot(slot))
         .collect();
     if let Some(env) = env {
         for mut slot in env_slots(env) {
@@ -426,6 +445,33 @@ mod tests {
         .unwrap();
         assert_eq!(slots[0].blocked_until, Some(123.0));
         assert_eq!(slots[0].block_reason.as_deref(), Some("rate_limit"));
+    }
+    #[test]
+    fn a_stored_account_with_no_name_is_not_listed_and_counts_as_unusable() {
+        let credential = empty_credential().with_extra(
+            "accounts",
+            serde_json::json!([
+                {"source":"login","access":"a","refresh":"r","expires":1.0},
+                {"name":"  ","source":"login","access":"a","refresh":"r","expires":1.0},
+                {"name":"work","source":"login","access":"a","refresh":"r","expires":60000.0}
+            ]),
+        );
+        let names: Vec<_> = list_accounts(&credential, None)
+            .unwrap()
+            .into_iter()
+            .map(|account| account.name)
+            .collect();
+        assert_eq!(names, ["work"]);
+        assert_eq!(unusable_stored_slot_count(&credential), 2);
+        assert_eq!(unusable_stored_slot_count(&empty_credential()), 0);
+    }
+    #[test]
+    fn a_sentinel_slot_is_hidden_on_purpose_not_counted_as_unusable() {
+        let mut poisoned = slot("login-2");
+        poisoned.access = SENTINEL_TOKEN.into();
+        poisoned.refresh = SENTINEL_TOKEN.into();
+        let credential = add_account(&empty_credential(), poisoned).unwrap();
+        assert_eq!(unusable_stored_slot_count(&credential), 0);
     }
     #[test]
     fn poisoned_sentinel_slot_never_listed() {

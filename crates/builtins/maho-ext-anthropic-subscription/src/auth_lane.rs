@@ -30,6 +30,9 @@ pub struct PreparedSlot {
     pub env: BTreeMap<String, String>,
     pub credential_digest: String,
 }
+/// A stored account that names no account cannot be selected, signed into, or affinity-routed. Refusing here keeps the
+/// turn from silently falling back to ambient host credentials (omo#12228, senpi#6116).
+const UNUSABLE_STORED_ACCOUNT_ERROR: &str = "claude_account_unusable: a stored Claude account has no name, so no turn can use it; run /login anthropic-subscription to add a named account";
 const TRANSIENT_REFRESH_FAILURE: &str = r"\bstatus=5\d\d\b|\bTimeoutError\b";
 /// senpi `refreshFailure`: throttling, server errors and timeouts on the token endpoint are not a verdict on the
 /// grant; anything else is an authentication failure.
@@ -226,7 +229,21 @@ pub async fn managed_pool(
     }
     let lane = request_lane(settings, &accounts, request)?;
     if lane == TokenInjection::Ambient {
-        return Ok(None);
+        // An ambient lane the user configured explicitly is their choice and is never overridden (omo#6784); a lane
+        // that defaulted to ambient only because every stored account was dropped names the real cause instead.
+        let explicit_ambient = settings
+            .values
+            .get("tokenInjection")
+            .and_then(serde_json::Value::as_str)
+            == Some("ambient");
+        let unusable = credential
+            .as_ref()
+            .and_then(|value| value.as_oauth())
+            .map_or(0, crate::accounts::unusable_stored_slot_count);
+        if explicit_ambient || unusable == 0 {
+            return Ok(None);
+        }
+        anyhow::bail!("{UNUSABLE_STORED_ACCOUNT_ERROR}");
     }
     let settings_pin = settings
         .values
@@ -426,6 +443,97 @@ mod tests {
             crate::accounts::list_accounts(&credential, None)
                 .expect("stored accounts")
                 .is_empty()
+        );
+    }
+    async fn store_with_raw_slots(
+        slots: serde_json::Value,
+    ) -> maho_ai::auth::credential_store::InMemoryCredentialStore {
+        use maho_ai::auth::{
+            credential_store::InMemoryCredentialStore,
+            types::{Credential, CredentialStore},
+        };
+        let store = InMemoryCredentialStore::new();
+        let credential = crate::accounts::empty_credential().with_extra("accounts", slots);
+        store
+            .modify(
+                PROVIDER_ID,
+                Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })),
+                None,
+            )
+            .await
+            .expect("seed");
+        store
+    }
+    fn nameless_slot() -> serde_json::Value {
+        serde_json::json!({"source":"login","access":"a","refresh":"r","expires":1.0})
+    }
+    fn named_slot(name: &str) -> serde_json::Value {
+        serde_json::json!({"name":name,"source":"login","access":"a","refresh":"r","expires":4102444800000.0})
+    }
+    fn configured(provider: serde_json::Value) -> ProviderSettings {
+        crate::settings::load(
+            &serde_json::json!({"anthropicSubscriptionProvider": provider}),
+            &serde_json::Value::Null,
+            &BTreeMap::new(),
+        )
+    }
+    #[tokio::test]
+    async fn a_pool_with_only_nameless_stored_accounts_refuses_instead_of_falling_back_to_ambient()
+    {
+        let store = store_with_raw_slots(serde_json::json!([nameless_slot()])).await;
+        let outcome = managed_pool(
+            &store,
+            &configured(serde_json::json!({})),
+            &BTreeMap::new(),
+            None,
+        )
+        .await;
+        match outcome {
+            Err(error) => assert!(error.to_string().contains("claude_account_unusable")),
+            Ok(_) => panic!("a pool of nameless accounts must refuse the turn"),
+        }
+    }
+    #[tokio::test]
+    async fn an_explicit_ambient_lane_is_never_overridden_by_a_nameless_stored_account() {
+        let store = store_with_raw_slots(serde_json::json!([nameless_slot()])).await;
+        let settings = configured(serde_json::json!({"tokenInjection":"ambient"}));
+        let pool = managed_pool(&store, &settings, &BTreeMap::new(), None)
+            .await
+            .expect("ambient is the user's choice");
+        assert!(pool.is_none());
+    }
+    #[tokio::test]
+    async fn an_explicit_managed_lane_names_the_missing_accounts() {
+        let store = store_with_raw_slots(serde_json::json!([nameless_slot()])).await;
+        let settings = configured(serde_json::json!({"tokenInjection":"config-dir"}));
+        match managed_pool(&store, &settings, &BTreeMap::new(), None).await {
+            Err(error) => assert!(
+                error
+                    .to_string()
+                    .contains("No Anthropic Subscription accounts configured")
+            ),
+            Ok(_) => panic!("an explicit managed lane with no usable account must refuse"),
+        }
+    }
+    #[tokio::test]
+    async fn a_named_account_beside_a_nameless_one_stays_usable() {
+        let store =
+            store_with_raw_slots(serde_json::json!([nameless_slot(), named_slot("work")])).await;
+        let pool = managed_pool(
+            &store,
+            &configured(serde_json::json!({})),
+            &BTreeMap::new(),
+            None,
+        )
+        .await
+        .expect("pool")
+        .expect("managed");
+        assert_eq!(
+            pool.accounts
+                .iter()
+                .map(|slot| slot.name.as_str())
+                .collect::<Vec<_>>(),
+            ["work"]
         );
     }
     fn settings(lane: &str) -> ProviderSettings {
