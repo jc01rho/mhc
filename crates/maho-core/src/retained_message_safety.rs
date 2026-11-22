@@ -159,6 +159,19 @@ fn safe_result(value: &Value) -> bool {
             v.as_array().is_some_and(|a| a.iter().all(Value::is_string))
         })
 }
+const CONFIGURATION_UPDATE_EFFORTS: &[&str] =
+    &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+fn safe_configuration_update(value: &Value) -> bool {
+    value
+        .get("effort")
+        .and_then(Value::as_str)
+        .is_some_and(|effort| CONFIGURATION_UPDATE_EFFORTS.contains(&effort))
+        && value
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        && finite(value, "timestamp")
+}
 pub fn has_unsafe_retained_content(messages: &[Value]) -> bool {
     messages.iter().any(|value| {
         if !value.is_object() {
@@ -171,6 +184,7 @@ pub fn has_unsafe_retained_content(messages: &[Value]) -> bool {
             }
             Some("assistant") => safe_assistant(value),
             Some("toolResult") => safe_result(value),
+            Some("configurationUpdate") => safe_configuration_update(value),
             Some("custom") => {
                 string(value, "customType")
                     && value.get("display").is_some_and(Value::is_boolean)
