@@ -11,6 +11,7 @@ pub mod auth_environment;
 pub mod auth_lane;
 pub mod availability;
 pub mod bounded_queue;
+pub mod claude_settings_env;
 pub mod cold_seed_budget;
 pub mod cold_seed_images;
 pub mod config_dir_credentials;

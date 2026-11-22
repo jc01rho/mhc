@@ -167,6 +167,13 @@ pub fn stream_anthropic_subscription(
                 .or(options.stream.session_id.as_deref())
         });
         let account_fallback = crate::settings::account_fallback(&deps.settings);
+        // The effective `env` of the settings files this stream's queries load (senpi#2988 item 4): a lifetime set
+        // there is what Claude Code will actually use, so the pin must see it. Resolved once per stream.
+        let settings_env = crate::claude_settings_env::resolve_query_settings_env(
+            &deps.cwd,
+            &deps.settings,
+            &deps.environment,
+        );
         // senpi `residentAuthLaneMessages`: the account this session's SDK transcript lives under is preferred while
         // it can serve (senpi#2891). Only the resident lane passes it; a one-shot turn has no transcript to follow.
         let resident_lane = options.as_ref().is_some_and(|options| {
@@ -369,7 +376,9 @@ pub fn stream_anthropic_subscription(
             let one_shot_cache_ttl = {
                 let mut host = deps.environment.clone();
                 if let Some(request) = request { host.extend(request.iter().map(|(key, value)| (key.clone(), value.clone()))); }
-                crate::prompt_cache_ttl::pin_one_shot_prompt_cache_ttl(configuration.as_object_mut().expect("query options"), lane, &host)
+                // Only the settings files this attempt loads can set its lifetime: managed lanes load none (senpi#2988).
+                let loads_settings = configuration["settingSources"].as_array().is_some_and(|sources| !sources.is_empty());
+                crate::prompt_cache_ttl::pin_one_shot_prompt_cache_ttl(configuration.as_object_mut().expect("query options"), lane, &host, settings_env.as_ref().filter(|_| loads_settings))
             };
             let spawn = crate::sdk_boundary::SdkQueryHandle::spawn(&deps.executable, &configuration, &environment);
             let handle = match &signal {
