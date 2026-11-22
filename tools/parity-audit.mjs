@@ -25,7 +25,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SENPI_PIN = "59d58cee59d76bbecc83be828b59ff5420eb74df";
+const SENPI_PIN = "f01af134919f0bbf24b2887000e2142dfd290567";
 
 const BUILTIN_DIR = "packages/coding-agent/src/core/extensions/builtin";
 // The 40 senpi builtin extension directories (plan IS-5); each maps to crates/builtins/maho-ext-<dir>.

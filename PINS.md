@@ -4,7 +4,7 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 
 | Source | Short | Full commit | Location |
 | --- | --- | --- | --- |
-| senpi | 59d58cee5 | 59d58cee59d76bbecc83be828b59ff5420eb74df | code-yeongyu/senpi |
+| senpi | f01af1349 | f01af134919f0bbf24b2887000e2142dfd290567 | code-yeongyu/senpi |
 | oh-my-openagent | 822bd92303 | 822bd923038c88427b450744de75e0fa7d7401cd | code-yeongyu/oh-my-openagent |
 | oh-my-pi | f59bbac3d | f59bbac3d56e8b485fef466388b1cb5be4b93123 | can1357/oh-my-pi (MIT; LSP mux design in crates/maho-lsp, task model in crates/maho-task, mnemopi memory engine in crates/maho-memory, Chromium discovery and browser/computer tool surface in crates/maho-browser, telemetry export and usage stats in crates/maho-telemetry, pi-iso rcopy backend and task worktree isolation in crates/maho-isolation, agentic-commit git tools in crates/maho-git, terminal launch and multiplexer detection in crates/maho-team, setup wizard step model in crates/maho-onboarding, `/init` context-file scope in crates/maho-context-files) |
 | omowright | a019fdf | a019fdfbc337bd917d10b8f3d64026b3549e0b2c | code-yeongyu/omowright (MIT; CDP transport, page model and snapshot world in crates/maho-browser) |
