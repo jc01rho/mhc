@@ -298,6 +298,40 @@ pub fn preset_handoff_cue_kind(name: Option<PromptPresetName>) -> HandoffCueKind
     }
 }
 
+/// Presets whose model plans after it has read (senpi#7101).
+pub const PLAN_AFTER_READING_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[
+        P::Gpt62,
+        P::Gpt6Astra,
+        P::Gpt56,
+        P::Gpt55,
+        P::Gpt54,
+        P::Gpt53Codex,
+        P::Gpt52,
+        P::Gpt5,
+    ]
+};
+
+pub fn preset_first_turn_plan_default(name: Option<PromptPresetName>) -> &'static str {
+    if name.is_some_and(|name| PLAN_AFTER_READING_PRESETS.contains(&name)) {
+        "off"
+    } else {
+        "force"
+    }
+}
+
+/// Presets whose core states the todo rules itself, so the todotools extension does not append the
+/// shared `Task_Management` block after them (senpi#7101).
+pub const TODO_RULE_OWNER_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[P::Gpt62]
+};
+
+pub fn preset_owns_todo_rules(name: Option<PromptPresetName>) -> bool {
+    name.is_some_and(|name| TODO_RULE_OWNER_PRESETS.contains(&name))
+}
+
 /// `PromptPresetModelCase`.
 #[derive(Clone, Copy, Debug)]
 pub struct PromptPresetModelCase {
@@ -498,6 +532,24 @@ mod tests {
             preset_shared_sections(Some(PromptPresetName::Gpt6Astra)),
             SharedSections::Diet
         );
+    }
+
+    #[test]
+    fn defaults_the_first_turn_plan_to_off_under_every_gpt_preset_and_to_force_elsewhere() {
+        for preset in std::iter::once(&PromptPresetName::Gpt5).chain(AUTO_RESOLVED_PRESET_NAMES) {
+            let expected = if preset.as_str().starts_with("gpt-") {
+                "off"
+            } else {
+                "force"
+            };
+            assert_eq!(
+                preset_first_turn_plan_default(Some(*preset)),
+                expected,
+                "{}",
+                preset.as_str()
+            );
+        }
+        assert_eq!(preset_first_turn_plan_default(None), "force");
     }
 
     #[test]

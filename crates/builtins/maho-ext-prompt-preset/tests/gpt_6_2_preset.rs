@@ -82,7 +82,11 @@ fn every_gpt_6_2_tier_renders_the_standalone_core() {
 
 #[test]
 fn the_core_renders_every_section_in_table_order() {
-    let prompt = render("gpt-6.2-sol", PromptSurface::Terminal, &["read"]);
+    let prompt = render(
+        "gpt-6.2-sol",
+        PromptSurface::Terminal,
+        &["read", "create_goal", "todo"],
+    );
     let mut cursor = 0;
     for section in GPT62_SECTIONS {
         let heading = format!("## {section}\n\n");
@@ -99,7 +103,7 @@ fn each_rule_renders_once_under_its_own_section() {
     let prompt = render(
         "gpt-6.2-astra",
         PromptSurface::Terminal,
-        &["eval", "monitor"],
+        &["eval", "monitor", "create_goal", "todo", "task"],
     );
     for rule in gpt62_rules()
         .into_iter()
@@ -117,7 +121,10 @@ fn each_rule_renders_once_under_its_own_section() {
 #[test]
 fn the_terminal_surface_keeps_one_routing_line_and_no_handoff_block() {
     let prompt = render("gpt-6.2-sol", PromptSurface::Terminal, &["read"]);
-    assert!(prompt.contains("I read this as [the goal as you understand it]."));
+    assert!(
+        prompt
+            .contains("I read this as [what you take the user to want], so that [what it is for].")
+    );
     assert!(prompt.contains("and anything left unverified."));
     for absent in ["## Handoff", "Ask / For you / Now / Next", "## Stop Goal"] {
         assert!(
@@ -133,12 +140,12 @@ fn the_app_and_chat_surfaces_swap_the_surface_bound_rules() {
     assert!(!app.contains("I read this as"));
     assert!(app.contains(&format!("and {GPT_APP_UNVERIFIED_SLOT}.")));
     assert!(app.contains(GPT_APP_UNRUN_CHECK_RULE));
-    assert!(app.contains("Report proactively while you work."));
+    assert!(app.contains("Report as things happen:"));
 
     let chat = render("gpt-6.2-sol", PromptSurface::Chat, &["read"]);
     assert!(!chat.contains("I read this as"));
     assert!(chat.contains(maho_core::dynamic_prompt::handoff::CHAT_REPLY_RULE));
-    assert!(!chat.contains("Report proactively while you work."));
+    assert!(!chat.contains("Report as things happen:"));
     assert!(chat.contains(GPT_APP_UNRUN_CHECK_RULE));
 }
 

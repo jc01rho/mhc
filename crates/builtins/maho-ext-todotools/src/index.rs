@@ -297,7 +297,9 @@ pub fn register_state_hooks(
 pub fn register_prompt_hook(api: &mut maho_ext_api::ExtensionApi) {
     api.on_with_options(
         maho_ext_api::EventKind::BeforeAgentStart,
-        std::sync::Arc::new(|event, _ctx| Box::pin(async move { Ok(prompt_hook_result(event)) })),
+        std::sync::Arc::new(|event, ctx| {
+            Box::pin(async move { Ok(prompt_hook_result_with_context(event, Some(ctx))) })
+        }),
         maho_ext_api::ExtensionHandlerOptions {
             preview_safe: true,
             ..Default::default()
@@ -344,13 +346,18 @@ pub fn register_first_turn_hooks(api: &mut maho_ext_api::ExtensionApi) {
                     let home = std::env::var("HOME")
                         .or_else(|_| std::env::var("USERPROFILE"))
                         .unwrap_or_default();
+                    let preset = maho_ext_prompt_preset::active_preset::resolve_active_preset_name(
+                        ctx, None,
+                    );
                     let setting = maho_core::settings_manager::SettingsManager::create(
                         &ctx.cwd.to_string_lossy(),
                         &ctx.agent_dir.to_string_lossy(),
                         &home,
                         ctx.is_project_trusted(),
                     )
-                    .get_todo_first_turn_plan();
+                    .get_todo_first_turn_plan_with_fallback(
+                        maho_ext_prompt_preset::contract::preset_first_turn_plan_default(preset),
+                    );
                     let todo_active = runtime
                         .session_actions()
                         .and_then(|actions| actions.get_active_tools())
@@ -488,15 +495,34 @@ pub fn register_first_turn_hooks(api: &mut maho_ext_api::ExtensionApi) {
     }
 }
 fn prompt_hook_result(event: &maho_ext_api::ExtensionEvent) -> maho_ext_api::EventResult {
+    prompt_hook_result_with_context(event, None)
+}
+
+fn prompt_hook_result_with_context(
+    event: &maho_ext_api::ExtensionEvent,
+    ctx: Option<&maho_ext_api::ExtensionContext>,
+) -> maho_ext_api::EventResult {
     match event {
         maho_ext_api::ExtensionEvent::BeforeAgentStart(event) => {
+            let preset = ctx.and_then(|ctx| {
+                maho_ext_prompt_preset::active_preset::resolve_active_preset_name(ctx, None)
+            });
+            let section = if maho_ext_prompt_preset::contract::preset_shared_sections(preset)
+                == maho_core::dynamic_prompt::SharedSections::Full
+            {
+                crate::prompt::FULL_TASK_MANAGEMENT_SECTION
+            } else {
+                crate::prompt::TASK_MANAGEMENT_SECTION
+            };
+            let system_prompt = if maho_ext_prompt_preset::contract::preset_owns_todo_rules(preset)
+            {
+                event.system_prompt.clone()
+            } else {
+                format!("{}\n{}", event.system_prompt, section)
+            };
             maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult {
                 system_prompt_parts: None,
-                system_prompt: Some(format!(
-                    "{}\n{}",
-                    event.system_prompt,
-                    crate::prompt::TASK_MANAGEMENT_SECTION
-                )),
+                system_prompt: Some(system_prompt),
                 message: None,
             })
         }
