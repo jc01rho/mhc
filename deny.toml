@@ -59,6 +59,9 @@ ignore = [
 
     # RUSTSEC-2026-0543 (chrono =0.4.45 pinned): unmaintained notice only, no vulnerability; chrono is a direct dependency of many workspace crates, migration to jiff/time is tracked separately.
     { id = "RUSTSEC-2026-0543", reason = "unmaintained notice only, no vulnerability; chrono is a direct dependency of many workspace crates, migration to jiff/time is tracked separately" },
+
+    # RUSTSEC-2026-0592 (url =2.5.8 pinned): Url::origin() recursion on nested blob: URLs; mhc does not call Url::origin() on untrusted blob: URLs; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0592", reason = "Url::origin() recursion on nested blob: URLs; mhc does not call Url::origin() on untrusted blob: URLs; tracked for next workspace pin bump" },
 ]
 
 [licenses]

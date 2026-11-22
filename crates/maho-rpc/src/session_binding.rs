@@ -778,6 +778,13 @@ impl RpcSessionBinding {
     pub fn ui(&self) -> &std::sync::Arc<crate::connection_handler::RpcExtensionUi> {
         self.handler.ui()
     }
+    pub fn pending_requests(
+        &self,
+    ) -> std::sync::Arc<
+        std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
+    > {
+        self.handler.pending_requests()
+    }
     /// senpi session-binding `bindMcpForms`: with presenters enabled, binds this session's private forms with
     /// `admitHumanAnswer` as the admission, attaching the connections already attached; `handle` then answers
     /// private records through the writer. A no-op when the deployment does not enforce presenters.

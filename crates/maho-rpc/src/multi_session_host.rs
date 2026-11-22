@@ -5473,7 +5473,7 @@ impl crate::session_unload::SessionUnloadPort for HostUnloadPort<'_> {
             .lock()
             .await
             .get(session_id)
-            .map(|binding| binding.ui().pending_requests());
+            .map(|binding| binding.pending_requests());
         let mut registry = self.release.core.registry.lock().await;
         let entry = registry
             .get_for_command(session_id, "unload_session", now)
