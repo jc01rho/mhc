@@ -92,14 +92,18 @@ const DESTRUCTIVE_PREFIX_WORDS: &[&str] = &[
 
 /// Last resort for a plain name carrying a stray word prefix (`trophy_eval` for `eval`, omo#12065).
 fn stray_prefix_match(requested: &str, names: &BTreeSet<String>) -> Option<String> {
-    if tool_name_forms(requested).len() > 1 {
+    if tool_name_forms(requested).len() > 1
+        || requested
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("mcp_"))
+    {
         return None;
     }
     let matched = unique_match(names, |name| {
         requested.len() > name.len() + 1
             && requested
                 .strip_suffix(name)
-                .is_some_and(|head| head.ends_with('_'))
+                .is_some_and(|head| head.ends_with('_') && !head.ends_with("__"))
     })?;
     let prefix = &requested[..requested.len() - matched.len() - 1];
     let registered: BTreeSet<String> = names.iter().map(|n| fold_tool_name(n)).collect();
