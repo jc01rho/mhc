@@ -1,5 +1,33 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+const TRANSIENT_ENV_NAMES: &[&str] = &[
+    "PI_SESSION_ID",
+    "PI_SESSION_FILE",
+    "PI_SESSION_CWD",
+    "PI_GOAL_STORE_FILE",
+    "PI_PROVIDER",
+    "PI_MODEL",
+    "PI_REASONING_LEVEL",
+    "OMO_BROWSER_ENGINE",
+    "PI_PROMPT_CACHE_SAFE_WAIT_SECONDS",
+    "SENPI_PY_KERNEL_PARENT_PID",
+    "SENPI_RPC_HOST_WATCH_FD",
+    "SENPI_RPC_HOST_WATCH_PPID",
+    "SENPI_RPC_HOST_SCRATCH_DIR",
+    "SENPI_RPC_HOST_CLEANUP_PATHS",
+    "SENPI_RPC_HOST_PUBLIC_SOCKET",
+    "SENPI_RPC_HOST_INSTANCE_ID",
+    "SENPI_RPC_HOST_GENERATION",
+    "SENPI_RPC_HOST_DAEMON_DIR",
+    "SENPI_RPC_HOST_EXPECTED_RUNTIME_BUILD_ID",
+    "SENPI_ENGINE_TRUST",
+    "SENPI_ENGINE_TRUST_HOP",
+];
+
+pub fn is_transient_daemon_env_name(name: &str) -> bool {
+    TRANSIENT_ENV_NAMES.contains(&name)
+}
+
 pub fn daemon_env_is_allowed(name: &str, platform: &str) -> bool {
     let upper;
     let name = if platform == "win32" {
@@ -8,28 +36,7 @@ pub fn daemon_env_is_allowed(name: &str, platform: &str) -> bool {
     } else {
         name
     };
-    const TRANSIENT: &[&str] = &[
-        "PI_SESSION_ID",
-        "PI_SESSION_FILE",
-        "PI_SESSION_CWD",
-        "PI_GOAL_STORE_FILE",
-        "PI_PROVIDER",
-        "PI_MODEL",
-        "PI_REASONING_LEVEL",
-        "OMO_BROWSER_ENGINE",
-        "PI_PROMPT_CACHE_SAFE_WAIT_SECONDS",
-        "SENPI_PY_KERNEL_PARENT_PID",
-        "SENPI_RPC_HOST_WATCH_FD",
-        "SENPI_RPC_HOST_WATCH_PPID",
-        "SENPI_RPC_HOST_SCRATCH_DIR",
-        "SENPI_RPC_HOST_CLEANUP_PATHS",
-        "SENPI_RPC_HOST_PUBLIC_SOCKET",
-        "SENPI_RPC_HOST_INSTANCE_ID",
-        "SENPI_RPC_HOST_GENERATION",
-        "SENPI_RPC_HOST_DAEMON_DIR",
-        "SENPI_RPC_HOST_EXPECTED_RUNTIME_BUILD_ID",
-    ];
-    if TRANSIENT.contains(&name) {
+    if is_transient_daemon_env_name(name) {
         return false;
     }
     if platform == "win32"

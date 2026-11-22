@@ -89,6 +89,7 @@ pub fn host_tool_runtime_capabilities(kind: ToolRuntimeKind, negotiated: &[Strin
             .iter()
             .filter(|capability| {
                 *capability != MCP_FORM_PRESENTER_CAPABILITY
+                    && *capability != crate::custom_capability::PARK_CLAIM_CAPABILITY
                     && !is_host_owned_tool_runtime_capability(capability)
             })
             .cloned(),
@@ -147,9 +148,11 @@ pub fn multi_session_host_capabilities(
         "continue_from_leaf",
         "eval_cells",
         "auth_key_verify",
+        ACCOUNT_RESET_CAPABILITY,
         crate::rpc_types::QUEUED_MESSAGE_REVISION_CAPABILITY,
         "tool_barrier",
         crate::rpc_types::USER_ACTIVITY_CAPABILITY,
+        crate::rpc_types::SESSION_MODEL_SCOPE_CAPABILITY,
         // Both shared runtimes dispatch through the active session-writing holder guard.
         SESSION_HELD_CAPABILITY,
         RESUME_SESSION_CAPABILITY,
@@ -164,6 +167,16 @@ pub fn multi_session_host_capabilities(
         UNLOAD_REFUSE_DELIVERIES_CAPABILITY,
         crate::session_move_wire::MOVE_SESSION_CAPABILITY,
         crate::session_move_wire::MOVE_SESSION_REVOKE_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_COPY_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_EXPORT_INLINE_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_IMPORT_FILES_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_IMPORT_SESSION_DIR_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_IMPORT_OPEN_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_INLINE_MAX_BYTES_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_IDENTITY_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_PREPARE_REPOSITORY_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_STATUS_LANDED_PATH_CAPABILITY,
+        crate::session_move_wire::MOVE_SESSION_STATUS_LANDING_CAPABILITY,
         SESSION_RELOCATION_CAPABILITY,
         SESSION_CONTEXT_CAPABILITY,
         SESSION_KIND_CAPABILITY,
@@ -174,6 +187,7 @@ pub fn multi_session_host_capabilities(
         PROMPT_SURFACE_CAPABILITY,
         PROMPT_SURFACE_CHAT_CAPABILITY,
         BROWSER_ENGINE_CAPABILITY,
+        SESSION_ENV_CAPABILITY,
         RETRY_FALLBACK_PROFILE_CAPABILITY,
         "permission_preset_accept_edits",
         "permission_preset_auto",
@@ -308,6 +322,8 @@ mod tests {
             SUBSCRIPTION_LIMITS_CAPABILITY,
             RESOLVE_PATH_CAPABILITY,
             FIND_SESSION_CAPABILITY,
+            crate::custom_capability::ACCOUNT_RESET_CAPABILITY,
+            crate::rpc_types::SESSION_MODEL_SCOPE_CAPABILITY,
         ] {
             assert!(
                 plain.iter().any(|capability| capability == wanted),

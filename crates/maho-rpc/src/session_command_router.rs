@@ -137,6 +137,31 @@ impl ConnectionAttachments {
             !sessions.is_empty()
         });
     }
+    pub fn take_other_holds(&mut self, session: &str, owner: &str) -> Vec<(String, usize)> {
+        let mut taken = Vec::new();
+        let connections: Vec<String> = self.owned.keys().cloned().collect();
+        for connection in connections {
+            if connection == owner {
+                continue;
+            }
+            let holds = self
+                .owned
+                .get_mut(&connection)
+                .and_then(|sessions| sessions.remove(session))
+                .unwrap_or(0);
+            if self
+                .owned
+                .get(&connection)
+                .is_some_and(std::collections::BTreeMap::is_empty)
+            {
+                self.owned.remove(&connection);
+            }
+            if holds > 0 {
+                taken.push((connection, holds));
+            }
+        }
+        taken
+    }
     pub fn release(&mut self, owner: &str, session: &str) {
         let Some(sessions) = self.owned.get_mut(owner) else {
             return;

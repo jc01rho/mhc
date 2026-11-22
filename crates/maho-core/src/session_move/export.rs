@@ -18,13 +18,27 @@ pub struct ExportSessionForMoveOptions<'a> {
 pub async fn export_session_for_move(
     options: ExportSessionForMoveOptions<'_>,
 ) -> Result<MoveManifest, String> {
+    let (manifest, ()) = export_session_for_move_and_read(options, |_| async { Ok(()) }).await?;
+    Ok(manifest)
+}
+
+pub async fn export_session_for_move_and_read<T, F, Fut>(
+    options: ExportSessionForMoveOptions<'_>,
+    read: F,
+) -> Result<(MoveManifest, T), String>
+where
+    F: FnOnce(&Path) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
     super::session_lock::with_session_move_lock(
         options.session_file,
         async {
             if let Some(guard) = options.locked_guard {
                 guard()?;
             }
-            write_move_bundle(&options).await
+            let manifest = write_move_bundle(&options).await?;
+            let read_out = read(options.bundle_dir).await?;
+            Ok((manifest, read_out))
         },
         options.guard,
     )

@@ -709,6 +709,7 @@ struct AgentSessionState {
     prompt_surface: Option<maho_ext_api::PromptSurface>,
     /// senpi `_browserEngine` (`connected` / `builtin` / `none`).
     browser_engine: Option<String>,
+    session_env: Option<BTreeMap<String, String>>,
     wake_sources: WakeSourceTracker,
     security_notices: crate::security_notices::SecurityNoticeSnapshot,
     shown_high_reasoning_warning_keys: BTreeSet<String>,
@@ -825,6 +826,7 @@ struct AgentSessionState {
     compaction_extension_signal: Option<maho_ext_api::AbortSignal>,
     branch_summary_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     session_title_abort_controller: Option<maho_ai::utils::abort::AbortController>,
+    pending_session_title_prompt: Option<String>,
     active_compaction_log_attempt: Option<CompactionLogAttempt>,
     superseded_compaction_log_attempt_ids: BTreeSet<String>,
     resume_compaction_requirement: Option<(serde_json::Value, String)>,
@@ -1133,6 +1135,7 @@ pub struct AgentSessionInner {
     /// senpi agent_end `failure`: the structured provider failure of the last agent_end, naming the selected
     /// model when the failing request ran on another one (senpi#4328). `None` after a success or an abort.
     last_provider_failure: Mutex<Option<crate::provider_failure::ProviderFailure>>,
+    retry_wait: Mutex<Option<crate::retry_wait::RetryWait>>,
     lifecycle_goal: Mutex<Option<Value>>,
     lifecycle_turn_facts: Mutex<Option<Value>>,
     /// senpi `RunStopFacts` of the run whose agent_end was bound, and the run restored from disk, which keeps exactly
@@ -2896,6 +2899,9 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             _ => None,
         }
     }
+    fn get_session_env(&self) -> Option<BTreeMap<String, String>> {
+        self.session().ok()?.session_env()
+    }
     fn get_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions {
         let Ok(session) = self.session() else {
             return Default::default();
@@ -4646,6 +4652,7 @@ impl AgentSession {
             system_prompt_override: None,
             prompt_surface: None,
             browser_engine: None,
+            session_env: None,
             wake_sources: WakeSourceTracker::default(),
             security_notices: Default::default(),
             shown_high_reasoning_warning_keys: BTreeSet::new(),
@@ -4734,6 +4741,7 @@ impl AgentSession {
             compaction_extension_signal: None,
             branch_summary_abort_controller: None,
             session_title_abort_controller: None,
+            pending_session_title_prompt: None,
             active_compaction_log_attempt: None,
             superseded_compaction_log_attempt_ids: BTreeSet::new(),
             resume_compaction_requirement: None,
@@ -4774,6 +4782,7 @@ impl AgentSession {
                 continued_start: std::sync::atomic::AtomicBool::new(false),
                 lifecycle_disposed: std::sync::atomic::AtomicBool::new(false),
                 last_provider_failure: Mutex::new(None),
+                retry_wait: Mutex::new(None),
                 lifecycle_goal: Mutex::new(None),
                 lifecycle_turn_facts: Mutex::new(None),
                 lifecycle_stop_facts: Mutex::new((None, restored_run_id)),
@@ -7701,8 +7710,9 @@ impl AgentSession {
                 return Err("Prompt cancelled".to_owned());
             }
         }
-        let queues_behind_pending_prompt =
-            self.state().prompt_start_pending && options.streaming_behavior.is_some();
+        let queues_behind_pending_prompt = (self.state().prompt_start_pending
+            || self.agent_run_active.load(Ordering::SeqCst))
+            && options.streaming_behavior.is_some();
         if !waits_for_manual_compaction
             && (self.is_streaming() || self.is_compacting() || queues_behind_pending_prompt)
         {
@@ -7826,6 +7836,16 @@ impl AgentSession {
         }
         // senpi `prompt()`: refuse before any provider work when the model's provider has no auth.
         let model = self.model();
+        if model.id.is_empty() && model.provider.is_empty() {
+            heap_future(|| {
+                self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                    input_id,
+                    disposition: maho_ext_api::InputDisposition::Rejected,
+                })
+            })
+            .await;
+            return Err(crate::auth_guidance::format_no_model_selected_message());
+        }
         let has_configured_auth = self.model_runtime().has_configured_auth(&model.provider)
             || match self.model_runtime().check_auth(&model.provider, None).await {
                 Ok(check) => check.is_some(),
@@ -8086,6 +8106,16 @@ impl AgentSession {
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.state().required_compaction_admission_error = None;
+        let title_prompt = match options.session_title_prompt {
+            Some(SessionTitlePrompt::Disabled) => None,
+            Some(SessionTitlePrompt::Text(prompt)) => Some(prompt),
+            None => Some(text),
+        };
+        {
+            let mut state = self.state();
+            state.pending_session_title_prompt =
+                state.auto_title_sessions.then_some(title_prompt).flatten();
+        }
         // Every large callee future in this function is built on the heap (`heap_future`): built
         // inline, each one takes its own slot in this frame in unoptimized builds, and the frames of
         // the prompt -> agent run -> retry recovery chain then overflow a 2 MiB thread stack.
@@ -8095,6 +8125,7 @@ impl AgentSession {
         })
         .await;
         if let Err(error) = heap_future(|| self.finish_provider_turn()).await {
+            self.state().pending_session_title_prompt = None;
             // A turn the engine refused never ran, so it releases the barrier it armed (senpi#4106).
             if let Some(spec) = &options.tool_barrier
                 && self.agent.signal().is_none()
@@ -8103,22 +8134,10 @@ impl AgentSession {
             }
             return Err(error);
         }
+        self.state().pending_session_title_prompt = None;
         let transcript_failure = lock(&self.transcript_write_failures).take_report();
         self.flush_pending_bash_messages();
         let required_compaction_error = self.state().required_compaction_admission_error.take();
-        let title_prompt = match options.session_title_prompt {
-            Some(SessionTitlePrompt::Disabled) => None,
-            Some(SessionTitlePrompt::Text(prompt)) => Some(prompt),
-            None => Some(text),
-        };
-        if self.state().auto_title_sessions
-            && let Some(text) = title_prompt
-        {
-            let session = self.clone();
-            tokio::spawn(async move {
-                session.generate_session_title_if_needed(&text).await;
-            });
-        }
         drop(_work);
         drop(_admission);
         heap_future(|| self.emit_agent_settled()).await;
@@ -8680,6 +8699,10 @@ impl AgentSession {
             signal.abort();
         }
         self.abort_compaction();
+        self.state().pending_session_title_prompt = None;
+        if let Some(controller) = self.state().session_title_abort_controller.take() {
+            controller.abort(None);
+        }
         // senpi _abortActiveAgentAndRetry("user").
         self.abort_retry();
         self.abort_branch_summary();
@@ -9563,6 +9586,10 @@ impl AgentSession {
         self.state().retry_attempt
     }
 
+    pub fn retry_wait(&self) -> Option<crate::retry_wait::RetryWait> {
+        lock(&self.inner.retry_wait).clone()
+    }
+
     /// senpi `currentAbortSource`: the abort owner for the current turn boundary, used by renderers.
     pub fn current_abort_source(&self) -> Option<maho_ext_api::AbortSource> {
         self.state().abort_provenance.current_source()
@@ -10400,6 +10427,22 @@ impl AgentSession {
             .await;
             self.end_unhandled_retry();
             outcome?;
+            let had_pending_title = self.state().pending_session_title_prompt.is_some();
+            heap_future(|| self.settle_session_title()).await;
+            if had_pending_title
+                && !self.state().user_aborted
+                && self.agent.signal().is_none()
+                && self.agent.has_queued_messages()
+            {
+                if let Err(error) =
+                    heap_future(|| self.agent.continue_with_queued_messages(Default::default()))
+                        .await
+                {
+                    self.settle_refused_continuation(error);
+                    return Ok(());
+                }
+                continue;
+            }
             if self.agent.signal().is_none() {
                 let messages = self.messages();
                 let outcome = if self.state().user_aborted {
@@ -13755,6 +13798,23 @@ impl AgentSession {
         self.state().prompt_templates.clone()
     }
 
+    async fn settle_session_title(&self) {
+        let (first_prompt, user_aborted) = {
+            let mut state = self.state();
+            (
+                state.pending_session_title_prompt.take(),
+                state.user_aborted,
+            )
+        };
+        if user_aborted {
+            return;
+        }
+        let Some(first_prompt) = first_prompt else {
+            return;
+        };
+        self.generate_session_title_if_needed(&first_prompt).await;
+    }
+
     pub async fn generate_session_title_if_needed(&self, prompt: &str) {
         if self.session_name().is_some()
             || crate::session_title_generator::should_skip_session_title(prompt)
@@ -14170,6 +14230,14 @@ impl AgentSession {
     /// senpi `browserEngine` getter.
     pub fn browser_engine(&self) -> Option<String> {
         self.state().browser_engine.clone()
+    }
+
+    pub fn set_session_env(&self, env: BTreeMap<String, String>) {
+        self.state().session_env = Some(env);
+    }
+
+    pub fn session_env(&self) -> Option<BTreeMap<String, String>> {
+        self.state().session_env.clone()
     }
 
     pub fn rebuild_system_prompt(&self) {
@@ -15528,6 +15596,44 @@ impl AgentSession {
 
     pub fn model(&self) -> Model {
         self.agent.model()
+    }
+
+    pub fn classify_model_not_ready_error(
+        &self,
+        error: &str,
+    ) -> Option<crate::model_not_ready_error::ModelNotReadyError> {
+        use crate::model_not_ready_error::{ModelNotReadyCode, ModelNotReadyError};
+        if error == crate::auth_guidance::format_no_model_selected_message()
+            || error.starts_with("No model selected.")
+        {
+            return Some(ModelNotReadyError::new(
+                error.to_owned(),
+                ModelNotReadyCode::NoModelSelected,
+                None,
+            ));
+        }
+        let provider = self.model().provider;
+        if provider.is_empty() {
+            return None;
+        }
+        let expired = format!(
+            "Authentication failed for \"{provider}\". Credentials may have expired or network is unavailable. Run '/login {provider}' to re-authenticate."
+        );
+        if error == expired {
+            return Some(ModelNotReadyError::new(
+                error.to_owned(),
+                ModelNotReadyCode::ProviderCredentialsExpired,
+                Some(provider),
+            ));
+        }
+        if error == crate::auth_guidance::format_no_api_key_found_message(&provider) {
+            return Some(ModelNotReadyError::new(
+                error.to_owned(),
+                ModelNotReadyCode::ProviderCredentialsMissing,
+                Some(provider),
+            ));
+        }
+        None
     }
 
     /// senpi `_refreshCurrentModelFromRegistry`. Assigns the catalog object directly: `set_model`
@@ -20405,6 +20511,14 @@ impl AgentSession {
 
     /// Emit an event to all listeners.
     pub fn emit(&self, event: AgentSessionEvent) {
+        {
+            let mut wait = lock(&self.inner.retry_wait);
+            *wait = crate::retry_wait::next_retry_wait(
+                wait.clone(),
+                &event,
+                maho_ai::utils::diagnostics::now_ms(),
+            );
+        }
         let carrier = match &event {
             AgentSessionEvent::Agent(event) => self.observe_recovery(event),
             _ => None,

@@ -699,6 +699,11 @@ pub fn build_rpc_session_state_with_dialogs(
     {
         state["thinkingSelection"] = value;
     }
+    if let Some(retry_wait) = session.retry_wait()
+        && let Ok(value) = serde_json::to_value(retry_wait)
+    {
+        state["retryWait"] = value;
+    }
     if let Some(abort_source) = last_abort_source {
         state["lastAbortSource"] = abort_source.into();
     }
@@ -727,7 +732,7 @@ pub fn build_rpc_session_state_with_dialogs(
 }
 /// The classic `get_protocol_info` capabilities that precede the tool-runtime and negotiated ones (senpi
 /// connection-handler.ts), `entries_tail` last.
-const CLASSIC_CAPABILITIES: [&str; 17] = [
+const CLASSIC_CAPABILITIES: [&str; 19] = [
     "multi_session",
     crate::custom_capability::SNAPSHOT_CURSOR_CAPABILITY,
     crate::custom_capability::UI_ANSWER_LEDGER_CAPABILITY,
@@ -740,9 +745,11 @@ const CLASSIC_CAPABILITIES: [&str; 17] = [
     "continue_from_leaf",
     "eval_cells",
     "auth_key_verify",
+    crate::custom_capability::ACCOUNT_RESET_CAPABILITY,
     crate::rpc_types::QUEUED_MESSAGE_REVISION_CAPABILITY,
     "tool_barrier",
     crate::rpc_types::USER_ACTIVITY_CAPABILITY,
+    crate::rpc_types::SESSION_MODEL_SCOPE_CAPABILITY,
     crate::custom_capability::RESUME_SESSION_CAPABILITY,
     crate::custom_capability::ENTRIES_TAIL_CAPABILITY,
 ];
@@ -1178,6 +1185,21 @@ async fn run_prompt_command(
                 })),
             ));
         }
+        if let Err(error) = &result
+            && let Some(not_ready) = session.classify_model_not_ready_error(error)
+        {
+            let error_data = not_ready
+                .provider
+                .map(|provider| serde_json::json!({ "provider": provider }));
+            return Some(command_response_coded(
+                session,
+                command,
+                "prompt",
+                Err(not_ready.message),
+                Some(not_ready.code.as_str()),
+                error_data,
+            ));
+        }
         Some(command_response(session, command, "prompt", result))
     }
 }
@@ -1496,8 +1518,10 @@ async fn handle_session_command_with_sink(
             if let Some(active_logins)=active_logins && let Some(controller)=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider){controller.abort(None);}
             ("login_cancel",Ok(None))
         },
-        RpcCommandBody::LoginApiKey{provider,key}=>{
-            let result=session.model_registry().auth_storage.set(provider,Some(serde_json::json!({"type":"api_key","key":key}))).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});None});
+        RpcCommandBody::LoginApiKey{provider,key,region}=>{
+            let registered=session.model_runtime().get_provider(provider);
+            let credential=crate::api_key_login_credential::api_key_login_credential(registered.as_deref(),key,region.as_deref()).await.and_then(|credential|serde_json::to_value(maho_ai::auth::types::Credential::ApiKey(credential)).map_err(|error|error.to_string()));
+            let result=credential.and_then(|credential|session.model_registry().auth_storage.set(provider,Some(credential)).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});None}));
             ("login_api_key",result)
         },
         RpcCommandBody::Logout{provider}=>{
@@ -1518,6 +1542,23 @@ async fn handle_session_command_with_sink(
         RpcCommandBody::AccountRemove{provider,name}=>{
             let result=session.model_registry().remove_credential_account(provider,name,&session.agent_dir()).await.map(|()|None);
             ("account_remove",result)
+        },
+        RpcCommandBody::AccountReset{provider,name}=>{
+            let (Some(provider),Some(name))=(provider.as_ref().and_then(serde_json::Value::as_str),name.as_ref().and_then(serde_json::Value::as_str)) else {
+                return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"account_reset".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"provider and name must be strings".into(),error_code:Some(crate::rpc_types::RPC_ERROR_INVALID_ARGUMENT.into()),error_data:default_error_data(session,"account_reset")}});
+            };
+            match session.model_registry().reset_credential_account(provider,name,&session.agent_dir()).await {
+                Ok(())=>{
+                    maho_core::emit_provider_accounts_changed(provider);
+                    ("account_reset",Ok(None))
+                }
+                Err(error) if error.starts_with(maho_core::credential_accounts::CREDENTIAL_ACCOUNT_NOT_FOUND_PREFIX)=>{
+                    return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"account_reset".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Provider account not found. Refresh the account list.".into(),error_code:Some(maho_core::credential_accounts::CREDENTIAL_ACCOUNT_NOT_FOUND_CODE.into()),error_data:default_error_data(session,"account_reset")}});
+                }
+                Err(_)=>{
+                    return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"account_reset".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Could not reset this account. Try again.".into(),error_code:Some("account_reset_failed".into()),error_data:default_error_data(session,"account_reset")}});
+                }
+            }
         },
         RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state_with_dialogs(session,current_abort_source(session,last_abort_source),Vec::new())))),
         // senpi connection-handler.ts: `runQueuedInputChange(effectContext(), command)` / `runGetEffectStatus(...)`.
@@ -1621,14 +1662,14 @@ async fn handle_session_command_with_sink(
             // carries no `retry_fallback` command, so it is not advertised.
             let mut capabilities=CLASSIC_CAPABILITIES.map(str::to_owned).to_vec();
             // Client flags cannot advertise a host guard this classic binding does not run.
-            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if capability!=crate::custom_capability::SESSION_HELD_CAPABILITY&&!capabilities.contains(&capability){capabilities.push(capability);}}
+            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if capability!=crate::custom_capability::SESSION_HELD_CAPABILITY&&capability!=crate::custom_capability::PARK_CLAIM_CAPABILITY&&!capabilities.contains(&capability){capabilities.push(capability);}}
             data["protocolVersion"]=crate::host_decision::HOST_PROTOCOL_VERSION.into();
             data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.clone().into();
             data["capabilities"]=serde_json::json!(capabilities);
             data["mode"]="classic".into();
             return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_protocol_info".into(),session_id:None,result:RpcResponseResult::Success{data:Some(data)}});
         },
-        RpcCommandBody::OpenSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"open_session".into(),session_id:None,result:RpcResponseResult::Error{error:crate::rpc_types::RPC_ERROR_MULTI_SESSION_DISABLED.into(),error_code:None,error_data:None}}),
+        RpcCommandBody::OpenSession{..}|RpcCommandBody::ParkSession{..}|RpcCommandBody::ClaimSession{..}=>{let kind=match &command.body{RpcCommandBody::OpenSession{..}=>"open_session",RpcCommandBody::ParkSession{..}=>"park_session",_=>"claim_session"};return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:None,result:RpcResponseResult::Error{error:crate::rpc_types::RPC_ERROR_MULTI_SESSION_DISABLED.into(),error_code:None,error_data:None}});},
         RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: close_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::UnloadSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"unload_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: unload_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::ReleaseSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"release_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: release_session".into(),error_code:None,error_data:None}}),
@@ -2955,6 +2996,13 @@ impl RpcConnectionHandler {
     pub fn rerender_components(&self) {
         self.ui.rerender_components();
     }
+    pub fn pending_requests(
+        &self,
+    ) -> std::sync::Arc<
+        std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
+    > {
+        self.pending.clone()
+    }
     /// Cancel UI requests that can no longer be answered by this connection.
     pub fn cancel_pending_extension_ui_requests(&self) {
         self.pending
@@ -3717,9 +3765,11 @@ mod new_session_tests {
                 "continue_from_leaf",
                 "eval_cells",
                 "auth_key_verify",
+                "account_reset",
                 "queued_message_revision",
                 "tool_barrier",
                 "user_activity",
+                "session_model_scope",
                 "resume_session",
                 "entries_tail"
             ]
@@ -4129,6 +4179,118 @@ mod new_session_tests {
         );
     }
     #[tokio::test]
+    async fn login_api_key_stores_kimi_region_and_refuses_invalid_regions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json").to_string_lossy().into_owned();
+        let auth_storage =
+            std::sync::Arc::new(maho_core::auth_storage::AuthStorage::create(&auth_path));
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                credentials: Some(auth_storage),
+                allow_model_network: Some(false),
+                refresh_on_create: Some(false),
+                ..Default::default()
+            },
+        )
+        .expect("model runtime");
+        let sess = AgentSession::new(maho_core::agent_session::AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+                stream_fn: Some(std::sync::Arc::new(|_, _, _| {
+                    maho_ai::types::AssistantMessageEventStream::assistant()
+                })),
+                ..Default::default()
+            }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                "/tmp", None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".into(),
+            agent_dir: Some(dir.path().to_string_lossy().into_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: vec![],
+            favorite_models: vec![],
+            flag_values: Default::default(),
+            custom_tools: vec![],
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
+        })
+        .expect("session");
+
+        let unknown = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(serde_json::json!({
+                    "type": "login_api_key",
+                    "provider": "kimi-coding",
+                    "key": "sk-kimi-synthetic",
+                    "region": "moon"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unknown["success"], false);
+        assert_eq!(sess.model_registry().auth_storage.get("kimi-coding"), None);
+
+        let no_region = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(serde_json::json!({
+                    "type": "login_api_key",
+                    "provider": "openrouter",
+                    "key": "sk-or-synthetic",
+                    "region": "global"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(no_region["success"], false);
+        assert_eq!(sess.model_registry().auth_storage.get("openrouter"), None);
+
+        let ok = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(serde_json::json!({
+                    "type": "login_api_key",
+                    "provider": "kimi-coding",
+                    "key": "sk-kimi-synthetic",
+                    "region": "global"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ok["success"], true);
+        assert_eq!(
+            sess.model_registry().auth_storage.get("kimi-coding"),
+            Some(serde_json::json!({
+                "type": "api_key",
+                "key": "sk-kimi-synthetic",
+                "env": { "KIMI_CODE_REGION": "global" }
+            }))
+        );
+    }
+    #[tokio::test]
     async fn logout_removes_stored_credential() {
         let session = session();
         session
@@ -4334,6 +4496,256 @@ mod new_session_tests {
         assert_eq!(response["command"], "account_remove");
         assert_eq!(response["success"], false);
         assert_eq!(response["error"], "Provider account not found: missing");
+    }
+    #[tokio::test]
+    async fn account_reset_unblocks_named_account_and_validates_selectors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json").to_string_lossy().into_owned();
+        let auth_storage =
+            std::sync::Arc::new(maho_core::auth_storage::AuthStorage::create(&auth_path));
+        auth_storage
+            .set(
+                "openai",
+                Some(serde_json::json!({
+                    "type": "api_key",
+                    "key": "synthetic-a",
+                    "accounts": [
+                        {
+                            "name": "a",
+                            "key": "synthetic-a",
+                            "blockReason": "account_disabled",
+                            "blockedUntil": 4_102_444_800_000_i64
+                        },
+                        {
+                            "name": "b",
+                            "key": "synthetic-b",
+                            "blockReason": "account_disabled",
+                            "blockedUntil": 4_102_444_800_000_i64
+                        }
+                    ],
+                    "pinned": "b",
+                    "order": ["b", "a"],
+                    "slotState": {
+                        "a": {"blockReason": "account_disabled", "blockedUntil": 4_102_444_800_000_i64},
+                        "b": {"blockReason": "account_disabled", "blockedUntil": 4_102_444_800_000_i64}
+                    }
+                })),
+            )
+            .expect("seed auth");
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                credentials: Some(auth_storage),
+                providers: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .expect("model runtime");
+        let sess = AgentSession::new(maho_core::agent_session::AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+                stream_fn: Some(std::sync::Arc::new(|_, _, _| {
+                    maho_ai::types::AssistantMessageEventStream::assistant()
+                })),
+                ..Default::default()
+            }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                "/tmp", None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".into(),
+            agent_dir: Some(dir.path().to_string_lossy().into_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: vec![],
+            favorite_models: vec![],
+            flag_values: Default::default(),
+            custom_tools: vec![],
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
+        })
+        .expect("session");
+        let reset = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(
+                    serde_json::json!({"id":"r1","type":"account_reset","provider":"openai","name":"b"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reset["command"], "account_reset");
+        assert_eq!(reset["success"], true);
+        let after = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(
+                    serde_json::json!({"type":"get_provider_accounts","provider":"openai"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after["data"]["accounts"][0]["name"], "a");
+        assert_eq!(after["data"]["accounts"][0]["blocked"], true);
+        assert_eq!(after["data"]["accounts"][1]["name"], "b");
+        assert_eq!(after["data"]["accounts"][1]["blocked"], false);
+
+        let missing = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(
+                    serde_json::json!({"id":"m1","type":"account_reset","provider":"openai","name":"missing"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(missing["success"], false);
+        assert_eq!(missing["errorCode"], "account_not_found");
+        assert_eq!(
+            missing["error"],
+            "Provider account not found. Refresh the account list."
+        );
+
+        for invalid in [
+            serde_json::json!({"type":"account_reset","provider":null,"name":"b"}),
+            serde_json::json!({"type":"account_reset","provider":1,"name":"b"}),
+            serde_json::json!({"type":"account_reset","name":"b"}),
+            serde_json::json!({"type":"account_reset","provider":"openai","name":null}),
+            serde_json::json!({"type":"account_reset","provider":"openai","name":1}),
+            serde_json::json!({"type":"account_reset","provider":"openai"}),
+        ] {
+            let response = serde_json::to_value(
+                handle_session_command(&sess, &serde_json::from_value(invalid).unwrap())
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(response["command"], "account_reset");
+            assert_eq!(response["success"], false);
+            assert_eq!(response["errorCode"], "invalid_argument");
+        }
+    }
+    #[tokio::test]
+    async fn prompt_refuses_with_typed_error_code_when_model_not_ready() {
+        let sess = session();
+        let missing = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(serde_json::json!({
+                    "id": "nk1",
+                    "type": "prompt",
+                    "message": "Hello"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(missing["success"], false);
+        assert_eq!(missing["errorCode"], "provider_credentials_missing");
+        assert_eq!(
+            missing["errorData"],
+            serde_json::json!({ "provider": "unknown" })
+        );
+        assert!(
+            missing["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("No API key found for the selected model.")
+        );
+
+        let mut no_model = sess.model();
+        no_model.id.clear();
+        no_model.provider.clear();
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                providers: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .expect("model runtime");
+        let unselected_sess = AgentSession::new(maho_core::agent_session::AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+                initial_state: Some(maho_agent::PartialAgentState {
+                    model: Some(no_model),
+                    ..Default::default()
+                }),
+                stream_fn: Some(std::sync::Arc::new(|_, _, _| {
+                    maho_ai::types::AssistantMessageEventStream::assistant()
+                })),
+                ..Default::default()
+            }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                "/tmp", None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".into(),
+            agent_dir: Some("/tmp/maho-agent".into()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: vec![],
+            favorite_models: vec![],
+            flag_values: Default::default(),
+            custom_tools: vec![],
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
+        })
+        .expect("session");
+        let unselected = serde_json::to_value(
+            handle_session_command(
+                &unselected_sess,
+                &serde_json::from_value(serde_json::json!({
+                    "id": "nk2",
+                    "type": "prompt",
+                    "message": "Hello"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unselected["success"], false);
+        assert_eq!(unselected["errorCode"], "no_model_selected");
+        assert!(unselected.get("errorData").is_none());
+        assert!(
+            unselected["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("No model selected.")
+        );
     }
 }
 

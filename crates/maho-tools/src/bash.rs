@@ -361,6 +361,9 @@ pub fn resolve_spawn_context(
         if let Some(engine) = context.browser_engine() {
             env.insert("OMO_BROWSER_ENGINE".into(), engine.into());
         }
+        if let Some(session_env) = context.session_env() {
+            env.extend(session_env);
+        }
     }
     let context = BashSpawnContext { command, cwd, env };
     if let Some(hook) = hook {

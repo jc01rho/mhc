@@ -72,6 +72,7 @@ pub mod unknown_command_feedback;
 pub mod attach;
 pub mod attach_client;
 pub mod attach_dialogs;
+pub mod attach_startup;
 #[cfg(all(test, unix))]
 mod attach_test_endpoint;
 pub mod record_renderer;

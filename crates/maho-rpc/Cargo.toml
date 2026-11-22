@@ -8,6 +8,7 @@ autotests = false
 
 [dependencies]
 async-trait = "=0.1.92"
+anyhow = "=1.0.104"
 maho-core = { path = "../maho-core" }
 maho-agent = { path = "../maho-agent" }
 maho-tools = { path = "../maho-tools" }
@@ -43,7 +44,6 @@ tokio = { workspace = true, features = ["io-util", "io-std", "sync", "rt", "macr
 libproc = "=0.14.11"
 
 [dev-dependencies]
-anyhow = "=1.0.104"
 tempfile.workspace = true
 maho-ext-host = { path = "../maho-ext-host" }
 maho-test-support = { path = "../maho-test-support", features = ["sdk"] }

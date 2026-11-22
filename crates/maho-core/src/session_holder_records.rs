@@ -15,12 +15,13 @@ use crate::schedule::runner_lease::{
 use crate::schedule::store::names;
 
 /// One process holding a session (senpi `SessionHolder`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionHolder {
     pub pid: u32,
     pub cwd: Option<String>,
     pub host_socket: Option<String>,
     pub host_instance: Option<String>,
+    pub unproven: bool,
 }
 
 /// The host generation a holder record names, as written by `hold_session_file`.
@@ -103,6 +104,7 @@ pub async fn live_holders(
                 .and_then(|parsed| string_field(parsed, "cwd")),
             host_socket,
             host_instance,
+            unproven,
         });
     }
     Ok(holders)

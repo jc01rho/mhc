@@ -5,7 +5,10 @@
 //! refused and the sender may safely take its session back. Every writer and the import's final rename share
 //! one lock per move.
 
-use super::move_landing::{Landing, LandingOutcome, lands_at, parse_landing, settled_landing};
+use super::move_landing::{
+    Landing, LandingOutcome, held_elsewhere, landed_elsewhere, lands_at, move_folder,
+    parse_landing, settled_at, settled_landing,
+};
 use super::move_ledger_lock::MoveRecordLocks;
 use super::move_steps::{MoveStep, move_step};
 use std::future::Future;
@@ -260,24 +263,59 @@ impl MoveLedger {
     /// Says this device can take the move, for `READY_TTL_MS`. Sending ready again keeps the first window; a move
     /// already receiving or accepted stays so, and one already answered otherwise is refused.
     pub async fn prepare(&self, move_id: &str) -> Result<MoveRecord, MoveLedgerError> {
+        self.prepare_for(move_id, None).await
+    }
+
+    pub async fn prepare_for(
+        &self,
+        move_id: &str,
+        folder: Option<&Path>,
+    ) -> Result<MoveRecord, MoveLedgerError> {
+        let cwd = move_folder(folder);
         self.locked(move_id, || {
-            let Some(record) = self.current(move_id)? else {
+            let record = self.current(move_id)?;
+            let landing = self.landing(move_id)?;
+            if let (Some(req_cwd), Some(stored_cwd)) = (cwd.as_deref(), landing.cwd.as_deref())
+                && req_cwd != stored_cwd
+            {
+                return Err(self.fenced_with_detail(
+                    move_id,
+                    record,
+                    Some(held_elsewhere(&landing)),
+                ));
+            }
+            let Some(record) = record else {
                 let expires = chrono::DateTime::from_timestamp_millis((self.now)() + READY_TTL_MS)
                     .unwrap_or_default();
                 let ready = MoveRecord::Ready {
                     expires_at: expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 };
-                self.write(move_id, &ready)?;
+                self.write_landing(
+                    move_id,
+                    &ready,
+                    &Landing {
+                        target: None,
+                        cwd,
+                        committing: false,
+                    },
+                )?;
                 return Ok(ready);
             };
-            match record {
+            match &record {
                 MoveRecord::Ready { .. }
                 | MoveRecord::Status(
                     MoveStatus::Receiving | MoveStatus::Accepted | MoveStatus::AcceptedRevoked,
-                ) => Ok(record),
-                other => Err(MoveFencedError {
+                ) => {
+                    if cwd.is_some() && landing.cwd.is_none() && !landing.committing {
+                        let mut updated = landing;
+                        updated.cwd = cwd;
+                        self.write_landing(move_id, &record, &updated)?;
+                    }
+                    Ok(record)
+                }
+                _ => Err(MoveFencedError {
                     move_id: move_id.to_owned(),
-                    record: other,
+                    record,
                 }
                 .into()),
             }
@@ -285,24 +323,69 @@ impl MoveLedger {
         .await
     }
 
+    pub fn require_readied_for(&self, move_id: &str, cwd: &Path) -> Result<(), MoveLedgerError> {
+        let record = self.read(move_id)?;
+        let landing = self.landing(move_id)?;
+        if matches!(record, Some(MoveRecord::Ready { .. }))
+            && let Some(stored_cwd) = landing.cwd.as_deref()
+            && move_folder(Some(cwd)).as_deref() != Some(stored_cwd)
+        {
+            return Err(self.fenced_with_detail(move_id, record, Some(held_elsewhere(&landing))));
+        }
+        Ok(())
+    }
+
     /// Starts receiving a verified bundle. Only a move this device readied (and whose window is still open) may
     /// start; a bundle for a move it never readied is declined for good (`chunk_without_ready`).
     pub async fn begin_receive(&self, move_id: &str, target: &str) -> Result<(), MoveLedgerError> {
+        self.begin_receive_in(move_id, target, None).await
+    }
+
+    pub async fn begin_receive_in(
+        &self,
+        move_id: &str,
+        target: &str,
+        folder: Option<&Path>,
+    ) -> Result<(), MoveLedgerError> {
+        let cwd = move_folder(folder);
         self.locked(move_id, || {
             let record = self.current(move_id)?;
             let landing = self.landing(move_id)?;
+            let receiving = lands_at(record.as_ref(), &landing, target);
+            if (matches!(record, Some(MoveRecord::Ready { .. })) || receiving)
+                && let Some(stored_cwd) = landing.cwd.as_deref()
+                && cwd.as_deref() != Some(stored_cwd)
+            {
+                return Err(self.fenced_with_detail(
+                    move_id,
+                    record,
+                    Some(held_elsewhere(&landing)),
+                ));
+            }
             if matches!(record, Some(MoveRecord::Ready { .. })) {
                 return self.write_landing(
                     move_id,
                     &MoveRecord::Status(MoveStatus::Receiving),
-                    &Landing {
-                        target: Some(target.into()),
-                        committing: false,
-                    },
+                    &settled_at(
+                        &Landing {
+                            cwd: cwd.or(landing.cwd),
+                            ..Default::default()
+                        },
+                        target,
+                    ),
                 );
             }
-            if lands_at(record.as_ref(), &landing, target) {
+            if receiving {
                 return Ok(());
+            }
+            if matches!(
+                record,
+                Some(MoveRecord::Status(
+                    MoveStatus::Receiving | MoveStatus::Accepted | MoveStatus::AcceptedRevoked
+                ))
+            ) {
+                let detail = landed_elsewhere(record.as_ref(), &landing);
+                return Err(self.fenced_with_detail(move_id, record, Some(detail)));
             }
             let record = match record {
                 Some(record) => record,
@@ -355,14 +438,7 @@ impl MoveLedger {
             if let (Some(outcome), Some(target)) = (outcome, landing.target.as_deref())
                 && let Some(next) = settled_landing(record.as_ref(), landing.committing, outcome)
             {
-                self.write_landing(
-                    move_id,
-                    &next,
-                    &Landing {
-                        target: Some(target.into()),
-                        committing: false,
-                    },
-                )?;
+                self.write_landing(move_id, &next, &settled_at(&landing, target))?;
                 record = Some(next);
             }
             if revoked {
@@ -430,18 +506,18 @@ impl MoveLedger {
     ) -> Result<T, MoveLedgerError> {
         self.locked_async(move_id, async {
             let record = self.read(move_id)?;
-            if !lands_at(record.as_ref(), &self.landing(move_id)?, target) {
+            let landing = self.landing(move_id)?;
+            if !lands_at(record.as_ref(), &landing, target) {
                 return Err(self.fenced(move_id, record));
             }
             // `prepare` runs before the stamp: whatever it does or refuses lands nothing.
             prepare.await.map_err(MoveLedgerError::Failed)?;
+            let mut committing_landing = settled_at(&landing, target);
+            committing_landing.committing = true;
             self.write_landing(
                 move_id,
                 &MoveRecord::Status(MoveStatus::Receiving),
-                &Landing {
-                    target: Some(target.into()),
-                    committing: true,
-                },
+                &committing_landing,
             )?;
             move_step(MoveStep::ImportStamped).map_err(MoveLedgerError::Failed)?;
             let result = rename.await.map_err(MoveLedgerError::Failed)?;
@@ -449,10 +525,7 @@ impl MoveLedger {
             self.write_landing(
                 move_id,
                 &MoveRecord::Status(MoveStatus::Accepted),
-                &Landing {
-                    target: Some(target.into()),
-                    committing: false,
-                },
+                &settled_at(&landing, target),
             )?;
             Ok(result)
         })
@@ -495,10 +568,7 @@ impl MoveLedger {
                 } else {
                     MoveStatus::Accepted
                 }),
-                &Landing {
-                    target: Some(target.into()),
-                    committing: false,
-                },
+                &settled_at(&landing, target),
             )
         })
         .await
@@ -619,6 +689,20 @@ impl MoveLedger {
     }
 
     fn fenced(&self, move_id: &str, record: Option<MoveRecord>) -> MoveLedgerError {
+        self.fenced_with_detail(move_id, record, None)
+    }
+
+    fn fenced_with_detail(
+        &self,
+        move_id: &str,
+        record: Option<MoveRecord>,
+        detail: Option<String>,
+    ) -> MoveLedgerError {
+        if let Some(detail) = detail {
+            return MoveLedgerError::Failed(format!(
+                "move_fenced: Move {move_id} can no longer be imported here: {detail}."
+            ));
+        }
         match record {
             Some(record) => MoveFencedError {
                 move_id: move_id.into(),
@@ -627,6 +711,14 @@ impl MoveLedger {
             .into(),
             None => MoveLedgerError::Failed(format!("move_fenced: {move_id} has no record")),
         }
+    }
+
+    pub fn landing_of(&self, move_id: &str) -> Result<Landing, MoveLedgerError> {
+        self.landing(move_id)
+    }
+
+    pub fn current_record(&self, move_id: &str) -> Result<Option<MoveRecord>, MoveLedgerError> {
+        self.read(move_id)
     }
 
     fn landing(&self, move_id: &str) -> Result<Landing, MoveLedgerError> {
@@ -657,6 +749,9 @@ impl MoveLedger {
         let mut body = record.to_json();
         if let Some(target) = &landing.target {
             body["target"] = json!(target);
+        }
+        if let Some(cwd) = &landing.cwd {
+            body["cwd"] = json!(cwd);
         }
         if landing.committing {
             body["committing"] = json!(true);

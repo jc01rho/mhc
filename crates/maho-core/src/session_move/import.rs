@@ -1,11 +1,17 @@
 //! Path-bound import, staged payload checks, and file-authoritative status.
 use super::bundle::*;
+use super::landed_file::{LandedFile, outcome_in, read_landing};
 use super::move_landing::LandingOutcome;
 use super::move_ledger::{DeclineReason, FailReason, MoveLedger, MoveStatus};
 use super::move_steps::{MoveStep, move_step};
 use super::ownership::*;
+use super::repository_check::is_checkout_of_repository;
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 pub type RepositoryIdentityReader<'a> =
     &'a dyn Fn(&Path) -> Result<Option<RepositoryIdentity>, String>;
@@ -18,57 +24,128 @@ pub struct ImportMovedSessionOptions<'a> {
     pub read_identity: Option<RepositoryIdentityReader<'a>>,
 }
 pub async fn import_outcome(file: &Path, move_id: &str) -> LandingOutcome {
-    let mut outcome = LandingOutcome::Absent;
-    for entry in super::entries(file).await {
-        if entry["type"] != "custom" || entry["data"]["move_id"] != move_id {
-            continue;
-        }
-        if entry["customType"] == SESSION_MOVED_IN {
-            outcome = LandingOutcome::MovedIn;
-        } else if outcome == LandingOutcome::MovedIn
-            && entry["customType"] == SESSION_MOVED
-            && entry["data"]["reason"] == "revoked"
-        {
-            outcome = LandingOutcome::Revoked;
-        }
-    }
-    outcome
+    outcome_in(&super::entries(file).await, move_id)
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusFileKind {
+    Copy,
+    Landing,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StatusFile<'a> {
+    pub file: &'a Path,
+    pub kind: StatusFileKind,
+}
+
 pub async fn answer_move_status(
     ledger: &MoveLedger,
     move_id: &str,
     session_file: Option<&Path>,
 ) -> Result<MoveStatus, String> {
-    let landed = |target: String| -> std::pin::Pin<
+    let asked = session_file.map(|file| StatusFile {
+        file,
+        kind: StatusFileKind::Copy,
+    });
+    let (status, _) = answer_move_status_and_landing(ledger, move_id, asked).await?;
+    Ok(status)
+}
+
+pub async fn answer_move_status_and_landing(
+    ledger: &MoveLedger,
+    move_id: &str,
+    asked: Option<StatusFile<'_>>,
+) -> Result<(MoveStatus, Option<LandedFile>), String> {
+    let seen_file: Arc<Mutex<Option<LandedFile>>> = Arc::new(Mutex::new(None));
+    let seen_landing: Arc<Mutex<Option<LandedFile>>> = Arc::new(Mutex::new(None));
+    let seen_file_for_reader = seen_file.clone();
+    let landed = move |target: String| -> std::pin::Pin<
         Box<dyn std::future::Future<Output = LandingOutcome> + Send>,
     > {
         let move_id = move_id.to_owned();
+        let seen_file = seen_file_for_reader.clone();
         Box::pin(async move {
-            let target = PathBuf::from(target);
-            if super::path_exists(&target).await {
-                import_outcome(&target, &move_id).await
-            } else {
-                LandingOutcome::Absent
-            }
+            let target_path = PathBuf::from(&target);
+            let (outcome, file) = read_landing(&target_path, &move_id).await;
+            *seen_file
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(file);
+            outcome
         })
     };
-    let file = match session_file {
-        Some(file) if super::path_exists(file).await => file,
-        _ => {
-            return ledger
-                .answer_status_with(move_id, false, false, Some(&landed))
-                .await
-                .map_err(|e| e.to_string());
+    let status = match asked {
+        Some(asked) if super::path_exists(asked.file).await => {
+            crate::session_sidecar_store::serialize_by_key(
+                &super::session_lock::move_lock_key(asked.file).await,
+                async {
+                    let (outcome, file) = read_landing(asked.file, move_id).await;
+                    if outcome == LandingOutcome::Absent {
+                        if asked.kind == StatusFileKind::Copy {
+                            return Err(format!(
+                                "move_mismatch: {} is not the copy this device imported for move {move_id}; nothing was answered",
+                                asked.file.display()
+                            ));
+                        }
+                        return ledger
+                            .answer_status_with(move_id, false, false, Some(&landed))
+                            .await
+                            .map_err(|e| e.to_string());
+                    }
+                    if asked.kind == StatusFileKind::Landing {
+                        *seen_landing
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(file);
+                    }
+                    ledger
+                        .answer_status_with(
+                            move_id,
+                            true,
+                            outcome == LandingOutcome::Revoked,
+                            Some(&landed),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .await?
         }
+        _ => ledger
+            .answer_status_with(move_id, false, false, Some(&landed))
+            .await
+            .map_err(|e| e.to_string())?,
     };
-    crate::session_sidecar_store::serialize_by_key(&super::session_lock::move_lock_key(file).await, async {
-        let outcome = import_outcome(file, move_id).await;
-        if outcome == LandingOutcome::Absent { return Err(format!("move_mismatch: {} is not the copy this device imported for move {move_id}; nothing was answered", file.display())); }
-        ledger.answer_status_with(move_id, true, outcome == LandingOutcome::Revoked, Some(&landed)).await.map_err(|e| e.to_string())
-    }).await
+    let is_accepted = matches!(status, MoveStatus::Accepted | MoveStatus::AcceptedRevoked);
+    let mut where_landed = seen_file
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .or_else(|| {
+            seen_landing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        });
+    if is_accepted
+        && where_landed.is_none()
+        && let Ok(landing) = ledger.landing_of(move_id)
+        && let Some(target) = landing.target
+    {
+        let (_, file) = read_landing(Path::new(&target), move_id).await;
+        where_landed = Some(file);
+    }
+    Ok((status, if is_accepted { where_landed } else { None }))
 }
+
 pub async fn import_moved_session(
     options: ImportMovedSessionOptions<'_>,
+) -> Result<PathBuf, String> {
+    import_moved_session_with_sent(options, None).await
+}
+
+pub async fn import_moved_session_with_sent(
+    options: ImportMovedSessionOptions<'_>,
+    sent: Option<&HashMap<String, String>>,
 ) -> Result<PathBuf, String> {
     let manifest = read_manifest(options.bundle_dir).map_err(|e| e.to_string())?;
     let cwd = super::session_lock::real_session_path_async(options.target_cwd).await;
@@ -96,7 +173,7 @@ pub async fn import_moved_session(
             .map_err(|e| e.to_string())?;
         return Ok(target);
     }
-    if let Err(error) = verify_bundle_async(options.bundle_dir, &manifest).await {
+    if let Err(error) = verify_bundle_with_sent_async(options.bundle_dir, &manifest, sent).await {
         options
             .ledger
             .fail_unless_landed(&manifest.move_id, FailReason::BundleInvalid, landed())
@@ -104,11 +181,12 @@ pub async fn import_moved_session(
             .map_err(|e| e.to_string())?;
         return Err(error.to_string());
     }
-    let identity = match options.read_identity {
-        Some(read) => read(&cwd)?,
-        None => read_identity(&cwd).await?,
-    };
-    if !same_repository(manifest.repository.as_ref(), identity.as_ref()) {
+    options
+        .ledger
+        .require_readied_for(&manifest.move_id, &cwd)
+        .map_err(|e| e.to_string())?;
+    if !is_checkout_of_repository(&cwd, manifest.repository.as_ref(), options.read_identity).await?
+    {
         if !landed().await {
             options
                 .ledger
@@ -122,11 +200,28 @@ pub async fn import_moved_session(
             manifest.source_cwd
         ));
     }
-    options
+    if let Err(error) = options
         .ledger
-        .begin_receive(&manifest.move_id, &target.to_string_lossy())
+        .begin_receive_in(&manifest.move_id, &target.to_string_lossy(), Some(&cwd))
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        let err_str = error.to_string();
+        if (err_str.contains("move_fenced") || err_str.contains("can no longer be imported"))
+            && landed().await
+        {
+            options
+                .ledger
+                .confirm_landed(
+                    &manifest.move_id,
+                    &target.to_string_lossy(),
+                    import_outcome(&target, &manifest.move_id).await == LandingOutcome::Revoked,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(target);
+        }
+        return Err(err_str);
+    }
     move_step(MoveStep::ImportReceived)?;
     let staging = session_dir.join(".move-staging").join(&manifest.move_id);
     let result: Result<PathBuf, String> = async {
@@ -161,20 +256,34 @@ pub async fn import_moved_session(
         Ok(file)
     }
     .await;
-    if let Err(error) = &result
-        && !error.contains("move_fenced")
-        && !error.contains("can no longer be imported")
-    {
-        let reason = if error.contains("could not be verified") {
-            FailReason::BundleInvalid
-        } else {
-            FailReason::ImportFailed
-        };
-        options
-            .ledger
-            .fail_unless_landed(&manifest.move_id, reason, landed())
-            .await
-            .map_err(|e| e.to_string())?;
+    if let Err(error) = &result {
+        if (error.contains("move_fenced") || error.contains("can no longer be imported"))
+            && landed().await
+        {
+            let _ = super::remove(&staging).await;
+            options
+                .ledger
+                .confirm_landed(
+                    &manifest.move_id,
+                    &target.to_string_lossy(),
+                    import_outcome(&target, &manifest.move_id).await == LandingOutcome::Revoked,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(target);
+        }
+        if !error.contains("move_fenced") && !error.contains("can no longer be imported") {
+            let reason = if error.contains("could not be verified") {
+                FailReason::BundleInvalid
+            } else {
+                FailReason::ImportFailed
+            };
+            options
+                .ledger
+                .fail_unless_landed(&manifest.move_id, reason, landed())
+                .await
+                .map_err(|e| e.to_string())?;
+        }
     }
     result
 }
@@ -329,86 +438,4 @@ async fn land(
         .map_err(|e| e.to_string())?;
     super::remove(staged).await?;
     Ok(target.into())
-}
-fn same_repository(a: Option<&RepositoryIdentity>, b: Option<&RepositoryIdentity>) -> bool {
-    let (Some(a), Some(b)) = (a, b) else {
-        return false;
-    };
-    if !a.root_commits.is_empty() && !b.root_commits.is_empty() {
-        return a
-            .root_commits
-            .iter()
-            .any(|root| b.root_commits.contains(root));
-    }
-    matches!((&a.origin_url, &b.origin_url), (Some(a),Some(b)) if a == b)
-}
-async fn read_identity(dir: &Path) -> Result<Option<RepositoryIdentity>, String> {
-    async fn git(dir: &Path, args: &[&str]) -> Result<Option<String>, String> {
-        let mut command = tokio::process::Command::new("git");
-        command.arg("-C").arg(dir).args(args).kill_on_drop(true);
-        for key in [
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_COMMON_DIR",
-            "GIT_INDEX_FILE",
-        ] {
-            command.env_remove(key);
-        }
-        match tokio::time::timeout(std::time::Duration::from_secs(5), command.output()).await {
-            Ok(Ok(output)) if output.status.success() => {
-                Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
-            }
-            Ok(Ok(_)) | Err(_) => Ok(None),
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Ok(Err(e)) => Err(e.to_string()),
-        }
-    }
-    let roots = git(dir, &["rev-list", "--max-parents=0", "HEAD"])
-        .await?
-        .unwrap_or_default();
-    let origin = git(dir, &["config", "--get", "remote.origin.url"]).await?;
-    let mut root_commits: Vec<String> = roots
-        .split_whitespace()
-        .filter(|root| {
-            (40..=64).contains(&root.len())
-                && root
-                    .bytes()
-                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-        })
-        .map(str::to_owned)
-        .collect();
-    root_commits.sort();
-    let origin_url = origin
-        .filter(|url| !url.trim().is_empty())
-        .map(|url| normalize_remote_url(&url));
-    Ok(
-        (!root_commits.is_empty() || origin_url.is_some()).then_some(RepositoryIdentity {
-            root_commits,
-            origin_url,
-        }),
-    )
-}
-fn normalize_remote_url(url: &str) -> String {
-    let trimmed = url.trim();
-    let mut value = if !trimmed.contains("://") {
-        let bare = trimmed.rsplit_once('@').map_or(trimmed, |(_, rest)| rest);
-        bare.split_once(':')
-            .filter(|(_, path)| !path.starts_with('/'))
-            .map_or_else(|| bare.to_owned(), |(host, path)| format!("{host}/{path}"))
-    } else {
-        let bare = trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
-        let bare = bare.split_once('@').map_or(bare, |(_, rest)| rest);
-        let (host, path) = bare.split_once('/').unwrap_or((bare, ""));
-        let host = host
-            .split_once(':')
-            .filter(|(_, port)| port.bytes().all(|c| c.is_ascii_digit()))
-            .map_or(host, |(host, _)| host);
-        format!("{host}/{path}")
-    }
-    .trim_end_matches('/')
-    .to_lowercase();
-    if value.ends_with(".git") {
-        value.truncate(value.len() - 4);
-    }
-    value
 }

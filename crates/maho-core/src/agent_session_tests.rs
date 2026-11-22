@@ -11055,6 +11055,48 @@ async fn title_generation_retries_one_transient_error() {
 }
 
 #[tokio::test]
+async fn auto_title_emits_session_info_changed_before_agent_settled_and_skips_aborted_run() {
+    let session = retry_session(
+        vec![
+            maho_ai::providers::faux::faux_assistant_message("turn complete", Default::default()),
+            maho_ai::providers::faux::faux_assistant_message(
+                "<title>QA session</title>",
+                Default::default(),
+            ),
+        ],
+        0,
+    );
+    session.state().auto_title_sessions = true;
+    let order = Arc::new(Mutex::new(Vec::<String>::new()));
+    let order_sink = order.clone();
+    let (idle_tx, mut idle_rx) = tokio::sync::watch::channel(false);
+    let _sub = session.subscribe(Arc::new(move |event| {
+        let label = match event {
+            AgentSessionEvent::SessionInfoChanged { .. } => Some("session_info_changed"),
+            AgentSessionEvent::AgentSettled => Some("agent_settled"),
+            AgentSessionEvent::AgentIdle => Some("agent_idle"),
+            _ => None,
+        };
+        if let Some(label) = label {
+            lock(&order_sink).push(label.to_owned());
+            if label == "agent_idle" {
+                let _ = idle_tx.send(true);
+            }
+        }
+    }));
+    session
+        .prompt("write a file", Default::default())
+        .await
+        .expect("prompt");
+    idle_rx.wait_for(|done| *done).await.expect("agent_idle");
+    assert_eq!(session.session_name().as_deref(), Some("QA session"));
+    assert_eq!(
+        *lock(&order),
+        vec!["session_info_changed", "agent_settled", "agent_idle"]
+    );
+}
+
+#[tokio::test]
 async fn scheduled_continuation_does_not_clear_a_later_user_abort() {
     let session = retry_session(
         vec![maho_ai::providers::faux::faux_assistant_message(

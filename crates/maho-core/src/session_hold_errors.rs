@@ -105,12 +105,14 @@ mod tests {
                 cwd: Some("/a".into()),
                 host_socket: None,
                 host_instance: None,
+                unproven: false,
             },
             SessionHolder {
                 pid: 2,
                 cwd: None,
                 host_socket: None,
                 host_instance: None,
+                unproven: false,
             },
         ];
         let error = SessionHeldError::new("/s.jsonl", holders);

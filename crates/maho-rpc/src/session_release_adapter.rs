@@ -19,13 +19,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct AgentSessionRelease {
     session: AgentSession,
     admission_closed: AtomicBool,
+    pending_requests: Option<
+        Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,
+    >,
 }
 
 impl AgentSessionRelease {
     pub fn new(session: AgentSession) -> Self {
+        Self::with_pending_requests(session, None)
+    }
+
+    pub fn with_pending_requests(
+        session: AgentSession,
+        pending_requests: Option<
+            Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,
+        >,
+    ) -> Self {
         Self {
             session,
             admission_closed: AtomicBool::new(false),
+            pending_requests,
         }
     }
 
@@ -230,5 +243,19 @@ impl crate::session_unload::UnloadableSession for AgentSessionRelease {
 
     fn effect_session(&self) -> Option<Arc<dyn crate::effect_session::EffectSession>> {
         None
+    }
+
+    fn pending_dialogs(&self) -> usize {
+        self.pending_requests.as_ref().map_or(0, |pending| {
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .snapshot()
+                .len()
+        })
+    }
+
+    fn executing_tools(&self) -> usize {
+        self.session.tool_dispatcher().executing()
     }
 }

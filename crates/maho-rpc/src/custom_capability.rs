@@ -17,9 +17,11 @@ pub const SESSION_STATUS_CAPABILITY: &str = "session_status";
 /// (`ui_request_pending`/`ui_request_settled`) without receiving command replies (senpi#4266).
 pub const DIALOG_OBSERVER_CAPABILITY: &str = "dialog_observer";
 pub const WARM_CAPABILITY: &str = "warm";
+pub const PARK_CLAIM_CAPABILITY: &str = "park_claim";
 pub const MOVED_PATH_GUARD_CAPABILITY: &str = "moved_path_guard";
 pub const PROMPT_SURFACE_CAPABILITY: &str = "prompt_surface";
 pub const BROWSER_ENGINE_CAPABILITY: &str = "browser_engine";
+pub const SESSION_ENV_CAPABILITY: &str = "session_env";
 pub const RETRY_FALLBACK_PROFILE_CAPABILITY: &str = "retry_fallback_profile";
 pub const RETRY_FALLBACK_COMMAND_CAPABILITY: &str = "retry_fallback_command";
 pub const PROMPT_SURFACE_CHAT_CAPABILITY: &str = "prompt_surface_chat";
@@ -93,6 +95,8 @@ pub const MEMORY_FORGET_CAPABILITY: &str = "memory_forget";
 pub const OWNER_MEMORY_REQUESTS: [&str; 3] = ["memory_receipts", "memory_forget", "memory_correct"];
 /// errorCode of an owner memory request no handler serves in this session.
 pub const MEMORY_UNAVAILABLE_ERROR_CODE: &str = "memory_unavailable";
+/// `account_reset`: reset one named account's local health, keeping its credentials (senpi#4879, senpi#5698).
+pub const ACCOUNT_RESET_CAPABILITY: &str = "account_reset";
 pub const RPC_CLIENT_CAPABILITIES_ENV: &str = "SENPI_RPC_CLIENT_CAPABILITIES";
 pub const DEFAULT_CUSTOM_EXTENSION_LABEL: &str = "custom UI component";
 

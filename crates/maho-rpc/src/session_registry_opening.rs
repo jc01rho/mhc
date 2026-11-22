@@ -72,10 +72,12 @@ pub fn build_opening_entry(input: OpeningInput<'_>) -> OpeningEntry {
         runtime_profile.runtime.initial_thinking_level = None;
     }
     let (settle_open, open_completion) = tokio::sync::watch::channel(None);
+    let speculative = profile.speculative;
     let entry = RpcSessionEntry {
+        speculative,
         close: SessionCloseState {
             state: RpcSessionState::Opening,
-            attachments: 1,
+            attachments: if speculative { 0 } else { 1 },
             retain_on_disconnect,
             reservation_key: session_path.clone(),
             writing: false,

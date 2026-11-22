@@ -102,7 +102,7 @@ pub async fn sha256_file_async(path: &Path) -> std::io::Result<String> {
 }
 
 /// Both separators count: a bundle written on one OS is read on another.
-fn leaves_bundle(path: &str) -> bool {
+pub fn leaves_bundle(path: &str) -> bool {
     let bytes = path.as_bytes();
     let windows_drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
     Path::new(path).is_absolute()
@@ -168,8 +168,7 @@ pub fn parse_move_id(value: &Value) -> Result<MoveId, MoveBundleInvalidError> {
     parse_plain_id(value, "move id")
 }
 
-/// The importer joins this name onto its session folder, so it must be a plain session file name and nothing else.
-fn parse_session_file_name(value: &str) -> Result<String, MoveBundleInvalidError> {
+pub fn is_session_file_name(value: &str) -> bool {
     let stem = value.strip_suffix(".jsonl");
     let plain = stem.is_some_and(|stem| {
         let mut chars = stem.chars();
@@ -178,7 +177,12 @@ fn parse_session_file_name(value: &str) -> Result<String, MoveBundleInvalidError
             .is_some_and(|first| first.is_ascii_alphanumeric())
             && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     });
-    if !plain || value.contains("..") {
+    plain && !value.contains("..")
+}
+
+/// The importer joins this name onto its session folder, so it must be a plain session file name and nothing else.
+fn parse_session_file_name(value: &str) -> Result<String, MoveBundleInvalidError> {
+    if !is_session_file_name(value) {
         return Err(MoveBundleInvalidError::new(format!(
             "the session file name is not a plain file name: {value}"
         )));
@@ -258,10 +262,17 @@ fn parse_payload(value: &Value) -> Result<MovePayload, MoveBundleInvalidError> {
 }
 
 pub fn read_manifest(bundle_dir: &Path) -> Result<MoveManifest, MoveBundleInvalidError> {
-    let raw: Value = std::fs::read_to_string(bundle_dir.join(MANIFEST_FILE))
-        .map_err(|error| error.to_string())
-        .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+    let text = std::fs::read_to_string(bundle_dir.join(MANIFEST_FILE))
         .map_err(|error| MoveBundleInvalidError::new(format!("manifest unreadable: {error}")))?;
+    parse_manifest(&text)
+}
+
+pub fn parse_manifest(text: &str) -> Result<MoveManifest, MoveBundleInvalidError> {
+    let raw: Value = serde_json::from_str(text)
+        .map_err(|error| MoveBundleInvalidError::new(format!("manifest unreadable: {error}")))?;
+    if !raw.is_object() {
+        return Err(MoveBundleInvalidError::new("the manifest is not an object"));
+    }
     let format = raw.get("format");
     if format.and_then(Value::as_u64) != Some(MOVE_BUNDLE_FORMAT) {
         let shown = match format {
@@ -318,11 +329,8 @@ pub fn read_manifest(bundle_dir: &Path) -> Result<MoveManifest, MoveBundleInvali
     })
 }
 
-pub fn verify_bundle(
-    bundle_dir: &Path,
-    manifest: &MoveManifest,
-) -> Result<(), MoveBundleInvalidError> {
-    for file in std::iter::once(&manifest.session)
+pub fn listed_files(manifest: &MoveManifest) -> Vec<BundleFile> {
+    std::iter::once(&manifest.session)
         .chain(manifest.sidecars.iter())
         .chain(
             manifest
@@ -330,12 +338,36 @@ pub fn verify_bundle(
                 .iter()
                 .flat_map(|payload| payload.files.iter()),
         )
-    {
+        .cloned()
+        .collect()
+}
+
+pub fn verify_bundle(
+    bundle_dir: &Path,
+    manifest: &MoveManifest,
+) -> Result<(), MoveBundleInvalidError> {
+    verify_bundle_with_sent(bundle_dir, manifest, None)
+}
+
+pub fn verify_bundle_with_sent(
+    bundle_dir: &Path,
+    manifest: &MoveManifest,
+    sent: Option<&std::collections::HashMap<String, String>>,
+) -> Result<(), MoveBundleInvalidError> {
+    for file in listed_files(manifest) {
         let actual = sha256_file(&bundle_dir.join(&file.path))
             .map_err(|_| MoveBundleInvalidError::new(format!("missing {}", file.path)))?;
         if actual != file.sha256 {
             return Err(MoveBundleInvalidError::new(format!(
                 "{} changed in transit",
+                file.path
+            )));
+        }
+        if let Some(sent) = sent
+            && sent.get(&file.path) != Some(&actual)
+        {
+            return Err(MoveBundleInvalidError::new(format!(
+                "{} was sent with a sha256 that is not its bytes'",
                 file.path
             )));
         }
@@ -359,9 +391,18 @@ pub async fn verify_bundle_async(
     bundle_dir: &Path,
     manifest: &MoveManifest,
 ) -> Result<(), MoveBundleInvalidError> {
+    verify_bundle_with_sent_async(bundle_dir, manifest, None).await
+}
+
+pub async fn verify_bundle_with_sent_async(
+    bundle_dir: &Path,
+    manifest: &MoveManifest,
+    sent: Option<&std::collections::HashMap<String, String>>,
+) -> Result<(), MoveBundleInvalidError> {
     let dir = bundle_dir.to_owned();
     let manifest = manifest.clone();
-    tokio::task::spawn_blocking(move || verify_bundle(&dir, &manifest))
+    let sent = sent.cloned();
+    tokio::task::spawn_blocking(move || verify_bundle_with_sent(&dir, &manifest, sent.as_ref()))
         .await
         .map_err(|error| MoveBundleInvalidError::new(error.to_string()))?
 }

@@ -1749,6 +1749,9 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_browser_engine(&self) -> Option<&'static str> {
         None
     }
+    fn get_session_env(&self) -> Option<BTreeMap<String, String>> {
+        None
+    }
     fn get_model(&self) -> Option<Model>;
     fn get_service_tier(&self) -> Option<ServiceTier>;
     fn get_effective_service_tier(&self) -> Option<ServiceTier> {
@@ -2923,6 +2926,11 @@ impl ToolContext for ExtensionContext {
         self.session_manager
             .extension_context_actions()
             .and_then(ExtensionContextActions::get_browser_engine)
+    }
+    fn session_env(&self) -> Option<BTreeMap<String, String>> {
+        self.session_manager
+            .extension_context_actions()
+            .and_then(ExtensionContextActions::get_session_env)
     }
     fn get_steering_signal(&self) -> Option<AbortSignal> {
         self.current_steering_signal().ok().flatten()

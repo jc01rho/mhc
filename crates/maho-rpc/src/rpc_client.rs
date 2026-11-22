@@ -1347,6 +1347,15 @@ impl RpcClient {
         .await
     }
 
+    /// Reset one account's local health on a host advertising `account_reset`; rejects with RpcCommandError on failure.
+    pub async fn reset_provider_account(&self, provider: &str, name: &str) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "account_reset", "provider": provider, "name": name}),
+            true,
+        )
+        .await
+    }
+
     /// senpi `prompt`: the prompt's disposition once accepted. A refusal (`streaming`, ...) is a typed
     /// [`RpcCommandError`]; an older host that omits the disposition reads as `Handled`.
     pub async fn prompt(
@@ -1949,6 +1958,7 @@ fn skip_stream_event(event: &Value) -> bool {
                     | "extension_ui_request"
                     | "session_replaced"
                     | "session_parked"
+                    | "session_released"
             )
         )
 }

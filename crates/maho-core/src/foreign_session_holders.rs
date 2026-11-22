@@ -87,3 +87,42 @@ pub async fn session_holder_warning(
         who.join("; ")
     ))
 }
+
+pub fn host_attach_socket(holders: &[SessionHolder]) -> Option<String> {
+    if holders.is_empty() || holders.iter().any(|holder| holder.unproven) {
+        return None;
+    }
+    let mut sockets = std::collections::BTreeSet::new();
+    for holder in holders {
+        let socket = holder
+            .host_instance
+            .as_ref()
+            .and(holder.host_socket.as_deref())
+            .filter(|socket| !socket.is_empty())?;
+        sockets.insert(socket.to_owned());
+    }
+    (sockets.len() == 1).then(|| sockets.into_iter().next().unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_attach_socket_returns_single_proven_host_socket_and_refuses_unproven() {
+        let proven = SessionHolder {
+            pid: 4242,
+            cwd: Some("/work".into()),
+            host_instance: Some("h-1".into()),
+            host_socket: Some("/run/rpc.sock".into()),
+            unproven: false,
+        };
+        assert_eq!(
+            host_attach_socket(std::slice::from_ref(&proven)).as_deref(),
+            Some("/run/rpc.sock")
+        );
+        let mut unproven = proven;
+        unproven.unproven = true;
+        assert_eq!(host_attach_socket(&[unproven]), None);
+    }
+}

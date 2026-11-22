@@ -493,6 +493,9 @@ pub fn profile_to_wire(
     if let Some(fallback) = &profile.retry_fallback {
         value["retryFallback"] = fallback.clone();
     }
+    if let Some(env) = &profile.session_env {
+        value["sessionEnv"] = serde_json::json!(env);
+    }
     if let Some(endpoint) = &profile.holder_endpoint {
         let mut holder = serde_json::Map::new();
         if let Some(instance) = &endpoint.host_instance {
@@ -561,6 +564,12 @@ pub fn profile_from_wire(
         prompt_surface: text("promptSurface"),
         browser_engine: text("browserEngine"),
         retry_fallback: value.get("retryFallback").cloned(),
+        session_env: match value.get("sessionEnv") {
+            Some(env) => {
+                Some(serde_json::from_value(env.clone()).map_err(|error| error.to_string())?)
+            }
+            None => None,
+        },
         holder_endpoint: value.get("holderEndpoint").and_then(|holder| {
             let field = |key: &str| {
                 holder
@@ -581,6 +590,7 @@ pub fn profile_from_wire(
             .get("spawnedBy")
             .and_then(|ancestry| serde_json::from_value(ancestry.clone()).ok()),
         session_start_reason: None,
+        speculative: false,
     })
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -846,6 +856,10 @@ mod tests {
             retry_fallback: Some(
                 serde_json::json!({"modelFallback":true,"fallbackChains":{"a":["b"]}}),
             ),
+            session_env: Some(std::collections::BTreeMap::from([(
+                "OMOCAT_LANE".into(),
+                "lane-1".into(),
+            )])),
             holder_endpoint: Some(maho_core::session_holders::SessionHolderEndpoint {
                 host_instance: Some("i".into()),
                 host_socket: None,
@@ -857,6 +871,7 @@ mod tests {
                 task_id: "t".into(),
             }),
             session_start_reason: None,
+            speculative: false,
         };
         assert_eq!(
             profile_from_wire(&profile_to_wire(&profile)).unwrap(),

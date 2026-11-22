@@ -25,8 +25,10 @@ use maho_rpc::session_status_subscriptions::parse_subscription;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TUI_RPC_COMMANDS: [&str; 12] = [
+pub const TUI_RPC_COMMANDS: [&str; 14] = [
     "open_session",
+    "park_session",
+    "claim_session",
     "get_snapshot",
     "subscribe_sessions",
     "unsubscribe_sessions",
@@ -78,6 +80,9 @@ pub async fn run_tui_rpc_command(
     match kind {
         "get_snapshot" => Answer(get_snapshot(context, connection, command)),
         "open_session" => open_session(context, connection, command),
+        "park_session" | "claim_session" => {
+            Answer(failure(command.get("id"), kind, "multi_session_disabled"))
+        }
         "subscribe_sessions" => subscribe(context, connection, command),
         "unsubscribe_sessions" => Answer(unsubscribe(context, connection, command)),
         "steer" | "follow_up" => Answer(admit_input(
@@ -256,6 +261,15 @@ fn attach_session(
             "session_identity_mismatch",
             "durableSessionId or expectedHostInstance does not name this terminal's session",
             "read list_sessions and get_protocol_info again, then attach with their ids",
+        ));
+    }
+    if command["takeover"] == true {
+        return TuiRpcAnswer::Answer(refusal(
+            id,
+            "attach_session",
+            "takeover_unsupported",
+            "only a headless engine with a takeover ledger takes sessions over",
+            "attach without takeover",
         ));
     }
     attachments.attach(connection);

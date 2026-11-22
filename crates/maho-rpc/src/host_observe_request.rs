@@ -26,7 +26,7 @@ pub fn is_observing_request(line: &str) -> bool {
     };
     let kind = record.get("type").and_then(serde_json::Value::as_str);
     // `warm` opens nothing and `authenticate` only proves the endpoint: neither attaches.
-    if kind == Some("warm") || kind == Some("authenticate") {
+    if kind == Some("warm") || kind == Some("park_session") || kind == Some("authenticate") {
         return true;
     }
     record.get(OBSERVE_REQUEST_FIELD) == Some(&serde_json::Value::Bool(true))

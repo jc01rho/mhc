@@ -12,7 +12,13 @@ pub fn apply_display(display: &mut WorkerDisplay, next: WorkerDisplay) -> bool {
 pub fn output_needs_snapshot(record: &serde_json::Value) -> bool {
     matches!(
         record.get("type").and_then(serde_json::Value::as_str),
-        Some("session_replaced" | "question_resolved" | "question_updated")
+        Some(
+            "session_replaced"
+                | "question_resolved"
+                | "question_updated"
+                | "auto_retry_start"
+                | "auto_retry_end"
+        )
     ) || (record.get("type").and_then(serde_json::Value::as_str) == Some("extension_ui_request")
         && record.get("method").and_then(serde_json::Value::as_str) == Some("question"))
 }
@@ -819,7 +825,13 @@ mod tests {
     }
     #[test]
     fn replacement_and_question_records_carry_snapshot_not_regular_events() {
-        for kind in ["session_replaced", "question_resolved", "question_updated"] {
+        for kind in [
+            "session_replaced",
+            "question_resolved",
+            "question_updated",
+            "auto_retry_start",
+            "auto_retry_end",
+        ] {
             assert!(output_needs_snapshot(&serde_json::json!({"type":kind})));
         }
         assert!(output_needs_snapshot(

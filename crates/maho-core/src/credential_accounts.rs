@@ -418,6 +418,9 @@ pub async fn get_credential_accounts(
     .await
 }
 
+pub const CREDENTIAL_ACCOUNT_NOT_FOUND_PREFIX: &str = "Provider account not found: ";
+pub const CREDENTIAL_ACCOUNT_NOT_FOUND_CODE: &str = "account_not_found";
+
 pub async fn reset_credential_account(
     storage: &AuthStorage,
     provider: &str,
@@ -443,7 +446,7 @@ pub(crate) async fn reset_credential_account_guarded(
     let account = accounts
         .iter()
         .find(|account| account.name == name)
-        .ok_or_else(|| format!("Provider account not found: {name}"))?;
+        .ok_or_else(|| format!("{CREDENTIAL_ACCOUNT_NOT_FOUND_PREFIX}{name}"))?;
     admit()?;
     let lane = if account.source == CredentialAccountSource::Env {
         "env"

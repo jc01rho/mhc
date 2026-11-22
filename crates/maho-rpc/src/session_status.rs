@@ -74,6 +74,7 @@ pub struct SessionStatusRuntimeView {
     pub steering: usize,
     pub follow_up: usize,
     pub pending_questions: usize,
+    pub waiting: Option<maho_core::retry_wait::RetryWait>,
 }
 
 /// One session's views as the stream reads them.
@@ -150,6 +151,12 @@ pub fn derive_session_status(
         "pendingQueue".into(),
         json!({"steering":runtime.map_or(0,|runtime|runtime.steering),"followUp":runtime.map_or(0,|runtime|runtime.follow_up)}),
     );
+    if status == SessionStatusValue::Running
+        && let Some(waiting) = runtime.and_then(|runtime| runtime.waiting.as_ref())
+        && let Ok(value) = serde_json::to_value(waiting)
+    {
+        record.insert("waiting".into(), value);
+    }
     record.insert("context".into(), Value::Object(entry.context.clone()));
     record
 }
@@ -196,6 +203,7 @@ pub fn cause_of_record(record: &Value) -> Option<SessionStatusCause> {
         "session_parked" => "park",
         "session_closed" => "close",
         "question_resolved" => "question",
+        "auto_retry_start" | "auto_retry_end" => "retry",
         "extension_ui_request" if record["method"] == "question" => "question",
         "compaction_start" | "compaction_end" => "compaction",
         _ => return None,
@@ -257,6 +265,42 @@ mod tests {
             derive_session_status(&entry(RpcSessionState::Closing), None, 0, None, None)["status"],
             "closed"
         );
+        let waiting = maho_core::retry_wait::RetryWait {
+            kind: maho_core::retry_wait::RetryWaitKind::RateLimit,
+            attempt: 2,
+            max_attempts: 5,
+            delay_ms: 45_000,
+            until: "2026-11-19T03:00:45.000Z".into(),
+            error: Some("429: slow down".into()),
+        };
+        let running_with_wait = derive_session_status(
+            &open,
+            Some(&SessionStatusRuntimeView {
+                is_streaming: true,
+                waiting: Some(waiting.clone()),
+                ..Default::default()
+            }),
+            0,
+            None,
+            None,
+        );
+        assert_eq!(running_with_wait["status"], "running");
+        assert_eq!(
+            running_with_wait["waiting"],
+            serde_json::to_value(&waiting).unwrap()
+        );
+        let closed = terminal_of_lifecycle(&json!({"type":"session_closed"})).unwrap();
+        let closed_with_wait = derive_session_status(
+            &open,
+            Some(&SessionStatusRuntimeView {
+                waiting: Some(waiting),
+                ..Default::default()
+            }),
+            0,
+            Some(&closed),
+            None,
+        );
+        assert!(!closed_with_wait.contains_key("waiting"));
     }
 
     #[test]
@@ -275,6 +319,14 @@ mod tests {
         assert_eq!(
             cause_of_record(&json!({"type":"extension_ui_request","method":"question"})),
             Some("question")
+        );
+        assert_eq!(
+            cause_of_record(&json!({"type":"auto_retry_start"})),
+            Some("retry")
+        );
+        assert_eq!(
+            cause_of_record(&json!({"type":"auto_retry_end"})),
+            Some("retry")
         );
         assert_eq!(
             cause_of_record(&json!({"type":"extension_ui_request","method":"confirm"})),

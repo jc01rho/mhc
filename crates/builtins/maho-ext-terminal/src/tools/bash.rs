@@ -91,10 +91,10 @@ pub const SESSION_SPAWN_DELETIONS: &[&str] =
 pub fn session_env_overrides(
     context: Option<&dyn maho_tools::definition::ToolContext>,
 ) -> std::collections::BTreeMap<String, String> {
-    let mut env = std::collections::BTreeMap::new();
     let Some(context) = context else {
-        return env;
+        return std::collections::BTreeMap::new();
     };
+    let mut env = context.session_env().unwrap_or_default();
     env.insert(
         "PI_SESSION_ID".to_owned(),
         context.session_manager().session_id().to_owned(),

@@ -105,12 +105,16 @@ pub const RPC_ERROR_CONTEXT_BUDGET: &str = "context_budget";
 pub const RPC_ERROR_EVAL_CELL_NOT_FOUND: &str = "eval_cell_not_found";
 pub const RPC_ERROR_INVALID_EVAL_CELL_REQUEST: &str = "invalid_eval_cell_request";
 pub const RPC_ERROR_EVAL_CELLS_UNAVAILABLE: &str = "eval_cells_unavailable";
+pub const RPC_ERROR_PROVIDER_CREDENTIALS_MISSING: &str = "provider_credentials_missing";
+pub const RPC_ERROR_PROVIDER_CREDENTIALS_EXPIRED: &str = "provider_credentials_expired";
+pub const RPC_ERROR_NO_MODEL_SELECTED: &str = "no_model_selected";
 pub const RPC_ERROR_UNKNOWN_COMMAND: &str = "unknown_command";
 pub const RPC_ERROR_HOST_STOPPING: &str = "host_stopping";
 /// A sealed (overflowed) session's output cannot be reattached; the client unloads and reopens it.
 pub const RPC_ERROR_SESSION_OUTPUT_OVERFLOW: &str = "session_output_overflow";
 /// `open_session.spawnedBy` must name non-empty `parentSessionId`, `rootSessionId` and `taskId`.
 pub const RPC_ERROR_INVALID_SPAWNED_BY: &str = "invalid_spawned_by";
+pub const RPC_ERROR_INVALID_SESSION_ENV: &str = "invalid_session_env";
 
 /// Capability: `steer_when_idle` (rpc-types.ts `STEER_WHEN_IDLE_CAPABILITY`).
 pub const STEER_WHEN_IDLE_CAPABILITY: &str = "steer_when_idle";
@@ -118,6 +122,8 @@ pub const STEER_WHEN_IDLE_CAPABILITY: &str = "steer_when_idle";
 pub const QUEUED_MESSAGE_REVISION_CAPABILITY: &str = "queued_message_revision";
 /// Capability: `record_user_activity` reports composer draft activity (senpi#3859).
 pub const USER_ACTIVITY_CAPABILITY: &str = "user_activity";
+/// Capability: `set_model` honours `scope: "session"` and leaves the default model alone (senpi#5933).
+pub const SESSION_MODEL_SCOPE_CAPABILITY: &str = "session_model_scope";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -510,6 +516,8 @@ pub enum RpcCommandBody {
     LoginApiKey {
         provider: String,
         key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<String>,
     },
     Logout {
         provider: String,
@@ -524,6 +532,12 @@ pub enum RpcCommandBody {
     AccountRemove {
         provider: String,
         name: String,
+    },
+    AccountReset {
+        #[serde(default)]
+        provider: Option<Value>,
+        #[serde(default)]
+        name: Option<Value>,
     },
     SetClientInfo {
         width: f64,
@@ -595,6 +609,107 @@ pub enum RpcCommandBody {
         /// Kept raw so a malformed value is refused with `invalid_spawned_by` rather than a parse error.
         #[serde(default, skip_serializing_if = "Value::is_null")]
         spawned_by: Value,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        env: Option<Value>,
+    },
+    ParkSession {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        kind: Option<Value>,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        context: Option<Value>,
+    },
+    ClaimSession {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking_level: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_preset: Option<String>,
+        #[serde(
+            rename = "retain_on_disconnect",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        retain_on_disconnect: Option<bool>,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        expected_host_instance: Option<Value>,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        kind: Option<Value>,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        context: Option<Value>,
+        #[serde(
+            rename = "auto_title",
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        auto_title: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        durable_session_id: Option<String>,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        attended: Option<Value>,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        prompt_surface: Option<Value>,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        browser_engine: Option<Value>,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        retry_fallback: Option<Value>,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        spawned_by: Value,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        env: Option<Value>,
     },
     /// Hands a session over to a runtime outside this host (senpi `release_session`). The session id travels in
     /// the routing envelope. `reason` and `moveId` stay raw so a malformed value is refused with
@@ -647,6 +762,10 @@ pub enum RpcCommandBody {
         durable_session_id: Value,
         #[serde(default, skip_serializing_if = "Value::is_null")]
         expected_host_instance: Value,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        takeover: Value,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        holder: Value,
     },
     /// Gives up one attachment of the requesting connection (senpi `release_attachment`).
     ReleaseAttachment,

@@ -70,6 +70,8 @@ pub struct HandoverParkedEntry {
     pub auto_title: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_fallback: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_env: Option<std::collections::BTreeMap<String, String>>,
     /// The host instance that wrote the park. Its own reopen watch skips it: the park is for the NEXT
     /// generation (senpi#3485). Absent on entries an older generation wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,6 +138,7 @@ pub fn parse_entry(value: &Value) -> Option<HandoverParkedEntry> {
             .is_none_or(|overlay| apply_context_patch(None, overlay).is_ok())
         && session_auto_title_error(record.get("autoTitle")).is_none()
         && retry_fallback_error(record.get("retryFallback")).is_none()
+        && crate::session_caller_env::session_env_shape_error(record.get("sessionEnv")).is_none()
         && absent_or(record, "model", |model| {
             model.as_object().is_some_and(|model| {
                 model.get("provider").is_some_and(Value::is_string)
