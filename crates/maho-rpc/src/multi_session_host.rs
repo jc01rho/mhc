@@ -6111,7 +6111,7 @@ mod handoff_tests {
         for (index, command_fn, expected_success, expected_kept) in [
             (
                 1,
-                Box::new(|session_id: String| {
+                (|session_id: String| {
                     serde_json::json!({
                         "id": "rel-move",
                         "type": "release_session",
@@ -6120,45 +6120,45 @@ mod handoff_tests {
                         "moveId": "move-6444",
                         "target": "laptop"
                     })
-                }) as Box<dyn FnOnce(String) -> serde_json::Value + Send>,
+                }) as fn(String) -> serde_json::Value,
                 true,
                 0usize,
             ),
             (
                 2,
-                Box::new(|session_id: String| {
+                |session_id: String| {
                     serde_json::json!({
                         "id": "rel-takeover",
                         "type": "release_session",
                         "sessionId": session_id,
                         "reason": "takeover"
                     })
-                }),
+                },
                 true,
                 0usize,
             ),
             (
                 3,
-                Box::new(|session_id: String| {
+                |session_id: String| {
                     serde_json::json!({
                         "id": "close-last",
                         "type": "close_session",
                         "sessionId": session_id
                     })
-                }),
+                },
                 true,
                 0usize,
             ),
             (
                 4,
-                Box::new(|session_id: String| {
+                |session_id: String| {
                     serde_json::json!({
                         "id": "rel-unknown",
                         "type": "release_session",
                         "sessionId": session_id,
                         "reason": "archive"
                     })
-                }),
+                },
                 false,
                 1usize,
             ),
@@ -7393,7 +7393,7 @@ mod tests {
             .open_session_inner(None, &command.body, None)
             .await
             .err()
-            .expect("a file cwd is refused");
+            .unwrap();
         assert_eq!(
             refusal.code.as_deref(),
             Some(crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY)
