@@ -123,7 +123,19 @@ where
     let mut touched: Option<IndexPage> = None;
     let mut rows: BTreeMap<String, IndexRow> = BTreeMap::new();
     let mut removed: BTreeSet<String> = BTreeSet::new();
-    let entries = i.0.overlays.entries(&cut.overrides, None);
+    // Ready keys only, oldest first: a pass never re-looks-up the still-pending backlog (senpi#4575).
+    let entries: Vec<(String, Arc<IndexOverride>)> = {
+        let state = lock(&i.0.state);
+        state
+            .ready
+            .iter()
+            .filter_map(|key| {
+                i.0.overlays
+                    .get(&cut.overrides, key)
+                    .map(|value| (key.clone(), value.clone()))
+            })
+            .collect()
+    };
     for batch in entries.chunks(128) {
         if selected.len() >= 128 {
             break;

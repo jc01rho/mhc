@@ -37,7 +37,10 @@ pub(crate) struct Decoded<T> {
     bytes: usize,
 }
 
-const CACHE_BYTES: usize = 32_768;
+/// Decoded-node budget of one compaction round's LRU (senpi#4559). A round's 128 rows land on up to 128 separate
+/// tree paths, about 1,000 nodes of about 0.9 KiB each at 8,000 rows. The selection lookup and the batched apply
+/// walk the same paths, so the cache must hold a whole round's paths for the apply to reuse them.
+pub const ROUND_CACHE_BYTES: usize = 1024 * 1024;
 
 /// Round-local LRU: least recently used first.
 struct Cache<T> {
@@ -87,7 +90,8 @@ impl<T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static> CompactPag
         }
     }
 
-    /// A round-local 32 KiB LRU retains reused upper paths, including newly built ones.
+    /// A round-local [`ROUND_CACHE_BYTES`] LRU retains reused upper paths, including newly built ones; it ends with
+    /// the round.
     pub async fn cached<R>(&self, operation: impl std::future::Future<Output = R>) -> R {
         *lock(&self.cache) = Some(Cache {
             entries: Vec::new(),
@@ -126,9 +130,9 @@ impl<T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static> CompactPag
         let bytes = (units + name.len()) * 2 + 128;
         let decoded = Decoded { node, name, bytes };
         if let Some(cache) = cache.as_mut()
-            && bytes <= CACHE_BYTES
+            && bytes <= ROUND_CACHE_BYTES
         {
-            while cache.bytes + bytes > CACHE_BYTES && !cache.entries.is_empty() {
+            while cache.bytes + bytes > ROUND_CACHE_BYTES && !cache.entries.is_empty() {
                 let (_, oldest) = cache.entries.remove(0);
                 cache.bytes -= oldest.bytes;
             }
