@@ -14,14 +14,19 @@ pub fn session_pin(session: Option<&str>) -> Option<String> {
         .cloned()
 }
 
-/// senpi `accountStatus`: an account-wide block, an auth block saying when it is re-checked.
+/// senpi `accountStatus`: an account-wide block in plain words, why it sits out and until when (senpi#5006).
 fn account_status(slot: &crate::accounts::AccountSlot, now: f64) -> Option<String> {
-    let until = slot.blocked_until.filter(|until| *until > now)?;
-    let until = crate::model_blocks::iso_ms(until);
-    Some(if slot.block_reason.as_deref() == Some("auth_error") {
-        format!("login rejected; re-checked at {until}")
-    } else {
-        format!("blocked until {until}")
+    let (blocked, reason, until) = crate::account_management::timed_block(
+        slot.blocked_until,
+        slot.block_reason.as_deref(),
+        now,
+    );
+    blocked.then(|| {
+        maho_core::credential_account_status::describe_account_block(
+            blocked,
+            reason,
+            until.map(|until| until as i64),
+        )
     })
 }
 
@@ -196,12 +201,31 @@ mod tests {
         slot.block_reason = Some("auth_error".into());
         assert_eq!(
             slot_status(&slot, 0.0),
-            "login rejected; re-checked at 1970-01-01T00:00:01.000Z, blocked for opus until 1970-01-01T00:01:00.000Z"
+            format!(
+                "sign-in rejected; next check after {}, blocked for opus until 1970-01-01T00:01:00.000Z",
+                maho_core::credential_account_status::format_account_retry_time(1_000)
+            )
         );
         slot.block_reason = Some("rate_limit".into());
         assert_eq!(
             slot_status(&slot, 2_000.0),
             "blocked for opus until 1970-01-01T00:01:00.000Z"
         );
+        assert_eq!(
+            slot_status(&slot, 0.0),
+            format!(
+                "rate limited; retry after {}, blocked for opus until 1970-01-01T00:01:00.000Z",
+                maho_core::credential_account_status::format_account_retry_time(1_000)
+            )
+        );
+    }
+    #[test]
+    fn a_disabled_account_has_no_end_time_and_says_it_needs_attention() {
+        let slot = crate::accounts::AccountSlot {
+            name: "work".into(),
+            block_reason: Some("account_disabled".into()),
+            ..Default::default()
+        };
+        assert_eq!(slot_status(&slot, 0.0), "account disabled; needs attention");
     }
 }

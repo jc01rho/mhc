@@ -62,6 +62,10 @@ impl ModelRegistry for SyntheticRegistry {
                     name: account.name,
                     display_name: account.display_name,
                     blocked: account.blocked,
+                    blocked_reason: account
+                        .blocked_reason
+                        .map(credential_accounts::CredentialAccountBlockedReason::as_str),
+                    blocked_until: account.blocked_until,
                     pinned: account.pinned,
                     unused: account.unused,
                     blocked_models: account

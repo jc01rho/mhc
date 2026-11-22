@@ -31,6 +31,7 @@ pub mod config_reference_env;
 pub mod config_reference_file;
 pub mod config_reference_redaction;
 pub mod config_reference_resolver;
+pub mod credential_account_status;
 pub mod credential_accounts;
 pub mod credential_policy_schema;
 pub mod credential_pool;
