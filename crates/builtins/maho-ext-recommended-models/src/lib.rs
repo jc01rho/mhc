@@ -1,35 +1,21 @@
 // Launch metadata: provisional and not promoted until release is confirmed.
 pub const FABLE55_RELEASED: bool = false;
 pub const FABLE55_PROMOTE_DEFAULTS: bool = false;
-pub const fn recommended_fable_model(released: bool, promote_defaults: bool) -> &'static str {
-    if released && promote_defaults {
-        "claude-fable-5-5"
-    } else {
-        "claude-fable-5-1"
-    }
+pub const fn recommended_fable_model() -> &'static str {
+    "claude-fable-5-2"
 }
 #[cfg(test)]
 mod launch_tests {
     #[test]
-    fn promotion_requires_both_flags() {
-        for (released, promoted, expected) in [
-            (false, false, "claude-fable-5-1"),
-            (true, false, "claude-fable-5-1"),
-            (false, true, "claude-fable-5-1"),
-            (true, true, "claude-fable-5-5"),
-        ] {
-            assert_eq!(super::recommended_fable_model(released, promoted), expected);
-        }
+    fn the_current_fable_is_the_released_model() {
+        assert_eq!(super::recommended_fable_model(), "claude-fable-5-2");
     }
 }
 use maho_ai::{model::Model, types::ThinkingLevel};
 
 pub const RECOMMENDED_DEFAULT_MODELS: &[(&str, ThinkingLevel)] = &[
     ("claude-opus-5-5", ThinkingLevel::Medium),
-    (
-        recommended_fable_model(FABLE55_RELEASED, FABLE55_PROMOTE_DEFAULTS),
-        ThinkingLevel::Xhigh,
-    ),
+    (recommended_fable_model(), ThinkingLevel::Xhigh),
     ("kimi-k3.1-pro", ThinkingLevel::Max),
     ("gpt-6-astra", ThinkingLevel::Xhigh),
     ("gpt-6.1-sol", ThinkingLevel::Medium),
@@ -60,7 +46,9 @@ const GLM_PROVIDERS: &[&str] = &["zai-coding-plan", "opencode-go"];
 /// Providers serving a recommended model, best first (empty for an unknown id).
 pub fn ranked_providers(model_id: &str) -> &'static [&'static str] {
     match model_id {
-        "claude-opus-5-5" | "claude-fable-5-1" | "claude-fable-5-5" => CLAUDE_PROVIDERS,
+        "claude-opus-5-5" | "claude-fable-5-1" | "claude-fable-5-2" | "claude-fable-5-5" => {
+            CLAUDE_PROVIDERS
+        }
         "kimi-k3.1-pro" => KIMI_PROVIDERS,
         "gpt-6-astra" | "gpt-6.1-sol" => GPT_PROVIDERS,
         "gpt-6.2-astra" | "gpt-6.2-sol" => GPT_6_2_PROVIDERS,

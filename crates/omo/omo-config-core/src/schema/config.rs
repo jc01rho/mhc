@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 use crate::internal::validate::{
-    DefaultFn, Node, any, array, defaulted, optional, record, strict_object, string,
+    DefaultFn, Node, any, array, boolean, defaulted, optional, record, strict_object, string,
 };
 use crate::schema::agent::omo_agents_config_schema;
 use crate::schema::category::omo_categories_config_schema;
@@ -51,6 +51,11 @@ pub fn omo_excluded_models_schema() -> Node {
     array(string())
 }
 
+/// mhc's Fable execution gate (docs/divergences.md GATE-1): `block_fable` is on unless set to false.
+pub fn omo_model_policy_schema() -> Node {
+    strict_object(vec![optional("block_fable", boolean())])
+}
+
 pub fn omo_typed_harness_config_schema() -> Node {
     strict_object(vec![
         optional("provenance", omo_provenance_settings_schema()),
@@ -72,6 +77,7 @@ pub fn omo_typed_harness_config_schema() -> Node {
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
+        optional("model_policy", omo_model_policy_schema()),
     ])
 }
 
@@ -96,6 +102,7 @@ pub fn omo_config_profile_schema() -> Node {
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
+        optional("model_policy", omo_model_policy_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
         optional("[native]", omo_typed_harness_config_schema()),
         optional("[senpi]", omo_typed_harness_config_schema()),
@@ -125,6 +132,7 @@ pub fn omo_config_schema() -> Node {
         optional("computer", omo_computer_settings_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
+        optional("model_policy", omo_model_policy_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
         optional("[native]", omo_typed_harness_config_schema()),
         optional("[senpi]", omo_typed_harness_config_schema()),
@@ -161,6 +169,7 @@ pub fn omo_config_layer_schema() -> Node {
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
+        optional("model_policy", omo_model_policy_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
         optional("[native]", omo_typed_harness_config_schema()),
         optional("[senpi]", omo_typed_harness_config_schema()),

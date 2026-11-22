@@ -80,3 +80,15 @@ pub fn match_available(
 pub fn is_available(target: &str, available: &[String]) -> bool {
     match_available(target, available, None).is_some()
 }
+
+/// `available` without the models the Fable execution gate blocks (docs/divergences.md GATE-1), so
+/// a chain moves on to its next rung. This build reads no omo.json `model_policy`, so the
+/// process-wide gate state applies.
+pub fn without_gate_blocked(available: Vec<String>) -> Vec<String> {
+    use maho_ai::model_execution_gate::{fable_blocked, is_execution_blocked};
+    let blocked = fable_blocked();
+    available
+        .into_iter()
+        .filter(|entry| !is_execution_blocked(entry, blocked))
+        .collect()
+}

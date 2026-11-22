@@ -127,7 +127,7 @@ describe.skipIf(!bunWebViewAvailable)("Bun.WebView from an eval cell", () => {
 	);
 
 	it(
-		"serves the default backend: native WebKit in the worker on macOS, the main-thread Chrome elsewhere",
+		"serves the default backend from the main-thread service on every platform",
 		async () => {
 			const value = await openKernel().value(
 				[
@@ -137,7 +137,31 @@ describe.skipIf(!bunWebViewAvailable)("Bun.WebView from an eval cell", () => {
 					`return { greeting, proxied: Object.getPrototypeOf(view) === Bun.WebView.prototype, isWebView: view instanceof Bun.WebView };`,
 				].join("\n"),
 			);
-			expect(value).toEqual({ greeting: "hello from the fixture", proxied: process.platform !== "darwin", isWebView: true });
+			expect(value).toEqual({ greeting: "hello from the fixture", proxied: true, isWebView: true });
+		},
+		BUDGET,
+	);
+
+	it(
+		"walks a chrome-backed view's history with goBack() and goForward()",
+		async () => {
+			const first = `data:text/html,${encodeURIComponent("<title>first</title>")}`;
+			const second = `data:text/html,${encodeURIComponent("<title>second</title>")}`;
+			const value = await openKernel().value(
+				[
+					`await using view = new Bun.WebView({ backend: "chrome", width: 320, height: 240 });`,
+					`await view.navigate(${JSON.stringify(first)});`,
+					`await view.navigate(${JSON.stringify(second)});`,
+					`const settled = async (move) => {`,
+					`  const navigated = new Promise((resolve, reject) => { view.onNavigated = resolve; view.onNavigationFailed = reject; });`,
+					`  await Promise.all([navigated, move()]);`,
+					`};`,
+					`await settled(() => view.goBack());`,
+					`await settled(() => view.goForward());`,
+					`return view.url;`,
+				].join("\n"),
+			);
+			expect(value).toBe(second);
 		},
 		BUDGET,
 	);

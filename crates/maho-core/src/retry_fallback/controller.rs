@@ -351,8 +351,12 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
         }
         let (current, thinking) = self.deps.current()?;
         let chains = self.canonical_chains();
-        let Some((key, entries)) = resolve_chain_key(&current, thinking, &chains)
-            .or_else(|| self.state.as_ref().map(|s| s.chain_key.clone()))
+        let Some((key, entries)) = self
+            .state
+            .as_ref()
+            .map(|s| s.chain_key.clone())
+            .filter(|key| chains.contains_key(key))
+            .or_else(|| resolve_chain_key(&current, thinking, &chains))
             .and_then(|key| chains.get(&key).cloned().map(|entries| (key, entries)))
         else {
             if log_decision {
@@ -373,6 +377,12 @@ impl<D: RetryFallbackDeps> RetryFallbackController<D> {
             };
             if selector.provider == current.provider && selector.id == current.id {
                 self.skip(raw, "self");
+                continue;
+            }
+            if maho_ai::model_execution_gate::execution_refusal(&selector.provider, &selector.id)
+                .is_some()
+            {
+                self.skip(raw, "execution-gate");
                 continue;
             }
             if refused_provider == Some(selector.provider.as_str())

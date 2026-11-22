@@ -25,8 +25,12 @@ fn invalid(message: &str) -> ExtensionFailure {
 }
 
 fn not_found(cell_id: &str) -> ExtensionFailure {
+    not_found_message(format!("Unknown detached eval cell \"{cell_id}\""))
+}
+
+fn not_found_message(message: impl Into<String>) -> ExtensionFailure {
     ExtensionFailure::classified(
-        format!("Unknown detached eval cell \"{cell_id}\""),
+        message,
         Some("EvalCellNotFoundError".into()),
         Some("eval_cell_not_found".into()),
     )
@@ -141,7 +145,7 @@ pub fn register_eval_cells_rpc(
                     .lock()
                     .expect("cell manager")
                     .peek(&cell_id)
-                    .map_err(|_| not_found(&cell_id))?;
+                    .map_err(not_found_message)?;
                 Ok(snapshot_reply(&snapshot, tail_bytes))
             });
             Box::pin(async move { result })
@@ -159,7 +163,7 @@ pub fn register_eval_cells_rpc(
                     .await
                     .map_err(|error| {
                         if error.starts_with("Unknown detached eval cell") {
-                            not_found(&cell_id)
+                            not_found_message(error)
                         } else {
                             ExtensionFailure::new(error)
                         }

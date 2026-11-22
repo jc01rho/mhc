@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::agents::{AgentDefinition, plan_gated_agent_names};
+use crate::category::category_caller_guidance;
 use crate::tools::task::categories::{list_task_agents, list_task_categories};
 
 pub const TASK_PROMPT_SNIPPET: &str =
@@ -23,12 +24,22 @@ pub struct DescriptionInput<'a> {
     pub agents: &'a BTreeMap<String, AgentDefinition>,
 }
 
-fn render_list<'a>(entries: impl IntoIterator<Item = (&'a str, Option<&'a str>)>) -> String {
+fn render_list<'a>(
+    entries: impl IntoIterator<Item = (&'a str, Option<&'a str>, Option<&'a str>)>,
+) -> String {
     let lines: Vec<String> = entries
         .into_iter()
-        .map(|(name, description)| match description {
-            Some(description) if !description.is_empty() => format!("  - {name}: {description}"),
-            _ => format!("  - {name}"),
+        .map(|(name, description, caller_guidance)| {
+            let line = match description {
+                Some(description) if !description.is_empty() => {
+                    format!("  - {name}: {description}")
+                }
+                _ => format!("  - {name}"),
+            };
+            match caller_guidance {
+                Some(guidance) => format!("{line}\n    {}", guidance.replace('\n', "\n    ")),
+                None => line,
+            }
         })
         .collect();
     if lines.is_empty() {
@@ -70,11 +81,13 @@ pub fn build_task_tool_description(input: &DescriptionInput<'_>) -> String {
             "\n  plan-reviewer is one-shot: spawn it, read task_output, optionally task_cancel; task_send is always refused. The harness replaces the plan-reviewer spawn prompt with the canonical plan-review contract (one .omo/plans/*.md path only) - any other prompt content is discarded, so pass the plan path and nothing else.",
         )
     };
-    let category_list = render_list(
-        categories
-            .iter()
-            .map(|entry| (entry.name.as_str(), entry.description.as_deref())),
-    );
+    let category_list = render_list(categories.iter().map(|entry| {
+        (
+            entry.name.as_str(),
+            entry.description.as_deref(),
+            category_caller_guidance(&entry.name),
+        )
+    }));
     // Rules first, catalogue last: Claude Code cuts an MCP tool description at 4096 chars (#14291),
     // so on the Claude subscription path only the head of this text reaches the model.
     format!(

@@ -140,3 +140,38 @@ fn ignores_wrong_optional_field_types() {
     assert!(input.timeout.is_none());
     assert!(input.reset.is_none());
 }
+
+#[test]
+fn run_field_required_messages_and_validator_report_missing_fields_in_order() {
+    use maho_codemode::tool::eval_argument_validator::{
+        missing_run_field_errors, register_eval_argument_validator,
+    };
+    let schema = create_eval_input_schema(
+        &maho_codemode::config::settings::Languages { js: true },
+        &EvalDeadlineSeconds::default(),
+    )
+    .expect("schema");
+    register_eval_argument_validator(&schema);
+    let errors = missing_run_field_errors(&json!({"action":"run"}));
+    let fields: Vec<&str> = errors
+        .iter()
+        .filter_map(|error| error.missing_property())
+        .collect();
+    assert_eq!(fields, vec!["language", "code", "summary"]);
+    assert_eq!(
+        errors[0].message.as_deref(),
+        Some("eval run requires language: one of \"js\"")
+    );
+    assert_eq!(
+        errors[1].message.as_deref(),
+        Some("eval run requires code: the cell body to execute, verbatim")
+    );
+    assert_eq!(
+        errors[2].message.as_deref(),
+        Some(
+            "eval run requires summary (one line in the user's language): what you are working on and for what purpose"
+        )
+    );
+    assert!(missing_run_field_errors(&json!({"action":"list"})).is_empty());
+    assert!(missing_run_field_errors(&json!({"action":"peek","cell_id":"c"})).is_empty());
+}

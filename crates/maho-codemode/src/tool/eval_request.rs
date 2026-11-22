@@ -75,14 +75,26 @@ pub fn parse_eval_request_with_sandbox(
                 "Unsupported eval language \"{value}\"; expected \"js\""
             )));
         }
-        None => return Err(EvalRequestError("eval run requires language \"js\"".into())),
+        None if params.get("language").is_some() => {
+            return Err(EvalRequestError(
+                "eval run language must be one of: js".into(),
+            ));
+        }
+        None => {
+            return Err(EvalRequestError(eval_run_field_required_message(
+                EvalRunField::Language,
+            )));
+        }
     };
     let code = params
         .get("code")
         .and_then(Value::as_str)
-        .ok_or_else(|| EvalRequestError("eval run requires code".into()))?
+        .ok_or_else(|| EvalRequestError(eval_run_field_required_message(EvalRunField::Code)))?
         .to_owned();
-    let summary = params.get("summary").and_then(normalize_eval_summary).ok_or_else(|| EvalRequestError("eval run requires summary — one line in the user's language: what you are working on and for what purpose".into()))?;
+    let summary = params
+        .get("summary")
+        .and_then(normalize_eval_summary)
+        .ok_or_else(|| EvalRequestError(eval_run_field_required_message(EvalRunField::Summary)))?;
     let on_timeout = match params.get("on_timeout") {
         None => None,
         Some(Value::String(value)) if value == "detach" => Some(TimeoutBehavior::Detach),
@@ -148,6 +160,31 @@ pub fn eval_timeout_behavior(input: &EvalToolInput, mode: &str) -> TimeoutBehavi
         } else {
             TimeoutBehavior::Detach
         })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalRunField {
+    Language,
+    Code,
+    Summary,
+}
+
+impl EvalRunField {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Language => "language",
+            Self::Code => "code",
+            Self::Summary => "summary",
+        }
+    }
+}
+
+pub fn eval_run_field_required_message(field: EvalRunField) -> String {
+    match field {
+        EvalRunField::Language => "eval run requires language: one of \"js\"".into(),
+        EvalRunField::Code => "eval run requires code: the cell body to execute, verbatim".into(),
+        EvalRunField::Summary => "eval run requires summary (one line in the user's language): what you are working on and for what purpose".into(),
+    }
 }
 
 #[cfg(test)]

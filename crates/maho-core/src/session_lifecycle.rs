@@ -231,7 +231,8 @@ impl SessionLifecycleController {
             append,
             custody,
         } = options;
-        let obligations = crate::work_obligations::SessionWorkObligations::new(custody);
+        let mut obligations = crate::work_obligations::SessionWorkObligations::new(custody);
+        obligations.settle_ended_runs(ledger.run_id.as_deref());
         Self {
             goal_service: maho_ext_api::goal_lifecycle::goal_lifecycle_service(&session_id),
             options: ControllerOptions {
@@ -274,6 +275,11 @@ impl SessionLifecycleController {
     }
     pub fn requires_human_continuation(&self) -> bool {
         self.ledger.interrupted && !self.pending_human && !self.restart_continues
+    }
+
+    pub fn run_started_here(&self) -> Option<&str> {
+        let run_id = self.ledger.run_id.as_deref()?;
+        (Some(run_id) != self.restored_run_id.as_deref()).then_some(run_id)
     }
 
     pub fn cut_by_host_shutdown(&mut self) {
@@ -350,11 +356,8 @@ impl SessionLifecycleController {
         self.liveness = None;
         self.stop_facts = None;
         self.deadline_stop = None;
-        let interrupted = self
-            .ledger
-            .interrupted
-            .then(|| self.ledger.run_id.clone())
-            .flatten();
+        let previous_run = self.ledger.run_id.clone();
+        self.ledger.interrupted = false;
         self.ledger
             .start_run(match origin.unwrap_or(self.next_run_origin()) {
                 EpochOrigin::Human => "human",
@@ -362,7 +365,7 @@ impl SessionLifecycleController {
             });
         self.pending_human = false;
         self.restart_continues = false;
-        if let Some(id) = interrupted {
+        if let Some(id) = previous_run {
             self.obligations.settle_run(&id);
         }
         self.recompute();
@@ -586,12 +589,24 @@ impl SessionLifecycleController {
                 .map(|r| r.active_count.unwrap_or(1.) as usize)
                 .sum(),
         );
+        let delivery_in_flight = active
+            .iter()
+            .any(|r| self.obligations.is_delivery_in_flight(r));
+        let live_run = self
+            .ledger
+            .run_active
+            .then_some(self.ledger.run_id.as_deref())
+            .flatten();
         let background = active
             .iter()
-            .filter(|r| r.kind == crate::work_custody_record::ObligationKind::Background)
+            .filter(|r| {
+                r.kind == crate::work_custody_record::ObligationKind::Background
+                    && !self.obligations.is_delivery_in_flight(r)
+                    && !self.obligations.is_consumed_by(r, live_run)
+            })
             .map(project)
             .collect();
-        let facts = evaluate_turn_facts(
+        let facts = evaluate_turn_facts_with_delivery(
             self.liveness.as_ref(),
             self.goal.as_ref(),
             background,
@@ -602,6 +617,7 @@ impl SessionLifecycleController {
                 || runtime.activity.is_compacting
                 || runtime.activity.is_bash_running
                 || runtime.activity.has_session_work,
+            delivery_in_flight,
         );
         let mut human = if self.ledger.current["role"] == "root" {
             runtime
@@ -714,11 +730,27 @@ pub struct TurnFacts {
 pub fn evaluate_turn_facts(
     input: Option<&Value>,
     goal: Option<&Value>,
+    background: Vec<Value>,
+    counts: (usize, usize),
+    run: (bool, bool),
+    snapshot: &Value,
+    activity: bool,
+) -> TurnFacts {
+    evaluate_turn_facts_with_delivery(
+        input, goal, background, counts, run, snapshot, activity, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_turn_facts_with_delivery(
+    input: Option<&Value>,
+    goal: Option<&Value>,
     mut background: Vec<Value>,
     counts: (usize, usize),
     run: (bool, bool),
     snapshot: &Value,
     activity: bool,
+    delivery_in_flight: bool,
 ) -> TurnFacts {
     let (pending, children) = counts;
     let (run_active, interrupted) = run;
@@ -769,7 +801,11 @@ pub fn evaluate_turn_facts(
         }
     }
     let mut synthetic = Vec::new();
-    let no_wake = children == 0 && background.is_empty() && !continuation && pending == 0;
+    let no_wake = children == 0
+        && background.is_empty()
+        && !delivery_in_flight
+        && !continuation
+        && pending == 0;
     if snapshot["role"] == "root" {
         if question {
             synthetic.push((format!("question:{}", snapshot["epoch"]), "question".into()));
@@ -832,7 +868,7 @@ pub fn evaluate_turn_facts(
     TurnFacts {
         background,
         synthetic,
-        running: run_active || activity || pending > 0 || continuation,
+        running: run_active || activity || pending > 0 || delivery_in_flight || continuation,
         failure,
     }
 }
@@ -1153,5 +1189,37 @@ mod tests {
             false,
         );
         assert_eq!(f.failure.expect("failure")["reason"], "provider_error");
+    }
+
+    #[test]
+    fn start_run_settles_previous_uninterrupted_run_and_tracks_run_started_here() {
+        let mut c = controller();
+        assert_eq!(c.run_started_here(), None);
+        c.start_run(Some(EpochOrigin::Human));
+        let first_run = c.run_started_here().expect("first run").to_owned();
+        let token = c.obligations.open(
+            "delivery:test",
+            crate::work_custody_record::ObligationKind::Background,
+            None,
+        );
+        let ticket = token.ticket(&mut c.obligations).expect("ticket");
+        c.obligations
+            .queue(
+                &ticket,
+                crate::work_custody_record::CustodyPayload {
+                    message: json!({"role":"custom"}),
+                    deliver_as: None,
+                    item_ids: None,
+                },
+            )
+            .expect("queue");
+        c.obligations
+            .consumed(&ticket, &first_run, "entry-1")
+            .expect("consumed");
+        c.obligations.end_delivery(&ticket);
+        assert_eq!(c.obligations.active().len(), 1);
+        // A second run starting without idle() still settles what first_run consumed (senpi#4435).
+        c.start_run(Some(EpochOrigin::Automatic));
+        assert!(c.obligations.active().is_empty());
     }
 }

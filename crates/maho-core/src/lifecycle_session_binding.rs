@@ -14,6 +14,10 @@ pub trait LifecycleBindingHost: Send + Sync {
     /// `SessionLifecycleController::mark_interrupted_from_custody(delivered)` so consumed work holds the reopened
     /// session for a person (senpi#4204). `delivered` reports whether the transcript already holds a ticket's delivery.
     fn mark_interrupted_from_custody(&self, _delivered: &dyn Fn(&str) -> bool) {}
+    /// The current run when this process started it, not the run the session file left current (senpi#7053).
+    fn run_started_here(&self) -> Option<String> {
+        None
+    }
 }
 pub struct LifecycleSessionBinding {
     pub session_id: String,
@@ -222,11 +226,25 @@ impl LifecycleSessionBinding {
             let entries = manager.entries_of_types(&["custom", "custom_message"]);
             let mut custody = std::collections::BTreeMap::new();
             for entry in &entries {
-                if entry["customType"] == "work-custody" && entry.pointer("/data/sessionId").and_then(Value::as_str) == Some(self.session_id.as_str())
-                    && let Some(key) = entry.pointer("/data/key").and_then(Value::as_str) { custody.insert(key.to_owned(), entry["data"].clone()); }
+                if entry["customType"] == "work-custody"
+                    && entry.pointer("/data/sessionId").and_then(Value::as_str)
+                        == Some(self.session_id.as_str())
+                    && let Some(key) = entry.pointer("/data/key").and_then(Value::as_str)
+                {
+                    custody.insert(key.to_owned(), entry["data"].clone());
+                }
             }
+            let live_run = self.host.run_started_here();
             for record in custody.values() {
-                let Some(ticket) = record["ticketId"].as_str() else { continue };
+                let Some(ticket) = record["ticketId"].as_str() else {
+                    continue;
+                };
+                if live_run
+                    .as_deref()
+                    .is_some_and(|live| record["runId"].as_str() == Some(live))
+                {
+                    continue;
+                }
                 if !matches!(record["state"].as_str(), Some("open" | "queued" | "consumed")) { continue; }
                 let transcript = entries.iter().find(|entry| entry["type"] == "custom_message" && entry.pointer("/details/ticketId").and_then(Value::as_str) == Some(ticket));
                 if record["state"] != "consumed" && transcript.is_none() { continue; }

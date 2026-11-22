@@ -1,5 +1,6 @@
 use super::expansion::{
     FallbackAuthTiers, MAX_PROVIDERS_PER_FAMILY, parse_bare_selector, rank_family_models,
+    rank_family_models_for_session,
 };
 pub use super::settings::FallbackChains;
 use crate::model_resolver::{find_exact_model_reference_match, parse_model_pattern};
@@ -95,22 +96,30 @@ pub fn canonicalize_fallback_chains(
     let mut canonical = FallbackChains::new();
     let mut explicit_keys = HashSet::new();
     let mut tombstones = HashSet::new();
-    let expand = |entries: &[String], key: &str| -> Vec<String> {
+    let expand = |entries: &[String], key: &str, session_provider: &str| -> Vec<String> {
+        let mut seen = HashSet::new();
         entries
             .iter()
             .flat_map(|entry| {
                 if let Some(bare) = parse_bare_selector(entry) {
-                    rank_family_models(models, &bare.family, tiers, Some(MAX_PROVIDERS_PER_FAMILY))
-                        .into_iter()
-                        .map(|m| format_selector(m, bare.thinking_level))
-                        .filter(|s| normalized_base(s) != normalized_base(key))
-                        .collect()
+                    rank_family_models_for_session(
+                        models,
+                        &bare.family,
+                        tiers,
+                        Some(MAX_PROVIDERS_PER_FAMILY),
+                        Some(session_provider),
+                    )
+                    .into_iter()
+                    .map(|m| format_selector(m, bare.thinking_level))
+                    .filter(|s| normalized_base(s) != normalized_base(key))
+                    .collect()
                 } else {
                     parse_fallback_selector(entry, models)
                         .map(|p| vec![format_parsed(&p)])
                         .unwrap_or_default()
                 }
             })
+            .filter(|entry| seen.insert(entry.clone()))
             .collect()
     };
     for (key, entries) in chains {
@@ -123,7 +132,7 @@ pub fn canonicalize_fallback_chains(
                 continue;
             }
             let key = format_selector(model, bare.thinking_level);
-            let entries = expand(entries, &key);
+            let entries = expand(entries, &key, &model.provider);
             if !entries.is_empty() {
                 canonical.insert(key, entries);
             }
@@ -142,7 +151,7 @@ pub fn canonicalize_fallback_chains(
             continue;
         }
         explicit_keys.insert(key.to_lowercase());
-        let entries = expand(entries, &key);
+        let entries = expand(entries, &key, &parsed.provider);
         if !entries.is_empty() {
             canonical.insert(key, entries);
         }

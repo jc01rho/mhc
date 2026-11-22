@@ -55,15 +55,35 @@ fn unavailable_builtin_head_preserves_requested_head_and_remaining_rungs() {
     let result = plan(
         json!({}),
         vec![
-            json!({"provider":"openai-codex","id":"gpt-5.6-luna-fast"}),
+            json!({"provider":"deepseek","id":"deepseek-flash"}),
             json!({"provider":"opencode-go","id":"minimax-m3"}),
         ],
     );
-    assert_eq!(result.model, "openai-codex/gpt-5.6-luna-fast");
+    assert_eq!(result.model, "deepseek/deepseek-flash");
+    let requested = result.requested_model.expect("requested");
     assert_eq!(
-        result.requested_model.expect("requested").provider,
-        "kimi-coding"
+        (requested.provider.as_str(), requested.model_id.as_str()),
+        ("chatgpt-subscription", "gpt-6-luna-fast")
     );
+    assert_eq!(
+        result.resolved_model.expect("resolved").variant.as_deref(),
+        Some("off")
+    );
+    let fallbacks = result.fallback_models.expect("fallbacks");
+    assert_eq!(fallbacks.len(), 1);
+    assert_eq!(fallbacks[0].provider, "opencode-go");
+    assert_eq!(fallbacks[0].model_id, "minimax-m3");
+}
+#[test]
+fn user_fallback_on_chain_rung_keeps_priority_without_duplicate_rung() {
+    let result = plan(
+        json!({"categories":{"quick":{"fallback_models":[{"model":"chatgpt-subscription/gpt-6-luna-fast","variant":"low"}]}}}),
+        vec![
+            json!({"provider":"chatgpt-subscription","id":"gpt-6-luna-fast"}),
+            json!({"provider":"opencode-go","id":"minimax-m3"}),
+        ],
+    );
+    assert_eq!(result.model, "chatgpt-subscription/gpt-6-luna-fast");
     assert_eq!(
         result.resolved_model.expect("resolved").variant.as_deref(),
         Some("low")
@@ -71,20 +91,6 @@ fn unavailable_builtin_head_preserves_requested_head_and_remaining_rungs() {
     let fallbacks = result.fallback_models.expect("fallbacks");
     assert_eq!(fallbacks.len(), 1);
     assert_eq!(fallbacks[0].provider, "opencode-go");
-    assert_eq!(fallbacks[0].variant.as_deref(), Some("max"));
-}
-#[test]
-fn user_fallback_on_chain_rung_keeps_priority_without_duplicate_rung() {
-    let result = plan(
-        json!({"categories":{"quick":{"fallback_models":[{"model":"openai-codex/gpt-5.6-luna-fast","variant":"low"}]}}}),
-        vec![
-            json!({"provider":"openai-codex","id":"gpt-5.6-luna-fast"}),
-            json!({"provider":"opencode-go","id":"minimax-m3"}),
-        ],
-    );
-    assert_eq!(result.model, "openai-codex/gpt-5.6-luna-fast");
-    let fallbacks = result.fallback_models.expect("fallbacks");
-    assert_eq!(fallbacks.len(), 1);
-    assert_eq!(fallbacks[0].provider, "opencode-go");
-    assert_eq!(fallbacks[0].variant.as_deref(), Some("max"));
+    assert_eq!(fallbacks[0].model_id, "minimax-m3");
+    assert_eq!(fallbacks[0].display, "opencode-go/minimax-m3");
 }

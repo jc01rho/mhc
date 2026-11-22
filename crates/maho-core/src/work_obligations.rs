@@ -60,6 +60,7 @@ pub struct SessionWorkObligations {
     records: BTreeMap<String, WorkCustodyRecord>,
     unpersisted: BTreeMap<String, WorkCustodyRecord>,
     delivering: BTreeSet<String>,
+    sending: BTreeSet<String>,
     published_sources: BTreeSet<String>,
     store: Box<dyn CustodyStore>,
 }
@@ -78,6 +79,7 @@ impl SessionWorkObligations {
             records,
             unpersisted: BTreeMap::new(),
             delivering: BTreeSet::new(),
+            sending: BTreeSet::new(),
             published_sources: BTreeSet::new(),
             store,
         }
@@ -109,9 +111,32 @@ impl SessionWorkObligations {
         let mut record = fresh(key, kind);
         record.detail = detail;
         let id = record.id.clone();
+        if key.starts_with(ENGINE_DELIVERY_KEY_PREFIX) {
+            self.sending.insert(id.clone());
+        }
         self.install(record);
         self.store.changed();
         ObligationToken { id }
+    }
+
+    pub fn is_delivery_in_flight(&self, record: &WorkCustodyRecord) -> bool {
+        if !record.key.starts_with(ENGINE_DELIVERY_KEY_PREFIX) {
+            return false;
+        }
+        self.sending.contains(&record.id)
+            || record
+                .ticket_id
+                .as_deref()
+                .is_some_and(|ticket| self.delivering.contains(ticket))
+    }
+
+    pub fn is_consumed_by(&self, record: &WorkCustodyRecord, run_id: Option<&str>) -> bool {
+        let Some(run_id) = run_id else {
+            return false;
+        };
+        record.key.starts_with(ENGINE_DELIVERY_KEY_PREFIX)
+            && record.state == State::Consumed
+            && record.run_id.as_deref() == Some(run_id)
     }
     /// `items`: the producer's named items (`items`, else legacy `monitors`, senpi#4106); a change in ids,
     /// descriptions or omitted count republishes even when the count holds.
@@ -207,8 +232,10 @@ impl SessionWorkObligations {
         r.state = State::Queued;
         r.payload = Some(payload);
         r.delivery = None;
+        let record_id = r.id.clone();
         self.install(r);
         self.delivering.insert(ticket.into());
+        self.sending.remove(&record_id);
         self.store.changed();
         Ok(true)
     }
@@ -224,7 +251,17 @@ impl SessionWorkObligations {
         record.payload.as_ref()?.item_ids.clone()
     }
     pub fn end_delivery(&mut self, ticket: &str) {
-        self.delivering.remove(ticket);
+        if !self.delivering.remove(ticket) {
+            return;
+        }
+        let should_notify = self
+            .records
+            .values()
+            .find(|r| r.ticket_id.as_deref() == Some(ticket))
+            .is_some_and(|r| custody_is_open(r) && r.state != State::Consumed);
+        if should_notify {
+            self.store.changed();
+        }
     }
     pub fn passive(&mut self, ticket: &str) -> Result<(), CustodyViolation> {
         let r = self.ticket_record(ticket)?;
@@ -301,6 +338,25 @@ impl SessionWorkObligations {
         }
         self.store.changed();
     }
+    pub fn settle_ended_runs(&mut self, current_run_id: Option<&str>) {
+        let Some(current_run_id) = current_run_id else {
+            return;
+        };
+        let ended: Vec<_> = self
+            .active()
+            .into_iter()
+            .filter(|r| r.state == State::Consumed && r.run_id.as_deref() != Some(current_run_id))
+            .cloned()
+            .collect();
+        if ended.is_empty() {
+            return;
+        }
+        for mut r in ended {
+            r.state = State::Settled;
+            self.install(r);
+        }
+        self.store.changed();
+    }
     fn install(&mut self, record: WorkCustodyRecord) {
         if self.store.append(&record).is_ok() {
             self.unpersisted.remove(&record.id);
@@ -337,6 +393,7 @@ impl SessionWorkObligations {
         notice_id: Option<String>,
     ) -> Result<(), CustodyViolation> {
         let mut r = self.owned(id)?;
+        self.sending.remove(id);
         r.state = state;
         if notice_id.is_some() {
             r.notice_id = notice_id;
@@ -582,5 +639,31 @@ mod tests {
         assert!(r.active()[0].payload.is_none());
         r.held(&ticket, "notice").unwrap();
         assert_eq!(r.admission(&ticket), TicketAdmission::Closed);
+    }
+
+    #[test]
+    fn settle_ended_runs_settles_only_other_runs_and_tracks_in_flight_delivery() {
+        let (mut r, _) = registry();
+        let old = r.open("delivery:old", ObligationKind::Background, None);
+        let old_ticket = old.ticket(&mut r).unwrap();
+        assert!(r.is_delivery_in_flight(r.active()[0]));
+        r.queue(&old_ticket, payload()).unwrap();
+        assert!(r.is_delivery_in_flight(r.active()[0]));
+        r.consumed(&old_ticket, "run-1", "entry-1").unwrap();
+        r.end_delivery(&old_ticket);
+        assert!(!r.is_delivery_in_flight(r.active()[0]));
+        assert!(r.is_consumed_by(r.active()[0], Some("run-1")));
+        assert!(!r.is_consumed_by(r.active()[0], Some("run-2")));
+
+        let cur = r.open("delivery:cur", ObligationKind::Background, None);
+        let cur_ticket = cur.ticket(&mut r).unwrap();
+        r.queue(&cur_ticket, payload()).unwrap();
+        r.consumed(&cur_ticket, "run-2", "entry-2").unwrap();
+        r.end_delivery(&cur_ticket);
+
+        r.settle_ended_runs(Some("run-2"));
+        let active = r.active();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].run_id.as_deref(), Some("run-2"));
     }
 }

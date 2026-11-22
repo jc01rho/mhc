@@ -500,12 +500,13 @@ impl Extension for ModelProfileExtension {
                             "the model profile \"recommended\" is retired; using the default lanes",
                         );
                     }
-                    let available: Vec<String> = ctx
-                        .model_registry
-                        .get_available()
-                        .iter()
-                        .map(|m| format!("{}/{}", m.provider, m.id))
-                        .collect();
+                    let available = crate::matching::without_gate_blocked(
+                        ctx.model_registry
+                            .get_available()
+                            .iter()
+                            .map(|m| format!("{}/{}", m.provider, m.id))
+                            .collect(),
+                    );
                     let probe = RegistryProbe {
                         registry: Arc::clone(&ctx.model_registry),
                         agent_dir: ctx.agent_dir.clone(),

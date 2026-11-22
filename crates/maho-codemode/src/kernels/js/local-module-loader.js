@@ -17,7 +17,9 @@ globalThis.__senpi_import__ = async (source, options) => {
   if (specifier === 'bun' && kernelBun) return { ...(await import('bun')), WebView: kernelBun.WebView, default: kernelBun };
   const match = /^([a-z][a-z0-9+.-]*):\/\/(.*)$/i.exec(specifier);
   let target = specifier;
-  if (match) {
+  if (match && match[1].toLowerCase() === 'file') {
+    target = new URL(specifier).href;
+  } else if (match) {
     const scheme = match[1].toLowerCase();
     const root = context.localRootUrls[scheme];
     if (!root) throw new Error('Unsupported module protocol: ' + specifier);
@@ -33,7 +35,7 @@ globalThis.__senpi_import__ = async (source, options) => {
   } else if (specifier.startsWith('/') || /^[A-Za-z]:[\\/]/.test(specifier)) {
     const urlModule = await import('node:url');
     target = urlModule.pathToFileURL(specifier).href;
-  } else {
+  } else if (!match) {
     await globalThis.__senpi_package_resolver_ready__;
     target = globalThis[Symbol.for('senpi.kernel.resolvePackage')](specifier, [context.cwdUrl, context.packageRootUrl]) ?? specifier;
   }

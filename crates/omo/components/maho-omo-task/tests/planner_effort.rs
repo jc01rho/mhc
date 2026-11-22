@@ -186,9 +186,7 @@ fn builtin_agent_fails_closed_without_registry() {
 }
 #[test]
 fn variant_bearing_builtin_category_fallback_applies_variant() {
-    let registry = Arc::new(Registry(
-        json!({"provider":"zai-coding-plan","id":"glm-5.2"}),
-    ));
+    let registry = Arc::new(Registry(json!({"provider":"kimi-coding","id":"k3.1-pro"})));
     let planner =
         create_task_child_planner(json!({}), vec![], Arc::new(move || Some(registry.clone())));
     let result = planner(&ManagerStartSpec {
@@ -263,7 +261,9 @@ fn explicit_model_cannot_bypass_disabled_agent() {
 }
 #[test]
 fn unknown_target_and_dead_agent_chain_preserve_available_target_metadata() {
-    let registry = Arc::new(Registry(json!({"provider":"google","id":"gemini-3.1-pro"})));
+    let registry = Arc::new(Registry(
+        json!({"provider":"anthropic","id":"claude-opus-5-5"}),
+    ));
     let agents = maho_omo_task::engine_runners::resolve_task_agents(&json!({}))
         .into_iter()
         .collect();

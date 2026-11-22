@@ -3,7 +3,7 @@ use model_core::CATEGORY_MODEL_REQUIREMENTS;
 use pretty_assertions::assert_eq;
 
 #[test]
-fn visual_engineering_prioritizes_opus_then_kimi_k3_1_pro_and_kimi_k3_without_fable() {
+fn visual_engineering_prioritizes_fable_opus_then_kimi_k3_1_pro_and_kimi_k3() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain,
         vec![
@@ -11,6 +11,16 @@ fn visual_engineering_prioritizes_opus_then_kimi_k3_1_pro_and_kimi_k3_without_fa
                 &["google", "google-vertex", "opencode"],
                 "gemini-4-argon",
                 Some("low")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-2",
+                Some("max")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-1",
+                Some("max")
             ),
             entry(
                 &["anthropic", "anthropic-api", "github-copilot", "opencode"],
@@ -198,6 +208,8 @@ fn high_artistry_and_writing_follow_selected_chains() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,
         vec![
+            entry(providers, "claude-fable-5-2", Some("max")),
+            entry(providers, "claude-fable-5-1", Some("max")),
             entry(providers, "claude-opus-5-5", Some("max")),
             entry(kimi, "kimi-k3.1-pro", Some("max")),
             kimi_k3.clone()

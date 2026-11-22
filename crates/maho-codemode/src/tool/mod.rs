@@ -14,6 +14,7 @@ pub mod detached_notification_queue;
 pub mod display_code;
 pub mod display_json_bounds;
 pub mod display_json_size;
+pub mod eval_argument_validator;
 pub mod eval_execution_event;
 pub mod eval_kernel_reset_refused_error;
 pub mod eval_request;

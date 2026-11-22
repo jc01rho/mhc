@@ -37,6 +37,26 @@ fn is_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(unix)]
+fn real_account_home_dir() -> Option<PathBuf> {
+    let user = nix::unistd::User::from_uid(nix::unistd::Uid::current())
+        .ok()
+        .flatten()?;
+    let path = user.dir.to_string_lossy();
+    (!path.is_empty()).then(|| normalize(&path))
+}
+
+#[cfg(not(unix))]
+fn real_account_home_dir() -> Option<PathBuf> {
+    std::env::var("USERPROFILE")
+        .ok()
+        .filter(|path| !path.is_empty())
+        .map(|path| normalize(&path))
+}
+
+static ACCOUNT_HOME_DIR: std::sync::LazyLock<Option<PathBuf>> =
+    std::sync::LazyLock::new(real_account_home_dir);
+
 pub fn find_nearest_parent_config_dir(
     cwd: &str,
     home_dir: &str,
@@ -45,10 +65,15 @@ pub fn find_nearest_parent_config_dir(
     required_child_file: Option<&str>,
 ) -> Option<String> {
     let normalized_home_dir = normalize(home_dir);
+    let account_home_dir = ACCOUNT_HOME_DIR
+        .as_ref()
+        .filter(|dir| dir.parent().is_some_and(|parent| parent != dir.as_path()));
     let mut current_dir = normalize(cwd);
 
     for _ in 0..=MAX_PARENT_CONFIG_SEARCH_DEPTH {
-        if current_dir == normalized_home_dir {
+        if current_dir == normalized_home_dir
+            || account_home_dir.is_some_and(|account| &current_dir == account)
+        {
             return None;
         }
 
@@ -190,6 +215,27 @@ mod tests {
             )
             .as_deref(),
             Some(project.join(".omo").to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn stops_at_real_account_home_even_when_home_env_is_redirected() {
+        let Some(real_home) = ACCOUNT_HOME_DIR
+            .as_ref()
+            .filter(|dir| dir.parent().is_some_and(|parent| parent != dir.as_path()))
+        else {
+            return;
+        };
+        let fake_home = tempfile::tempdir().expect("tempdir");
+        assert!(
+            find_nearest_parent_config_dir(
+                &real_home.to_string_lossy(),
+                &fake_home.path().to_string_lossy(),
+                ".omo",
+                None,
+                None,
+            )
+            .is_none()
         );
     }
 }

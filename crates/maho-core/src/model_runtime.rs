@@ -2170,6 +2170,19 @@ impl ModelRuntime {
     }
     /// Consent gate for every request path (`stream`, `stream_simple`, `complete`): returns a
     /// terminal error stream before any rotation, refresh, header or network work starts.
+    /// The Fable execution gate (`maho_ai::model_execution_gate`) refuses a blocked model before any
+    /// provider request, whichever selection path put it on the session.
+    fn blocked_model_stream(model: &Model) -> Option<AssistantMessageEventStream> {
+        let message = maho_ai::model_execution_gate::execution_refusal(&model.provider, &model.id)?;
+        let error = maho_ai::utils::lazy::setup_error_message(model, &message);
+        let stream = AssistantMessageEventStream::assistant();
+        stream.push(maho_ai::types::AssistantMessageEvent::Error {
+            reason: maho_ai::types::ErrorReason::Error,
+            error: error.clone(),
+        });
+        stream.end(Some(error));
+        Some(stream)
+    }
     fn consent_error_stream(&self, model: &Model) -> Option<AssistantMessageEventStream> {
         let message =
             crate::provider_consent::consent_failure(&self.credentials, &model.provider, None)?;
@@ -2206,7 +2219,9 @@ impl ModelRuntime {
         context: &Context,
         options: Option<StreamOptions>,
     ) -> AssistantMessageEventStream {
-        if let Some(failed) = self.consent_error_stream(model) {
+        if let Some(failed) =
+            Self::blocked_model_stream(model).or_else(|| self.consent_error_stream(model))
+        {
             return failed;
         }
         let mut options = options.unwrap_or_default();
@@ -2283,7 +2298,9 @@ impl ModelRuntime {
         options: Option<SimpleStreamOptions>,
         transforms: ModelsRequestTransforms,
     ) -> AssistantMessageEventStream {
-        if let Some(failed) = self.consent_error_stream(model) {
+        if let Some(failed) =
+            Self::blocked_model_stream(model).or_else(|| self.consent_error_stream(model))
+        {
             return failed;
         }
         let mut options = options.unwrap_or_default();
@@ -3714,6 +3731,72 @@ mod tests {
         .expect("settings");
         let _ = runtime.complete(&model, &context, None).await;
         assert!(calls.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn a_gate_blocked_fable_model_fails_on_every_runtime_path_without_a_call() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let model = Model {
+            id: "claude-fable-5-2".into(),
+            provider: "fable-fixture".into(),
+            api: "openai-completions".into(),
+            base_url: "http://127.0.0.1:9/v1".into(),
+            ..maho_ai::providers::faux::faux_provider(Default::default())
+                .expect("faux provider")
+                .get_model(None)
+                .expect("model")
+        };
+        let provider = maho_ai::models::create_provider(maho_ai::models::CreateProviderOptions {
+            id: "fable-fixture".into(),
+            name: None,
+            base_url: None,
+            headers: None,
+            auth: None,
+            models: vec![model.clone()],
+            fetch_models: None,
+            restore_models: None,
+            filter_models: None,
+            api: maho_ai::models::ProviderApi::Single(std::sync::Arc::new(CountingStreams(
+                calls.clone(),
+            ))),
+            images: IndexMap::new(),
+        })
+        .expect("provider");
+        let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+            providers: Some(vec![provider]),
+            auth_path: Some(dir.path().join("auth.json")),
+            agent_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        })
+        .expect("model runtime");
+        runtime
+            .credentials
+            .set(
+                "fable-fixture",
+                Some(serde_json::json!({"type":"api_key","key":"k"})),
+            )
+            .expect("seed");
+        let context = Context::default();
+        let check = |message: maho_ai::types::AssistantMessage| {
+            assert_eq!(message.stop_reason, maho_ai::types::StopReason::Error);
+            assert!(
+                message
+                    .error_message
+                    .expect("message")
+                    .contains(maho_ai::model_execution_gate::BLOCK_FABLE_SETTING)
+            );
+        };
+        check(
+            runtime
+                .complete(&model, &context, None)
+                .await
+                .expect("stream result"),
+        );
+        let stream = runtime.stream_simple(&model, &context, None);
+        while let Ok(Some(_)) = stream.next().await {}
+        check(stream.result().await.expect("simple result"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

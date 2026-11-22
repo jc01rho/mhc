@@ -164,12 +164,29 @@ fn multimodal_looker_keeps_vision_capable_fallback_order() {
 }
 
 #[test]
-fn prometheus_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_without_fable() {
+fn prometheus_uses_fable_5_2_xhigh_then_fable_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max()
+ {
     let chain = chain("prometheus");
 
-    assert_eq!(chain.len(), 3);
+    assert_eq!(chain.len(), 5);
     assert_eq!(
         chain[0],
+        entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-2",
+            Some("xhigh")
+        )
+    );
+    assert_eq!(
+        chain[1],
+        entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-1",
+            Some("xhigh")
+        )
+    );
+    assert_eq!(
+        chain[2],
         entry(
             &["anthropic", "github-copilot", "opencode"],
             "claude-opus-5-5",
@@ -177,24 +194,40 @@ fn prometheus_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_w
         )
     );
     assert_eq!(
-        chain[1],
+        chain[3],
         entry(
             &["opencode-go", "kimi-for-coding", "moonshotai"],
             "kimi-k3.1-pro",
             Some("max")
         )
     );
-    assert_eq!(chain[2], entry(&["opencode"], "kimi-k3", Some("max")));
-    assert!(!chain.iter().any(|entry| entry.model.contains("fable")));
+    assert_eq!(chain[4], entry(&["opencode"], "kimi-k3", Some("max")));
 }
 
 #[test]
-fn metis_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_without_fable() {
+fn metis_uses_fable_5_2_max_then_fable_5_1_max_then_opus_5_5_max_then_kimi_k3_1_pro_max_and_kimi_k3_max()
+ {
     let chain = chain("metis");
 
-    assert_eq!(chain.len(), 3);
+    assert_eq!(chain.len(), 5);
     assert_eq!(
         chain[0],
+        entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-2",
+            Some("max")
+        )
+    );
+    assert_eq!(
+        chain[1],
+        entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-1",
+            Some("max")
+        )
+    );
+    assert_eq!(
+        chain[2],
         entry(
             &["anthropic", "github-copilot", "opencode"],
             "claude-opus-5-5",
@@ -202,15 +235,14 @@ fn metis_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_withou
         )
     );
     assert_eq!(
-        chain[1],
+        chain[3],
         entry(
             &["opencode-go", "kimi-for-coding", "moonshotai"],
             "kimi-k3.1-pro",
             Some("max")
         )
     );
-    assert_eq!(chain[2], entry(&["opencode"], "kimi-k3", Some("max")));
-    assert!(!chain.iter().any(|entry| entry.model.contains("fable")));
+    assert_eq!(chain[4], entry(&["opencode"], "kimi-k3", Some("max")));
 }
 
 #[test]

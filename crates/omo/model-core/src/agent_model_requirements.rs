@@ -231,6 +231,16 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                     fallback_chain: vec![
                         entry(
                             &["anthropic", "github-copilot", "opencode"],
+                            "claude-fable-5-2",
+                            Some("xhigh"),
+                        ),
+                        entry(
+                            &["anthropic", "github-copilot", "opencode"],
+                            "claude-fable-5-1",
+                            Some("xhigh"),
+                        ),
+                        entry(
+                            &["anthropic", "github-copilot", "opencode"],
                             "claude-opus-5-5",
                             Some("max"),
                         ),
@@ -248,6 +258,16 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                 "metis",
                 ModelRequirement {
                     fallback_chain: vec![
+                        entry(
+                            &["anthropic", "github-copilot", "opencode"],
+                            "claude-fable-5-2",
+                            Some("max"),
+                        ),
+                        entry(
+                            &["anthropic", "github-copilot", "opencode"],
+                            "claude-fable-5-1",
+                            Some("max"),
+                        ),
                         entry(
                             &["anthropic", "github-copilot", "opencode"],
                             "claude-opus-5-5",
