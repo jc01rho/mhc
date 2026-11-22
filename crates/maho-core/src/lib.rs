@@ -18,6 +18,7 @@
 //!   settings_public_types, settings_overrides, terminal_settings, compaction_settings_access,
 //!   compaction_settings_resolver, http_dispatcher, and the rest of the senpi core tree.
 
+pub mod account_list_view;
 pub mod auth_credential_values;
 pub mod auth_guidance;
 pub mod auth_providers;
@@ -31,6 +32,7 @@ pub mod config_reference_env;
 pub mod config_reference_file;
 pub mod config_reference_redaction;
 pub mod config_reference_resolver;
+pub mod credential_account_status;
 pub mod credential_accounts;
 pub mod credential_policy_schema;
 pub mod credential_pool;

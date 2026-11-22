@@ -5,6 +5,20 @@ use crate::types::{
 
 pub use crate::types::PROVIDER_DIAGNOSTIC_MAX_BYTES;
 
+/// senpi's own token for a credential pool whose every account waits on a rate or usage limit (senpi#3975).
+pub const CREDENTIAL_POOL_BLOCKED_CODE: &str = "credential_pool_blocked";
+
+/// A credential pool whose every account is limited until `resets_at`, the soonest one being due back.
+pub fn credential_pool_blocked_diagnostic(resets_at: i64) -> Option<ProviderDiagnostic> {
+    crate::types::sanitize_provider_diagnostic(&ProviderDiagnostic {
+        category: Category::RateLimit,
+        http_status: None,
+        code: Some(CREDENTIAL_POOL_BLOCKED_CODE.to_owned()),
+        evidence: Evidence::StructuredCode,
+        resets_at: Some(resets_at),
+    })
+}
+
 pub fn category_for_provider_code(code: &str) -> Option<Category> {
     Some(match code {
         "authentication_error" | "invalid_api_key" | "account_pool_auth_blocked" => Category::Auth,
@@ -150,6 +164,23 @@ mod tests {
             code: Some("invalid_api_key"),
         });
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn a_blocked_pool_diagnostic_is_a_rate_limit_with_the_soonest_reset() {
+        let resets_at = 1_795_359_840_000;
+        let diagnostic = credential_pool_blocked_diagnostic(resets_at).expect("diagnostic");
+        assert_eq!(diagnostic.category, Category::RateLimit);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(CREDENTIAL_POOL_BLOCKED_CODE)
+        );
+        assert_eq!(diagnostic.http_status, None);
+        assert_eq!(diagnostic.resets_at, Some(resets_at));
+        assert!(is_provider_code_status_compatible(
+            CREDENTIAL_POOL_BLOCKED_CODE,
+            429
+        ));
     }
 
     /// senpi#4950: a precise `error.type` stands in for a missing `error.code`, a coarse bucket

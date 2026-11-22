@@ -14,33 +14,6 @@ pub fn session_pin(session: Option<&str>) -> Option<String> {
         .cloned()
 }
 
-/// senpi `accountStatus`: an account-wide block, an auth block saying when it is re-checked.
-fn account_status(slot: &crate::accounts::AccountSlot, now: f64) -> Option<String> {
-    let until = slot.blocked_until.filter(|until| *until > now)?;
-    let until = crate::model_blocks::iso_ms(until);
-    Some(if slot.block_reason.as_deref() == Some("auth_error") {
-        format!("login rejected; re-checked at {until}")
-    } else {
-        format!("blocked until {until}")
-    })
-}
-
-/// senpi `slotStatus`: the account-wide block followed by each live model-family block (senpi#2555).
-pub fn slot_status(slot: &crate::accounts::AccountSlot, now: f64) -> String {
-    let states: Vec<String> = account_status(slot, now)
-        .into_iter()
-        .chain(crate::model_blocks::describe_model_blocks(
-            slot.model_blocks.as_ref(),
-            now,
-        ))
-        .collect();
-    if states.is_empty() {
-        "available".into()
-    } else {
-        states.join(", ")
-    }
-}
-
 pub fn register(
     api: &mut ExtensionApi,
     oauth: Arc<crate::oauth_login::AnthropicSubscriptionOAuth>,
@@ -137,17 +110,21 @@ pub fn register(
                         let empty = crate::accounts::empty_credential();
                         let credential = stored.as_ref().and_then(|value| value.as_oauth()).unwrap_or(&empty);
                         let slots = crate::accounts::list_accounts(credential, Some(&|key| environment.get(key).cloned()))?;
-                        let cli_pin = crate::account_command::session_pin(Some(ctx.session_manager.session_id()));
-                        let settings_pin = (oauth.settings)().values.get("pinnedAccount").and_then(serde_json::Value::as_str).map(str::to_owned);
+                        let settings = (oauth.settings)();
+                        let session_id = ctx.session_manager.session_id();
+                        let cli_pin = crate::account_command::session_pin(Some(session_id));
+                        let settings_pin = settings.values.get("pinnedAccount").and_then(serde_json::Value::as_str).map(str::to_owned);
                         let stored_pin = accounts.iter().find(|account| account.pinned).map(|account| account.name.clone());
-                        let pin_source = if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else if settings_pin.is_some() { Some(crate::affinity::PinSource::Settings) } else if stored_pin.is_some() { Some(crate::affinity::PinSource::Stored) } else { None };
+                        let pin_source = if cli_pin.is_some() { crate::affinity::PinSource::Cli } else if settings_pin.is_some() { crate::affinity::PinSource::Settings } else { crate::affinity::PinSource::Stored };
                         let pinned = cli_pin.or(settings_pin).or(stored_pin);
-                        let pin_label = match pin_source { Some(crate::affinity::PinSource::Cli) => "CLI", Some(crate::affinity::PinSource::Settings) => "settings", _ => "stored" }.to_lowercase();
-                        let message = if accounts.is_empty() { "Anthropic Subscription accounts:\n  (none)\nPinned account: none\nAffinity pick: none".into() } else {
-                            let mut lines=vec!["Anthropic Subscription accounts:".to_owned()];
-                            lines.extend(accounts.into_iter().map(|account|format!("  {} | {} | {}{}",account.display_name.as_deref().unwrap_or(&account.name),match account.source {crate::accounts::AccountSource::Env=>"env",crate::accounts::AccountSource::Login=>"login",crate::accounts::AccountSource::Import=>"import"},slots.iter().find(|slot|slot.name==account.name).map_or_else(||if account.blocked {"blocked".into()} else {"available".into()},|slot|slot_status(slot,now)),if pinned.as_deref()==Some(account.name.as_str()) {" | pinned"} else {""})));
-                            lines.push(format!("Pinned account: {}",match &pinned {Some(name)=>format!("{name} ({pin_label})"),None=>"none".into()}));
-                            lines.push("Affinity pick: unavailable - no affinity context".into());lines.join("\n") };
+                        let order = credential.get_extra("order").and_then(|order| serde_json::from_value::<Vec<String>>(order.clone()).ok());
+                        let (affinity_pick, affinity_error) = if slots.is_empty() { (None, None) } else {
+                            match crate::affinity::select_account(&slots, &crate::affinity::AffinityOptions { session_id: Some(session_id), pinned_account: pinned.as_deref(), pin_source: pinned.as_ref().map(|_| pin_source), account_fallback: Some(crate::settings::account_fallback(&settings)), account_order: order.as_deref(), ..Default::default() }, now) {
+                                Ok(slot) => (Some(slot.name), None),
+                                Err(error) => (None, Some(error.to_string())),
+                            }
+                        };
+                        let message = crate::account_list::format_claude_account_list(&crate::account_list::ClaudeAccountListInput { accounts: &slots, pinned: pinned.as_deref(), pin_source, affinity_pick: affinity_pick.as_deref(), affinity_error: affinity_error.as_deref(), now });
                         runtime.assert_active()?;
                         ctx.ui.notify(&message, NotificationType::Info);
                     },
@@ -167,41 +144,4 @@ pub fn register(
             Ok::<(), ExtensionFailure>(())
         })
     }));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn slot_status_lists_the_account_block_then_each_model_block() {
-        let mut slot = crate::accounts::AccountSlot {
-            name: "work".into(),
-            ..Default::default()
-        };
-        assert_eq!(slot_status(&slot, 0.0), "available");
-        slot.model_blocks = Some(
-            [(
-                "opus".to_owned(),
-                crate::model_blocks::ModelBlock {
-                    blocked_until: 60_000.0,
-                },
-            )]
-            .into(),
-        );
-        assert_eq!(
-            slot_status(&slot, 0.0),
-            "blocked for opus until 1970-01-01T00:01:00.000Z"
-        );
-        slot.blocked_until = Some(1_000.0);
-        slot.block_reason = Some("auth_error".into());
-        assert_eq!(
-            slot_status(&slot, 0.0),
-            "login rejected; re-checked at 1970-01-01T00:00:01.000Z, blocked for opus until 1970-01-01T00:01:00.000Z"
-        );
-        slot.block_reason = Some("rate_limit".into());
-        assert_eq!(
-            slot_status(&slot, 2_000.0),
-            "blocked for opus until 1970-01-01T00:01:00.000Z"
-        );
-    }
 }

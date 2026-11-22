@@ -39,6 +39,11 @@ pub struct AllAccountsBlockedError {
     pub unavailable_account: Option<UnavailableAccount>,
     /// The requested model when a usage limit on that model, not the accounts, is what blocks it somewhere.
     pub limited_model: Option<String>,
+    /// When the pool waits only on rate limits, the soonest of them; else `None` (senpi#3975). Accounts out for
+    /// billing, organization, or authentication cannot serve until someone acts, so they are not counted; every other
+    /// account must be rate-limited (account-wide or on the requested model), and an unknown block is not a rate
+    /// limit. A billing deadline is a re-probe time, never the pool's reset.
+    pub rate_limited_until: Option<f64>,
 }
 impl std::fmt::Display for AllAccountsBlockedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -173,6 +178,30 @@ fn unblock_at(account: &AccountSlot, now: f64, model: Option<&str>) -> Option<f6
         (a, m) => a.or(m),
     }
 }
+/// Account blocks that need the user (top-up, organization access, a new login), not a wait.
+const OUT_OF_POOL_REASONS: [&str; 3] = ["billing", "org_not_allowed", "auth_error"];
+fn pool_rate_limited_until(accounts: &[AccountSlot], now: f64, model: Option<&str>) -> Option<f64> {
+    let mut resets = Vec::new();
+    for account in accounts {
+        let blocked = is_account_blocked(account, now);
+        let reason = account.block_reason.as_deref();
+        if blocked && reason.is_some_and(|reason| OUT_OF_POOL_REASONS.contains(&reason)) {
+            continue;
+        }
+        let rate_limited = if blocked {
+            reason == Some("rate_limit")
+        } else {
+            crate::model_blocks::active_model_block_until(account.model_blocks.as_ref(), model, now)
+                .is_some()
+        };
+        let until = unblock_at(account, now, model)?;
+        if !rate_limited {
+            return None;
+        }
+        resets.push(until);
+    }
+    resets.into_iter().min_by(f64::total_cmp)
+}
 pub fn select_account(
     accounts: &[AccountSlot],
     options: &AffinityOptions<'_>,
@@ -233,6 +262,7 @@ pub fn select_account(
                 .all(|a| a.block_reason.as_deref() == Some("auth_error"))
                 .then_some("auth_error"),
             unavailable_account,
+            rate_limited_until: pool_rate_limited_until(candidates, now, options.model),
         })
 }
 #[cfg(test)]
@@ -253,6 +283,76 @@ mod tests {
                 ..Default::default()
             })
             .into()
+    }
+    fn blocked_until(name: &str, until: f64, reason: &str) -> AccountSlot {
+        AccountSlot {
+            name: name.into(),
+            blocked_until: Some(until),
+            block_reason: Some(reason.into()),
+            ..Default::default()
+        }
+    }
+    fn reset_of(pool: &[AccountSlot], model: Option<&str>) -> Option<f64> {
+        let options = AffinityOptions {
+            model,
+            ..Default::default()
+        };
+        select_account(pool, &options, 1.0)
+            .unwrap_err()
+            .rate_limited_until
+    }
+    #[test]
+    fn a_pool_waiting_only_on_rate_limits_reports_the_soonest_reset() {
+        let pool = [
+            blocked_until("a", 900.0, "rate_limit"),
+            blocked_until("b", 400.0, "rate_limit"),
+        ];
+        assert_eq!(reset_of(&pool, None), Some(400.0));
+    }
+    #[test]
+    fn billing_and_auth_accounts_are_not_waited_out_and_unknown_blocks_stay_unclassified() {
+        let mixed = [
+            blocked_until("limited", 900.0, "rate_limit"),
+            blocked_until("billed", 100.0, "billing"),
+            blocked_until("rejected", 50.0, "auth_error"),
+        ];
+        assert_eq!(reset_of(&mixed, None), Some(900.0));
+        let billing_only = [
+            blocked_until("a", 900.0, "billing"),
+            blocked_until("b", 400.0, "billing"),
+        ];
+        assert_eq!(reset_of(&billing_only, None), None);
+        let unknown = [AccountSlot {
+            name: "a".into(),
+            blocked_until: Some(900.0),
+            ..Default::default()
+        }];
+        assert_eq!(reset_of(&unknown, None), None);
+        let rate_limited_and_unknown = [
+            blocked_until("a", 900.0, "rate_limit"),
+            AccountSlot {
+                name: "b".into(),
+                blocked_until: Some(400.0),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(reset_of(&rate_limited_and_unknown, None), None);
+    }
+    #[test]
+    fn a_pool_limited_only_on_the_requested_model_reports_that_models_soonest_reset() {
+        let mut pool = accounts();
+        for (account, until) in pool.iter_mut().zip([500.0, 700.0, 600.0]) {
+            account.model_blocks = Some(
+                [(
+                    "opus".to_owned(),
+                    crate::model_blocks::ModelBlock {
+                        blocked_until: until,
+                    },
+                )]
+                .into(),
+            );
+        }
+        assert_eq!(reset_of(&pool, Some("claude-opus-5")), Some(500.0));
     }
     #[test]
     fn mixed_blocks_are_not_classified_as_auth() {

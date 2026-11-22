@@ -25,7 +25,8 @@ fn provider_command_preserves_generic_pin_semantics() {
 }
 
 #[test]
-fn status_lists_each_model_block_with_its_iso_expiry() {
+fn status_lists_each_model_block_with_its_local_expiry() {
+    use maho_core::credential_account_status::format_account_retry_time;
     use maho_ext_account::{account_status, iso_timestamp};
     use maho_ext_api::{
         CredentialAccountBlockedModel, CredentialAccountSource, CredentialAccountSummary,
@@ -38,6 +39,8 @@ fn status_lists_each_model_block_with_its_iso_expiry() {
         display_name: None,
         source: CredentialAccountSource::Login,
         blocked: false,
+        blocked_reason: None,
+        blocked_until: None,
         pinned: true,
         blocked_models: vec![CredentialAccountBlockedModel {
             model: "fable".into(),
@@ -47,6 +50,9 @@ fn status_lists_each_model_block_with_its_iso_expiry() {
     };
     assert_eq!(
         account_status(&account),
-        "work | login | available | blocked for fable until 2024-02-29T23:59:59.999Z | pinned"
+        format!(
+            "work | login | available | blocked for fable until {} | pinned",
+            format_account_retry_time(1_709_251_199_999)
+        )
     );
 }

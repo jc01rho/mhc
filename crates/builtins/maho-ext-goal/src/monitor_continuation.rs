@@ -97,6 +97,17 @@ pub fn publish_monitor_resume(
     data["phase"] = "resumed".into();
     api.append_entry(crate::cache_warm::GOAL_CACHE_WARMUP_ENTRY_TYPE, Some(data))
 }
+/// The one notice a provider-limit park shows: when the goal resumes, in local time and as the exact instant
+/// (senpi#3975).
+pub fn provider_pause_notice(retry_at: i64) -> String {
+    let instant = chrono::DateTime::from_timestamp_millis(retry_at)
+        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(|| retry_at.to_string());
+    format!(
+        "Goal paused until {} ({instant}): the provider cannot serve before then. It resumes once at that time.",
+        maho_core::credential_account_status::format_account_retry_time(retry_at)
+    )
+}
 impl MonitorAwareGoalContinuation {
     pub fn build_continuation_content(
         &self,
@@ -230,17 +241,24 @@ impl MonitorAwareGoalContinuation {
         })?;
         self.provider_retry_attempts = self.provider_retry_attempts.saturating_add(1);
         let attempt = self.provider_retry_attempts;
-        let delay_ms = crate::provider_retry::provider_retry_delay_ms(
-            attempt,
-            crate::provider_retry::provider_retry_at(&pending.event.messages, now as i64),
-            now as i64,
-        ) as f64;
+        let retry_at =
+            crate::provider_retry::provider_retry_at(&pending.event.messages, now as i64);
+        let delay_ms =
+            crate::provider_retry::provider_retry_delay_ms(attempt, retry_at, now as i64) as f64;
         if delay_ms > 0.0 {
             self.armed_timer = None;
             self.held_timer = None;
             self.scheduled_cache = None;
             self.provider_retry_delay_ms = Some(delay_ms);
             self.arm_timer(GoalWaitKind::ProviderRetry, delay_ms, delay_ms, false, now);
+            if let Some(retry_at) = retry_at
+                && pending.context.has_ui
+            {
+                pending.context.ui.notify(
+                    &provider_pause_notice(retry_at),
+                    maho_ext_api::NotificationType::Info,
+                );
+            }
             return None;
         }
         Some((
@@ -470,6 +488,21 @@ impl MonitorAwareGoalContinuation {
         {
             self.consecutive_length_recoveries.remove(&goal.id);
         }
+    }
+    /// A turn the provider refused (a blocked pool, an outage) was not the model choosing to skip tools: it neither
+    /// counts toward nor clears the stall streak (senpi#3975).
+    pub fn record_settled_continuation_turn(
+        &mut self,
+        goal_id: &str,
+        messages: &[maho_agent::types::AgentMessage],
+        turn_used_tools: bool,
+    ) {
+        if crate::last_assistant_message::last_assistant_message(messages)
+            .is_some_and(|message| message.stop_reason == maho_ai::types::StopReason::Error)
+        {
+            return;
+        }
+        self.record_toolless_continuation_turn(goal_id, turn_used_tools);
     }
     pub fn record_toolless_continuation_turn(&mut self, goal_id: &str, turn_used_tools: bool) {
         if self.toolless_streak_goal_id.as_deref() != Some(goal_id) {
@@ -1006,6 +1039,95 @@ mod tests {
             monitor.recent_normalized_output_hashes,
             ["b", "c", "d"].map(crate::continuation::hash_assistant_text)
         );
+    }
+    fn assistant_turn(
+        stop_reason: maho_ai::types::StopReason,
+    ) -> Vec<maho_agent::types::AgentMessage> {
+        let mut assistant =
+            maho_ai::providers::faux::faux_assistant_message("done", Default::default());
+        assistant.stop_reason = stop_reason;
+        vec![maho_agent::types::AgentMessage::Llm(
+            maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant)),
+        )]
+    }
+    #[test]
+    fn a_turn_the_provider_refused_never_counts_toward_the_toolless_streak() {
+        let answered = assistant_turn(maho_ai::types::StopReason::Stop);
+        let refused = assistant_turn(maho_ai::types::StopReason::Error);
+        let mut monitor = MonitorAwareGoalContinuation::default();
+        monitor.record_settled_continuation_turn("g", &answered, false);
+        assert_eq!(monitor.toolless_continuation_streak, 1);
+        monitor.record_settled_continuation_turn("g", &refused, false);
+        assert_eq!(monitor.toolless_continuation_streak, 1);
+        monitor.record_settled_continuation_turn("g", &refused, true);
+        assert_eq!(monitor.toolless_continuation_streak, 1);
+        monitor.record_settled_continuation_turn("g", &answered, false);
+        assert_eq!(monitor.toolless_continuation_streak, 2);
+    }
+    #[test]
+    fn the_pause_notice_names_the_local_time_and_the_exact_instant() {
+        let notice = provider_pause_notice(1_795_359_840_000);
+        assert!(notice.starts_with("Goal paused until "), "{notice}");
+        assert!(
+            notice.contains(
+                "(2026-11-22T15:04:00.000Z): the provider cannot serve before then. It resumes once at that time."
+            ),
+            "{notice}"
+        );
+    }
+    #[test]
+    fn a_provider_limit_with_a_stated_reset_parks_until_it_with_one_notice_naming_it() {
+        let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
+        let ui = std::sync::Arc::new(crate::test_context::Ui::default());
+        let mut context = crate::test_context::context();
+        context.ui = ui.clone();
+        let reset: i64 = 1_795_359_840_000;
+        let mut limited = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        limited.stop_reason = maho_ai::types::StopReason::Error;
+        limited.provider_diagnostic = Some(maho_ai::types::ProviderDiagnostic {
+            category: maho_ai::types::ProviderDiagnosticCategory::RateLimit,
+            http_status: None,
+            code: Some("credential_pool_blocked".into()),
+            evidence: maho_ai::types::ProviderDiagnosticEvidence::StructuredCode,
+            resets_at: Some(reset),
+        });
+        let event = maho_core::agent_abort_provenance::AgentEndEvent {
+            messages: vec![maho_agent::types::AgentMessage::Llm(
+                maho_ai::types::Message::Assistant(std::sync::Arc::new(limited)),
+            )],
+            will_retry: false,
+            aborted: false,
+            abort_source: None,
+        };
+        let now = (reset - 3_600_000) as f64;
+        let mut monitor = MonitorAwareGoalContinuation::default();
+        monitor.after_provider_failure(&context, Some(&goal), &event);
+        assert!(monitor.after_agent_settled(now).is_none());
+        assert_eq!(
+            monitor.scheduled_continuation(),
+            Some(GoalWaitKind::ProviderRetry)
+        );
+        assert_eq!(
+            monitor.armed_timer.unwrap().due_at_ms,
+            reset as f64 + 1000.0
+        );
+        assert_eq!(
+            *ui.notices.lock().unwrap(),
+            vec![provider_pause_notice(reset)]
+        );
+        assert!(
+            monitor
+                .take_due_continuation(now + 1000.0, true, false)
+                .is_none()
+        );
+        let due = monitor
+            .take_due_continuation(reset as f64 + 1000.0, true, false)
+            .unwrap();
+        assert_eq!(
+            due.path,
+            crate::continuation::GoalContinuationPath::ProviderRecovery
+        );
+        assert_eq!(ui.notices.lock().unwrap().len(), 1);
     }
     #[test]
     fn user_turn_is_exempt_from_toolless_streak() {

@@ -1203,6 +1203,11 @@ pub struct CredentialAccountSummary {
     pub display_name: Option<String>,
     pub source: CredentialAccountSource,
     pub blocked: bool,
+    /// Why a blocked account sits out: `auth_error`, `rate_limit` or `disabled`; absent when the stored block names no
+    /// reason (senpi#4327).
+    pub blocked_reason: Option<&'static str>,
+    /// Epoch ms when the block lifts (the re-probe time for `auth_error`); absent for `disabled`.
+    pub blocked_until: Option<u64>,
     pub pinned: bool,
     /// Usage limits binding one model (family) while the account serves the rest (senpi#2555).
     pub blocked_models: Vec<CredentialAccountBlockedModel>,

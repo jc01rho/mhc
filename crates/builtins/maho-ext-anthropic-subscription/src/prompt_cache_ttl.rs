@@ -42,25 +42,39 @@ fn option_env<'a>(options: &'a Map<String, Value>, key: &str) -> Option<&'a str>
 }
 
 /// Pin Claude Code's prompt-cache lifetime for a one-shot query and return it, so the history
-/// breakpoint uses the same lifetime (senpi#2982). `FORCE_PROMPT_CACHING_5M` wins; then an explicit
-/// `CLAUDE_CODE_PROMPT_CACHE_TTL` from the query env, then from the process environment. Managed
-/// subscription lanes pin 1 hour; the ambient lane pins nothing and the caller adds no breakpoint.
+/// breakpoint uses the same lifetime (senpi#2982). `FORCE_PROMPT_CACHING_5M` wins; then a lifetime
+/// from a loaded settings file, then an explicit `CLAUDE_CODE_PROMPT_CACHE_TTL` from the query env,
+/// then from the process environment. Managed subscription lanes pin 1 hour; the ambient lane pins
+/// nothing unless a lifetime is set explicitly, and the caller adds no breakpoint then.
+///
+/// `settings_env` is the effective `env` of the settings files this attempt loads (senpi#2988):
+/// Claude Code writes each settings source's env over the process env, and launch-env keys are only
+/// protected for host-orchestrated sessions, so a settings value beats the process env and
+/// `options.env`, and beats the assumption about Claude Code's lane default.
 pub fn pin_one_shot_prompt_cache_ttl(
     options: &mut Map<String, Value>,
     auth_lane: TokenInjection,
     environment: &BTreeMap<String, String>,
+    settings_env: Option<&BTreeMap<String, String>>,
 ) -> Option<PromptCacheTtl> {
+    let setting = |name: &str| {
+        settings_env
+            .and_then(|env| env.get(name))
+            .map(String::as_str)
+    };
     let forced_5m = is_truthy(option_env(options, FORCE_PROMPT_CACHING_5M_ENV))
         || is_truthy(
             environment
                 .get(FORCE_PROMPT_CACHING_5M_ENV)
                 .map(String::as_str),
-        );
+        )
+        || is_truthy(setting(FORCE_PROMPT_CACHING_5M_ENV));
     let ttl = (if forced_5m {
         Some(PromptCacheTtl::FiveMinutes)
     } else {
         None
     })
+    .or_else(|| parse_prompt_cache_ttl(setting(PROMPT_CACHE_TTL_ENV)))
     .or_else(|| parse_prompt_cache_ttl(option_env(options, PROMPT_CACHE_TTL_ENV)))
     .or_else(|| parse_prompt_cache_ttl(environment.get(PROMPT_CACHE_TTL_ENV).map(String::as_str)))
     .or(if auth_lane == TokenInjection::Ambient {
@@ -132,7 +146,7 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone();
-            let ttl = pin_one_shot_prompt_cache_ttl(&mut options, lane, &environment);
+            let ttl = pin_one_shot_prompt_cache_ttl(&mut options, lane, &environment, None);
             assert_eq!(ttl.map(PromptCacheTtl::as_str), Some(expected));
             assert_eq!(
                 options["env"],
@@ -148,6 +162,7 @@ mod tests {
             &mut options,
             TokenInjection::Ambient,
             &env(&[(PROMPT_CACHE_TTL_ENV, "10m")]),
+            None,
         );
         assert_eq!(ttl, None);
         assert!(options.get("env").is_none());
@@ -160,9 +175,72 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone();
-        let ttl =
-            pin_one_shot_prompt_cache_ttl(&mut options, TokenInjection::OAuthSlots, &env(&[]));
+        let ttl = pin_one_shot_prompt_cache_ttl(
+            &mut options,
+            TokenInjection::OAuthSlots,
+            &env(&[]),
+            None,
+        );
         assert_eq!(ttl, Some(PromptCacheTtl::FiveMinutes));
         assert_eq!(options["env"][PROMPT_CACHE_TTL_ENV], "5m");
+    }
+
+    fn pin_case(
+        lane: TokenInjection,
+        query_env: &[(&str, &str)],
+        process_env: &[(&str, &str)],
+        settings_env: &[(&str, &str)],
+        expected: Option<&str>,
+    ) {
+        let mut options = Map::new();
+        options.insert(
+            "env".into(),
+            Value::Object(
+                query_env
+                    .iter()
+                    .map(|(key, value)| ((*key).to_owned(), json!(value)))
+                    .collect(),
+            ),
+        );
+        let before = options["env"].clone();
+        let ttl = pin_one_shot_prompt_cache_ttl(
+            &mut options,
+            lane,
+            &env(process_env),
+            Some(&env(settings_env)),
+        );
+        assert_eq!(ttl.map(PromptCacheTtl::as_str), expected);
+        match expected {
+            None => assert_eq!(options["env"], before),
+            Some(lifetime) => {
+                let mut pinned = before.clone();
+                pinned[PROMPT_CACHE_TTL_ENV] = json!(lifetime);
+                assert_eq!(options["env"], pinned);
+            }
+        }
+    }
+
+    #[test]
+    fn a_lifetime_set_in_a_loaded_settings_file_is_visible_to_the_pin() {
+        let one_hour = (PROMPT_CACHE_TTL_ENV, "1h");
+        let five_minutes = (PROMPT_CACHE_TTL_ENV, "5m");
+        let force = (FORCE_PROMPT_CACHING_5M_ENV, "1");
+        let oauth = TokenInjection::OAuthSlots;
+        let ambient = TokenInjection::Ambient;
+        pin_case(oauth, &[], &[], &[force], Some("5m"));
+        pin_case(oauth, &[], &[], &[five_minutes], Some("5m"));
+        pin_case(oauth, &[], &[one_hour], &[five_minutes], Some("5m"));
+        pin_case(oauth, &[one_hour], &[], &[five_minutes], Some("5m"));
+        pin_case(oauth, &[force], &[], &[one_hour], Some("5m"));
+        pin_case(ambient, &[], &[], &[five_minutes], Some("5m"));
+        pin_case(ambient, &[], &[], &[force], Some("5m"));
+        pin_case(
+            oauth,
+            &[],
+            &[],
+            &[(PROMPT_CACHE_TTL_ENV, "10m")],
+            Some("1h"),
+        );
+        pin_case(ambient, &[], &[], &[], None);
     }
 }

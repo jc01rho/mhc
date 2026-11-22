@@ -16,7 +16,7 @@ pub struct ProviderAccountSummary {
     pub pinned: bool,
 }
 /// senpi `timedBlock`: like the generic listing, a disabled account never lifts on its own and has no end time.
-fn timed_block(
+pub fn timed_block(
     blocked_until: Option<f64>,
     block_reason: Option<&str>,
     now: f64,

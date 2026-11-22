@@ -246,9 +246,8 @@ pub fn register_with_router(
                         let mut lines=vec!["Cursor CLI (OAuth) accounts:".into()];
                         if accounts.is_empty() {lines.push("  (none)".into());}
                         for slot in &accounts {
-                            let status=if slot.block_reason==Some(crate::accounts::BlockReason::AuthError) {"blocked until re-login".into()}else if let Some(until)=slot.blocked_until.filter(|until|*until>now) {
-                                let until=chrono::DateTime::from_timestamp_millis(until as i64).ok_or_else(||anyhow::anyhow!("invalid account block timestamp"))?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
-                                format!("blocked until {until} (rate_limit)")
+                            let status=if slot.block_reason==Some(crate::accounts::BlockReason::AuthError) {maho_core::credential_account_status::describe_account_block(true,Some("auth_error"),None)}else if let Some(until)=slot.blocked_until.filter(|until|*until>now) {
+                                maho_core::credential_account_status::describe_account_block(true,Some("rate_limit"),Some(until as i64))
                             }else {"available".into()};
                             let mut states=vec![label(&slot.name),match slot.source {crate::accounts::AccountSource::Login=>"login",crate::accounts::AccountSource::Import=>"import"}.into(),status];
                             if Some(slot.name.as_str())==pin {states.push("pinned".into());}

@@ -31,6 +31,10 @@ fn push_text(blocks: &mut Vec<Value>, text: impl Into<String>) {
 /// Text that closes the replayed history. Everything after it changes every turn, so it stays after the cache
 /// breakpoint.
 pub const CONVERSATION_HISTORY_CLOSER: &str = "\n</conversation_history>";
+/// The current turn's tool images go after the history closer, past the cache breakpoint, so the history bytes stay
+/// the same when the turn ends and these images are no longer sent (senpi#5275).
+pub const CURRENT_TURN_IMAGES_OPENER: &str = "\n<current_turn_tool_images>\n";
+pub const CURRENT_TURN_IMAGES_CLOSER: &str = "\n</current_turn_tool_images>";
 pub fn build_prompt_blocks(
     messages: &[Value],
     custom: &BTreeMap<String, String>,
@@ -109,6 +113,7 @@ pub fn build_prompt_blocks_with(
                 if !append_sdk_content_blocks(
                     &mut blocks,
                     replayed_images
+                        .history
                         .get(&message_index)
                         .unwrap_or(&message["content"]),
                 ) {
@@ -123,6 +128,11 @@ pub fn build_prompt_blocks_with(
             mark_cache_breakpoint(&mut blocks, history_start, ttl);
         }
         push_text(&mut blocks, CONVERSATION_HISTORY_CLOSER);
+        if !replayed_images.current_turn.is_empty() {
+            push_text(&mut blocks, CURRENT_TURN_IMAGES_OPENER);
+            append_sdk_content_blocks(&mut blocks, &Value::Array(replayed_images.current_turn));
+            push_text(&mut blocks, CURRENT_TURN_IMAGES_CLOSER);
+        }
     }
     if let Some(note) = tool_watch_note.map(str::trim).filter(|s| !s.is_empty()) {
         push_text(&mut blocks, "<recovered_tool_results>\n");
@@ -273,5 +283,90 @@ mod tests {
         assert!(!blocks.iter().any(|b| b["text"] == "USER:\n"));
         assert_eq!(blocks.last().expect("final")["text"], "continue");
         assert!(blocks.iter().any(|b| b["text"] == "recovered"));
+    }
+
+    const SHOTS: [&str; 6] = [
+        "c2hvdDE=", "c2hvdDI=", "c2hvdDM=", "c2hvdDQ=", "c2hvdDU=", "c2hvdDY=",
+    ];
+
+    fn shot_call(id: &str, data: &str) -> [Value; 2] {
+        [
+            json!({"role":"assistant","content":[{"type":"toolCall","id":id,"name":"read","arguments":{"path":"shot.png"}}]}),
+            json!({"role":"toolResult","toolCallId":id,"toolName":"read","content":[{"type":"image","mimeType":"image/png","data":data}]}),
+        ]
+    }
+
+    fn without_cache_marker(block: &Value) -> Value {
+        let mut block = block.clone();
+        if let Some(object) = block.as_object_mut() {
+            object.remove("cache_control");
+        }
+        block
+    }
+
+    fn first_divergence(left: &[Value], right: &[Value]) -> usize {
+        left.iter()
+            .zip(right)
+            .position(|(a, b)| without_cache_marker(a) != without_cache_marker(b))
+            .unwrap_or_else(|| left.len().min(right.len()))
+    }
+
+    /// The senpi#5275 sequence with resume off: every request of an image-heavy tool turn is a rebuilt one-shot prompt,
+    /// then the turn ends and a user-role message (a background completion) starts the next request.
+    fn closing_a_tool_turn_keeps_the_cached_history(
+        opening_user_message: Value,
+        screenshots: usize,
+    ) {
+        let one_hour = Some(crate::prompt_cache_ttl::PromptCacheTtl::OneHour);
+        let mut transcript = vec![opening_user_message];
+        for (n, data) in SHOTS.iter().take(screenshots).enumerate() {
+            transcript.extend(shot_call(&format!("shot-{}", n + 1), data));
+        }
+        let last = build_prompt_blocks_with(&transcript, &BTreeMap::new(), None, one_hour);
+        let breakpoint = last
+            .iter()
+            .rposition(|block| block.get("cache_control").is_some())
+            .expect("cache breakpoint");
+        let mut closed = transcript;
+        closed.push(json!({"role":"assistant","content":[{"type":"text","text":"QA done: every screen matches."}]}));
+        closed.push(json!({"role":"user","content":"Background task finished: build succeeded."}));
+        let next = build_prompt_blocks_with(&closed, &BTreeMap::new(), None, one_hour);
+        assert!(first_divergence(&last, &next) > breakpoint);
+    }
+
+    #[test]
+    fn a_turn_that_ends_after_tool_screenshots_rewrites_none_of_the_history_the_last_request_cached()
+     {
+        closing_a_tool_turn_keeps_the_cached_history(
+            json!({"role":"user","content":"Run the UI QA"}),
+            5,
+        );
+    }
+
+    #[test]
+    fn a_turn_the_user_opened_with_an_upload_keeps_that_uploads_history_bytes_when_it_closes() {
+        closing_a_tool_turn_keeps_the_cached_history(
+            json!({"role":"user","content":[{"type":"text","text":"Run the UI QA against this mockup"},{"type":"image","mimeType":"image/png","data":"c2hvdDA="}]}),
+            1,
+        );
+    }
+
+    #[test]
+    fn current_turn_tool_images_follow_the_history_closer_while_the_turn_is_in_progress() {
+        let mut transcript = vec![json!({"role":"user","content":"Run the UI QA"})];
+        transcript.extend(shot_call("shot-1", SHOTS[0]));
+        let blocks = build_prompt_blocks(&transcript, &BTreeMap::new(), None);
+        let closer = blocks
+            .iter()
+            .position(|block| block["text"] == CONVERSATION_HISTORY_CLOSER)
+            .expect("closer");
+        assert_eq!(blocks[closer + 1]["text"], CURRENT_TURN_IMAGES_OPENER);
+        assert_eq!(blocks[closer + 3]["type"], "image");
+        assert_eq!(blocks[closer + 4]["text"], CURRENT_TURN_IMAGES_CLOSER);
+        assert!(
+            blocks[..closer]
+                .iter()
+                .all(|block| block["type"] != "image")
+        );
     }
 }

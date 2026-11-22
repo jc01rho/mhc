@@ -471,6 +471,54 @@ struct RotationHost {
     slots: Vec<RotationSlot>,
     target: maho_ai::types::AssistantMessageEventStream,
     signal: maho_ai::utils::abort::AbortSignal,
+    /// Set when the pool refused because every slot waits on a rate limit: the soonest reset (senpi#3975).
+    pool_limited_until: Option<u64>,
+}
+
+/// senpi `withPoolRetryAt`: the last slot's error, forwarded when every slot is limited, carries the time the first
+/// slot is due back. A limit the provider classified keeps its own reset when it named one, and a failure with no
+/// diagnostic or an unclassified 429 becomes the pool's rate limit (senpi#3975). Anything else (auth, a 402/403/404
+/// status) is left exactly as the provider said, status included.
+fn with_pool_retry_at_event(
+    event: maho_ai::types::AssistantMessageEvent,
+    retry_at: u64,
+) -> maho_ai::types::AssistantMessageEvent {
+    use maho_ai::types::{
+        AssistantMessageEvent, ProviderDiagnostic, ProviderDiagnosticCategory as Category,
+        sanitize_provider_diagnostic,
+    };
+    match event {
+        AssistantMessageEvent::Error { reason, mut error } => {
+            let resets_at = i64::try_from(retry_at).ok();
+            let own = error
+                .provider_diagnostic
+                .as_ref()
+                .and_then(sanitize_provider_diagnostic);
+            let limit = own
+                .as_ref()
+                .is_some_and(|own| matches!(own.category, Category::RateLimit | Category::Quota));
+            let unclassified_limit = own.as_ref().is_none_or(|own| {
+                own.category == Category::Unknown && own.http_status == Some(429)
+            });
+            if limit || unclassified_limit {
+                let diagnostic = match own {
+                    Some(own) if limit => sanitize_provider_diagnostic(&ProviderDiagnostic {
+                        resets_at: own.resets_at.or(resets_at),
+                        ..own.clone()
+                    })
+                    .or(Some(own)),
+                    _ => resets_at.and_then(
+                        maho_ai::utils::provider_diagnostic_vocabulary::credential_pool_blocked_diagnostic,
+                    ),
+                };
+                if let Some(diagnostic) = diagnostic {
+                    error.provider_diagnostic = Some(diagnostic);
+                }
+            }
+            AssistantMessageEvent::Error { reason, error }
+        }
+        other => other,
+    }
 }
 
 impl crate::credential_pool::failover::FailoverHost for RotationHost {
@@ -694,6 +742,14 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
         }
     }
 
+    fn with_pool_retry_at(&self, event: Self::Event, retry_at: u64) -> Self::Event {
+        with_pool_retry_at_event(event, retry_at)
+    }
+
+    fn pool_limited(&mut self, retry_at: u64) {
+        self.pool_limited_until = Some(retry_at);
+    }
+
     fn emit(&mut self, event: Self::Event) {
         self.target.push(event);
     }
@@ -728,6 +784,7 @@ pub fn stream_with_credential_rotation(
         slots: Vec::new(),
         target: target.clone(),
         signal,
+        pool_limited_until: None,
     };
     let model = model.clone();
     let task = tokio::spawn(async move {
@@ -744,8 +801,21 @@ pub fn stream_with_credential_rotation(
                             .map(str::to_owned)
                     })
                     .unwrap_or(error.detail);
+                let pool_diagnostic = host
+                    .pool_limited_until
+                    .and_then(|until| i64::try_from(until).ok())
+                    .and_then(
+                        maho_ai::utils::provider_diagnostic_vocabulary::credential_pool_blocked_diagnostic,
+                    );
                 let failed = maho_ai::utils::lazy::error_stream(&model, &message);
-                while let Ok(Some(event)) = failed.next().await {
+                while let Ok(Some(mut event)) = failed.next().await {
+                    if let (
+                        Some(diagnostic),
+                        maho_ai::types::AssistantMessageEvent::Error { error, .. },
+                    ) = (&pool_diagnostic, &mut event)
+                    {
+                        error.provider_diagnostic = Some(diagnostic.clone());
+                    }
                     host.target.push(event);
                 }
                 host.target.end(None);
@@ -761,6 +831,107 @@ mod tests {
     use super::*;
     use crate::credential_pool::slots::CredentialSlot;
     use serde_json::json;
+
+    const RESET: u64 = 1_795_359_840_000;
+
+    fn error_event(
+        diagnostic: Option<maho_ai::types::ProviderDiagnostic>,
+    ) -> maho_ai::types::AssistantMessageEvent {
+        let mut error =
+            maho_ai::providers::faux::faux_assistant_message("limited", Default::default());
+        error.stop_reason = maho_ai::types::StopReason::Error;
+        error.provider_diagnostic = diagnostic;
+        maho_ai::types::AssistantMessageEvent::Error {
+            reason: maho_ai::types::ErrorReason::Error,
+            error,
+        }
+    }
+
+    fn diagnostic_of(
+        event: maho_ai::types::AssistantMessageEvent,
+    ) -> Option<maho_ai::types::ProviderDiagnostic> {
+        match event {
+            maho_ai::types::AssistantMessageEvent::Error { error, .. } => error.provider_diagnostic,
+            _ => None,
+        }
+    }
+
+    fn provider_limit(
+        category: maho_ai::types::ProviderDiagnosticCategory,
+        code: &str,
+        resets_at: Option<i64>,
+    ) -> maho_ai::types::ProviderDiagnostic {
+        maho_ai::types::ProviderDiagnostic {
+            category,
+            http_status: None,
+            code: Some(code.to_owned()),
+            evidence: maho_ai::types::ProviderDiagnosticEvidence::StructuredCode,
+            resets_at,
+        }
+    }
+
+    #[test]
+    fn a_failure_with_no_diagnostic_becomes_the_pools_rate_limit() {
+        let diagnostic = diagnostic_of(with_pool_retry_at_event(error_event(None), RESET))
+            .expect("pool diagnostic");
+        assert_eq!(
+            diagnostic.category,
+            maho_ai::types::ProviderDiagnosticCategory::RateLimit
+        );
+        assert_eq!(diagnostic.code.as_deref(), Some("credential_pool_blocked"));
+        assert_eq!(diagnostic.resets_at, Some(RESET as i64));
+    }
+
+    #[test]
+    fn an_unclassified_429_becomes_the_pools_rate_limit() {
+        let unclassified = maho_ai::types::ProviderDiagnostic {
+            category: maho_ai::types::ProviderDiagnosticCategory::Unknown,
+            http_status: Some(429),
+            code: None,
+            evidence: maho_ai::types::ProviderDiagnosticEvidence::StructuredStatus,
+            resets_at: None,
+        };
+        let diagnostic = diagnostic_of(with_pool_retry_at_event(
+            error_event(Some(unclassified)),
+            RESET,
+        ))
+        .expect("pool diagnostic");
+        assert_eq!(diagnostic.code.as_deref(), Some("credential_pool_blocked"));
+        assert_eq!(diagnostic.resets_at, Some(RESET as i64));
+    }
+
+    #[test]
+    fn a_limit_the_provider_classified_keeps_its_own_reset_and_gains_one_when_it_named_none() {
+        use maho_ai::types::ProviderDiagnosticCategory::{Quota, RateLimit};
+        let own_reset = RESET as i64 + 3_600_000;
+        let named = provider_limit(RateLimit, "rate_limit_error", Some(own_reset));
+        let kept = diagnostic_of(with_pool_retry_at_event(error_event(Some(named)), RESET))
+            .expect("diagnostic");
+        assert_eq!(kept.code.as_deref(), Some("rate_limit_error"));
+        assert_eq!(kept.resets_at, Some(own_reset));
+
+        let unnamed = provider_limit(Quota, "insufficient_quota", None);
+        let gained = diagnostic_of(with_pool_retry_at_event(error_event(Some(unnamed)), RESET))
+            .expect("diagnostic");
+        assert_eq!(gained.code.as_deref(), Some("insufficient_quota"));
+        assert_eq!(gained.resets_at, Some(RESET as i64));
+    }
+
+    #[test]
+    fn auth_and_other_failures_and_non_error_events_are_left_exactly_as_the_provider_said() {
+        use maho_ai::types::ProviderDiagnosticCategory::Auth;
+        let auth = provider_limit(Auth, "authentication_error", None);
+        let untouched = diagnostic_of(with_pool_retry_at_event(
+            error_event(Some(auth.clone())),
+            RESET,
+        ));
+        assert_eq!(untouched, Some(auth));
+
+        let mut start = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        start.provider_diagnostic = None;
+        let event = maho_ai::types::AssistantMessageEvent::Start { partial: start };
+        assert!(diagnostic_of(with_pool_retry_at_event(event, RESET)).is_none());
+    }
 
     #[tokio::test]
     async fn cancelling_rotation_drops_pending_auth_setup_without_starting_another_slot() {

@@ -164,8 +164,45 @@ pub trait FailoverHost {
         self.provider_id()
             .is_none_or(crate::provider_consent::rotation_consented)
     }
+    /// Marks the terminal event forwarded when every slot is limited with the time the first one is due back, so the
+    /// session and goal read a rate limit with its reset instead of one slot's bare error (senpi#3975).
+    fn with_pool_retry_at(&self, event: Self::Event, _retry_at: u64) -> Self::Event {
+        event
+    }
+    /// Called once when the pool is exhausted and waits only on rate limits, with the soonest reset (senpi#3975).
+    fn pool_limited(&mut self, _retry_at: u64) {}
     /// Delivers one event to the caller.
     fn emit(&mut self, event: Self::Event);
+}
+
+fn is_rate_limit_block(action: &CredentialAction) -> bool {
+    matches!(
+        action,
+        CredentialAction::Failover {
+            block: CredentialBlock::RateLimit { .. }
+        }
+    )
+}
+
+/// Blocks that need the user (a new login, a re-enabled or topped-up account), not a wait.
+const OUT_OF_POOL_REASONS: [&str; 2] = ["auth_error", "account_disabled"];
+
+/// The soonest rate-limit reset when the pool waits only on rate limits, else `None` (senpi#3975). Slots out for auth
+/// or a disabled account are not counted; every other slot must be rate-limited, so a slot with an unknown block or
+/// none keeps the refusal unclassified, and a disabled slot's re-probe time is never the pool's reset.
+fn limited_until(slots: &[RunSlot], now: u64) -> Option<u64> {
+    let mut resets = Vec::new();
+    for slot in slots {
+        let reason = slot.block_reason.as_deref();
+        if reason.is_some_and(|reason| OUT_OF_POOL_REASONS.contains(&reason)) {
+            continue;
+        }
+        match (reason, slot.blocked_until) {
+            (Some("rate_limit"), Some(until)) if until > now => resets.push(until),
+            _ => return None,
+        }
+    }
+    resets.into_iter().min()
 }
 
 /// When every slot is cooling and this request has tried none, the rate-limited slot due back first
@@ -238,9 +275,26 @@ pub async fn run_credential_failover<H: FailoverHost>(
             available
         };
         if candidates.is_empty() {
+            // Only a refusal that is itself a limit is the pool's rate limit: a probe refused for auth, billing or a
+            // missing model keeps its own classification, which the goal's auth block reads (senpi#3975).
+            let limited_retry_at = if last_error
+                .as_ref()
+                .is_none_or(|error| is_rate_limit_block(&error.action))
+            {
+                limited_until(&slots, now)
+            } else {
+                None
+            };
             if let Some(terminal) = last_terminal_event.take() {
+                let terminal = match limited_retry_at {
+                    Some(retry_at) => host.with_pool_retry_at(terminal, retry_at),
+                    None => terminal,
+                };
                 host.emit(terminal);
                 return Ok(());
+            }
+            if let Some(retry_at) = limited_retry_at {
+                host.pool_limited(retry_at);
             }
             let retry_at = soonest_retry_at(&slots, now);
             let (action, detail) = match (last_error, last_original) {
@@ -449,6 +503,8 @@ mod tests {
         provider_id: Option<String>,
         attempted_slots: Vec<String>,
         consented: Option<bool>,
+        pool_retry_at: std::cell::Cell<Option<u64>>,
+        pool_limited: Option<u64>,
     }
 
     impl FailoverHost for FakeHost {
@@ -536,6 +592,20 @@ mod tests {
                 .is_none_or(crate::provider_consent::rotation_consented)
         }
 
+        fn error_from_event(&self, event: &Self::Event) -> Option<Value> {
+            (*event == "limited-error")
+                .then(|| json!({ "status": 429, "message": "rate limit reached" }))
+        }
+
+        fn with_pool_retry_at(&self, event: Self::Event, retry_at: u64) -> Self::Event {
+            self.pool_retry_at.set(Some(retry_at));
+            event
+        }
+
+        fn pool_limited(&mut self, retry_at: u64) {
+            self.pool_limited = Some(retry_at);
+        }
+
         fn emit(&mut self, event: Self::Event) {
             self.emitted.push(event);
         }
@@ -544,6 +614,15 @@ mod tests {
     fn slot(name: &str) -> RunSlot {
         RunSlot {
             name: name.to_owned(),
+            ..RunSlot::default()
+        }
+    }
+
+    fn out_until(name: &str, reason: Option<&str>, until: u64) -> RunSlot {
+        RunSlot {
+            name: name.to_owned(),
+            blocked_until: Some(until),
+            block_reason: reason.map(str::to_owned),
             ..RunSlot::default()
         }
     }
@@ -741,6 +820,126 @@ mod tests {
             .expect_err("failover gated after revoke");
         assert_eq!(host_after_revoke.attempted_slots, vec!["a1"]);
         assert!(error_revoked.detail.contains("Automatic rotation across 2 accounts is off. Enable it with `mhc auth consent chatgpt-subscription --rotation`."));
+    }
+
+    #[test]
+    fn the_pool_reset_counts_only_slots_that_wait_on_a_rate_limit() {
+        let limited = |until| out_until("limited", Some("rate_limit"), until);
+        assert_eq!(limited_until(&[limited(500), limited(300)], 100), Some(300));
+        assert_eq!(
+            limited_until(
+                &[limited(500), out_until("auth", Some("auth_error"), 150)],
+                100
+            ),
+            Some(500)
+        );
+        assert_eq!(
+            limited_until(
+                &[
+                    limited(500),
+                    out_until("off", Some("account_disabled"), 200)
+                ],
+                100
+            ),
+            Some(500)
+        );
+        assert_eq!(
+            limited_until(&[limited(500), out_until("unknown", None, 300)], 100),
+            None
+        );
+        assert_eq!(limited_until(&[limited(500), slot("healthy")], 100), None);
+        assert_eq!(limited_until(&[limited(50)], 100), None);
+        assert_eq!(
+            limited_until(&[out_until("auth", Some("auth_error"), 150)], 100),
+            None
+        );
+        assert_eq!(limited_until(&[], 100), None);
+    }
+
+    #[tokio::test]
+    async fn a_pool_waiting_only_on_rate_limits_forwards_its_terminal_event_with_the_soonest_reset()
+    {
+        let mut host = FakeHost {
+            slots: vec![out_until("a", Some("rate_limit"), 500)],
+            attempts: vec![vec![ok(vec!["start", "limited-error"])]],
+            now: 100,
+            ..FakeHost::default()
+        };
+        run_credential_failover(&mut host)
+            .await
+            .expect("the terminal event is forwarded");
+        assert_eq!(host.emitted, vec!["start", "limited-error"]);
+        assert_eq!(host.pool_retry_at.get(), Some(500));
+        assert_eq!(host.pool_limited, None);
+    }
+
+    #[tokio::test]
+    async fn a_pool_waiting_only_on_rate_limits_refuses_with_the_soonest_reset() {
+        let limited = json!({ "status": 429, "message": "rate limit reached" });
+        let mut host = FakeHost {
+            slots: vec![
+                out_until("a", Some("rate_limit"), 500),
+                out_until("b", Some("rate_limit"), 300),
+            ],
+            attempts: vec![vec![failed(limited.clone())], vec![failed(limited)]],
+            now: 100,
+            ..FakeHost::default()
+        };
+        let error = run_credential_failover(&mut host)
+            .await
+            .expect_err("refused");
+        assert_eq!(host.pool_limited, Some(300));
+        assert_eq!(error.retry_at, Some(300));
+    }
+
+    #[tokio::test]
+    async fn the_pool_never_parks_on_a_slot_out_for_auth_that_is_due_back_sooner() {
+        let limited = json!({ "status": 429, "message": "rate limit reached" });
+        let mut host = FakeHost {
+            slots: vec![
+                out_until("auth", Some("auth_error"), 150),
+                out_until("limited", Some("rate_limit"), 500),
+            ],
+            attempts: vec![vec![failed(limited)]],
+            now: 100,
+            ..FakeHost::default()
+        };
+        let error = run_credential_failover(&mut host)
+            .await
+            .expect_err("refused");
+        assert_eq!(host.pool_limited, Some(500));
+        assert_eq!(error.retry_at, Some(150));
+    }
+
+    #[tokio::test]
+    async fn a_pool_with_an_unknown_block_or_a_non_limit_refusal_stays_unclassified() {
+        let limited = json!({ "status": 429, "message": "rate limit reached" });
+        let mut unknown = FakeHost {
+            slots: vec![
+                out_until("a", Some("rate_limit"), 500),
+                out_until("b", None, 300),
+            ],
+            attempts: vec![vec![failed(limited)]],
+            now: 100,
+            ..FakeHost::default()
+        };
+        run_credential_failover(&mut unknown)
+            .await
+            .expect_err("refused");
+        assert_eq!(unknown.pool_limited, None);
+
+        let mut rejected = FakeHost {
+            slots: vec![out_until("a", Some("rate_limit"), 500)],
+            attempts: vec![vec![failed(
+                json!({ "status": 401, "message": "invalid api key" }),
+            )]],
+            now: 100,
+            ..FakeHost::default()
+        };
+        run_credential_failover(&mut rejected)
+            .await
+            .expect_err("refused");
+        assert_eq!(rejected.pool_limited, None);
     }
 
     #[tokio::test]

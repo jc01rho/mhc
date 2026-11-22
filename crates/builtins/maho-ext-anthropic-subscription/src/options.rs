@@ -23,9 +23,13 @@ pub fn claude_code_query_environment(
             model["contextWindow"].as_u64().unwrap_or(0),
         );
         environment.insert("CLAUDE_CODE_TOTAL_TOKENS_REMINDER".into(), json!("off"));
+        // The variable carries the window plus the output reserve Claude Code holds back from it, so Claude Code refuses
+        // a request only past the window compaction plans against, not 23k below it (senpi#6303).
+        let max_context_tokens =
+            crate::context_window::claude_code_max_context_tokens(window, None);
         environment.insert(
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
-            json!(window.to_string()),
+            json!(max_context_tokens.to_string()),
         );
         environment.insert("DISABLE_COMPACT".into(), json!("1"));
     }
@@ -300,7 +304,7 @@ mod tests {
             json!({
                 "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH":"16384",
                 "CLAUDE_CODE_TOTAL_TOKENS_REMINDER":"off",
-                "CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000",
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS":crate::context_window::claude_code_max_context_tokens(1_000_000, None).to_string(),
                 "DISABLE_COMPACT":"1",
                 "CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"
             })

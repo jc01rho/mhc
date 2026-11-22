@@ -63,8 +63,7 @@ impl Extension for GptAccount {
                             let mut lines=vec![format!("{PROVIDER_LABEL} accounts:")];
                             if accounts.is_empty(){lines.push("  (none)".into());}
                             for account in accounts{
-                                let label=account.display_name.map_or_else(||account.name.clone(),|display|format!("{display} ({})",account.name));
-                                lines.push(format!("  {label} | {} | {}{}",account.source.as_str(),if account.blocked{"blocked"}else{"available"},if account.pinned{" | pinned"}else{""}));
+                                lines.push(format!("  {}",maho_core::credential_account_status::describe_credential_account(&account)));
                             }
                             ctx.ui.notify(&lines.join("\n"),NotificationType::Info);
                         }

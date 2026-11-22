@@ -33,44 +33,12 @@ pub fn parse_command(raw: &str) -> Option<(String, AccountAction)> {
 }
 
 use maho_ext_api::{
-    CredentialAccountSource, CredentialAccountSummary, Extension, ExtensionApi, ExtensionFailure,
-    NotificationType,
+    CredentialAccountSummary, Extension, ExtensionApi, ExtensionFailure, NotificationType,
 };
 use std::sync::Arc;
 
-fn account_label(name: &str, display_name: Option<&str>) -> String {
-    display_name.map_or_else(|| name.into(), |display| format!("{display} ({name})"))
-}
 pub fn account_status(account: &CredentialAccountSummary) -> String {
-    let source = match account.source {
-        CredentialAccountSource::Login => "login",
-        CredentialAccountSource::Import => "import",
-        CredentialAccountSource::Env => "env",
-    };
-    let availability = if account.unused {
-        "unused (other login kind; switch with /login)"
-    } else if account.blocked {
-        "blocked"
-    } else {
-        "available"
-    };
-    let mut status = format!(
-        "{} | {} | {}",
-        account_label(&account.name, account.display_name.as_deref()),
-        source,
-        availability
-    );
-    for block in &account.blocked_models {
-        status.push_str(&format!(
-            " | blocked for {} until {}",
-            block.model,
-            iso_timestamp(block.until)
-        ));
-    }
-    if account.pinned {
-        status.push_str(" | pinned");
-    }
-    status
+    maho_core::credential_account_status::describe_credential_account(account)
 }
 
 /// JS `new Date(ms).toISOString()` (`YYYY-MM-DDTHH:MM:SS.sssZ`, UTC) without a date crate.

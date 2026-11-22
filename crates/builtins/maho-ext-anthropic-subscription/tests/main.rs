@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "account_add_event.rs"]
+mod account_add_event;
 #[path = "credential_store_contract.rs"]
 mod credential_store_contract;
 #[path = "faux_session.rs"]

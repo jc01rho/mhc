@@ -378,7 +378,7 @@ impl GoalRuntime {
                             &crate::lifecycle_helpers::last_assistant_text(messages),
                             used_tools,
                         );
-                        monitor.record_toolless_continuation_turn(&goal.id, used_tools);
+                        monitor.record_settled_continuation_turn(&goal.id, messages, used_tools);
                         let tool_effect = monitor.record_tool_effect(messages);
                         monitor.last_turn_progress = (tool_effect, human_input);
                     }
@@ -1073,7 +1073,10 @@ mod tests {
             }
             assert!(monitor.after_agent_settled(2000.0).is_none());
             assert!(monitor.recent_normalized_output_hashes.is_empty());
-            assert_eq!(monitor.toolless_continuation_streak, u64::from(will_retry));
+            assert_eq!(
+                monitor.toolless_continuation_streak, 0,
+                "a turn the provider refused is not the model skipping tools (senpi#3975)"
+            );
         }
     }
     #[tokio::test]
