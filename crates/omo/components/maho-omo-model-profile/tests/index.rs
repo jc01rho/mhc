@@ -1044,7 +1044,10 @@ async fn the_applied_notice_carries_the_profile_model_and_skipped_selector_detai
     assert_eq!(details["reasoning"], json!("max"));
     assert_eq!(
         details["skipped"],
-        json!(["anthropic-subscription/claude-opus-5-5"])
+        json!([
+            "anthropic-subscription/claude-opus-5-5",
+            "anthropic-subscription/claude-fable-5-2"
+        ])
     );
 }
 
