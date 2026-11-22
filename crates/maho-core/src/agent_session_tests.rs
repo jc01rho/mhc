@@ -11055,6 +11055,66 @@ async fn title_generation_retries_one_transient_error() {
 }
 
 #[tokio::test]
+async fn auto_title_emits_session_info_changed_before_agent_settled_and_skips_aborted_run() {
+    use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider};
+    let provider = faux_provider(RegisterFauxProviderOptions {
+        tokens_per_second: Some(0.0),
+        ..Default::default()
+    })
+    .expect("valid faux provider");
+    provider.set_responses(vec![
+        maho_ai::providers::faux::faux_assistant_message("turn complete", Default::default())
+            .into(),
+        maho_ai::providers::faux::faux_assistant_message(
+            "<title>QA session</title>",
+            Default::default(),
+        )
+        .into(),
+    ]);
+    let session = test_session_with_stream_function(false);
+    session.state().auto_title_sessions = true;
+    session
+        .agent
+        .set_model(provider.get_model(Some("faux-1")).expect("model"));
+    let mut runtime = session.model_runtime().clone();
+    runtime.register_native_provider(provider.provider.clone());
+    runtime
+        .register_provider(
+            "faux",
+            crate::provider_composer::ProviderConfigInput {
+                config: crate::model_config_schema::ModelsJsonProvider {
+                    api_key: Some("faux-test".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .expect("auth");
+    let order = Arc::new(Mutex::new(Vec::<String>::new()));
+    let order_sink = order.clone();
+    let _sub = session.subscribe(move |event| {
+        let label = match event {
+            AgentSessionEvent::SessionInfoChanged { .. } => Some("session_info_changed"),
+            AgentSessionEvent::AgentSettled => Some("agent_settled"),
+            AgentSessionEvent::AgentIdle => Some("agent_idle"),
+            _ => None,
+        };
+        if let Some(label) = label {
+            lock(&order_sink).push(label.to_owned());
+        }
+    });
+    session
+        .prompt("write a file", Default::default())
+        .await
+        .expect("prompt");
+    assert_eq!(session.session_name().as_deref(), Some("QA session"));
+    assert_eq!(
+        *lock(&order),
+        vec!["session_info_changed", "agent_settled", "agent_idle"]
+    );
+}
+
+#[tokio::test]
 async fn scheduled_continuation_does_not_clear_a_later_user_abort() {
     let session = retry_session(
         vec![maho_ai::providers::faux::faux_assistant_message(

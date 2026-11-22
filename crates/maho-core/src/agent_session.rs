@@ -825,6 +825,7 @@ struct AgentSessionState {
     compaction_extension_signal: Option<maho_ext_api::AbortSignal>,
     branch_summary_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     session_title_abort_controller: Option<maho_ai::utils::abort::AbortController>,
+    pending_session_title_prompt: Option<String>,
     active_compaction_log_attempt: Option<CompactionLogAttempt>,
     superseded_compaction_log_attempt_ids: BTreeSet<String>,
     resume_compaction_requirement: Option<(serde_json::Value, String)>,
@@ -4734,6 +4735,7 @@ impl AgentSession {
             compaction_extension_signal: None,
             branch_summary_abort_controller: None,
             session_title_abort_controller: None,
+            pending_session_title_prompt: None,
             active_compaction_log_attempt: None,
             superseded_compaction_log_attempt_ids: BTreeSet::new(),
             resume_compaction_requirement: None,
@@ -7701,8 +7703,9 @@ impl AgentSession {
                 return Err("Prompt cancelled".to_owned());
             }
         }
-        let queues_behind_pending_prompt =
-            self.state().prompt_start_pending && options.streaming_behavior.is_some();
+        let queues_behind_pending_prompt = (self.state().prompt_start_pending
+            || self.agent_run_active.load(Ordering::SeqCst))
+            && options.streaming_behavior.is_some();
         if !waits_for_manual_compaction
             && (self.is_streaming() || self.is_compacting() || queues_behind_pending_prompt)
         {
@@ -8096,6 +8099,16 @@ impl AgentSession {
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.state().required_compaction_admission_error = None;
+        let title_prompt = match options.session_title_prompt {
+            Some(SessionTitlePrompt::Disabled) => None,
+            Some(SessionTitlePrompt::Text(prompt)) => Some(prompt),
+            None => Some(text),
+        };
+        self.state().pending_session_title_prompt = self
+            .state()
+            .auto_title_sessions
+            .then_some(title_prompt)
+            .flatten();
         // Every large callee future in this function is built on the heap (`heap_future`): built
         // inline, each one takes its own slot in this frame in unoptimized builds, and the frames of
         // the prompt -> agent run -> retry recovery chain then overflow a 2 MiB thread stack.
@@ -8105,6 +8118,7 @@ impl AgentSession {
         })
         .await;
         if let Err(error) = heap_future(|| self.finish_provider_turn()).await {
+            self.state().pending_session_title_prompt = None;
             // A turn the engine refused never ran, so it releases the barrier it armed (senpi#4106).
             if let Some(spec) = &options.tool_barrier
                 && self.agent.signal().is_none()
@@ -8113,22 +8127,10 @@ impl AgentSession {
             }
             return Err(error);
         }
+        self.state().pending_session_title_prompt = None;
         let transcript_failure = lock(&self.transcript_write_failures).take_report();
         self.flush_pending_bash_messages();
         let required_compaction_error = self.state().required_compaction_admission_error.take();
-        let title_prompt = match options.session_title_prompt {
-            Some(SessionTitlePrompt::Disabled) => None,
-            Some(SessionTitlePrompt::Text(prompt)) => Some(prompt),
-            None => Some(text),
-        };
-        if self.state().auto_title_sessions
-            && let Some(text) = title_prompt
-        {
-            let session = self.clone();
-            tokio::spawn(async move {
-                session.generate_session_title_if_needed(&text).await;
-            });
-        }
         drop(_work);
         drop(_admission);
         heap_future(|| self.emit_agent_settled()).await;
@@ -8690,6 +8692,10 @@ impl AgentSession {
             signal.abort();
         }
         self.abort_compaction();
+        self.state().pending_session_title_prompt = None;
+        if let Some(controller) = self.state().session_title_abort_controller.take() {
+            controller.abort(None);
+        }
         // senpi _abortActiveAgentAndRetry("user").
         self.abort_retry();
         self.abort_branch_summary();
@@ -10410,6 +10416,22 @@ impl AgentSession {
             .await;
             self.end_unhandled_retry();
             outcome?;
+            let had_pending_title = self.state().pending_session_title_prompt.is_some();
+            heap_future(|| self.settle_session_title()).await;
+            if had_pending_title
+                && !self.state().user_aborted
+                && self.agent.signal().is_none()
+                && self.agent.has_queued_messages()
+            {
+                if let Err(error) =
+                    heap_future(|| self.agent.continue_with_queued_messages(Default::default()))
+                        .await
+                {
+                    self.settle_refused_continuation(error);
+                    return Ok(());
+                }
+                continue;
+            }
             if self.agent.signal().is_none() {
                 let messages = self.messages();
                 let outcome = if self.state().user_aborted {
@@ -13763,6 +13785,17 @@ impl AgentSession {
 
     pub fn prompt_templates(&self) -> Vec<crate::prompt_templates::PromptTemplate> {
         self.state().prompt_templates.clone()
+    }
+
+    async fn settle_session_title(&self) {
+        let first_prompt = self.state().pending_session_title_prompt.take();
+        if self.state().user_aborted {
+            return;
+        }
+        let Some(first_prompt) = first_prompt else {
+            return;
+        };
+        self.generate_session_title_if_needed(&first_prompt).await;
     }
 
     pub async fn generate_session_title_if_needed(&self, prompt: &str) {
