@@ -102,7 +102,8 @@ impl<K: Eq + Hash + Clone> ClientOccupancy<K> {
             self.observers.insert(client.clone());
             match observing_hold_change(&line) {
                 Some(true) => {
-                    if self.held.insert(client.clone()) {
+                    let newly_held = self.held.insert(client.clone());
+                    if newly_held {
                         (self.on_attach)();
                     }
                 }
