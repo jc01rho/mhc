@@ -49,6 +49,7 @@ pub struct Ui {
     pub statuses: std::sync::Mutex<Vec<(String, Option<String>)>>,
     pub selection: std::sync::Mutex<Option<String>>,
     pub choices: std::sync::Mutex<Vec<Vec<String>>>,
+    pub notices: std::sync::Mutex<Vec<String>>,
 }
 impl ExtensionUi for Ui {
     fn select<'a>(
@@ -78,7 +79,9 @@ impl ExtensionUi for Ui {
     ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn notify(&self, _: &str, _: NotificationType) {}
+    fn notify(&self, message: &str, _: NotificationType) {
+        self.notices.lock().unwrap().push(message.to_owned());
+    }
     fn set_status(&self, key: &str, text: Option<&str>) {
         self.statuses
             .lock()

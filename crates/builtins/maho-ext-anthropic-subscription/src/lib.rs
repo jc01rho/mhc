@@ -35,6 +35,7 @@ pub mod prompt_append;
 pub mod prompt_bridge;
 pub mod prompt_cache_ttl;
 pub mod prompt_directive_dedupe;
+pub mod provider_diagnostic;
 pub mod refusal;
 pub mod sdk_boundary;
 pub mod seat_digest;

@@ -612,6 +612,8 @@ pub fn stream_anthropic_subscription(
                     message.push_str(&guidance);
                 }
                 mapper.output.error_message = Some(message);
+                mapper.output.provider_diagnostic =
+                    crate::provider_diagnostic::pool_refusal_diagnostic(&error);
                 crate::cold_seed_budget::mark_cold_seed_overflow(
                     &mut mapper.output,
                     context_window,

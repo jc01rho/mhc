@@ -188,6 +188,7 @@ mod tests {
             block_reason: Some("rate_limit"),
             unavailable_account: None,
             limited_model: Some("claude-opus-5".into()),
+            rate_limited_until: None,
         };
         let text = with_account_auth_guidance_at(&anyhow::Error::new(blocked), None, 0.0);
         assert!(

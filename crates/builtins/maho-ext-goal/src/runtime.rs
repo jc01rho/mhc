@@ -378,7 +378,7 @@ impl GoalRuntime {
                             &crate::lifecycle_helpers::last_assistant_text(messages),
                             used_tools,
                         );
-                        monitor.record_toolless_continuation_turn(&goal.id, used_tools);
+                        monitor.record_settled_continuation_turn(&goal.id, messages, used_tools);
                         let tool_effect = monitor.record_tool_effect(messages);
                         monitor.last_turn_progress = (tool_effect, human_input);
                     }
