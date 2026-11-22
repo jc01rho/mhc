@@ -269,6 +269,7 @@ fn kind_name(kind: SdkErrorKind) -> &'static str {
         SdkErrorKind::RateLimit => "rate_limit",
         SdkErrorKind::Overloaded => "overloaded",
         SdkErrorKind::AuthError => "auth_error",
+        SdkErrorKind::LoginUnreadable => "login_unreadable",
         SdkErrorKind::Billing => "billing",
         SdkErrorKind::OrgNotAllowed => "org_not_allowed",
         SdkErrorKind::Entitlement => "entitlement",
@@ -671,6 +672,23 @@ impl<'a> FailoverTurn<'a> {
                 long_context_refused: false,
             });
         }
+        if classification.kind == SdkErrorKind::LoginUnreadable {
+            if visible || self.attempt + 1 >= self.attempt_limit {
+                return Err(classified.into());
+            }
+            let mut unreadable = account.clone();
+            unreadable.blocked_until = Some(
+                now + maho_core::subscription_limits::usage_accounts::AUTH_BLOCK_REPROBE_MS as f64,
+            );
+            unreadable.block_reason = Some("login_unreadable".into());
+            unreadable.blocked_at = Some(now);
+            self.replace(unreadable.clone());
+            self.attempt += 1;
+            return Ok(FailureStep::Rotate {
+                blocked: unreadable,
+                classification,
+            });
+        }
         let blocked = blocked_account(
             account,
             classification,
@@ -846,6 +864,16 @@ pub async fn run_failover(
                         visible_delta_emitted: error.suppress_turn_retry,
                     })
                     .await?;
+                if !error.suppress_turn_retry
+                    && options.model.is_some()
+                    && crate::errors::sdk_error_model_family(&error.original).is_none()
+                    && let Err(refusal) = boundary.select(&turn.accounts)
+                    && refusal
+                        .downcast_ref::<crate::affinity::AllAccountsBlockedError>()
+                        .is_some_and(|blocked| blocked.limited_model.is_some())
+                {
+                    return Err(refusal);
+                }
                 return Err(error.into());
             }
         }
