@@ -727,10 +727,7 @@ pub async fn restore_model_from_session(
 ) -> Result<InitialModelResult, maho_ai::models::ModelsError> {
     let restored = resolve_stored_model_reference(provider, id, &runtime.get_models(None));
     if let Some(parsed) = &restored
-        && parsed
-            .model
-            .as_ref()
-            .is_some_and(|m| runtime.get_provider_auth_status(&m.provider).configured)
+        && parsed.model.is_some()
     {
         return Ok(InitialModelResult {
             parsed: parsed.clone(),
@@ -738,11 +735,7 @@ pub async fn restore_model_from_session(
             provenance: InitialModelProvenance::Settings,
         });
     }
-    let reason = if restored.is_none() {
-        "model no longer exists"
-    } else {
-        "no auth configured"
-    };
+    let reason = "model no longer exists";
     let model = if current.is_some() {
         current
     } else {
@@ -1145,5 +1138,33 @@ mod tests {
         let result = resolve_model_scope_from_models(&["missing".into()], &[model("p", "sol")]);
         assert!(result.pattern_resolutions[0].unresolved);
         assert_eq!(result.diagnostics[0].code, "no-match");
+    }
+
+    #[tokio::test]
+    async fn restore_model_from_session_keeps_signed_out_provider_model() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("models.json");
+        std::fs::write(
+            &path,
+            r#"{"providers":{"xprov":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"mimo"}]}}}"#,
+        )
+        .expect("config");
+        let runtime = crate::model_runtime::ModelRuntime::create_sync(
+            crate::model_runtime::CreateModelRuntimeOptions {
+                models_path: Some(path),
+                providers: Some(Vec::new()),
+                ..Default::default()
+            },
+        )
+        .expect("model runtime");
+        let restored = restore_model_from_session("xprov", "mimo", None, &runtime)
+            .await
+            .expect("restore");
+        let restored_model = restored.parsed.model.expect("kept signed-out model");
+        assert_eq!(
+            (restored_model.provider.as_str(), restored_model.id.as_str()),
+            ("xprov", "mimo")
+        );
+        assert!(restored.fallback_message.is_none());
     }
 }

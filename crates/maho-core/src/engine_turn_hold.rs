@@ -206,6 +206,8 @@ pub struct EngineTurnHold {
     records: Vec<(String, SessionHold)>,
     notices: EngineTurnHoldNotices,
     pause_seq: u64,
+    /// The seq of the newest hold that pauses the session, which `session_paused` announced (senpi#6900).
+    announced_seq: u64,
     pause_open: bool,
     released: Vec<SessionHold>,
     release_barrier: bool,
@@ -235,6 +237,7 @@ impl EngineTurnHold {
             records: Vec::new(),
             notices,
             pause_seq: 0,
+            announced_seq: 0,
             pause_open: false,
             released: Vec::new(),
             release_barrier: false,
@@ -265,6 +268,9 @@ impl EngineTurnHold {
                     this.pause_seq = this
                         .pause_seq
                         .max(data.get("pauseSeq").and_then(Value::as_u64).unwrap_or(0));
+                    if kind != HoldKind::RunFence {
+                        this.announced_seq = this.pause_seq;
+                    }
                     this.remove_record(key);
                     this.records.push((
                         key.to_owned(),
@@ -318,6 +324,12 @@ impl EngineTurnHold {
 
     pub fn current_pause_seq(&self) -> u64 {
         self.pause_seq
+    }
+
+    /// Whether a Resume quoting `expected_seq` has seen every hold that pauses the session. Run fences raise the seq
+    /// without pausing anything, so a seq from before a fence, up to the current one, is still current (senpi#6900).
+    pub fn is_current_pause_seq(&self, expected_seq: u64) -> bool {
+        expected_seq >= self.announced_seq && expected_seq <= self.pause_seq
     }
 
     pub fn held(&self) -> bool {
@@ -408,7 +420,11 @@ impl EngineTurnHold {
                 false
             }
         };
-        if !self.pause_open && self.is_held() {
+        // A run fence alone does not pause the session, so it emits no `session_paused` (senpi#3811). Any other hold
+        // announces its seq, even while already paused: Resume quotes that seq, so an unannounced one could never be
+        // released (senpi#6900).
+        if kind != HoldKind::RunFence && self.is_held() {
+            self.announced_seq = self.pause_seq;
             self.pause_open = true;
             (self.emit)(SessionHoldEvent::SessionPaused {
                 pause_seq: self.pause_seq,
@@ -454,7 +470,6 @@ impl EngineTurnHold {
         }
         Ok(())
     }
-
     pub fn holds_source(&self, source: &str) -> bool {
         self.is_held()
             || (!self.attended && self.release_barrier)
@@ -711,7 +726,22 @@ mod tests {
         hold.release(&["parent".into()], HoldReleaseCause::RunResume)
             .expect("parent resumes");
         assert!(!hold.held());
-        assert_eq!(events.lock().expect("events").len(), 2);
+        assert_eq!(events.lock().expect("events").len(), 3);
+    }
+
+    #[test]
+    fn run_fences_after_a_pause_keep_the_announced_pause_seq_current() {
+        let (mut hold, _, _, events) = harness(&[], false, false);
+        hold.add_hold(HoldKind::SessionHold, None, None);
+        let announced = hold.current_pause_seq();
+        assert_eq!(announced, 1);
+        hold.add_hold(HoldKind::RunFence, Some("fence-1"), None);
+        assert_eq!(hold.current_pause_seq(), 2);
+        assert!(hold.is_current_pause_seq(announced));
+        assert!(hold.is_current_pause_seq(2));
+        assert!(!hold.is_current_pause_seq(0));
+        assert!(!hold.is_current_pause_seq(3));
+        assert_eq!(events.lock().expect("events").len(), 1);
     }
 
     #[test]

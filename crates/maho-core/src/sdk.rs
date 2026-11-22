@@ -294,15 +294,11 @@ pub async fn create_agent_session(
     let context = manager.current_context();
     let mut model_fallback_message: Option<String> = None;
     let mut model = options.model.take();
-    // senpi sdk.ts:284-299: a resumed session's model is restored only when its provider has
-    // configured auth; otherwise startup warns and falls back.
     if model.is_none()
         && !context.messages.is_empty()
         && let Some((provider, id)) = context.model.as_ref()
     {
-        model = registry
-            .find(provider, id)
-            .filter(|restored| registry.has_configured_auth(restored));
+        model = registry.find(provider, id);
         if model.is_none() {
             model_fallback_message = Some(format!("Could not restore model {provider}/{id}"));
         }

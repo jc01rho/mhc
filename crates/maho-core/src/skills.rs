@@ -311,6 +311,10 @@ fn load_skills_from_dir_internal(
         let Some((is_directory, is_file)) = directory_and_file(full_path) else {
             continue;
         };
+        let is_link = std::fs::symlink_metadata(full_path)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        let linked_directory = is_link && is_directory;
 
         let rel_path = to_posix_path(&relative_path(&root, &full_path.to_string_lossy()));
         let ignore_path = if is_directory {
@@ -318,16 +322,22 @@ fn load_skills_from_dir_internal(
         } else {
             rel_path.clone()
         };
-        if matcher.ignores(&ignore_path) {
+        if !linked_directory && matcher.ignores(&ignore_path) {
             continue;
         }
 
         if is_directory {
+            let fresh_matcher = IgnoreMatcher::default();
+            let child_matcher = if linked_directory {
+                &fresh_matcher
+            } else {
+                &matcher
+            };
             let sub_result = load_skills_from_dir_internal(
                 &full_path.to_string_lossy(),
                 source,
                 false,
-                (Some(&matcher), Some(&root)),
+                (Some(child_matcher), Some(&root)),
                 provenance,
                 Some(allowed),
                 &descendants,

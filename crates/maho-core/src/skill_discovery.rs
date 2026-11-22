@@ -329,16 +329,21 @@ pub fn collect_skill_entries_with_options(
         if !is_dir {
             continue;
         }
-        if matcher.ignores(&format!("{rel_path}/")) {
+        let is_link = std::fs::symlink_metadata(full_path)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        if !is_link && matcher.ignores(&format!("{rel_path}/")) {
             continue;
         }
 
         let mut child_options = options.clone();
         child_options.ancestry = Some(descendants.clone());
+        let fresh_matcher = IgnoreMatcher::default();
+        let child_matcher = if is_link { &fresh_matcher } else { &matcher };
         let nested = collect_skill_entries_with_options(
             &full_path.to_string_lossy(),
             mode,
-            Some(&matcher),
+            Some(child_matcher),
             Some(&root),
             &child_options,
         );
@@ -547,5 +552,27 @@ mod tests {
     #[test]
     fn a_missing_skill_file_is_an_error() {
         assert!(read_skill_markdown_source("/definitely/missing/SKILL.md").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_skill_directory_is_not_hidden_by_parent_ignore_rules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("skills");
+        let external = dir.path().join("external-skill");
+        write_file(&root.join(".gitignore"), "linked-skill/\n");
+        write_file(
+            &external.join("SKILL.md"),
+            "---\nname: linked-skill\ndescription: demo\n---\nbody\n",
+        );
+        std::os::unix::fs::symlink(&external, root.join("linked-skill")).expect("symlink");
+        let found = collect_skill_entries(
+            &root.to_string_lossy(),
+            SkillDiscoveryMode::Agents,
+            None,
+            None,
+        );
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("linked-skill/SKILL.md"));
     }
 }

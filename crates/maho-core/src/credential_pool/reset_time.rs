@@ -35,6 +35,12 @@ static CLOCK: LazyLock<Option<Regex>> = LazyLock::new(|| {
     .ok()
 });
 static ISO_DAY: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}T").ok());
+static ISO_RESET: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\bresets?\s+(?:at\s+)?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2}))",
+    )
+    .ok()
+});
 
 /// Whether the reset names a moment or a duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +72,12 @@ pub fn usage_limit_reset(text: &str, now_ms: i64) -> Option<UsageLimitReset> {
         return Some(UsageLimitReset {
             ms,
             kind: ResetKind::Relative,
+        });
+    }
+    if let Some(ms) = from_iso_reset_prose(text, now_ms) {
+        return Some(UsageLimitReset {
+            ms,
+            kind: ResetKind::Absolute,
         });
     }
     from_clock_prose(text, now_ms).map(|ms| UsageLimitReset {
@@ -154,6 +166,12 @@ fn unit_ms(unit: &str) -> f64 {
     } else {
         MINUTE_MS
     }
+}
+
+fn from_iso_reset_prose(text: &str, now_ms: i64) -> Option<u64> {
+    let instant = ISO_RESET.as_ref()?.captures(text)?.get(1)?.as_str();
+    let at = instant.parse::<jiff::Timestamp>().ok()?;
+    Some(clamp_ms((at.as_millisecond() - now_ms) as f64))
 }
 
 fn from_relative_prose(text: &str) -> Option<u64> {
@@ -293,5 +311,24 @@ mod tests {
         assert_eq!(usage_limit_reset_ms("quota exceeded", NOW), None);
         assert_eq!(usage_limit_reset_ms("resets 13pm (UTC)", NOW), None);
         assert_eq!(usage_limit_reset_ms("resets 9am (Not/AZone)", NOW), None);
+    }
+
+    #[test]
+    fn iso_reset_prose_resolves_as_an_absolute_reset() {
+        let reset = usage_limit_reset(
+            "Weekly usage limit reached. Resets at 2023-11-14T22:15:00Z",
+            NOW,
+        );
+        assert_eq!(
+            reset,
+            Some(UsageLimitReset {
+                ms: 100_000,
+                kind: ResetKind::Absolute,
+            })
+        );
+        assert_eq!(
+            usage_limit_reset_ms("Resets 2023-11-14T22:10:00Z", NOW),
+            Some(0)
+        );
     }
 }

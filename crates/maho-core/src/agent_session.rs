@@ -6552,15 +6552,20 @@ impl AgentSession {
     pub fn stop_for_run(&self) {
         crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold)).stamp();
     }
-    pub fn note_automatic_input(&self, text: &str) -> bool {
-        let mut hold = lock(&self.engine_turn_hold);
-        if !hold.holds().iter().any(|record| {
+    /// Whether the user's Stop or a parent's run hold is live: automatic connection input is then kept as a notice.
+    pub fn automatic_input_hold_live(&self) -> bool {
+        lock(&self.engine_turn_hold).holds().iter().any(|record| {
             (record.kind == crate::engine_turn_hold::HoldKind::SessionHold
                 && record.key != crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY)
                 || record.kind == crate::engine_turn_hold::HoldKind::InheritedHold
-        }) {
+        })
+    }
+
+    pub fn note_automatic_input(&self, text: &str) -> bool {
+        if !self.automatic_input_hold_live() {
             return false;
         }
+        let mut hold = lock(&self.engine_turn_hold);
         hold.note(&format!("rpc-input:{}",uuid::Uuid::new_v4()),Some(serde_json::json!({"role":"custom","customType":"rpc-automatic-input","content":text,"display":true,"timestamp":maho_ai::utils::diagnostics::now_ms()})));
         true
     }
@@ -6590,7 +6595,7 @@ impl AgentSession {
         }
         if request["expectedSeq"]
             .as_u64()
-            .is_some_and(|expected| expected != seq)
+            .is_some_and(|expected| !lock(&self.engine_turn_hold).is_current_pause_seq(expected))
         {
             let mut answer = idle;
             answer["reason"] = "stale".into();

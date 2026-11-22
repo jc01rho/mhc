@@ -20,11 +20,13 @@ pub struct ResolvedRetryFallbackSettings {
 }
 
 pub fn default_fallback_chains() -> FallbackChains {
-    let long = ["claude-opus-5-5:max", "claude-opus-5:max"];
+    let anthropic_opus = ["claude-opus-5-5", "claude-opus-5"];
+    let opus_55 = ["claude-fable-5-2:medium", "kimi-k3.1-pro:max"];
     [
-        ("claude-fable-5-1", long.as_slice()),
-        ("claude-fable-5", long.as_slice()),
-        ("claude-opus-5-5", &long[1..]),
+        ("claude-fable-5-2", anthropic_opus.as_slice()),
+        ("claude-fable-5-1", anthropic_opus.as_slice()),
+        ("claude-fable-5", anthropic_opus.as_slice()),
+        ("claude-opus-5-5", opus_55.as_slice()),
     ]
     .into_iter()
     .map(|(key, values)| {
@@ -108,8 +110,20 @@ mod tests {
     fn unrelated_chain_preserves_defaults() {
         let settings = json!({"fallbackChains":{"a/b":["c/d"]}});
         let resolved = resolve_retry_fallback_settings(Some(&settings));
-        assert_eq!(resolved.chains.len(), 4);
+        assert_eq!(resolved.chains.len(), 5);
         assert_eq!(resolved.chains["a/b"], ["c/d"]);
+    }
+    #[test]
+    fn opus_55_steps_to_fable_52_then_kimi_k31_pro() {
+        let defaults = default_fallback_chains();
+        assert_eq!(
+            defaults["claude-fable-5-2"],
+            ["claude-opus-5-5", "claude-opus-5"]
+        );
+        assert_eq!(
+            defaults["claude-opus-5-5"],
+            ["claude-fable-5-2:medium", "kimi-k3.1-pro:max"]
+        );
     }
     #[test]
     fn empty_chain_is_a_tombstone() {
