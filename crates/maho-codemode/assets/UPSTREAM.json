@@ -138,8 +138,8 @@
       "path": "kernels/js/worker-shell-capture.js",
       "status": "patched",
       "upstreamCommit": "c44e259d177bc65b02e5912395dbc3f58ae5e741",
-      "sha256": "c23722472c34b0514ee7182efc07507d35870204a502fe5c277ab6ad227ffce2",
-      "change": "track shell waits and process groups",
+      "sha256": "a728fe6092b3113bafebe358be0ef05cc14ce047e19922025f0942f6e0356e50",
+      "change": "track shell waits and process groups; env == null pin after cell settle (senpi#6830)",
       "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
       "divergence": "port gap predating this release range: group-signal notices (group-signal-notice.js, 7bb160e2bf) and the released-cell guard assertCellLive (14d8a35324) are not ported; mhc normalizes spawn options for its process-group tracking. The lint comment from b621a01c25 is applied"
     },
@@ -245,11 +245,12 @@
     },
     {
       "path": "kernels/js/worker-webview.js",
-      "status": "verbatim",
-      "upstreamCommit": "b621a01c2527b21684923ecf3fef3f7998307731",
-      "sha256": "2a8170cba1de08be6125450f37426505fbd3fe7518d92488e35dbf5fccb45874",
-      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
-      "divergence": "verbatim at 59d58cee5; later changes are after the senpi pin 59d58cee5 (v2026.10.27-2): main-thread WebKit views (c253693a4d), goBack/goForward proxy (cb5e852dc5), interposition (b4e76ace01)"
+      "status": "patched",
+      "upstreamCommit": "e0877ef6e12131998a3bb6061c39fd8dc26c1d30",
+      "sha256": "0a85767ef5f2b9c76294e9d5617318e57fe9d4fd2035e0a4446b4bc71b2409e3",
+      "change": "main-thread WebKit and goBack/goForward without the permissionBunPlugin interposition hook",
+      "reviewedThrough": "f01af134919f0bbf24b2887000e2142dfd290567",
+      "divergence": "upstream's permissionBunPlugin proxy arm (b4e76ace01, senpi#4391) belongs to the unported JS eval permission interposition stack"
     },
     {
       "path": "kernels/js/windows-tree-kill.js",
@@ -301,7 +302,7 @@
       "status": "local",
       "upstreamCommit": null,
       "change": "JavaScript port of senpi kernels/js/webview-host.ts (KernelWebViewClients) and coding-agent core/webview/{webview-wire,webview-readiness,native-webview,bun-chrome,webview-client,webview-service}.ts plus the main-thread connectWebViewService route; served by the relay process main thread; Windows Chrome retirement only calls closeAll()",
-      "sha256": "6ffaf6f78b0b9f030e0f0db50e854005502767413ff8f5a686c29d015d67400d"
+      "sha256": "a3c6c46b4473beb0b3bbc1a91180b9363ee99f146f928eed00b9dee96d8323f1"
     },
     {
       "path": "kernels/js/worker-relay.js",
