@@ -1073,7 +1073,10 @@ mod tests {
             }
             assert!(monitor.after_agent_settled(2000.0).is_none());
             assert!(monitor.recent_normalized_output_hashes.is_empty());
-            assert_eq!(monitor.toolless_continuation_streak, u64::from(will_retry));
+            assert_eq!(
+                monitor.toolless_continuation_streak, 0,
+                "a turn the provider refused is not the model skipping tools (senpi#3975)"
+            );
         }
     }
     #[tokio::test]
