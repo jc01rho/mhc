@@ -170,7 +170,7 @@ fn has_native_anthropic_search(model: Option<&Model>) -> bool {
         .compat
         .as_ref()
         .and_then(|compat| compat.get("supportsWebSearch"))
-        .and_then(serde_json::Value::as_bool)
+        .and_then(maho_ext_api::JsonValue::as_bool)
         .unwrap_or_else(|| {
             model.base_url == "https://api.anthropic.com"
                 || model.base_url.starts_with("https://api.anthropic.com/")
