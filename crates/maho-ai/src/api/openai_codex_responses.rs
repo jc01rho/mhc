@@ -1172,7 +1172,10 @@ async fn run_web_socket_request(
         },
         failed.clone(),
     );
-    let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
+    let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState {
+        error: None,
+        provider: model.provider.clone(),
+    }));
     let adapter = CodexEventStream {
         body,
         buffer: String::new(),
@@ -1439,6 +1442,18 @@ pub fn register_session_resource_cleanup() -> impl FnOnce() {
 #[derive(Default)]
 struct CodexStreamAdapterState {
     error: Option<CodexError>,
+    provider: String,
+}
+
+fn state_provider(state: &Arc<Mutex<CodexStreamAdapterState>>) -> String {
+    let guard = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.provider.is_empty() {
+        String::from("chatgpt-subscription")
+    } else {
+        guard.provider.clone()
+    }
 }
 
 /// `mapCodexEvents` + `parseSSE` as a byte stream: each Codex event is normalized onto the shared
@@ -1586,7 +1601,7 @@ fn map_codex_frame(
                     &base,
                 ) {
                     super::subscription_sharing_items::shared_subscription_item_limit_message(
-                        &model.provider,
+                        &state_provider(state),
                         &base,
                     )
                 } else {
@@ -1625,7 +1640,7 @@ fn map_codex_frame(
                     &base,
                 ) {
                     super::subscription_sharing_items::shared_subscription_item_limit_message(
-                        &model.provider,
+                        &state_provider(state),
                         &base,
                     )
                 } else {
@@ -2176,7 +2191,10 @@ async fn drive(
             partial: output.clone(),
         });
     }
-    let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
+    let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState {
+        error: None,
+        provider: model.provider.clone(),
+    }));
     let provenance: super::openai_responses::ResponsesFailureSlot = Arc::default();
     let adapter = CodexEventStream {
         body: super::openai_responses::observe_responses_transport(
