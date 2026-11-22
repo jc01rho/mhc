@@ -27,7 +27,8 @@ const INTENT_GATE_LEAD_TERMINAL: &str = "Open every turn with one short routing 
 const INTENT_GATE_LEAD_APP: &str = "Only the user's explicit request commits you to implementation. Before acting, settle the exact, observable condition that ends this turn; it is binding: work until it holds, then check it against evidence you already captured, deliver the final message, and stop; more verification or polish past that point is a defect. Never echo prompt scaffolding in user-facing output.";
 
 fn build_search_grounding_line(context: &DynamicPromptCoreContext) -> String {
-    if !context.tools.iter().any(|tool| tool.name == "web_search") {
+    let has_builtin_search = context.tools.iter().any(|tool| tool.name == "web_search");
+    if !has_builtin_search && !context.native_search_available {
         return String::new();
     }
     " Today's date is in the environment context, and your training data ends well before it: records, office holders, prices, versions, rules, and anything \"latest\" may have changed since, so search for those before you answer, even when you feel sure; facts that cannot change need no search.".to_string()
@@ -68,4 +69,47 @@ pub fn build_claude_haiku55_prompt(mut options: BuildDynamicSystemPromptOptions<
     options.core_prompt = Some(&build_claude_haiku55_core);
     options.workstation_dialect = Some(WorkstationDialect::Claude);
     build_dynamic_system_prompt(&options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        presets::{ModelMetadata, resolve_preset},
+        settings::PromptPresetName,
+    };
+
+    fn render(selected_tools: &[&str], native_search_available: bool) -> String {
+        resolve_preset(
+            ModelMetadata {
+                id: "claude-haiku-5-5",
+                provider: "anthropic",
+                name: None,
+                prompt_preset: None,
+            },
+            PromptPresetName::Auto,
+            BuildDynamicSystemPromptOptions {
+                selected_tools: selected_tools
+                    .iter()
+                    .map(|tool| (*tool).to_owned())
+                    .collect(),
+                native_search_available,
+                ..Default::default()
+            },
+        )
+        .expect("haiku 5.5 preset")
+        .prompt
+    }
+
+    #[test]
+    fn adds_the_search_grounding_sentence_when_only_anthropic_native_search_is_available() {
+        let native_only = render(&["read"], true);
+        assert!(native_only.contains("your training data ends well before it"));
+    }
+
+    #[test]
+    fn omits_the_search_grounding_sentence_when_neither_builtin_nor_native_search_is_available() {
+        let neither = render(&["read"], false);
+        assert!(!neither.contains("your training data ends well before it"));
+    }
 }

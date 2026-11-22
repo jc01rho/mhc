@@ -43,6 +43,7 @@ pub struct DynamicPromptCoreContext {
     pub tool_section: String,
     pub surface: PromptSurface,
     pub shared_sections: SharedSections,
+    pub native_search_available: bool,
 }
 
 /// Tool snippets and guidelines as the pre-diet prompt listed them, rendered for `shared_sections: Full`.
@@ -61,6 +62,7 @@ pub struct BuildDynamicSystemPromptOptions<'a> {
     pub on_parts: Option<PromptPartsObserver<'a>>,
     pub cwd: String,
     pub selected_tools: Vec<String>,
+    pub native_search_available: bool,
     pub tool_snippets: HashMap<String, String>,
     pub prompt_guidelines: Vec<String>,
     pub full_tool_prompt: Option<FullToolPrompt>,
@@ -125,6 +127,7 @@ pub fn build_dynamic_system_prompt_parts(
             tool_section: tool_section.clone(),
             surface: options.surface,
             shared_sections,
+            native_search_available: options.native_search_available,
         })],
         None => vec![
             build_identity_section(),

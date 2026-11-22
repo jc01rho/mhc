@@ -32,7 +32,7 @@ impl Extension for PromptPreset {
                     let Some(preset) = resolve_preset(
                         metadata(model, prompt_preset.as_deref()),
                         settings(ctx),
-                        builder_input(&event.system_prompt_options, ctx),
+                        builder_input(&event.system_prompt_options, ctx, Some(model)),
                     ) else {
                         return Ok(EventResult::None);
                     };
@@ -77,7 +77,7 @@ impl Extension for PromptPreset {
                     let preset = resolve_preset(
                         metadata(&event.model, prompt_preset.as_deref()),
                         settings(ctx),
-                        builder_input(&event.system_prompt_options, ctx),
+                        builder_input(&event.system_prompt_options, ctx, Some(&event.model)),
                     );
                     let name = preset.as_ref().map(|preset| preset.name.as_str().into());
                     Ok(EventResult::ModelSelect(ModelSelectEventResult {
@@ -151,9 +151,38 @@ fn settings(ctx: &ExtensionContext) -> PromptPresetName {
             .and_then(|value| value.as_str()),
     )
 }
+fn has_native_anthropic_search(model: Option<&Model>) -> bool {
+    let Some(model) = model.filter(|model| model.api == "anthropic-messages") else {
+        return false;
+    };
+    let enabled = !std::env::var("PI_ANTHROPIC_WEB_SEARCH")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        });
+    if !enabled {
+        return false;
+    }
+    model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.get("supportsWebSearch"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| {
+            model.base_url == "https://api.anthropic.com"
+                || model.base_url.starts_with("https://api.anthropic.com/")
+                || model.base_url.starts_with("https://api.anthropic.com:")
+                || model.base_url.starts_with("https://api.anthropic.com?")
+        })
+}
+
 fn builder_input(
     options: &BuildSystemPromptOptions,
     ctx: &ExtensionContext,
+    model: Option<&Model>,
 ) -> BuildDynamicSystemPromptOptions<'static> {
     BuildDynamicSystemPromptOptions {
         custom_prompt: None,
@@ -165,6 +194,7 @@ fn builder_input(
             options.cwd.to_string_lossy().into_owned()
         },
         selected_tools: options.tools.clone(),
+        native_search_available: has_native_anthropic_search(model),
         tool_snippets: options
             .tool_snippets
             .iter()
