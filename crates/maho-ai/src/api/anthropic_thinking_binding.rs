@@ -241,19 +241,27 @@ pub fn thinking_binding_unrecoverable_message(cause_message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AssistantMessage, ThinkingContent};
+    use crate::types::AssistantMessage;
 
     fn assistant_with_signed_thinking(id: &str, signature: Option<&str>) -> Message {
-        let mut msg = AssistantMessage::default();
+        let mut msg: AssistantMessage = serde_json::from_value(json!({
+            "role": "assistant",
+            "content": [
+                { "type": "thinking", "thinking": "reasoning", "thinkingSignature": signature },
+                { "type": "text", "text": "answer" }
+            ],
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-test",
+            "usage": {
+                "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 }
+            },
+            "stopReason": "stop",
+            "timestamp": 0
+        }))
+        .expect("assistant message fixture");
         msg.response_id = Some(id.to_owned());
-        msg.content = vec![
-            ContentBlock::Thinking(ThinkingContent {
-                thinking: "reasoning".into(),
-                thinking_signature: signature.map(str::to_owned),
-                ..Default::default()
-            }),
-            ContentBlock::text("answer"),
-        ];
         Message::Assistant(Arc::new(msg))
     }
 
