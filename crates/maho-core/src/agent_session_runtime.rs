@@ -371,6 +371,7 @@ pub struct AgentSessionRuntime {
     prompt_surface: Option<maho_ext_api::PromptSurface>,
     /// senpi `launchProfile.browserEngine` (`connected` / `builtin` / `none`); same caveat as `prompt_surface`.
     browser_engine: Option<String>,
+    session_env: Option<std::collections::BTreeMap<String, String>>,
     /// The hold on the active session's file; released when the session is replaced or disposed.
     session_hold: std::sync::Mutex<Option<crate::schedule::runner_lease::SessionHold>>,
     /// senpi `launchProfile.retryFallback`: re-applied to every replacement's settings.
@@ -418,6 +419,7 @@ impl AgentSessionRuntime {
             holder_endpoint: None,
             prompt_surface: None,
             browser_engine: None,
+            session_env: None,
             session_hold: std::sync::Mutex::new(None),
             retry_fallback: None,
             session_replace_listeners: std::sync::Mutex::new(Vec::new()),
@@ -584,6 +586,15 @@ impl AgentSessionRuntime {
 
     pub fn browser_engine(&self) -> Option<&str> {
         self.browser_engine.as_deref()
+    }
+
+    pub fn set_session_env(&mut self, env: std::collections::BTreeMap<String, String>) {
+        self.session.set_session_env(env.clone());
+        self.session_env = Some(env);
+    }
+
+    pub fn session_env(&self) -> Option<&std::collections::BTreeMap<String, String>> {
+        self.session_env.as_ref()
     }
 
     /// senpi `setRetryFallback`: overlays the fallback policy on this session's settings in memory;
@@ -1215,6 +1226,9 @@ impl AgentSessionRuntime {
         }
         if let Some(engine) = &self.browser_engine {
             created.session.set_browser_engine(engine.clone());
+        }
+        if let Some(env) = &self.session_env {
+            created.session.set_session_env(env.clone());
         }
         created.session.set_extension_command_gate(command_gate);
         created.session.set_user_bash_denied(user_bash_denied);

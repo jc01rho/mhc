@@ -680,6 +680,9 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_browser_engine(&self) -> Option<&'static str> {
         self.actions.get_browser_engine()
     }
+    fn get_session_env(&self) -> Option<BTreeMap<String, String>> {
+        self.actions.get_session_env()
+    }
     fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> {
         Box::pin(async move {
             self.runtime.assert_active()?;

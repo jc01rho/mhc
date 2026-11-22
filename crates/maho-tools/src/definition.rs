@@ -61,6 +61,9 @@ pub trait ToolContext: Send + Sync {
     fn browser_engine(&self) -> Option<&str> {
         None
     }
+    fn session_env(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        None
+    }
     /// The session's steering abort signal, when the host exposes one (codemode detaches a
     /// running eval cell on steering). Defaults to `None` for hosts without a steering surface.
     fn get_steering_signal(&self) -> Option<AbortSignal> {

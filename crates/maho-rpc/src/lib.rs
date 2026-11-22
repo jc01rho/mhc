@@ -207,6 +207,7 @@ pub mod session_attachment_commands;
 pub mod session_attachment_gate;
 pub mod session_attribution;
 pub mod session_binding;
+pub mod session_caller_env;
 pub mod session_command_activity;
 pub mod session_command_router;
 pub mod session_context_patch;

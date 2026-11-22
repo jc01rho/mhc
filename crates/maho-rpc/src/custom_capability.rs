@@ -20,6 +20,7 @@ pub const WARM_CAPABILITY: &str = "warm";
 pub const MOVED_PATH_GUARD_CAPABILITY: &str = "moved_path_guard";
 pub const PROMPT_SURFACE_CAPABILITY: &str = "prompt_surface";
 pub const BROWSER_ENGINE_CAPABILITY: &str = "browser_engine";
+pub const SESSION_ENV_CAPABILITY: &str = "session_env";
 pub const RETRY_FALLBACK_PROFILE_CAPABILITY: &str = "retry_fallback_profile";
 pub const RETRY_FALLBACK_COMMAND_CAPABILITY: &str = "retry_fallback_command";
 pub const PROMPT_SURFACE_CHAT_CAPABILITY: &str = "prompt_surface_chat";

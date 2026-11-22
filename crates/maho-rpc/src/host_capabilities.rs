@@ -176,6 +176,7 @@ pub fn multi_session_host_capabilities(
         PROMPT_SURFACE_CAPABILITY,
         PROMPT_SURFACE_CHAT_CAPABILITY,
         BROWSER_ENGINE_CAPABILITY,
+        SESSION_ENV_CAPABILITY,
         RETRY_FALLBACK_PROFILE_CAPABILITY,
         "permission_preset_accept_edits",
         "permission_preset_auto",

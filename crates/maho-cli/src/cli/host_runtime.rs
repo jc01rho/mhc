@@ -1541,6 +1541,9 @@ fn apply_launch_profile(
     if let Some(engine) = &profile.browser_engine {
         runtime.set_browser_engine(engine.clone());
     }
+    if let Some(env) = &profile.session_env {
+        runtime.set_session_env(env.clone());
+    }
     runtime.set_holder_endpoint(profile.holder_endpoint.clone())
 }
 

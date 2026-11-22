@@ -869,6 +869,7 @@ impl HostCore {
             SESSION_KIND_CAPABILITY,
             AUTO_TITLE_PER_SESSION_CAPABILITY,
             DURABLE_SESSION_ID_CAPABILITY,
+            SESSION_ENV_CAPABILITY,
             crate::host_capabilities::UNLOAD_SESSION_CAPABILITY,
             crate::host_capabilities::UNLOAD_REFUSE_DELIVERIES_CAPABILITY,
             crate::host_capabilities::FIND_SESSION_CAPABILITY,
@@ -2688,6 +2689,7 @@ impl HostCore {
             browser_engine,
             retry_fallback,
             spawned_by,
+            env,
         } = body
         else {
             return Err(OpenRefusal::plain(
@@ -2784,6 +2786,30 @@ impl HostCore {
         {
             return Err(invalid(reason));
         }
+        if let Some(reason) =
+            crate::session_caller_env::session_env_error_from_process(env.as_ref())
+        {
+            return Err(OpenRefusal {
+                message: format!(
+                    "{}: {reason}",
+                    crate::rpc_types::RPC_ERROR_INVALID_SESSION_ENV
+                ),
+                code: Some(crate::rpc_types::RPC_ERROR_INVALID_SESSION_ENV.to_owned()),
+                data: None,
+            });
+        }
+        let parent_session_env = match spawned_by
+            .get("parentSessionId")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(parent_id) => self.parent_session_env(parent_id).await,
+            None => None,
+        };
+        let requested_env = crate::session_caller_env::parse_session_env(env.as_ref());
+        let session_env = crate::session_caller_env::inherited_session_env(
+            parent_session_env.as_ref(),
+            requested_env.as_ref(),
+        );
         let parsed_kind = kind
             .as_ref()
             .and_then(serde_json::Value::as_str)
@@ -2834,6 +2860,7 @@ impl HostCore {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
             retry_fallback: retry_fallback.clone(),
+            session_env,
             holder_endpoint: Some(maho_core::session_holders::SessionHolderEndpoint {
                 host_instance: Some(instance_id.to_owned()),
                 host_socket: None,
@@ -2870,6 +2897,37 @@ impl HostCore {
             crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
         }
         opened
+    }
+    async fn parent_session_env(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<std::collections::BTreeMap<String, String>> {
+        if let Some(workers) = &self.workers {
+            let rows = workers.list_sessions(true);
+            let row = rows.iter().find(|row| {
+                row["durableSessionId"].as_str() == Some(parent_session_id)
+                    || row["sessionId"].as_str() == Some(parent_session_id)
+            })?;
+            let sid = row["sessionId"].as_str()?;
+            return workers
+                .with_entry(sid, |entry| {
+                    (entry.close.state == crate::session_registry::RpcSessionState::Open)
+                        .then(|| entry.profile.session_env.clone())
+                        .flatten()
+                })
+                .flatten();
+        }
+        let registry = self.registry.lock().await;
+        let rows = registry.list_sessions(true);
+        let row = rows.iter().find(|row| {
+            row["durableSessionId"].as_str() == Some(parent_session_id)
+                || row["sessionId"].as_str() == Some(parent_session_id)
+        })?;
+        let sid = row["sessionId"].as_str()?;
+        let entry = registry.get(sid)?;
+        (entry.close.state == crate::session_registry::RpcSessionState::Open)
+            .then(|| entry.profile.session_env.clone())
+            .flatten()
     }
     async fn open_admitted(
         &self,

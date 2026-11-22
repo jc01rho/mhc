@@ -114,6 +114,7 @@ pub const RPC_ERROR_HOST_STOPPING: &str = "host_stopping";
 pub const RPC_ERROR_SESSION_OUTPUT_OVERFLOW: &str = "session_output_overflow";
 /// `open_session.spawnedBy` must name non-empty `parentSessionId`, `rootSessionId` and `taskId`.
 pub const RPC_ERROR_INVALID_SPAWNED_BY: &str = "invalid_spawned_by";
+pub const RPC_ERROR_INVALID_SESSION_ENV: &str = "invalid_session_env";
 
 /// Capability: `steer_when_idle` (rpc-types.ts `STEER_WHEN_IDLE_CAPABILITY`).
 pub const STEER_WHEN_IDLE_CAPABILITY: &str = "steer_when_idle";
@@ -608,6 +609,12 @@ pub enum RpcCommandBody {
         /// Kept raw so a malformed value is refused with `invalid_spawned_by` rather than a parse error.
         #[serde(default, skip_serializing_if = "Value::is_null")]
         spawned_by: Value,
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        env: Option<Value>,
     },
     /// Hands a session over to a runtime outside this host (senpi `release_session`). The session id travels in
     /// the routing envelope. `reason` and `moveId` stay raw so a malformed value is refused with

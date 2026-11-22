@@ -83,6 +83,8 @@ pub struct ChildToolContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_engine: Option<BrowserEngine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_env: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_store_file: Option<PathBuf>,
 }
 
@@ -99,6 +101,9 @@ pub trait NarrowableContext {
         None
     }
     fn browser_engine(&self) -> Option<BrowserEngine> {
+        None
+    }
+    fn session_env(&self) -> Option<std::collections::BTreeMap<String, String>> {
         None
     }
     fn goal_store_file(&self) -> Option<PathBuf> {
@@ -136,6 +141,10 @@ impl NarrowableContext for ExtensionContext {
             .map(|tier| service_tier_str(tier).to_owned())
     }
 
+    fn session_env(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        maho_tools::definition::ToolContext::session_env(self)
+    }
+
     fn goal_store_file(&self) -> Option<PathBuf> {
         self.goal_store_file.clone()
     }
@@ -162,6 +171,7 @@ pub fn narrow_context(
         thinking_level: ctx.thinking_level(),
         service_tier: ctx.service_tier(),
         browser_engine: ctx.browser_engine(),
+        session_env: ctx.session_env(),
         goal_store_file: ctx.goal_store_file(),
     }
 }

@@ -709,6 +709,7 @@ struct AgentSessionState {
     prompt_surface: Option<maho_ext_api::PromptSurface>,
     /// senpi `_browserEngine` (`connected` / `builtin` / `none`).
     browser_engine: Option<String>,
+    session_env: Option<BTreeMap<String, String>>,
     wake_sources: WakeSourceTracker,
     security_notices: crate::security_notices::SecurityNoticeSnapshot,
     shown_high_reasoning_warning_keys: BTreeSet<String>,
@@ -2898,6 +2899,9 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             _ => None,
         }
     }
+    fn get_session_env(&self) -> Option<BTreeMap<String, String>> {
+        self.session().ok()?.session_env()
+    }
     fn get_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions {
         let Ok(session) = self.session() else {
             return Default::default();
@@ -4648,6 +4652,7 @@ impl AgentSession {
             system_prompt_override: None,
             prompt_surface: None,
             browser_engine: None,
+            session_env: None,
             wake_sources: WakeSourceTracker::default(),
             security_notices: Default::default(),
             shown_high_reasoning_warning_keys: BTreeSet::new(),
@@ -14219,6 +14224,14 @@ impl AgentSession {
     /// senpi `browserEngine` getter.
     pub fn browser_engine(&self) -> Option<String> {
         self.state().browser_engine.clone()
+    }
+
+    pub fn set_session_env(&self, env: BTreeMap<String, String>) {
+        self.state().session_env = Some(env);
+    }
+
+    pub fn session_env(&self) -> Option<BTreeMap<String, String>> {
+        self.state().session_env.clone()
     }
 
     pub fn rebuild_system_prompt(&self) {

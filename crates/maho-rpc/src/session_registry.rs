@@ -18,6 +18,7 @@ pub struct RpcSessionLaunchProfile {
     pub browser_engine: Option<String>,
     /// This session's own `{ modelFallback, fallbackChains }` policy (senpi `retryFallback`).
     pub retry_fallback: Option<serde_json::Value>,
+    pub session_env: Option<BTreeMap<String, String>>,
     /// The host endpoint this session's holder record names (senpi `holderEndpoint`).
     pub holder_endpoint: Option<maho_core::session_holders::SessionHolderEndpoint>,
     /// The validated ancestry of a child session, merged into the launch profile (senpi `spawnedBy`) for the
@@ -474,6 +475,9 @@ impl RpcSessionRegistry {
         runtime
             .session()
             .on_before_session_replace(seal_ledgers_on_replace(handle.to_owned()));
+        if let Some(session_env) = &entry.profile.session_env {
+            runtime.session().set_session_env(session_env.clone());
+        }
         entry.close.writing = true;
         entry.close.state = RpcSessionState::Open;
         entry.runtime = Some(runtime);
