@@ -1,5 +1,5 @@
 use crate::{
-    aborted_error_label::{aborted_error_label, unrun_tool_call_text},
+    aborted_error_label::unrun_tool_call_text,
     components::{
         tool_execution::ToolExecutionComponent, tool_execution_types::ToolExecutionResult,
     },
@@ -32,14 +32,11 @@ pub fn replay_assistant_tools(message: &AssistantMessage, host: &mut impl Replay
     // that closes the message after a tool call, as in live mode, else the head row (or, for an abort,
     // the tool card).
     let mut last_run_start: Option<usize> = None;
-    if let Some(index) = first
-        && !matches!(message.content.last(), Some(ContentBlock::ToolCall(_)))
-    {
+    if first.is_some() && !matches!(message.content.last(), Some(ContentBlock::ToolCall(_))) {
         let mut start = message.content.len() - 1;
         while start > 0 && !matches!(message.content[start - 1], ContentBlock::ToolCall(_)) {
             start -= 1;
         }
-        let _ = index;
         last_run_start = Some(start);
     }
     let mut head = message.clone();
@@ -91,5 +88,4 @@ pub fn replay_assistant_tools(message: &AssistantMessage, host: &mut impl Replay
             host.add_message(segment, Some(start) == last_run_start);
         }
     }
-    let _ = aborted_error_label;
 }

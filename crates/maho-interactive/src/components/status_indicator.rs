@@ -22,13 +22,22 @@ pub enum CompactionStatusReason {
     Branch,
     Extension,
 }
+struct RetryState {
+    deadline: u64,
+    attempt: usize,
+    max: usize,
+    trouble: bool,
+    key: String,
+    reason: Option<String>,
+}
+
 pub struct StatusIndicator {
     pub kind: StatusIndicatorKind,
     pub loader: Loader,
     theme: Theme,
     progress: String,
     compact_label: String,
-    retry: Option<(u64, usize, usize, bool, String, Option<String>)>,
+    retry: Option<RetryState>,
 }
 impl StatusIndicator {
     pub fn new(
@@ -112,56 +121,78 @@ impl StatusIndicator {
     ) -> Self {
         let message = retry_message(attempt, max, delay.div_ceil(1000), trouble, key, None);
         let mut s = Self::new(StatusIndicatorKind::Retry, &message, theme, indicator, now);
-        s.retry = Some((
-            now.saturating_add(delay),
+        s.retry = Some(RetryState {
+            deadline: now.saturating_add(delay),
             attempt,
             max,
             trouble,
-            key.into(),
-            None,
-        ));
+            key: key.into(),
+            reason: None,
+        });
         s
     }
     pub fn with_retry_reason(mut self, reason: Option<String>, now: u64) -> Self {
-        if let Some((deadline, attempt, max, trouble, key, slot)) = &mut self.retry {
-            *slot = reason;
-            let seconds = deadline.saturating_sub(now).div_ceil(1000);
-            let msg = retry_message(*attempt, *max, seconds, *trouble, key, slot.as_deref());
+        if let Some(state) = &mut self.retry {
+            state.reason = reason;
+            let seconds = state.deadline.saturating_sub(now).div_ceil(1000);
+            let msg = retry_message(
+                state.attempt,
+                state.max,
+                seconds,
+                state.trouble,
+                &state.key,
+                state.reason.as_deref(),
+            );
             self.loader.set_message(msg, now);
-            if *trouble {
-                let suffix = slot
+            if state.trouble {
+                let suffix = state
+                    .reason
                     .as_deref()
                     .map_or_else(String::new, |r| format!(": {r}"));
                 self.compact_label = format!(
-                    "Retrying {attempt}/{max} {} ({key} cancel){suffix}",
+                    "Retrying {}/{} {} ({} cancel){suffix}",
+                    state.attempt,
+                    state.max,
                     if seconds > 0 {
                         format!("in {seconds}s")
                     } else {
                         "now".into()
-                    }
+                    },
+                    state.key
                 );
             }
         }
         self
     }
     pub fn tick(&mut self, now: u64) -> bool {
-        if let Some((deadline, attempt, max, trouble, key, reason)) = &self.retry {
-            let seconds = deadline.saturating_sub(now).div_ceil(1000);
+        if let Some(state) = &self.retry {
+            let seconds = state.deadline.saturating_sub(now).div_ceil(1000);
             self.loader.set_message(
-                retry_message(*attempt, *max, seconds, *trouble, key, reason.as_deref()),
+                retry_message(
+                    state.attempt,
+                    state.max,
+                    seconds,
+                    state.trouble,
+                    &state.key,
+                    state.reason.as_deref(),
+                ),
                 now,
             );
-            if *trouble {
-                let suffix = reason
+            if state.trouble {
+                let suffix = state
+                    .reason
                     .as_deref()
                     .map_or_else(String::new, |r| format!(": {r}"));
                 self.compact_label = format!(
-                    "Retrying {attempt}/{max} {} ({key} cancel){suffix}",
+                    "Retrying {}/{} {} ({} cancel){suffix}",
+                    state.attempt,
+                    state.max,
                     if seconds > 0 {
                         format!("in {seconds}s")
                     } else {
                         "now".into()
-                    }
+                    },
+                    state.key
                 );
             }
         }
