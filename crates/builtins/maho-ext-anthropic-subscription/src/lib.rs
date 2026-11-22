@@ -1,6 +1,7 @@
 pub mod account_command;
 pub mod account_context;
 pub mod account_events;
+pub mod account_list;
 pub mod account_management;
 pub mod accounts;
 pub mod affinity;
