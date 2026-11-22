@@ -932,6 +932,8 @@ impl HostCore {
                         kind: entry.identity.kind,
                         cwd: &entry.cwd,
                         attachments: entry.close.attachments,
+                        last_activity_at: (entry.last_command_at > 0.)
+                            .then_some(entry.last_command_at),
                         durable_session_id: entry.durable_session_id.clone(),
                         session_path: entry.session_path.clone(),
                         context: &entry.identity.context,
@@ -952,6 +954,8 @@ impl HostCore {
                         kind: entry.identity.kind,
                         cwd: &cwd,
                         attachments: entry.close.attachments,
+                        last_activity_at: (entry.last_command_at > 0.)
+                            .then_some(entry.last_command_at),
                         durable_session_id: entry.durable_session_id.clone(),
                         session_path: entry.session_path.clone(),
                         context: &entry.identity.context,
@@ -6407,6 +6411,7 @@ done"#
                         kind: maho_ext_api::SessionKind::Interactive,
                         cwd: "/w",
                         attachments: 1,
+                        last_activity_at: None,
                         durable_session_id: Some("d1".into()),
                         session_path: None,
                         context: &std::collections::BTreeMap::new(),

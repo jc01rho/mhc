@@ -126,7 +126,7 @@ impl SessionStatusStream {
             if !subscription_matches(&options, &session_id, &view.entry) {
                 continue;
             }
-            let change = self.last_change_of(&session_id);
+            let change = self.last_change_of(&session_id, view.entry.last_activity_at);
             let questions = delivery.pending_questions(&session_id);
             snapshot.push(self.record(
                 &id,
@@ -413,11 +413,21 @@ impl SessionStatusStream {
         live.or_else(|| self.last_views.get(session_id).cloned())
     }
 
-    fn last_change_of(&self, session_id: &str) -> Value {
+    fn last_change_of(&self, session_id: &str, last_activity_at: Option<f64>) -> Value {
         self.last_changes
             .get(session_id)
             .cloned()
-            .unwrap_or_else(|| json!({"at":(self.now)(),"cause":"open","by":"host"}))
+            // senpi#6415: a snapshot with no recorded change names the session's last known activity, not the
+            // subscription time, so two snapshots of a quiet session agree.
+            .unwrap_or_else(|| {
+                let at = last_activity_at
+                    .and_then(|millis| chrono::DateTime::from_timestamp_millis(millis as i64))
+                    .map_or_else(
+                        || (self.now)(),
+                        |at| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    );
+                json!({"at":at,"cause":"open","by":"host"})
+            })
     }
 
     #[allow(
@@ -486,6 +496,7 @@ mod tests {
                     kind: "interactive",
                     cwd: "/w".into(),
                     attachments: 1,
+                    last_activity_at: None,
                     durable_session_id: None,
                     session_path: None,
                     name: None,
@@ -545,6 +556,71 @@ mod tests {
         assert_eq!(seqs, [1, 2]);
         assert!(stream.unsubscribe("c1", &subscribed.subscription_id));
         assert!(!stream.unsubscribe("c1", &subscribed.subscription_id));
+    }
+
+    // senpi#6415: with no recorded change, a snapshot's `lastChange.at` comes from the entry's last known activity
+    // rather than the subscription clock, so two snapshots of a quiet session agree.
+    #[test]
+    fn snapshot_without_recorded_change_uses_last_activity_at_when_known() {
+        struct ActiveSession(Option<f64>);
+        impl SessionStatusSource for ActiveSession {
+            fn session_ids(&self) -> Vec<String> {
+                vec!["s1".into()]
+            }
+            fn view(&self, _session_id: &str) -> Option<SessionView> {
+                Some(SessionView {
+                    entry: SessionStatusEntryView {
+                        state: RpcSessionState::Open,
+                        kind: "interactive",
+                        cwd: "/w".into(),
+                        attachments: 1,
+                        last_activity_at: self.0,
+                        durable_session_id: None,
+                        session_path: None,
+                        name: None,
+                        context: serde_json::Map::new(),
+                        open_context: None,
+                    },
+                    runtime: Some(Default::default()),
+                })
+            }
+        }
+        let clock = Arc::new(Mutex::new("2026-10-27T01:00:00.000Z".to_owned()));
+        let tick = Arc::clone(&clock);
+        let mut stream = SessionStatusStream::new(Box::new(move || tick.lock().unwrap().clone()));
+        let sent = Sent::default();
+        // 1761523200500 ms = 2025-10-27T00:00:00.500Z
+        let first = stream.subscribe(
+            &ActiveSession(Some(1_761_523_200_500.)),
+            &sent,
+            "c1",
+            parse_subscription(&json!({})).unwrap(),
+        );
+        *clock.lock().unwrap() = "2026-10-27T02:00:00.000Z".to_owned();
+        let second = stream.subscribe(
+            &ActiveSession(Some(1_761_523_200_500.)),
+            &sent,
+            "c2",
+            parse_subscription(&json!({})).unwrap(),
+        );
+        assert_eq!(
+            first.snapshot[0]["lastChange"],
+            json!({"at":"2025-10-27T00:00:00.500Z","cause":"open","by":"host"})
+        );
+        assert_eq!(
+            second.snapshot[0]["lastChange"],
+            first.snapshot[0]["lastChange"]
+        );
+        let fallback = stream.subscribe(
+            &ActiveSession(None),
+            &sent,
+            "c3",
+            parse_subscription(&json!({})).unwrap(),
+        );
+        assert_eq!(
+            fallback.snapshot[0]["lastChange"]["at"],
+            "2026-10-27T02:00:00.000Z"
+        );
     }
 
     /// rpc-session-status.test.ts effect subscriptions: an `effects: true` subscription gets `effect_status` on its
