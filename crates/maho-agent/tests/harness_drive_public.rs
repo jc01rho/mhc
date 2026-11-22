@@ -1220,7 +1220,7 @@ async fn harness_provider_requests_carry_the_session_cwd() {
         bounded(
             turn_fixture
                 .lane
-                .prompt(text("question"), None, &BACKGROUND_CONTEXT),
+                .prompt(text("question"), &BACKGROUND_CONTEXT),
         )
         .await
         .expect("no fault")
@@ -1287,11 +1287,9 @@ async fn harness_provider_requests_carry_the_session_cwd() {
         .expect("mutation");
     mutation
         .commit(
-            vec![insert_entry(NewEntry::message(
-                "target",
-                Some(root_id),
-                user("target", 3),
-            ))],
+            vec![maho_agent::harness::session::commit::insert_entry(
+                NewEntry::message("target", Some(root_id), user("target", 3)),
+            )],
             &BACKGROUND_CONTEXT,
         )
         .await
