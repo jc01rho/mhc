@@ -8,10 +8,10 @@ Rows the per-area tracks do not own. Every functional row of this range is judge
 | `54a7c2adca` | n/a | sync merge of origin/main; its content is covered by the PR rows of the owning tracks |
 | `c130b2d8b9` | n/a | sync merge of origin/main; its content is covered by the PR rows of the owning tracks |
 | `0acf766f44` | n/a | sync merge of origin/main; its content is covered by the PR rows of the owning tracks |
-| #4312 (`19a5ba8298`) | moved | judged in the rpc-host ledger |
-| #4370 (`3d0df57eb3`) | moved | judged in the rpc-host ledger |
-| #4373 (`3505ce7c8a`) | moved | judged in the rpc-host ledger |
-| #4470 (`3e39075fe0`) | moved | judged in the rpc-host ledger |
+| #4312 (`19a5ba8298`) | n/a | Windows native adapter crate `senpi-socket-secret` (presence guards / binding, owner-only DACL, `CREATE_NEW` staging) and its loader `socket-secret-native.ts`: at f01af13491 no senpi production code imports the loader, so senpi still writes the secret in place on win32 like `crates/maho-socket-secret` (same decision as round 1, `crates/maho-socket-secret/parity.d/5179.md`); nothing to match until upstream wires it |
+| #4370 (`3d0df57eb3`) | n/a | Windows native adapter crate `senpi-socket-secret` (presence guards / binding, owner-only DACL, `CREATE_NEW` staging) and its loader `socket-secret-native.ts`: at f01af13491 no senpi production code imports the loader, so senpi still writes the secret in place on win32 like `crates/maho-socket-secret` (same decision as round 1, `crates/maho-socket-secret/parity.d/5179.md`); nothing to match until upstream wires it |
+| #4373 (`3505ce7c8a`) | n/a | Windows native adapter crate `senpi-socket-secret` (presence guards / binding, owner-only DACL, `CREATE_NEW` staging) and its loader `socket-secret-native.ts`: at f01af13491 no senpi production code imports the loader, so senpi still writes the secret in place on win32 like `crates/maho-socket-secret` (same decision as round 1, `crates/maho-socket-secret/parity.d/5179.md`); nothing to match until upstream wires it |
+| #4470 (`3e39075fe0`) | n/a | Windows native adapter crate `senpi-socket-secret` (presence guards / binding, owner-only DACL, `CREATE_NEW` staging) and its loader `socket-secret-native.ts`: at f01af13491 no senpi production code imports the loader, so senpi still writes the secret in place on win32 like `crates/maho-socket-secret` (same decision as round 1, `crates/maho-socket-secret/parity.d/5179.md`); nothing to match until upstream wires it |
 | #4547 (`2ff07b0954`) | n/a | knip cleanup: drops the export keyword of bashPermissionRequests; no runtime behavior change |
 | #4801 (`cde540c537`) | n/a | senpi CI/release workflows; JS dependency manifests/locks; senpi repo scripts (release, CI sharding, lint ratchet, test guards) only; no Rust counterpart |
 | #4860 (`ccf76963ab`) | n/a | senpi repo scripts (release, CI sharding, lint ratchet, test guards) only; no Rust counterpart |
