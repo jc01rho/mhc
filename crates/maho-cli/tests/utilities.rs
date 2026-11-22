@@ -59,6 +59,12 @@ fn clipboard_osc52_payload_is_bounded() {
         Some("\x1b]52;c;YWJj\x07")
     );
     assert!(maho_cli::utils::clipboard::osc52_sequence(&"x".repeat(75_001)).is_none());
+    assert!(maho_cli::utils::clipboard::is_remote_session_with(
+        |name| name == "SSH_TTY"
+    ));
+    assert!(!maho_cli::utils::clipboard::is_remote_session_with(|_| {
+        false
+    }));
 }
 #[tokio::test]
 async fn clipboard_command_reads_and_enforces_maximum_without_desktop_access() {

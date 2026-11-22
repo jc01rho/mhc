@@ -1,3 +1,4 @@
+pub mod oom_score;
 #[cfg(windows)]
 mod process_tree_windows;
 mod session;

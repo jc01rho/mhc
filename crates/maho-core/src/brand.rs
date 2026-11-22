@@ -57,6 +57,9 @@ pub struct BrandProfile {
     /// Update channel of the branded product; absent means the product manages updates itself.
     pub update: Option<BrandUpdateChannel>,
     pub changelog: Option<BrandChangelog>,
+    /// Absolute paths of the distribution's own extensions, which its launcher passes with
+    /// `--extension` on every start (senpi#7118, oh-my-openagent#14465).
+    pub extensions: Option<Vec<String>>,
 }
 
 /// The engine's own identity, used when no brand profile is injected: `maho` / `.omo` / `mhc`
@@ -73,6 +76,7 @@ pub fn standalone_brand_profile() -> BrandProfile {
         originator: None,
         update: None,
         changelog: None,
+        extensions: None,
     }
 }
 
@@ -96,6 +100,17 @@ fn read_changelog(source: &serde_json::Map<String, Value>) -> Option<BrandChange
         path,
         version: read_string(changelog, "version"),
     })
+}
+
+fn read_extensions(source: &serde_json::Map<String, Value>) -> Option<Vec<String>> {
+    let values = source.get("extensions")?.as_array()?;
+    let paths: Vec<String> = values
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|path| std::path::Path::new(path).is_absolute() && !path.contains('\0'))
+        .map(str::to_owned)
+        .collect();
+    (!paths.is_empty()).then_some(paths)
 }
 
 fn read_update_channel(source: &serde_json::Map<String, Value>) -> Option<BrandUpdateChannel> {
@@ -163,6 +178,7 @@ pub fn parse_brand_profile(raw: Option<&str>) -> Option<BrandProfile> {
         originator: read_string(source, "originator"),
         update: read_update_channel(source),
         changelog: read_changelog(source),
+        extensions: read_extensions(source),
     })
 }
 
@@ -360,5 +376,29 @@ mod tests {
         let env = HashMap::from([("PI_SETTING".to_owned(), String::new())]);
         assert_eq!(env_value("SETTING", &env).as_deref(), Some(""));
         assert!(env_value("MISSING", &HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn brand_extensions_keep_absolute_paths_and_drop_anything_else() {
+        let profile = parse_brand_profile(Some(
+            r#"{"name":"omo","extensions":["/opt/omo/plugin","relative/plugin",7,"/bad\u0000path"]}"#,
+        ))
+        .expect("profile");
+        assert_eq!(
+            profile.extensions.as_deref(),
+            Some(["/opt/omo/plugin".to_owned()].as_slice())
+        );
+        assert!(
+            parse_brand_profile(Some(r#"{"name":"omo"}"#))
+                .expect("profile")
+                .extensions
+                .is_none()
+        );
+        assert!(
+            parse_brand_profile(Some(r#"{"name":"omo","extensions":"/opt/omo/plugin"}"#))
+                .expect("profile")
+                .extensions
+                .is_none()
+        );
     }
 }

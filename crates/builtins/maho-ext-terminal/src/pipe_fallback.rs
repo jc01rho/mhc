@@ -131,6 +131,7 @@ impl PipeFallbackSession {
             ))
         })?;
         let pid = child.id();
+        maho_pty::oom_score::prefer_as_oom_victim(Some(pid));
         let sink = Arc::new(Mutex::new(on_chunk));
         let mut readers = Vec::new();
         let streams: [Option<Box<dyn Read + Send>>; 2] = [
