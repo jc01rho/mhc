@@ -215,14 +215,14 @@ mod tests {
         use maho_ai::compat::extension_oauth_types::OAuthLoginCallbacks;
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
         let sink = std::sync::Arc::clone(&sent);
-        let callbacks = RpcLoginPromptCallbacks::with_sink(
-            AbortController::new().signal(),
-            "anthropic-subscription".into(),
-            std::sync::Arc::new(move |record| {
+        let callbacks = RpcLoginPromptCallbacks {
+            login: AbortController::new().signal(),
+            provider: "anthropic-subscription".into(),
+            sink: std::sync::Arc::new(move |record| {
                 sink.lock().unwrap().push(record);
             }),
-            std::sync::Arc::new(maho_ext_api::NoopExtensionUi),
-        );
+            ui: None,
+        };
         callbacks.on_progress("downloading 40%");
         assert_eq!(
             sent.lock().unwrap().as_slice(),

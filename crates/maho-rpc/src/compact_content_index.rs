@@ -455,9 +455,11 @@ where
                 .copied()
                 .filter(|id| !self.0.store.is_committed(*id))
                 .collect();
-            state.pending.set(key.to_owned(), uncommitted);
-            if !state.pending.has(key) && !state.ready.iter().any(|existing| existing == key) {
-                state.ready.push(key.to_owned());
+            let owned_key = key.to_owned();
+            state.pending.set(owned_key.clone(), uncommitted);
+            if !state.pending.has(&owned_key) && !state.ready.iter().any(|existing| existing == key)
+            {
+                state.ready.push(owned_key);
             }
         }
         self.0.store.adjust(owner, -1, 0)?;
