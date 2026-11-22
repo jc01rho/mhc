@@ -282,7 +282,7 @@ pub const GPT_BLOCK_HANDOFF_PRESETS: &[PromptPresetName] = {
 
 pub const NO_HANDOFF_BLOCK_PRESETS: &[PromptPresetName] = {
     use PromptPresetName as P;
-    &[P::Gpt62]
+    &[P::Gpt62, P::DeepseekV41Flash]
 };
 
 pub fn preset_handoff_cue_kind(name: Option<PromptPresetName>) -> HandoffCueKind {
@@ -310,6 +310,7 @@ pub const PLAN_AFTER_READING_PRESETS: &[PromptPresetName] = {
         P::Gpt53Codex,
         P::Gpt52,
         P::Gpt5,
+        P::DeepseekV41Flash,
     ]
 };
 
@@ -325,7 +326,7 @@ pub fn preset_first_turn_plan_default(name: Option<PromptPresetName>) -> &'stati
 /// shared `Task_Management` block after them (senpi#7101).
 pub const TODO_RULE_OWNER_PRESETS: &[PromptPresetName] = {
     use PromptPresetName as P;
-    &[P::Gpt62]
+    &[P::Gpt62, P::DeepseekV41Flash]
 };
 
 pub fn preset_owns_todo_rules(name: Option<PromptPresetName>) -> bool {
@@ -535,13 +536,11 @@ mod tests {
     }
 
     #[test]
-    fn defaults_the_first_turn_plan_to_off_under_every_gpt_preset_and_to_force_elsewhere() {
+    fn defaults_the_first_turn_plan_to_off_under_every_gpt_preset_and_deepseek_v4_1_flash() {
         for preset in std::iter::once(&PromptPresetName::Gpt5).chain(AUTO_RESOLVED_PRESET_NAMES) {
-            let expected = if preset.as_str().starts_with("gpt-") {
-                "off"
-            } else {
-                "force"
-            };
+            let plans_after_reading = preset.as_str().starts_with("gpt-")
+                || *preset == PromptPresetName::DeepseekV41Flash;
+            let expected = if plans_after_reading { "off" } else { "force" };
             assert_eq!(
                 preset_first_turn_plan_default(Some(*preset)),
                 expected,

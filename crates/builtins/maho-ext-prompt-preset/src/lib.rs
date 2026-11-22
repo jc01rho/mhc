@@ -13,6 +13,7 @@ pub mod claude_opus_5_5;
 pub mod claude_sonnet_5_5;
 pub mod deepseek_v4;
 pub mod deepseek_v4_1_flash;
+pub mod deepseek_v4_1_flash_rules;
 pub mod deepseek_v4_flash;
 pub mod deepseek_v4_flash_0731;
 pub mod deepseek_v4_pro;

@@ -381,12 +381,12 @@ mod tests {
             )
             .map(|resolved| resolved.prompt)
             .unwrap_or_default();
-            let expected = if case.preset == PromptPresetName::Gpt62 {
-                HandoffCueKind::None
-            } else if prompt.contains("[Outcome so far] toward") {
+            let expected = if prompt.contains("[Outcome so far] toward") {
                 HandoffCueKind::GptBlock
-            } else {
+            } else if prompt.contains("Ask: [the user's original request]") {
                 HandoffCueKind::Default
+            } else {
+                HandoffCueKind::None
             };
             assert_eq!(
                 preset_handoff_cue_kind(Some(case.preset)),
