@@ -989,10 +989,65 @@ fn does_not_glue_a_newline_held_before_an_empty_read_into_a_later_read_s_paste()
 }
 
 #[test]
-fn treats_crlf_and_cr_only_bursts_like_lf_bursts() {
+fn keeps_a_crlf_burst_wholly_inside_the_paste() {
     let mut h = burst_buffer();
     h.input("l1\r\nl2\r\n");
     assert_eq!(h.paste, ["l1\r\nl2\r\n"]);
+    assert!(h.data.is_empty());
+}
+
+#[test]
+fn keeps_a_cr_only_burst_that_ends_in_cr_inside_the_paste() {
+    let mut h = burst_buffer();
     h.input("m1\rm2\r");
-    assert_eq!(h.paste, ["l1\r\nl2\r\n", "m1\rm2\r"]);
+    burst_flush(&mut h);
+    assert_eq!(h.paste, ["m1\rm2\r"]);
+    assert!(h.data.is_empty());
+}
+
+#[test]
+fn takes_the_cr_ending_an_lf_burst_as_the_enter_that_submits_it() {
+    let mut h = burst_buffer();
+    h.input("line1\nline2\r");
+    assert_eq!(h.paste, ["line1\nline2"]);
+    burst_flush(&mut h);
+    assert_eq!(h.data, ["\r"]);
+}
+
+#[test]
+fn keeps_a_cr_that_follows_a_cr_only_burst_paste_inside_that_paste() {
+    let mut h = burst_buffer();
+    h.input("m1\rm2");
+    h.input("\r");
+    burst_flush(&mut h);
+    assert_eq!(h.paste, ["m1\rm2", "\r"]);
+    assert!(h.data.is_empty());
+}
+
+#[test]
+fn submits_a_cr_that_follows_a_burst_paste_inside_the_window_instead_of_pasting_it() {
+    let mut h = burst_buffer();
+    h.input("line1\nline2\nline3");
+    h.input("\r");
+    assert_eq!(h.paste, ["line1\nline2\nline3"]);
+    assert_eq!(h.data, ["\r"]);
+}
+
+#[test]
+fn emits_a_crlf_pair_split_across_reads_as_its_own_second_paste_event() {
+    let mut h = burst_buffer();
+    h.input("line1\nline2\r");
+    assert_eq!(h.paste, ["line1\nline2"]);
+    h.input("\n");
+    burst_flush(&mut h);
+    assert_eq!(h.paste, ["line1\nline2", "\r\n"]);
+    assert!(h.data.is_empty());
+}
+
+#[test]
+fn releases_a_held_submit_before_a_read_that_is_not_a_crlf_continuation() {
+    let mut h = burst_buffer();
+    h.input("line1\nline2\r");
+    h.input("next");
+    assert_eq!(h.data, ["\r", "n", "e", "x", "t"]);
 }

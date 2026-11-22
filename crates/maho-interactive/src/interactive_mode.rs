@@ -12442,6 +12442,7 @@ impl InteractiveMode {
                     ..Default::default()
                 }
             });
+        let now = self.status_indicator_now();
         let indicator = crate::components::status_indicator::StatusIndicator::retry(
             attempt as usize,
             max_attempts as usize,
@@ -12450,7 +12451,11 @@ impl InteractiveMode {
             trouble,
             &crate::components::keybinding_hints::key_text("app.interrupt"),
             self.theme.clone(),
-            self.status_indicator_now(),
+            now,
+        )
+        .with_retry_reason(
+            crate::provider_error_presentation::provider_error_reason(Some(error_message)),
+            now,
         );
         self.show_status_indicator(indicator);
     }
@@ -14571,11 +14576,16 @@ impl InteractiveMode {
                             maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error
                         )
                     {
+                        // A card that never ran says so instead of repeating the raw provider error
+                        // (senpi#5064): an error stop shows its classified notice once elsewhere.
+                        let unrun = crate::aborted_error_label::unrun_tool_call_text(
+                            &serde_json::to_value(assistant).unwrap_or(serde_json::Value::Null),
+                        );
                         for component in self.pending_tools.values() {
                             component.borrow_mut().update_result(
                                 ToolExecutionResult {
                                     content: vec![maho_tools::definition::ToolContent::text(
-                                        assistant.error_message.as_deref().unwrap_or("Error"),
+                                        unrun.clone(),
                                     )],
                                     details: None,
                                     is_error: true,
@@ -15089,7 +15099,7 @@ impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
     fn expanded(&self) -> bool {
         self.tools_expanded
     }
-    fn add_message(&mut self, message: maho_ai::types::AssistantMessage) {
+    fn add_message(&mut self, message: maho_ai::types::AssistantMessage, owns_turn_notice: bool) {
         let component = Rc::new(RefCell::new(AssistantMessageComponent::new(
             Some(serde_json::to_value(message).expect("assistant")),
             self.reveal.hide_thinking,
@@ -15103,6 +15113,11 @@ impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
         component
             .borrow_mut()
             .set_hidden_thinking_label(&self.hidden_thinking_label);
+        if owns_turn_notice {
+            component.borrow_mut().set_owns_turn_notice(true);
+        } else {
+            component.borrow_mut().set_provider_error_owned(true);
+        }
         self.chat.add_child(
             crate::components::exploration_transcript_container::TranscriptChild::Assistant(
                 component.clone(),

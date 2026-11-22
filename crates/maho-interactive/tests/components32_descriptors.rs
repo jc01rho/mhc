@@ -71,6 +71,7 @@ fn assistant_render_descriptors_match_pinned_senpi_for_every_branch() {
                 thinking_visibility_overrides: &overrides,
                 handoff_open_overrides: &handoff_overrides,
                 has_tool_calls: options["hasToolCalls"].as_bool().expect("hasToolCalls"),
+                owns_turn_notice: options["ownsTurnNotice"].as_bool().unwrap_or(false),
             },
             &theme,
         );

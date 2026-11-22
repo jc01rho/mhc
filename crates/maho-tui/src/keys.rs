@@ -875,7 +875,6 @@ pub fn matches_key(data: &str, key_id: &str) -> bool {
         }
 
         if modifier == ALT
-            && !kitty
             && (is_letter || is_digit || is_symbol_key(key))
             && data.strip_prefix('\x1b') == Some(key)
         {
@@ -1018,9 +1017,9 @@ pub fn parse_key(data: &str) -> Option<String> {
     }
 
     let units: Vec<u16> = data.encode_utf16().collect();
-    if !kitty && units.len() == 2 && units[0] == 0x1b {
+    if units.len() == 2 && units[0] == 0x1b {
         let code = units[1];
-        if (1..=26).contains(&code) {
+        if !kitty && (1..=26).contains(&code) {
             return Some(format!("ctrl+alt+{}", char_string(i64::from(code) + 96)));
         }
         let key = char_string(i64::from(code));

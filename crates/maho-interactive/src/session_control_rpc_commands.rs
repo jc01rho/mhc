@@ -687,8 +687,8 @@ fn admit_input(
             id,
             kind,
             "held_draft",
-            "the user is composing in this terminal, so nothing was delivered",
-            "retry after the draft is sent or cleared",
+            "input the user submitted in this terminal has not reached the runtime yet, so nothing was delivered",
+            "retry once that input was taken",
         ),
         _ => refusal(
             id,

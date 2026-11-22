@@ -106,7 +106,8 @@ impl ReplayToolHost for ReplayHost {
     fn expanded(&self) -> bool {
         false
     }
-    fn add_message(&mut self, _message: maho_ai::types::AssistantMessage) {}
+    fn add_message(&mut self, _message: maho_ai::types::AssistantMessage, _owns_turn_notice: bool) {
+    }
     fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) {
         self.cards.push(component);
     }

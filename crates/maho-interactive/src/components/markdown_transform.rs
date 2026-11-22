@@ -104,6 +104,39 @@ pub fn get_markdown_theme(theme: &Theme) -> MarkdownTheme {
     let underline = theme.clone();
     let strike = theme.clone();
     let highlight = theme.clone();
+    let strong = theme
+        .has_markdown_emphasis(crate::theme::MarkdownEmphasisColor::MdBold)
+        .then(|| {
+            let theme = theme.clone();
+            Arc::new(move |text: &str| {
+                theme.markdown_emphasis(
+                    crate::theme::MarkdownEmphasisColor::MdBold,
+                    &theme.bold(text),
+                )
+            }) as maho_tui::components::markdown::ThemeFn
+        });
+    let emphasis = theme
+        .has_markdown_emphasis(crate::theme::MarkdownEmphasisColor::MdItalic)
+        .then(|| {
+            let theme = theme.clone();
+            Arc::new(move |text: &str| {
+                theme.markdown_emphasis(
+                    crate::theme::MarkdownEmphasisColor::MdItalic,
+                    &theme.italic(text),
+                )
+            }) as maho_tui::components::markdown::ThemeFn
+        });
+    let deleted = theme
+        .has_markdown_emphasis(crate::theme::MarkdownEmphasisColor::MdStrikethrough)
+        .then(|| {
+            let theme = theme.clone();
+            Arc::new(move |text: &str| {
+                theme.markdown_emphasis(
+                    crate::theme::MarkdownEmphasisColor::MdStrikethrough,
+                    &theme.strikethrough(text),
+                )
+            }) as maho_tui::components::markdown::ThemeFn
+        });
     MarkdownTheme {
         id: NEXT_THEME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         heading: fg(ThemeColor::MdHeading),
@@ -120,11 +153,9 @@ pub fn get_markdown_theme(theme: &Theme) -> MarkdownTheme {
         italic: Arc::new(move |text| italic.italic(text)),
         underline: Arc::new(move |text| underline.underline(text)),
         strikethrough: Arc::new(move |text| strike.strikethrough(text)),
-        // senpi installs the emphasis hooks only for themes that set `mdBold`/`mdItalic`/`mdStrikethrough`;
-        // this port has no such tokens yet, so every theme keeps the plain bold/italic/strikethrough path.
-        strong: None,
-        emphasis: None,
-        deleted: None,
+        strong,
+        emphasis,
+        deleted,
         highlight_code: Some(Arc::new(move |code, language| {
             crate::theme::highlight_code(&highlight, code, language)
         })),

@@ -38,6 +38,8 @@ pub struct AssistantRenderDescriptorOptions<'a> {
     /// Per-block click overrides of `expanded` for handoff folds, keyed by handoff block index.
     pub handoff_open_overrides: &'a BTreeMap<usize, bool>,
     pub has_tool_calls: bool,
+    /// Shows the turn-ending error or abort notice even though the row holds tool calls (a replayed turn).
+    pub owns_turn_notice: bool,
 }
 fn visible(content: &Value, provider_native: bool) -> bool {
     match content["type"].as_str() {
@@ -302,9 +304,9 @@ pub fn create_assistant_render_descriptors(
     }
     let error_message = message["errorMessage"].as_str();
     let error = match message["stopReason"].as_str() {
-        Some("length") => Some("Error: Model stopped because it reached the maximum output token limit. The response may be incomplete.".into()),
-        Some("aborted") if !options.has_tool_calls && !options.provider_error_owned => Some(error_message.filter(|message| !message.is_empty() && *message != "Request was aborted").map_or_else(|| "Operation aborted".into(), strip_turn_retry_suppression_prefix)),
-        Some("error") if !options.has_tool_calls && !options.provider_error_owned && !message["diagnostics"].as_array().is_some_and(|ds| ds.iter().any(|d| d["type"] == "server_fallback_aborted")) => {
+        Some("length") if !options.provider_error_owned => Some("Error: Model stopped because it reached the maximum output token limit. The response may be incomplete.".into()),
+        Some("aborted") if (!options.has_tool_calls || options.owns_turn_notice) && !options.provider_error_owned => Some(error_message.filter(|message| !message.is_empty() && *message != "Request was aborted").map_or_else(|| "Operation aborted".into(), strip_turn_retry_suppression_prefix)),
+        Some("error") if (!options.has_tool_calls || options.owns_turn_notice) && !options.provider_error_owned && !message["diagnostics"].as_array().is_some_and(|ds| ds.iter().any(|d| d["type"] == "server_fallback_aborted")) => {
             Some(describe_provider_failure_for_user(error_message, &ProviderStallDescriptionOptions::default()).unwrap_or_else(|| {
                 let stripped = strip_turn_retry_suppression_prefix(error_message.unwrap_or_default());
                 format!("Error: {}", if stripped.is_empty() { "Unknown error" } else { &stripped })

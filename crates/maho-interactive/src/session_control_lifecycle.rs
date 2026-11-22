@@ -272,9 +272,10 @@ async fn session_referenced(
 /// The composer's admission hold (senpi `editorHold`): `{revision}` or `{hold_reason, revision}`.
 pub fn editor_hold(context: &TuiControlContext) -> Value {
     let revision = (context.editor_revision)();
-    match context.surface.draft_hold() {
-        Some(hold) => json!({"hold_reason": hold, "revision": revision}),
-        None => json!({"revision": revision}),
+    if context.surface.submission_in_flight() {
+        json!({"hold_reason": "draft", "revision": revision})
+    } else {
+        json!({"revision": revision})
     }
 }
 

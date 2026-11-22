@@ -22,13 +22,22 @@ pub enum CompactionStatusReason {
     Branch,
     Extension,
 }
+struct RetryState {
+    deadline: u64,
+    attempt: usize,
+    max: usize,
+    trouble: bool,
+    key: String,
+    reason: Option<String>,
+}
+
 pub struct StatusIndicator {
     pub kind: StatusIndicatorKind,
     pub loader: Loader,
     theme: Theme,
     progress: String,
     compact_label: String,
-    retry: Option<(u64, usize, usize, bool, String)>,
+    retry: Option<RetryState>,
 }
 impl StatusIndicator {
     pub fn new(
@@ -110,24 +119,80 @@ impl StatusIndicator {
         theme: Theme,
         now: u64,
     ) -> Self {
-        let message = retry_message(attempt, max, delay.div_ceil(1000), trouble, key);
+        let message = retry_message(attempt, max, delay.div_ceil(1000), trouble, key, None);
         let mut s = Self::new(StatusIndicatorKind::Retry, &message, theme, indicator, now);
-        s.retry = Some((now.saturating_add(delay), attempt, max, trouble, key.into()));
+        s.retry = Some(RetryState {
+            deadline: now.saturating_add(delay),
+            attempt,
+            max,
+            trouble,
+            key: key.into(),
+            reason: None,
+        });
         s
     }
-    pub fn tick(&mut self, now: u64) -> bool {
-        if let Some((deadline, attempt, max, trouble, key)) = &self.retry {
-            let seconds = deadline.saturating_sub(now).div_ceil(1000);
-            self.loader
-                .set_message(retry_message(*attempt, *max, seconds, *trouble, key), now);
-            if *trouble {
+    pub fn with_retry_reason(mut self, reason: Option<String>, now: u64) -> Self {
+        if let Some(state) = &mut self.retry {
+            state.reason = reason;
+            let seconds = state.deadline.saturating_sub(now).div_ceil(1000);
+            let msg = retry_message(
+                state.attempt,
+                state.max,
+                seconds,
+                state.trouble,
+                &state.key,
+                state.reason.as_deref(),
+            );
+            self.loader.set_message(msg, now);
+            if state.trouble {
+                let suffix = state
+                    .reason
+                    .as_deref()
+                    .map_or_else(String::new, |r| format!(": {r}"));
                 self.compact_label = format!(
-                    "Retrying {attempt}/{max} {} ({key} cancel)",
+                    "Retrying {}/{} {} ({} cancel){suffix}",
+                    state.attempt,
+                    state.max,
                     if seconds > 0 {
                         format!("in {seconds}s")
                     } else {
                         "now".into()
-                    }
+                    },
+                    state.key
+                );
+            }
+        }
+        self
+    }
+    pub fn tick(&mut self, now: u64) -> bool {
+        if let Some(state) = &self.retry {
+            let seconds = state.deadline.saturating_sub(now).div_ceil(1000);
+            self.loader.set_message(
+                retry_message(
+                    state.attempt,
+                    state.max,
+                    seconds,
+                    state.trouble,
+                    &state.key,
+                    state.reason.as_deref(),
+                ),
+                now,
+            );
+            if state.trouble {
+                let suffix = state
+                    .reason
+                    .as_deref()
+                    .map_or_else(String::new, |r| format!(": {r}"));
+                self.compact_label = format!(
+                    "Retrying {}/{} {} ({} cancel){suffix}",
+                    state.attempt,
+                    state.max,
+                    if seconds > 0 {
+                        format!("in {seconds}s")
+                    } else {
+                        "now".into()
+                    },
+                    state.key
                 );
             }
         }
@@ -181,10 +246,18 @@ impl StatusIndicator {
         )
     }
 }
-fn retry_message(attempt: usize, max: usize, seconds: u64, trouble: bool, key: &str) -> String {
+fn retry_message(
+    attempt: usize,
+    max: usize,
+    seconds: u64,
+    trouble: bool,
+    key: &str,
+    reason: Option<&str>,
+) -> String {
     if trouble {
+        let cause = reason.map_or_else(String::new, |r| format!(" ({r})"));
         format!(
-            "The model provider may be having trouble. Retrying... ({attempt}/{max}, {}; {key} to cancel)",
+            "The model provider may be having trouble{cause}. Retrying... ({attempt}/{max}, {}; {key} to cancel)",
             if seconds > 0 {
                 format!("in {seconds}s")
             } else {
