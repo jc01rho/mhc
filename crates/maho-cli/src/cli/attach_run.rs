@@ -59,5 +59,6 @@ pub fn run_attach(
         theme,
         agent_dir: std::path::PathBuf::from(maho_core::config::get_agent_dir()),
         interrupted,
+        startup: None,
     })
 }

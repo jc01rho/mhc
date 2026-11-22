@@ -27,6 +27,7 @@ pub struct RunAttachedTuiOptions {
     pub agent_dir: PathBuf,
     /// Set by a signal handler: the view leaves at the next frame.
     pub interrupted: Arc<AtomicBool>,
+    pub startup: Option<crate::attach_startup::AttachStartup>,
 }
 
 pub fn run_attached_tui(options: RunAttachedTuiOptions) -> Result<(), String> {
@@ -48,11 +49,12 @@ pub fn run_attached_tui(options: RunAttachedTuiOptions) -> Result<(), String> {
         host.clone(),
         None,
     )));
-    view.borrow_mut().connect(
+    view.borrow_mut().connect_with_startup(
         &options.address,
         &options.session,
         usize::from(terminal.columns()),
         Some(options.agent_dir.as_path()),
+        options.startup.as_ref(),
     )?;
     let mut screen = create_interactive_tui(
         InteractiveTuiOptions {

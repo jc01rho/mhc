@@ -39,6 +39,7 @@ pub mod git_tools;
 pub mod global_default_shims;
 pub mod gpt_account_host;
 pub mod grok_neo_gate;
+pub mod held_session_attach;
 pub mod help_extension_flags;
 pub mod help_fast_path;
 pub mod help_flags_cache;

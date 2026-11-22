@@ -179,6 +179,7 @@ mod tests {
             cwd: None,
             host_socket: None,
             host_instance: Some("i".into()),
+            unproven: false,
         }]);
         assert_eq!(
             detail,

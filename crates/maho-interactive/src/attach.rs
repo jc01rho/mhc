@@ -250,6 +250,17 @@ impl AttachedTui {
         columns: usize,
         key_root: Option<&Path>,
     ) -> Result<(), String> {
+        self.connect_with_startup(address, session_ref, columns, key_root, None)
+    }
+
+    pub fn connect_with_startup(
+        &mut self,
+        address: &str,
+        session_ref: &str,
+        columns: usize,
+        key_root: Option<&Path>,
+        startup: Option<&crate::attach_startup::AttachStartup>,
+    ) -> Result<(), String> {
         let path = address.strip_prefix("unix://").unwrap_or(address);
         if path.is_empty()
             || path.contains("://")
@@ -260,7 +271,7 @@ impl AttachedTui {
                     .to_owned(),
             );
         }
-        let attached = self.attach(path, session_ref, columns, key_root);
+        let attached = self.attach(path, session_ref, columns, key_root, startup);
         if attached.is_err() {
             let _ = self.close();
         }
@@ -273,6 +284,7 @@ impl AttachedTui {
         session_ref: &str,
         columns: usize,
         key_root: Option<&Path>,
+        startup: Option<&crate::attach_startup::AttachStartup>,
     ) -> Result<(), String> {
         let records = self.outgoing.clone();
         let disconnects = self.outgoing.clone();
@@ -382,6 +394,13 @@ impl AttachedTui {
             .map_or(&[][..], Vec::as_slice)
         {
             self.record(status);
+        }
+        if let Some(startup) = startup {
+            crate::attach_startup::apply_attach_startup(
+                |command| client.request(command).map_err(|error| error.to_string()),
+                &session_id,
+                startup,
+            )?;
         }
         Ok(())
     }
