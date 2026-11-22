@@ -11,6 +11,7 @@ pub enum LandingOutcome {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Landing {
     pub target: Option<String>,
+    pub cwd: Option<String>,
     pub committing: bool,
 }
 pub fn parse_landing(value: &Value) -> Landing {
@@ -19,8 +20,29 @@ pub fn parse_landing(value: &Value) -> Landing {
             .get("target")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        cwd: value.get("cwd").and_then(Value::as_str).map(str::to_owned),
         committing: value.get("committing").and_then(Value::as_bool) == Some(true),
     }
+}
+pub fn settled_at(landing: &Landing, target: &str) -> Landing {
+    Landing {
+        target: Some(target.to_owned()),
+        cwd: landing.cwd.clone(),
+        committing: false,
+    }
+}
+pub fn move_folder(cwd: Option<&std::path::Path>) -> Option<String> {
+    cwd.map(|p| {
+        super::session_lock::real_session_path(p)
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+pub fn held_elsewhere(landing: &Landing) -> String {
+    format!(
+        "it was readied for {} and lands only there",
+        landing.cwd.as_deref().unwrap_or("another folder")
+    )
 }
 pub fn settled_landing(
     record: Option<&MoveRecord>,

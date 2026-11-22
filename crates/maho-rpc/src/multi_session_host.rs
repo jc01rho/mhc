@@ -1779,6 +1779,65 @@ impl HostCore {
             .unwrap_or_else(|error| {
                 serde_json::json!({"id":value["id"],"type":"response","command":"move_session","success":false,"error":"move_failed","errorCode":"move_failed","errorData":{"detail":error.to_string()}})
             });
+            let mut answer = answer;
+            if value["op"] == "import"
+                && answer["success"] == true
+                && let Some(open_arg) = value.get("open")
+                && let Some(landed_path) =
+                    answer["data"]["session_path"].as_str().map(str::to_owned)
+                && let Some(import_cwd) = value["cwd"].as_str().map(str::to_owned)
+            {
+                let mut open_val = match open_arg {
+                    serde_json::Value::Object(obj) => serde_json::Value::Object(obj.clone()),
+                    _ => serde_json::json!({}),
+                };
+                open_val["type"] = "open_session".into();
+                open_val["sessionPath"] = landed_path.into();
+                open_val["cwd"] = import_cwd.into();
+                if self.is_draining() {
+                    answer["data"]["open_error"] = serde_json::json!({
+                        "error": crate::rpc_types::RPC_ERROR_HOST_DRAINING,
+                    });
+                } else {
+                    match serde_json::from_value::<crate::rpc_types::RpcCommand>(open_val) {
+                        Ok(open_cmd) => {
+                            let _barrier = self.open_barrier(
+                                connection,
+                                value.get("id").and_then(serde_json::Value::as_str),
+                            );
+                            match self
+                                .open_session_inner(connection, &open_cmd.body, None)
+                                .await
+                            {
+                                Ok(open_data) => {
+                                    if let (Some(ans_obj), Some(open_obj)) =
+                                        (answer["data"].as_object_mut(), open_data.as_object())
+                                    {
+                                        for (k, v) in open_obj {
+                                            ans_obj.insert(k.clone(), v.clone());
+                                        }
+                                    }
+                                }
+                                Err(refusal) => {
+                                    let mut err_obj =
+                                        serde_json::json!({ "error": refusal.message });
+                                    if let Some(code) = refusal.code {
+                                        err_obj["errorCode"] = code.into();
+                                    }
+                                    if let Some(data) = refusal.data {
+                                        err_obj["errorData"] = data;
+                                    }
+                                    answer["data"]["open_error"] = err_obj;
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            answer["data"]["open_error"] =
+                                serde_json::json!({ "error": err.to_string() });
+                        }
+                    }
+                }
+            }
             self.respond_record(connection, "", answer);
             return Ok(());
         }
