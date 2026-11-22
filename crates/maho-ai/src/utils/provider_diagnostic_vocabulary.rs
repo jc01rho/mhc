@@ -7,8 +7,11 @@ pub use crate::types::PROVIDER_DIAGNOSTIC_MAX_BYTES;
 
 pub fn category_for_provider_code(code: &str) -> Option<Category> {
     Some(match code {
-        "authentication_error" | "invalid_api_key" => Category::Auth,
-        "rate_limit_error" | "rate_limit_exceeded" => Category::RateLimit,
+        "authentication_error" | "invalid_api_key" | "account_pool_auth_blocked" => Category::Auth,
+        "rate_limit_error"
+        | "rate_limit_exceeded"
+        | "account_pool_blocked"
+        | "credential_pool_blocked" => Category::RateLimit,
         "insufficient_quota" | "usage_limit_reached" | "usage_not_included" => Category::Quota,
         "context_length_exceeded" => Category::ContextLimit,
         "invalid_request_error" => Category::InvalidRequest,
