@@ -90,7 +90,7 @@ static BINDING_REFUSED_SESSIONS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 static THINKING_BINDING_CLEANUP: LazyLock<()> = LazyLock::new(|| {
-    let _ = register_session_resource_cleanup(|session_id: Option<&str>| {
+    let _ = register_session_resource_cleanup(Arc::new(|session_id: Option<&str>| {
         let mut rejected = REJECTED_THINKING_TURNS
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -109,7 +109,7 @@ static THINKING_BINDING_CLEANUP: LazyLock<()> = LazyLock::new(|| {
             }
         }
         Ok(())
-    });
+    }));
 });
 
 fn turn_key(message: &Message) -> String {
