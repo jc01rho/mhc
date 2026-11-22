@@ -621,6 +621,35 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         .runtime
         .bind_providers(providers.clone())
         .map_err(|error| error.message)?;
+    // senpi#7116: before extensions load, a bare option can consume the next positional as a
+    // string value. Re-parse positional messages once registered boolean extension flags are known.
+    let mut boolean_extension_flags = std::collections::BTreeSet::new();
+    for name in parsed.unknown_flags.keys().cloned().collect::<Vec<_>>() {
+        // apply_extension_flag_values uses the first declaration when extensions share a name.
+        if extensions
+            .extensions
+            .iter()
+            .flat_map(|extension| extension.flags.iter())
+            .find(|flag| flag.name == name)
+            .is_some_and(|flag| matches!(flag.kind, maho_ext_api::FlagType::Boolean { .. }))
+        {
+            boolean_extension_flags.insert(name.clone());
+            parsed
+                .unknown_flags
+                .insert(name, super::args::FlagValue::Boolean(true));
+        }
+    }
+    if !boolean_extension_flags.is_empty()
+        && let Ok(reparsed) = super::args::parse_args_with_options(
+            &parsed.raw_args,
+            super::args::ParseArgsOptions {
+                grok_neo_enabled: parsed.grok_neo,
+                boolean_extension_flags: Some(&boolean_extension_flags),
+            },
+        )
+    {
+        parsed.messages = reparsed.messages;
+    }
     // senpi `createAgentSessionServices({ extensionFlagValues: parsed.unknownFlags })` ->
     // `applyExtensionFlagValues`: registered flags are applied; an unregistered `--flag` or a string
     // flag without a value is a runtime error diagnostic (main.ts `reportDiagnostics` then exit 1).
