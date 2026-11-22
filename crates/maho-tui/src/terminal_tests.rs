@@ -322,6 +322,10 @@ fn native_shift_enter_leaves_non_return_input_unchanged() {
         "\x1b[13;2u"
     );
     assert_eq!(normalize_native_shift_enter_input("a", true, true), "a");
+    assert_eq!(
+        normalize_native_shift_enter_input("\x1b\r", true, true),
+        "\x1b\r"
+    );
 }
 
 #[test]
@@ -330,16 +334,28 @@ fn rewrites_apple_terminal_return_to_csi_u_shift_enter_when_shift_is_pressed() {
         normalize_apple_terminal_input("\r", true, true),
         "\x1b[13;2u"
     );
+    assert_eq!(
+        normalize_apple_terminal_input("\x1b\r", true, true),
+        "\x1b[13;2u"
+    );
 }
 
 #[test]
 fn leaves_apple_terminal_return_unchanged_when_shift_is_not_pressed() {
     assert_eq!(normalize_apple_terminal_input("\r", true, false), "\r");
+    assert_eq!(
+        normalize_apple_terminal_input("\x1b\r", true, false),
+        "\x1b\r"
+    );
 }
 
 #[test]
 fn leaves_non_apple_terminal_return_unchanged_when_shift_is_pressed() {
     assert_eq!(normalize_apple_terminal_input("\r", false, true), "\r");
+    assert_eq!(
+        normalize_apple_terminal_input("\x1b\r", false, true),
+        "\x1b\r"
+    );
 }
 
 #[test]

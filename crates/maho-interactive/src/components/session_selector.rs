@@ -636,7 +636,10 @@ impl SessionList {
             let name_filtered: Vec<&Rc<SessionInfo>> = self
                 .all_sessions
                 .iter()
-                .filter(|session| !named_only || has_session_name(session))
+                .filter(|session| {
+                    !self.is_live_session_without_conversation(session)
+                        && (!named_only || has_session_name(session))
+                })
                 .collect();
             let canonical_paths = &self.canonical_paths;
             let canonical = |path: &str| {
@@ -661,7 +664,10 @@ impl SessionList {
                 .all_sessions
                 .iter()
                 .enumerate()
-                .filter(|(_, session)| !named_only || has_session_name(session))
+                .filter(|(_, session)| {
+                    !self.is_live_session_without_conversation(session)
+                        && (!named_only || has_session_name(session))
+                })
                 .map(|(index, session)| {
                     (
                         session,
@@ -706,6 +712,12 @@ impl SessionList {
         }
         let path = selected.session.path.clone();
         self.set_confirming_delete_path(Some(path));
+    }
+
+    fn is_live_session_without_conversation(&self, session: &SessionInfo) -> bool {
+        session.message_count == 0
+            && !has_session_name(session)
+            && self.is_current_session_path(&session.path)
     }
 
     pub fn is_current_session_path(&self, path: &str) -> bool {

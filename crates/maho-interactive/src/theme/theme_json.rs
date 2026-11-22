@@ -35,13 +35,16 @@ pub enum ThemeError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
-const OPTIONAL_COLORS: [&str; 6] = [
+const OPTIONAL_COLORS: [&str; 9] = [
     "scrollbarTrack",
     "scrollbarThumb",
     "thinkingMax",
     "searchMatchText",
     "skillMention",
     "searchMatchBg",
+    "mdBold",
+    "mdItalic",
+    "mdStrikethrough",
 ];
 
 /// `ColorValueSchema`: a string, or an integer 256-color index in `0..=255`.

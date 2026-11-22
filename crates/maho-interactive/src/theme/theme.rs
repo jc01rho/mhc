@@ -3,6 +3,26 @@ use super::theme_json::ThemeAppearance;
 use super::theme_json::{ColorValue, ThemeError, ThemeJson, validate_theme_json};
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MarkdownEmphasisColor {
+    #[serde(rename = "mdBold")]
+    MdBold,
+    #[serde(rename = "mdItalic")]
+    MdItalic,
+    #[serde(rename = "mdStrikethrough")]
+    MdStrikethrough,
+}
+
+impl MarkdownEmphasisColor {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::MdBold => "mdBold",
+            Self::MdItalic => "mdItalic",
+            Self::MdStrikethrough => "mdStrikethrough",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThemeColor {
     #[serde(rename = "accent")]
     Accent,
@@ -546,6 +566,20 @@ impl Theme {
     }
     pub fn fg(&self, color: ThemeColor, text: &str) -> String {
         let ansi = self.ansi_ref(color.key(), false);
+        let mut out = String::with_capacity(ansi.len() + text.len() + 5);
+        out.push_str(&ansi);
+        out.push_str(text);
+        out.push_str("\x1b[39m");
+        out
+    }
+    pub fn has_markdown_emphasis(&self, token: MarkdownEmphasisColor) -> bool {
+        self.colors.contains_key(token.key())
+    }
+    pub fn markdown_emphasis(&self, token: MarkdownEmphasisColor, text: &str) -> String {
+        if !self.has_markdown_emphasis(token) {
+            return text.to_owned();
+        }
+        let ansi = self.ansi_ref(token.key(), false);
         let mut out = String::with_capacity(ansi.len() + text.len() + 5);
         out.push_str(&ansi);
         out.push_str(text);

@@ -1,5 +1,6 @@
 use super::ask_user_question_state::*;
 use crate::theme::{Theme, ThemeColor as C};
+use maho_tui::tui::CURSOR_MARKER;
 pub fn render_title(t: &Theme, label: &str) -> String {
     format!(
         "{}{}",
@@ -47,7 +48,7 @@ pub fn render_tab_bar(t: &Theme, s: &AskUserQuestionState) -> String {
 pub fn render_question_line(t: &Theme, q: &Question) -> String {
     t.fg(C::Text, &q.question)
 }
-pub fn render_question_list(t: &Theme, s: &AskUserQuestionState) -> Vec<String> {
+pub fn render_question_list(t: &Theme, s: &AskUserQuestionState, focused: bool) -> Vec<String> {
     let q = s.active_question();
     let mut lines = Vec::new();
     for (i, o) in q.options.iter().enumerate() {
@@ -78,8 +79,13 @@ pub fn render_question_list(t: &Theme, s: &AskUserQuestionState) -> Vec<String> 
         } else {
             "  ".into()
         };
+    let cursor = if focused && s.focus == QuestionFocus::Options {
+        CURSOR_MARKER
+    } else {
+        ""
+    };
     lines.push(format!(
-        "{prefix}{}{}",
+        "{prefix}{}{}{cursor}",
         t.fg(C::Muted, OWN_ANSWER_LABEL),
         s.text_for(&q.id)
             .map_or(String::new(), |v| t.fg(C::Text, &format!(": {v}")))

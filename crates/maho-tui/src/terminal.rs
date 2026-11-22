@@ -35,6 +35,7 @@ const TERMINAL_PROGRESS_KEEPALIVE_MS: u64 = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE: &str = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE: &str = "\x1b]9;4;0\x07";
 const NATIVE_SHIFT_ENTER_SEQUENCE: &str = "\x1b[13;2u";
+const APPLE_TERMINAL_ESCAPED_RETURN_SEQUENCE: &str = "\x1b\r";
 const DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS: u32 = 7;
 const DEAD_TERMINAL_ERROR_CODES: [&str; 4] = ["EIO", "EPIPE", "ENOTCONN", "ENXIO"];
 const TERMINAL_HANGUP_CODE: &str = "EHUP";
@@ -174,6 +175,9 @@ pub fn normalize_apple_terminal_input(
     is_apple_terminal: bool,
     is_shift_pressed: bool,
 ) -> String {
+    if is_apple_terminal && data == APPLE_TERMINAL_ESCAPED_RETURN_SEQUENCE && is_shift_pressed {
+        return NATIVE_SHIFT_ENTER_SEQUENCE.to_string();
+    }
     normalize_native_shift_enter_input(data, is_apple_terminal, is_shift_pressed)
 }
 
@@ -1215,10 +1219,15 @@ impl ProcessTerminal {
         if self.input_handler.is_none() {
             return;
         }
-        let should_detect =
-            sequence == "\r" && (is_apple_terminal_session() || node_platform() == "win32");
+        let is_return = sequence == "\r" || sequence == APPLE_TERMINAL_ESCAPED_RETURN_SEQUENCE;
+        let is_apple_terminal = is_return && is_apple_terminal_session();
+        let should_detect = is_apple_terminal || (sequence == "\r" && node_platform() == "win32");
         let shift = should_detect && is_native_modifier_pressed(ModifierKey::Shift);
-        let input = normalize_native_shift_enter_input(sequence, should_detect, shift);
+        let input = if is_apple_terminal {
+            normalize_apple_terminal_input(sequence, true, shift)
+        } else {
+            normalize_native_shift_enter_input(sequence, should_detect, shift)
+        };
         if let Some(handler) = self.input_handler.as_mut() {
             handler(&input);
         }

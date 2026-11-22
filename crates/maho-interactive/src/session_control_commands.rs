@@ -34,8 +34,18 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 pub trait TuiControlSurface: TuiSessionControls {
-    /// `"attachment"` / `"draft"` while the user composes; `None` otherwise.
+    /// `"attachment"` / `"draft"` while input is held; `None` otherwise.
     fn draft_hold(&self) -> Option<String>;
+    /// Input the user submitted that the runtime has not taken yet: it holds admission, so no
+    /// delivery overtakes it (senpi#7043).
+    fn submission_in_flight(&self) -> bool {
+        self.draft_hold().is_some()
+    }
+    /// Text or attachments in the composer: reported to clients, never a hold on a delivery
+    /// (senpi#7043).
+    fn has_draft(&self) -> bool {
+        self.draft_hold().is_some()
+    }
     fn blocking_question(&self) -> bool;
     fn pending_question_ids(&self) -> Vec<String>;
     /// The pending question's `questions` (wire shape), if this session is still waiting on it.
@@ -132,7 +142,7 @@ pub async fn run_control_command(
                 state.insert("compacting".into(), session.is_compacting().into());
                 state.insert(
                     "editor_has_draft".into(),
-                    context.surface.draft_hold().is_some().into(),
+                    (context.surface.submission_in_flight() || context.surface.has_draft()).into(),
                 );
                 state.insert(
                     "state_version".into(),

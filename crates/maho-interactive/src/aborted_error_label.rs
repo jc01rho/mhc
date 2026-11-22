@@ -57,6 +57,28 @@ pub fn aborted_error_label(
         _ => "Provider request failed".into(),
     }
 }
+/// Result text for a tool call the model emitted but that never ran because the turn ended (senpi#5064).
+pub const UNRUN_AFTER_ERROR: &str = "Not run: the request failed.";
+
+/// `rendered` has been through [`aborted_message_for_rendering`]. An abort keeps its label: when the
+/// turn ends in a tool call, the card is the abort's only notice. An error stop shows its classified
+/// notice once elsewhere, so the card never repeats the raw provider error.
+pub fn unrun_tool_call_text(rendered: &serde_json::Value) -> String {
+    let aborted = rendered
+        .get("stopReason")
+        .and_then(serde_json::Value::as_str)
+        == Some("aborted");
+    if !aborted {
+        return UNRUN_AFTER_ERROR.to_owned();
+    }
+    rendered
+        .get("errorMessage")
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("Provider request failed")
+        .to_owned()
+}
+
 pub fn aborted_message_for_rendering(
     message: &serde_json::Value,
     attempt: usize,
