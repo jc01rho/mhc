@@ -131,14 +131,17 @@ fn the_gpt_6_2_rows_opt_into_configuration_updates() {
 }
 
 #[test]
-fn no_fable_5_2_row_is_shipped() {
-    for (provider, models) in MODELS.iter() {
-        for id in models.keys() {
-            let lower = id.to_lowercase();
-            assert!(
-                !(lower.contains("fable-5-2") || lower.contains("fable-5.2")),
-                "{provider}/{id}: Fable 5.2 rows stay out of the catalog"
-            );
-        }
+fn fable_5_2_rows_ship_across_upstream_providers() {
+    for (provider, id) in [
+        ("anthropic", "claude-fable-5-2"),
+        ("amazon-bedrock", "anthropic.claude-fable-5-2"),
+        ("amazon-bedrock", "global.anthropic.claude-fable-5-2"),
+        ("amazon-bedrock", "us.anthropic.claude-fable-5-2"),
+        ("google-vertex", "claude-fable-5-2"),
+        ("openrouter", "anthropic/claude-fable-5.2"),
+        ("vercel-ai-gateway", "anthropic/claude-fable-5.2"),
+    ] {
+        let model = builtin(provider, id);
+        assert_eq!(model.id, id, "{provider}/{id}");
     }
 }

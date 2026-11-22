@@ -140,7 +140,7 @@ fn anthropic_claude_models_resolve_with_senpi_context_windows() {
         .into_iter()
         .filter(|m| m.id.starts_with("claude-"))
         .collect();
-    assert_eq!(claude.len(), 17);
+    assert_eq!(claude.len(), 18);
     let expected = [
         ("claude-fable-5", 1_000_000, 128_000),
         ("claude-fable-5-1", 1_000_000, 128_000),
