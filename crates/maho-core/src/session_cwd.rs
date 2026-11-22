@@ -73,6 +73,60 @@ impl fmt::Display for MissingSessionCwdError {
 
 impl std::error::Error for MissingSessionCwdError {}
 
+/// A session cwd that exists but is not a folder (a file, a socket): its tools could not run there (senpi#6686).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCwdNotDirectoryIssue {
+    pub session_file: Option<String>,
+    pub session_cwd: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCwdNotDirectoryError {
+    pub issue: SessionCwdNotDirectoryIssue,
+}
+
+impl fmt::Display for SessionCwdNotDirectoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let session_file = self
+            .issue
+            .session_file
+            .as_ref()
+            .map(|file| format!("\nSession file: {file}"))
+            .unwrap_or_default();
+        write!(
+            f,
+            "Session working directory is not a directory: {}{session_file}",
+            self.issue.session_cwd
+        )
+    }
+}
+
+impl std::error::Error for SessionCwdNotDirectoryError {}
+
+/// The directory half of senpi `assertSessionCwdExists`, awaited because the probe is a filesystem call.
+///
+/// `None` for a cwd that is missing (that is [`get_missing_session_cwd_issue`]'s case, or a session with no file),
+/// and for one this host cannot read: only a cwd that exists and is not a folder is refused here. The cwd and file
+/// arrive as owned data so the future never holds the manager across the probe.
+pub async fn session_cwd_not_directory(
+    session_cwd: &str,
+    session_file: Option<&str>,
+) -> Option<SessionCwdNotDirectoryError> {
+    if session_cwd.is_empty() {
+        return None;
+    }
+    let metadata = tokio::fs::metadata(session_cwd).await.ok()?;
+    if metadata.is_dir() {
+        return None;
+    }
+    Some(SessionCwdNotDirectoryError {
+        issue: SessionCwdNotDirectoryIssue {
+            session_file: session_file.map(str::to_owned),
+            session_cwd: session_cwd.to_owned(),
+        },
+    })
+}
+
 pub fn assert_session_cwd_exists(
     session_manager: &dyn SessionCwdSource,
     fallback_cwd: &str,
@@ -478,6 +532,50 @@ mod tests {
             session_file: Some("/s.jsonl".into()),
         };
         assert!(assert_session_cwd_exists(&source, "/fallback").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_cwd_that_is_a_file_is_reported_as_not_a_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_cwd = dir.path().join("hostname");
+        std::fs::write(&file_cwd, "a file, not a folder\n").expect("write");
+        let source = Source {
+            cwd: file_cwd.to_string_lossy().into_owned(),
+            session_file: Some("/s.jsonl".into()),
+        };
+        let error = session_cwd_not_directory(&source.cwd, source.session_file.as_deref())
+            .await
+            .expect("a file cwd is not a directory");
+        assert_eq!(error.issue.session_cwd, source.cwd);
+        assert_eq!(error.issue.session_file.as_deref(), Some("/s.jsonl"));
+        assert!(
+            error
+                .to_string()
+                .starts_with("Session working directory is not a directory: ")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_directory_cwd_and_a_missing_one_are_left_to_the_missing_check() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let existing = Source {
+            cwd: dir.path().to_string_lossy().into_owned(),
+            session_file: Some("/s.jsonl".into()),
+        };
+        assert!(
+            session_cwd_not_directory(&existing.cwd, existing.session_file.as_deref())
+                .await
+                .is_none()
+        );
+        let missing = Source {
+            cwd: "/definitely/missing".into(),
+            session_file: Some("/s.jsonl".into()),
+        };
+        assert!(
+            session_cwd_not_directory(&missing.cwd, missing.session_file.as_deref())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]

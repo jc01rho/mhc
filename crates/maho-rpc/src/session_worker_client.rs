@@ -600,6 +600,8 @@ impl ClientInner {
     }
     fn receive(self: &Arc<Self>, message: crate::session_worker_protocol::SessionWorkerWire) {
         use crate::session_worker_protocol::SessionWorkerWire as W;
+        let now = self.now();
+        lock(&self.requests).note_progress(now);
         if lock(&self.state).stopped {
             if let Some(signal) = wire_signal(&message) {
                 self.credit(

@@ -194,6 +194,7 @@ pub struct HostCore {
     drain: std::sync::Mutex<crate::session_command_router::HandoffDrain>,
     /// Sessions a drain has already claimed, so a later sweep never parks one twice.
     handoff_closed: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    drain_held_sessions: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// In-flight parks, so the drain exit waits for them (senpi `handoffParks`).
     handoff_parks: std::sync::atomic::AtomicUsize,
     /// Set when the host runs every session in its own worker process (senpi `createHostCore` selects
@@ -379,6 +380,7 @@ impl HostCore {
             handoff_enabled: std::sync::atomic::AtomicBool::new(false),
             drain: std::sync::Mutex::new(crate::session_command_router::HandoffDrain::default()),
             handoff_closed: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            drain_held_sessions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             handoff_parks: std::sync::atomic::AtomicUsize::new(0),
             workers: None,
             connection_roles: Default::default(),
@@ -1077,6 +1079,10 @@ impl HostCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .forget_session(session_id);
+        self.drain_held_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
         self.default_writer.forget_session(session_id);
     }
     /// Starts the drain this host parks itself with (senpi `SessionCommandRouter.beginDrain`).
@@ -1099,7 +1105,7 @@ impl HostCore {
         {
             return false;
         }
-        let (active_open, open) = {
+        let (active_open, open, unattended) = {
             let rows = self.list_rows(true).await;
             let active_open = rows.iter().any(|row| row["status"] == "opening");
             let open = rows
@@ -1107,9 +1113,38 @@ impl HostCore {
                 .filter(|row| row["status"] == "open")
                 .filter_map(|row| row["sessionId"].as_str().map(str::to_owned))
                 .collect::<Vec<_>>();
-            (active_open, open)
+            let held = self
+                .drain_held_sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let unattended = crate::session_drain_hold::unattended_turn_targets(&rows, &held);
+            (active_open, open, unattended)
         };
         if !active_open {
+            if !unattended.is_empty() {
+                let mut sessions = Vec::new();
+                {
+                    let registry = self.registry.lock().await;
+                    let mut held = self
+                        .drain_held_sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    for handle in unattended {
+                        if let Some(session) = registry
+                            .get(&handle)
+                            .and_then(|entry| entry.runtime.as_ref())
+                            .map(|runtime| runtime.session().clone())
+                            && held.insert(handle)
+                        {
+                            sessions.push(session);
+                        }
+                    }
+                }
+                for session in sessions {
+                    session.hold_automatic_turns();
+                }
+            }
             for handle in &open {
                 if self
                     .handoff_closed
@@ -1173,9 +1208,25 @@ impl HostCore {
     /// attachment drained, the runtime disposed and the path reservation freed before this resolves, and sealed
     /// `session_closed { reason: "released" }` naming the file. `false` when another close already owns the entry.
     async fn tear_down_released(&self, session_id: &str, session_path: &str) -> bool {
+        let mut recorded_paths = std::collections::BTreeSet::from([session_path.to_owned()]);
         if let Some(workers) = &self.workers {
+            if let Some(paths) = workers.with_entry(session_id, |entry| {
+                [
+                    entry.session_path.clone(),
+                    entry.profile.session_path.clone(),
+                ]
+            }) {
+                recorded_paths.extend(paths.into_iter().flatten());
+            }
             if workers.force_close(session_id).is_none() {
                 return false;
+            }
+            // The file is another runtime's now: drop its handover-parked record entry as an explicit close does,
+            // or the next host on this endpoint would reopen it (senpi#6444).
+            if let Some(dir) = self.handover_parked_dir.get() {
+                for path in &recorded_paths {
+                    crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
+                }
             }
             if let Some(worker) = workers.worker(session_id) {
                 worker.cancel_pending_extension_ui_requests();
@@ -1190,8 +1241,27 @@ impl HostCore {
                 if entry.close.state != crate::session_registry::RpcSessionState::Open {
                     return false;
                 }
+                recorded_paths.extend(
+                    [
+                        entry.session_path.clone(),
+                        entry.profile.session_path.clone(),
+                        entry
+                            .runtime
+                            .as_ref()
+                            .and_then(|runtime| runtime.session().session_file()),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                );
                 entry.close.attachments = 0;
                 entry.close.state = crate::session_registry::RpcSessionState::Closing;
+            }
+            // The file is another runtime's now: drop its handover-parked record entry as an explicit close does,
+            // or the next host on this endpoint would reopen it (senpi#6444).
+            if let Some(dir) = self.handover_parked_dir.get() {
+                for path in &recorded_paths {
+                    crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
+                }
             }
             if let Some(binding) = self.bindings.lock().await.remove(session_id) {
                 binding.cancel_pending_extension_ui_requests();
@@ -2201,6 +2271,32 @@ impl HostCore {
                             );
                             return Ok(());
                         }
+                        if let Some(dir) = self.handover_parked_dir.get() {
+                            let paths = {
+                                let registry = self.registry.lock().await;
+                                registry
+                                    .get(&session_id)
+                                    .map(|entry| {
+                                        [
+                                            entry.session_path.clone(),
+                                            entry.profile.session_path.clone(),
+                                            entry.runtime.as_ref().and_then(|runtime| {
+                                                runtime.session().session_file()
+                                            }),
+                                        ]
+                                    })
+                                    .into_iter()
+                                    .flatten()
+                                    .flatten()
+                                    .collect::<std::collections::BTreeSet<_>>()
+                            };
+                            for path in &paths {
+                                crate::host_handover_parked::clear_handover_parked_session(
+                                    dir, path,
+                                )
+                                .await;
+                            }
+                        }
                         if let Some(binding) = self.bindings.lock().await.remove(&session_id) {
                             binding.dispose().await;
                         }
@@ -2709,6 +2805,19 @@ impl HostCore {
             session_start_reason: None,
         };
         let retain = retain_on_disconnect.unwrap_or(false);
+        // senpi#6686: a folder that exists but is a file (or a socket) is refused, typed, before anything is opened
+        // or created. A missing folder, or one this host cannot stat, keeps today's answer from the registry.
+        let open_cwd = profile.runtime.cwd.clone();
+        if tokio::fs::metadata(&open_cwd)
+            .await
+            .is_ok_and(|metadata| !metadata.is_dir())
+        {
+            return Err(OpenRefusal::with_data(
+                crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY,
+                crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY,
+                serde_json::json!({"cwd": open_cwd}),
+            ));
+        }
         let opened = self
             .open_admitted(connection, profile, retain, overlay, attach_only)
             .await;
@@ -3155,6 +3264,22 @@ impl HostCore {
                 .await;
             self.success(connection, id, "close_session", None, Some(session_id));
             return;
+        }
+        if let Some(dir) = self.handover_parked_dir.get() {
+            let paths = workers
+                .with_entry(&session_id, |entry| {
+                    [
+                        entry.session_path.clone(),
+                        entry.profile.session_path.clone(),
+                    ]
+                })
+                .into_iter()
+                .flatten()
+                .flatten()
+                .collect::<std::collections::BTreeSet<_>>();
+            for path in &paths {
+                crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
+            }
         }
         if let Some(worker) = workers.worker(&session_id) {
             worker.dispose();
@@ -5341,6 +5466,120 @@ mod handoff_tests {
         core.begin_drain().await;
         assert!(core.drain_sweep().await);
     }
+    #[test]
+    fn the_drain_holds_automatic_turns_of_unattended_sessions_only() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let temp = tempfile::tempdir().unwrap();
+                        let (core, gate, mut calls, _disposed) = gated_core(temp.path());
+                        let mut gone = peer(&core, "gone");
+                        let mut live = peer(&core, "live");
+                        let cwd = temp.path().to_string_lossy().into_owned();
+                        let child_path =
+                            temp.path().join("child.jsonl").to_string_lossy().into_owned();
+                        let top_path = temp.path().join("top.jsonl").to_string_lossy().into_owned();
+                        core.handle(
+                            Some("gone"),
+                            &serde_json::json!({
+                                "id": "o-child",
+                                "type": "open_session",
+                                "cwd": cwd,
+                                "sessionPath": child_path,
+                                "retain_on_disconnect": true
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .unwrap();
+                        let unattended = reply_to(&mut gone, "o-child").await["data"]["sessionId"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned();
+                        core.handle(
+                            Some("live"),
+                            &serde_json::json!({
+                                "id": "o-top",
+                                "type": "open_session",
+                                "cwd": cwd,
+                                "sessionPath": top_path
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .unwrap();
+                        let attended = reply_to(&mut live, "o-top").await["data"]["sessionId"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned();
+                        let child_prompt = serde_json::json!({
+                            "id": "p-child",
+                            "type": "prompt",
+                            "sessionId": unattended,
+                            "message": "hi"
+                        })
+                        .to_string();
+                        let top_prompt = serde_json::json!({
+                            "id": "p-top",
+                            "type": "prompt",
+                            "sessionId": attended,
+                            "message": "hi"
+                        })
+                        .to_string();
+                        let c1 = std::sync::Arc::clone(&core);
+                        let t1 = tokio::spawn(async move { c1.handle(Some("gone"), &child_prompt).await });
+                        let c2 = std::sync::Arc::clone(&core);
+                        let t2 = tokio::spawn(async move { c2.handle(Some("live"), &top_prompt).await });
+                        for _ in 0..2 {
+                            tokio::time::timeout(std::time::Duration::from_secs(10), calls.recv())
+                                .await
+                                .expect("both turns reach the provider")
+                                .expect("the provider stays alive");
+                        }
+                        core.release_connection("gone").await;
+                        core.unregister_connection("gone");
+                        {
+                            let registry = core.registry.lock().await;
+                            assert_eq!(registry.get(&unattended).unwrap().close.attachments, 0);
+                            assert_eq!(registry.get(&attended).unwrap().close.attachments, 1);
+                        }
+
+                        core.begin_drain().await;
+
+                        let (unattended_held, attended_held) = {
+                            let registry = core.registry.lock().await;
+                            let has_drain_hold = |id: &str| {
+                                registry
+                                    .get(id)
+                                    .and_then(|entry| entry.runtime.as_ref())
+                                    .is_some_and(|runtime| {
+                                        runtime.session().holds().iter().any(|hold| {
+                                            hold.key
+                                                == maho_core::host_restart_continuation::HOST_DRAIN_HOLD_KEY
+                                        })
+                                    })
+                            };
+                            (has_drain_hold(&unattended), has_drain_hold(&attended))
+                        };
+                        assert!(unattended_held);
+                        assert!(!attended_held);
+                        assert!(core.has_session(&unattended).await);
+                        assert!(core.has_session(&attended).await);
+
+                        gate.send(true).unwrap();
+                        let _ = t1.await.unwrap();
+                        let _ = t2.await.unwrap();
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
     fn peer(core: &HostCore, id: &str) -> tokio::io::BufReader<tokio::io::DuplexStream> {
         let (write, read) = tokio::io::duplex(64 * 1024);
         core.register_connection(
@@ -5856,6 +6095,129 @@ mod handoff_tests {
         drop(first);
         assert!(core.opens_by_connection.lock().unwrap().is_empty());
     }
+    // senpi#6444 / senpi#6449: `release_session` (for `move` or `takeover`) and `close_session` drop the
+    // session's entry in the endpoint's handover-parked record so the next host on the same endpoint never
+    // reopens a file handed to another runtime or explicitly closed, while a refused release keeps it.
+    #[tokio::test]
+    async fn a_released_or_closed_session_leaves_no_handover_parked_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon_dir = temp.path().join("daemon");
+        std::fs::create_dir_all(&daemon_dir).unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        core.set_handover_parked_dir(daemon_dir.clone());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+
+        for (index, command_fn, expected_success, expected_kept) in [
+            (
+                1,
+                (|session_id: String| {
+                    serde_json::json!({
+                        "id": "rel-move",
+                        "type": "release_session",
+                        "sessionId": session_id,
+                        "reason": "move",
+                        "moveId": "move-6444",
+                        "target": "laptop"
+                    })
+                }) as fn(String) -> serde_json::Value,
+                true,
+                0usize,
+            ),
+            (
+                2,
+                |session_id: String| {
+                    serde_json::json!({
+                        "id": "rel-takeover",
+                        "type": "release_session",
+                        "sessionId": session_id,
+                        "reason": "takeover"
+                    })
+                },
+                true,
+                0usize,
+            ),
+            (
+                3,
+                |session_id: String| {
+                    serde_json::json!({
+                        "id": "close-last",
+                        "type": "close_session",
+                        "sessionId": session_id
+                    })
+                },
+                true,
+                0usize,
+            ),
+            (
+                4,
+                |session_id: String| {
+                    serde_json::json!({
+                        "id": "rel-unknown",
+                        "type": "release_session",
+                        "sessionId": session_id,
+                        "reason": "archive"
+                    })
+                },
+                false,
+                1usize,
+            ),
+        ] {
+            let path = temp
+                .path()
+                .join(format!("s-{index}.jsonl"))
+                .to_string_lossy()
+                .into_owned();
+            let open_id = format!("open-{index}");
+            core.handle(
+                Some("c"),
+                &serde_json::json!({
+                    "id": open_id,
+                    "type": "open_session",
+                    "cwd": cwd,
+                    "sessionPath": path,
+                    "retain_on_disconnect": true
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+            let session_id = reply_to(&mut client, &open_id).await["data"]["sessionId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            crate::host_handover_parked::record_handover_parked_session(
+                &daemon_dir,
+                &crate::host_handover_parked::HandoverParkedEntry {
+                    session_path: path.clone(),
+                    retain_on_disconnect: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                crate::host_handover_parked::read_handover_parked_sessions(&daemon_dir)
+                    .await
+                    .len(),
+                1
+            );
+
+            let cmd = command_fn(session_id);
+            let cmd_id = cmd["id"].as_str().unwrap().to_owned();
+            core.handle(Some("c"), &cmd.to_string()).await.unwrap();
+            let answer = reply_to(&mut client, &cmd_id).await;
+            assert_eq!(answer["success"], expected_success);
+            assert_eq!(
+                crate::host_handover_parked::read_handover_parked_sessions(&daemon_dir)
+                    .await
+                    .len(),
+                expected_kept
+            );
+            crate::host_handover_parked::clear_handover_parked_session(&daemon_dir, &path).await;
+        }
+    }
+
     #[tokio::test]
     async fn reclaim_seals_session_closed_to_attached_connections_only() {
         let temp = tempfile::tempdir().unwrap();
@@ -7016,6 +7378,34 @@ mod tests {
             "invalid_launch_profile: provider and modelId must be given together"
         );
     }
+    #[tokio::test]
+    async fn open_session_rejects_a_cwd_that_is_a_file_before_creating_anything() {
+        let (core, _, directory) = test_core();
+        let file_cwd = directory.path().join("hostname");
+        std::fs::write(&file_cwd, "a file, not a folder\n").expect("file cwd");
+        let command: crate::rpc_types::RpcCommand = serde_json::from_value(serde_json::json!({
+            "type":"open_session",
+            "cwd":file_cwd.to_string_lossy(),
+            "sessionPath":directory.path().join("file-cwd.jsonl").to_string_lossy()
+        }))
+        .unwrap();
+        let refusal = core
+            .open_session_inner(None, &command.body, None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            refusal.code.as_deref(),
+            Some(crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY)
+        );
+        assert_eq!(
+            refusal.data.unwrap()["cwd"],
+            serde_json::json!(file_cwd.to_string_lossy())
+        );
+        assert!(core.registry.lock().await.list_sessions(true).is_empty());
+        assert!(!directory.path().join("file-cwd.jsonl").exists());
+    }
+
     #[tokio::test]
     async fn open_session_rejects_explicit_null_host_instance() {
         let (core, _, _directory) = test_core();
