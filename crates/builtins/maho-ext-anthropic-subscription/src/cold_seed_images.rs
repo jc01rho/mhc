@@ -98,11 +98,28 @@ fn sdk_name(name: &str, custom: &std::collections::BTreeMap<String, String>) -> 
         .unwrap_or_else(|| crate::tools::map_pi_tool_name(name, custom))
 }
 
+/// What a cold-seed replay does with the images of a history (senpi `ReplayedHistoryImages`, senpi#5275).
+#[derive(Default)]
+pub struct ReplayedHistoryImages {
+    /// Replacement content for each history index that holds an image; every other message is replayed unchanged.
+    pub history: std::collections::BTreeMap<usize, Value>,
+    /// The current turn's tool images, sent after the history and its cache breakpoint.
+    pub current_turn: Vec<Value>,
+}
+
+/// Rewrites the image entries of a cold-seed history (senpi#2490): identical bytes are sent once and referenced in
+/// text afterwards, the replay is capped, and undecodable image data is dropped with a note.
+///
+/// What a history entry becomes depends only on the history before it, never on whether a later assistant message
+/// answered it, so a request rebuilt after the turn ends starts with the bytes the previous one cached (senpi#5275).
+/// A tool image is therefore always a text note in the history; while its turn is in progress it is also sent in
+/// `current_turn`, which comes after the cache breakpoint and simply disappears when the turn ends (senpi#2768: an
+/// answered tool image is never re-sent). A user upload is replayed in place under the same label in every state.
 pub fn replay_history_images(
     messages: &[Value],
     custom: &std::collections::BTreeMap<String, String>,
     in_progress_turn: bool,
-) -> std::collections::BTreeMap<usize, Value> {
+) -> ReplayedHistoryImages {
     let answer_boundary = if in_progress_turn {
         messages
             .iter()
@@ -149,7 +166,7 @@ pub fn replay_history_images(
         }
     }
     if images.is_empty() {
-        return Default::default();
+        return ReplayedHistoryImages::default();
     }
     let mut ranking = std::collections::BTreeMap::<String, (bool, usize)>::new();
     for (index, image) in images.iter().enumerate() {
@@ -177,57 +194,64 @@ pub fn replay_history_images(
         .take(MAX_REPLAYED_HISTORY_IMAGES)
         .map(|x| x.0)
         .collect();
-    let mut shown = std::collections::BTreeMap::<String, Origin>::new();
+    let mut shown_in_history = std::collections::BTreeMap::<String, Origin>::new();
+    let mut shown_in_current_turn = std::collections::BTreeMap::<String, Origin>::new();
     let mut replacements =
         std::collections::BTreeMap::<usize, std::collections::BTreeMap<usize, Vec<Value>>>::new();
+    let mut current_turn = Vec::new();
     for image in images {
-        let replacement = if let Some(hash) = image.hash.as_ref() {
-            if matches!(image.origin, Origin::Tool { .. })
-                && image.answered
-                && !shown.contains_key(hash)
-            {
-                let Origin::Tool { name, id } = &image.origin else {
-                    unreachable!()
-                };
-                vec![
-                    json!({"type":"text","text":format!("[image returned earlier by the {name} tool, id={id}: already seen earlier in this conversation; run the tool again if you need it]")}),
-                ]
-            } else if !allowed.contains(hash) && !shown.contains_key(hash) {
-                vec![
-                    json!({"type":"text","text":format!("{}: omitted from this replay, which re-sends at most {MAX_REPLAYED_HISTORY_IMAGES} earlier images; re-read the source if you need it]",image.origin.subject())}),
-                ]
-            } else if let Some(first) = shown.get(hash) {
-                vec![
-                    json!({"type":"text","text":format!("{}: identical to an image already shown above ({}); not attached again]",image.origin.subject(),first.source())}),
-                ]
-            } else {
-                shown.insert(hash.clone(), image.origin.clone());
-                let block = if let Some(data) = image.data {
-                    let mut block = image.block;
-                    block["data"] = json!(data);
-                    block
+        let Image {
+            message,
+            entry,
+            answered,
+            origin,
+            block,
+            hash,
+            data,
+        } = image;
+        let replacement = match hash.as_deref() {
+            None => vec![text_block(format!(
+                "{}: omitted because its image data is missing or unreadable]",
+                origin.subject()
+            ))],
+            Some(hash) => {
+                if let Some(first) = shown_in_history.get(hash) {
+                    vec![text_block(duplicate_text(&origin, first))]
+                } else if let Origin::Tool { name, id } = &origin {
+                    if !answered {
+                        if let Some(first) = shown_in_current_turn.get(hash) {
+                            current_turn.push(text_block(duplicate_text(&origin, first)));
+                        } else if !allowed.contains(hash) {
+                            current_turn.push(text_block(capped_text(&origin)));
+                        } else {
+                            shown_in_current_turn.insert(hash.to_owned(), origin.clone());
+                            current_turn.push(text_block(format!("[image returned by the {name} tool, id={id}, to your own call in the current turn (tool output, not a user attachment)]")));
+                            current_turn.push(canonical_block(block, data));
+                        }
+                    }
+                    vec![text_block(format!(
+                        "[image returned by the {name} tool, id={id} (tool output, not a user attachment): not shown in the history; an image from your current turn is attached after the history, any other was already seen, so run the tool again if you need it]"
+                    ))]
+                } else if !allowed.contains(hash) {
+                    vec![text_block(capped_text(&origin))]
                 } else {
-                    image.block
-                };
-                let prefix=match &image.origin {Origin::Tool{name,..}=>Some(format!("[image returned by the {name} tool to your own call (tool output, not a user attachment)]")),Origin::User if image.answered=>Some("[image the user attached in this earlier turn (history, not part of the current message)]".into()),_=>None};
-                let mut values = Vec::new();
-                if let Some(text) = prefix {
-                    values.push(json!({"type":"text","text":text}));
+                    shown_in_history.insert(hash.to_owned(), origin.clone());
+                    vec![
+                        text_block(
+                            "[image the user attached to this message of the history (not part of any newer message)]"
+                                .to_owned(),
+                        ),
+                        canonical_block(block, data),
+                    ]
                 }
-                values.push(block);
-                values
             }
-        } else {
-            vec![
-                json!({"type":"text","text":format!("{}: omitted because its image data is missing or unreadable]",image.origin.subject())}),
-            ]
         };
         replacements
-            .entry(image.message)
+            .entry(message)
             .or_default()
-            .insert(image.entry, replacement);
+            .insert(entry, replacement);
     }
-    replacements
+    let history = replacements
         .into_iter()
         .map(|(mi, entries)| {
             let content = messages[mi]["content"].as_array().expect("image content");
@@ -243,7 +267,37 @@ pub fn replay_history_images(
                 .collect();
             (mi, json!(rewritten))
         })
-        .collect()
+        .collect();
+    ReplayedHistoryImages {
+        history,
+        current_turn,
+    }
+}
+
+fn text_block(text: String) -> Value {
+    json!({"type":"text","text":text})
+}
+
+fn duplicate_text(origin: &Origin, first: &Origin) -> String {
+    format!(
+        "{}: identical to an image already shown above ({}); not attached again]",
+        origin.subject(),
+        first.source()
+    )
+}
+
+fn capped_text(origin: &Origin) -> String {
+    format!(
+        "{}: omitted from this replay, which re-sends at most {MAX_REPLAYED_HISTORY_IMAGES} earlier images; re-read the source if you need it]",
+        origin.subject()
+    )
+}
+
+fn canonical_block(mut block: Value, data: Option<String>) -> Value {
+    if let Some(data) = data {
+        block["data"] = json!(data);
+    }
+    block
 }
 
 #[cfg(test)]
@@ -268,6 +322,17 @@ mod tests {
             assert!(canonical_base64(&format!("aW1{character}hZ2U=")).is_none());
         }
     }
+    fn read_result(id: &str, data: &str) -> Value {
+        json!({"role":"toolResult","toolName":"read","toolCallId":id,"content":[image(data)]})
+    }
+    fn texts(content: &Value) -> Vec<&str> {
+        content
+            .as_array()
+            .expect("content")
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect()
+    }
     #[test]
     fn history_images_carry_origin_deduplicate_and_omit_answered_tool_images() {
         let messages = vec![
@@ -279,24 +344,25 @@ mod tests {
         ];
         let replay = replay_history_images(&messages, &Default::default(), false);
         assert!(
-            replay[&0][0]["text"]
+            replay.history[&0][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains("earlier turn")
+                .contains("this message of the history")
         );
         assert!(
-            replay[&2][0]["text"]
+            replay.history[&2][0]["text"]
                 .as_str()
                 .unwrap()
                 .contains("identical to an image already shown")
         );
         assert!(
-            replay[&3]
+            replay.history[&3]
                 .as_array()
                 .expect("replayed content")
                 .iter()
                 .any(|block| block["type"] == "image")
         );
+        assert!(replay.current_turn.is_empty());
     }
     #[test]
     fn replay_caps_distinct_images_and_labels_tool_outputs() {
@@ -309,21 +375,111 @@ mod tests {
             .collect();
         let replay = replay_history_images(&messages, &Default::default(), false);
         let attached = replay
+            .history
             .values()
             .flat_map(|content| content.as_array().expect("content"))
             .filter(|block| block["type"] == "image")
             .count();
         assert_eq!(attached, MAX_REPLAYED_HISTORY_IMAGES);
         let tool = vec![
-            json!({"role":"toolResult","toolName":"read","toolCallId":"x","content":[image("aW1hZ2U=")]}),
+            read_result("x", "aW1hZ2U="),
             json!({"role":"user","content":"next"}),
         ];
         let replay = replay_history_images(&tool, &Default::default(), false);
         assert!(
-            replay[&0][0]["text"]
+            replay.history[&0][0]["text"]
                 .as_str()
                 .unwrap()
                 .contains("tool output, not a user attachment")
         );
+    }
+    #[test]
+    fn a_tool_image_is_a_history_note_in_every_state_and_rides_the_current_turn_only_while_it_is_unanswered()
+     {
+        let in_progress = vec![
+            json!({"role":"user","content":"look"}),
+            json!({"role":"assistant","content":[]}),
+            read_result("shot-1", "AQ=="),
+        ];
+        let mid_turn = replay_history_images(&in_progress, &Default::default(), true);
+        let mut closed = in_progress.clone();
+        closed.push(json!({"role":"assistant","content":[]}));
+        let after_turn = replay_history_images(&closed, &Default::default(), false);
+
+        assert_eq!(mid_turn.history, after_turn.history);
+        assert!(
+            mid_turn.history[&2][0]["text"].as_str().unwrap().contains(
+                "id=shot-1 (tool output, not a user attachment): not shown in the history"
+            )
+        );
+        assert_eq!(
+            texts(&json!(mid_turn.current_turn)),
+            [
+                "[image returned by the Read tool, id=shot-1, to your own call in the current turn (tool output, not a user attachment)]"
+            ]
+        );
+        assert_eq!(mid_turn.current_turn[1]["type"], "image");
+        assert!(after_turn.current_turn.is_empty());
+    }
+    #[test]
+    fn a_user_upload_keeps_its_history_label_whether_or_not_the_turn_has_ended() {
+        let upload = vec![
+            json!({"role":"user","content":[{"type":"text","text":"mockup"},image("AQ==")]}),
+            json!({"role":"assistant","content":[]}),
+            read_result("shot-1", "Ag=="),
+        ];
+        let mid_turn = replay_history_images(&upload, &Default::default(), true);
+        let mut closed = upload.clone();
+        closed.push(json!({"role":"assistant","content":[]}));
+        let after_turn = replay_history_images(&closed, &Default::default(), false);
+
+        assert_eq!(mid_turn.history[&0], after_turn.history[&0]);
+        assert_eq!(
+            texts(&mid_turn.history[&0]),
+            [
+                "mockup",
+                "[image the user attached to this message of the history (not part of any newer message)]"
+            ]
+        );
+        assert_eq!(mid_turn.history[&0][2]["type"], "image");
+    }
+    #[test]
+    fn current_turn_tool_images_are_deduplicated_and_capped_like_history_images() {
+        let mut messages = vec![
+            json!({"role":"user","content":"look"}),
+            json!({"role":"assistant","content":[]}),
+            read_result("first", "AQ=="),
+            read_result("again", "AQ=="),
+        ];
+        let replay = replay_history_images(&messages, &Default::default(), true);
+        assert_eq!(replay.current_turn.len(), 3);
+        assert!(
+            replay.current_turn[2]["text"]
+                .as_str()
+                .unwrap()
+                .contains("identical to an image already shown above")
+        );
+        assert_eq!(replay.history.len(), 2);
+
+        for (n, data) in [
+            "Ag==", "Aw==", "BA==", "BQ==", "Bg==", "Bw==", "CA==", "CQ==",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            messages.push(read_result(&format!("more-{n}"), data));
+        }
+        let replay = replay_history_images(&messages, &Default::default(), true);
+        let attached = replay
+            .current_turn
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .count();
+        assert_eq!(attached, MAX_REPLAYED_HISTORY_IMAGES);
+        assert!(replay.current_turn.iter().any(|block| {
+            block["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("omitted from this replay"))
+        }));
     }
 }
