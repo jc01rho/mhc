@@ -299,6 +299,7 @@ async fn unknown_cell_id_suggests_unique_close_match_and_suppresses_ties() {
             Arc::new(|| (None, vec![])),
         );
     }
+    manager.mark_running(&second);
     assert!(manager.complete(&second, AgentToolResult::text("done")));
     assert_eq!(
         manager.peek("cell-alpha-x").unwrap_err(),
