@@ -106,11 +106,12 @@ impl std::error::Error for SessionCwdNotDirectoryError {}
 /// The directory half of senpi `assertSessionCwdExists`, awaited because the probe is a filesystem call.
 ///
 /// `None` for a cwd that is missing (that is [`get_missing_session_cwd_issue`]'s case, or a session with no file),
-/// and for one this host cannot read: only a cwd that exists and is not a folder is refused here.
+/// and for one this host cannot read: only a cwd that exists and is not a folder is refused here. The cwd and file
+/// arrive as owned data so the future never holds the manager across the probe.
 pub async fn session_cwd_not_directory(
-    session_manager: &dyn SessionCwdSource,
+    session_cwd: &str,
+    session_file: Option<&str>,
 ) -> Option<SessionCwdNotDirectoryError> {
-    let session_cwd = session_manager.get_cwd();
     if session_cwd.is_empty() {
         return None;
     }
@@ -120,7 +121,7 @@ pub async fn session_cwd_not_directory(
     }
     Some(SessionCwdNotDirectoryError {
         issue: SessionCwdNotDirectoryIssue {
-            session_file: session_manager.get_session_file().map(str::to_owned),
+            session_file: session_file.map(str::to_owned),
             session_cwd: session_cwd.to_owned(),
         },
     })
@@ -542,7 +543,7 @@ mod tests {
             cwd: file_cwd.to_string_lossy().into_owned(),
             session_file: Some("/s.jsonl".into()),
         };
-        let error = session_cwd_not_directory(&source)
+        let error = session_cwd_not_directory(&source.cwd, source.session_file.as_deref())
             .await
             .expect("a file cwd is not a directory");
         assert_eq!(error.issue.session_cwd, source.cwd);
@@ -561,12 +562,20 @@ mod tests {
             cwd: dir.path().to_string_lossy().into_owned(),
             session_file: Some("/s.jsonl".into()),
         };
-        assert!(session_cwd_not_directory(&existing).await.is_none());
+        assert!(
+            session_cwd_not_directory(&existing.cwd, existing.session_file.as_deref())
+                .await
+                .is_none()
+        );
         let missing = Source {
             cwd: "/definitely/missing".into(),
             session_file: Some("/s.jsonl".into()),
         };
-        assert!(session_cwd_not_directory(&missing).await.is_none());
+        assert!(
+            session_cwd_not_directory(&missing.cwd, missing.session_file.as_deref())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]

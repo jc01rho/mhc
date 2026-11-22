@@ -2807,14 +2807,15 @@ impl HostCore {
         let retain = retain_on_disconnect.unwrap_or(false);
         // senpi#6686: a folder that exists but is a file (or a socket) is refused, typed, before anything is opened
         // or created. A missing folder, or one this host cannot stat, keeps today's answer from the registry.
-        if tokio::fs::metadata(&profile.runtime.cwd)
+        let open_cwd = profile.runtime.cwd.clone();
+        if tokio::fs::metadata(&open_cwd)
             .await
             .is_ok_and(|metadata| !metadata.is_dir())
         {
             return Err(OpenRefusal::with_data(
                 crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY,
                 crate::rpc_types::RPC_ERROR_SESSION_CWD_NOT_DIRECTORY,
-                serde_json::json!({"cwd": profile.runtime.cwd}),
+                serde_json::json!({"cwd": open_cwd}),
             ));
         }
         let opened = self

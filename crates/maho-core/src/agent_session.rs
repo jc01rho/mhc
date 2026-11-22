@@ -12581,7 +12581,9 @@ impl AgentSession {
             None,
         )?;
         crate::session_cwd::assert_session_cwd_exists(&target, &self.cwd())?;
-        if let Some(not_directory) = crate::session_cwd::session_cwd_not_directory(&target).await {
+        if let Some(not_directory) =
+            crate::session_cwd::session_cwd_not_directory(target.cwd(), target.session_file()).await
+        {
             return Err(not_directory.into());
         }
         self.ensure_extension_recreation().await?;

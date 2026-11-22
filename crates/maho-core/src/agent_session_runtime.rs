@@ -719,7 +719,10 @@ impl AgentSessionRuntime {
         )?;
         self.check_switch_target(&manager)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;
-        if let Some(error) = crate::session_cwd::session_cwd_not_directory(&manager).await {
+        if let Some(error) =
+            crate::session_cwd::session_cwd_not_directory(manager.cwd(), manager.session_file())
+                .await
+        {
             return Err(error.into());
         }
         let cwd = manager.cwd().to_owned();
@@ -955,7 +958,10 @@ impl AgentSessionRuntime {
         )?;
         self.check_switch_target(&manager)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;
-        if let Some(error) = crate::session_cwd::session_cwd_not_directory(&manager).await {
+        if let Some(error) =
+            crate::session_cwd::session_cwd_not_directory(manager.cwd(), manager.session_file())
+                .await
+        {
             return Err(error.into());
         }
         let cwd = manager.cwd().to_owned();
