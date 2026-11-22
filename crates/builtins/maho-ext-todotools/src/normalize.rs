@@ -33,6 +33,52 @@ fn list(value: Option<&Value>) -> Option<Vec<TodoPhaseInput>> {
         })
         .collect()
 }
+fn unwrap_todo_list(value: &Value) -> Value {
+    let mut current = value.clone();
+    for _ in 0..3 {
+        current = match current {
+            Value::Array(entries) if !entries.is_empty() && entries.iter().all(Value::is_array) => {
+                Value::Array(
+                    entries
+                        .into_iter()
+                        .filter_map(|entry| match entry {
+                            Value::Array(inner) => Some(inner),
+                            _ => None,
+                        })
+                        .flatten()
+                        .collect(),
+                )
+            }
+            Value::Object(mut map) if map.len() == 1 && map.contains_key("list") => {
+                map.remove("list").unwrap_or(Value::Null)
+            }
+            other => {
+                current = other;
+                break;
+            }
+        };
+    }
+    match &current {
+        Value::Array(entries) if !entries.is_empty() => current,
+        _ => value.clone(),
+    }
+}
+pub fn prepare_todo_arguments(args: &Value) -> Value {
+    let Some(map) = args.as_object() else {
+        return args.clone();
+    };
+    let Some(raw_list) = map.get("list") else {
+        return args.clone();
+    };
+    let unwrapped = unwrap_todo_list(raw_list);
+    if &unwrapped == raw_list {
+        args.clone()
+    } else {
+        let mut next = map.clone();
+        next.insert("list".into(), unwrapped);
+        Value::Object(next)
+    }
+}
 fn js_whitespace(c: char) -> bool {
     matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')
 }
@@ -64,6 +110,8 @@ fn inferred(op: &str, reason: &str, form: &str) -> String {
     )
 }
 pub fn normalize_todo_params(raw: &Value, current: &[TodoPhase]) -> TodoNormalization {
+    let prepared = prepare_todo_arguments(raw);
+    let raw = &prepared;
     let raw_op = raw.get("op");
     let op = match raw_op.and_then(Value::as_str) {
         Some("view") => {
@@ -508,5 +556,45 @@ mod tests {
                 items: None
             })
         );
+    }
+    #[test]
+    fn unwraps_init_list_wrapped_one_level_too_deep() {
+        let canonical = json!([
+            {"phase": "Foundation", "items": ["Survey code"]},
+            {"phase": "Verification", "items": ["Run checks"]}
+        ]);
+        let expected = Some(vec![
+            TodoPhaseInput {
+                phase: "Foundation".into(),
+                items: vec!["Survey code".into()],
+            },
+            TodoPhaseInput {
+                phase: "Verification".into(),
+                items: vec!["Run checks".into()],
+            },
+        ]);
+        for wrapped in [
+            canonical.clone(),
+            json!([canonical]),
+            json!([
+                [{"phase": "Foundation", "items": ["Survey code"]}],
+                [{"phase": "Verification", "items": ["Run checks"]}]
+            ]),
+            json!({"list": canonical}),
+            json!({"list": [canonical]}),
+        ] {
+            let result = normalize_todo_params(&json!({"op": "init", "list": wrapped}), &[]);
+            assert!(result.error.is_none());
+            assert_eq!(result.entry.and_then(|entry| entry.list), expected);
+        }
+        for malformed in [
+            json!([{"phase": "Foundation", "items": ["Survey code"]}, [{"phase": "Verification", "items": ["Run checks"]}]]),
+            json!({"list": canonical, "extra": true}),
+            json!([[]]),
+            json!({"list": []}),
+        ] {
+            let prepared = prepare_todo_arguments(&json!({"op": "init", "list": malformed}));
+            assert_eq!(prepared["list"], malformed);
+        }
     }
 }
