@@ -470,10 +470,9 @@ impl StdinBuffer {
         if !self.held_newline.is_empty() {
             // The clock decides, not timer delivery: a read outside the window means the held line
             // break was an Enter, even when its release timer has not fired yet (a stalled loop).
-            if burst_gap.is_some_and(|gap| gap >= self.burst_window_ms) {
-                self.release_held_newline(events);
-            } else if self.held_newline_kind == HeldLineBreakKind::Enter
-                && !self.buffer.starts_with('\n')
+            if burst_gap.is_some_and(|gap| gap >= self.burst_window_ms)
+                || (self.held_newline_kind == HeldLineBreakKind::Enter
+                    && !self.buffer.starts_with('\n'))
             {
                 self.release_held_newline(events);
             } else {
