@@ -11076,6 +11076,14 @@ async fn auto_title_emits_session_info_changed_before_agent_settled_and_skips_ab
     session
         .agent
         .set_model(provider.get_model(Some("faux-1")).expect("model"));
+    let stream_provider = provider.provider.clone();
+    session
+        .agent
+        .set_stream_fn(Arc::new(move |model, context, options| {
+            stream_provider
+                .stream_simple(model, context, options)
+                .expect("faux stream")
+        }));
     let mut runtime = session.model_runtime().clone();
     runtime.register_native_provider(provider.provider.clone());
     runtime
