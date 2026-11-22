@@ -512,6 +512,8 @@ pub enum RpcCommandBody {
     LoginApiKey {
         provider: String,
         key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<String>,
     },
     Logout {
         provider: String,

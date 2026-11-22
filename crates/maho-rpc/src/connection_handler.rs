@@ -1498,8 +1498,10 @@ async fn handle_session_command_with_sink(
             if let Some(active_logins)=active_logins && let Some(controller)=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider){controller.abort(None);}
             ("login_cancel",Ok(None))
         },
-        RpcCommandBody::LoginApiKey{provider,key}=>{
-            let result=session.model_registry().auth_storage.set(provider,Some(serde_json::json!({"type":"api_key","key":key}))).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});None});
+        RpcCommandBody::LoginApiKey{provider,key,region}=>{
+            let registered=session.model_runtime().get_provider(provider);
+            let credential=crate::api_key_login_credential::api_key_login_credential(registered.as_deref(),key,region.as_deref()).await.and_then(|credential|serde_json::to_value(maho_ai::auth::types::Credential::ApiKey(credential)).map_err(|error|error.to_string()));
+            let result=credential.and_then(|credential|session.model_registry().auth_storage.set(provider,Some(credential)).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});None}));
             ("login_api_key",result)
         },
         RpcCommandBody::Logout{provider}=>{
@@ -4147,6 +4149,115 @@ mod new_session_tests {
         assert_eq!(
             session.model_registry().auth_storage.get("fixture"),
             Some(serde_json::json!({"type":"api_key","key":"secret"}))
+        );
+    }
+    #[tokio::test]
+    async fn login_api_key_stores_kimi_region_and_refuses_invalid_regions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_storage =
+            maho_core::auth_storage::AuthStorage::create(dir.path().join("auth.json"));
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                auth_storage: Some(auth_storage),
+                ..Default::default()
+            },
+        )
+        .expect("model runtime");
+        let sess = AgentSession::new(maho_core::agent_session::AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+                stream_fn: Some(std::sync::Arc::new(|_, _, _| {
+                    maho_ai::types::AssistantMessageEventStream::assistant()
+                })),
+                ..Default::default()
+            }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                "/tmp", None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".into(),
+            agent_dir: Some(dir.path().to_string_lossy().into_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: vec![],
+            favorite_models: vec![],
+            flag_values: Default::default(),
+            custom_tools: vec![],
+            model_runtime: Some(runtime),
+            prompt_templates: vec![],
+            slash_commands: vec![],
+            skills: vec![],
+            context_files: vec![],
+            resource_diagnostics: vec![],
+            auto_title_sessions: None,
+            compaction_Flush_hooks: false,
+            prompt_surface: None,
+            browser_engine: None,
+            tool_runtime: None,
+            initial_thinking_level_source: None,
+        });
+
+        let unknown = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(serde_json::json!({
+                    "type": "login_api_key",
+                    "provider": "kimi-coding",
+                    "key": "sk-kimi-synthetic",
+                    "region": "moon"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unknown["success"], false);
+        assert_eq!(sess.model_registry().auth_storage.get("kimi-coding"), None);
+
+        let no_region = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(serde_json::json!({
+                    "type": "login_api_key",
+                    "provider": "openrouter",
+                    "key": "sk-or-synthetic",
+                    "region": "global"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(no_region["success"], false);
+        assert_eq!(sess.model_registry().auth_storage.get("openrouter"), None);
+
+        let ok = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(serde_json::json!({
+                    "type": "login_api_key",
+                    "provider": "kimi-coding",
+                    "key": "sk-kimi-synthetic",
+                    "region": "global"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ok["success"], true);
+        assert_eq!(
+            sess.model_registry().auth_storage.get("kimi-coding"),
+            Some(serde_json::json!({
+                "type": "api_key",
+                "key": "sk-kimi-synthetic",
+                "env": { "KIMI_CODE_REGION": "global" }
+            }))
         );
     }
     #[tokio::test]
