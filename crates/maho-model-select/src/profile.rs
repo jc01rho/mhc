@@ -144,15 +144,7 @@ pub fn gate_rungs(
 }
 
 fn same_family_top_model() -> &'static str {
-    use maho_ext_recommended_models::{
-        FABLE55_PROMOTE_DEFAULTS, FABLE55_RELEASED, recommended_fable_model,
-    };
-    let current = recommended_fable_model(FABLE55_RELEASED, FABLE55_PROMOTE_DEFAULTS);
-    if is_launch_gated(current) {
-        recommended_fable_model(false, false)
-    } else {
-        current
-    }
+    maho_ext_recommended_models::recommended_fable_model()
 }
 
 /// Built-in profiles plus the rungs the launch gate dropped.

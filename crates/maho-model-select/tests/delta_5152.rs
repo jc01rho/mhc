@@ -49,7 +49,7 @@ fn flag_off_removes_the_gated_rung_everywhere() {
     assert_eq!(builtin_profiles(), built.profiles);
 
     let first = &heavy(&built.profiles).rungs[0];
-    assert!(first.model.starts_with("claude-fable-"));
+    assert_eq!(first.model, "claude-fable-5-2");
     assert_eq!(first.reasoning.as_deref(), Some("xhigh"));
     assert_eq!(first.providers[0], "anthropic-subscription");
 
