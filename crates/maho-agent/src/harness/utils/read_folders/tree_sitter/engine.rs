@@ -85,10 +85,23 @@ pub fn load_tree_sitter_folder(
 ) -> Option<Arc<dyn ReadFolder>> {
     let parser = if options.cache {
         let mut cache = grammars().lock().ok()?;
-        cache
-            .entry(language)
-            .or_insert_with(|| load_parser(language, &options))
-            .clone()?
+        if let Some(cached) = cache.get(&language) {
+            cached.clone()?
+        } else {
+            let grammar = options
+                .resolve_grammar
+                .as_ref()
+                .map_or_else(|| resolve_grammar(language), |resolve| resolve(language));
+            let Some(grammar) = grammar else {
+                cache.insert(language, None);
+                return None;
+            };
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&grammar).ok()?;
+            let loaded = Arc::new(Mutex::new(parser));
+            cache.insert(language, Some(loaded.clone()));
+            loaded
+        }
     } else {
         load_parser(language, &options)?
     };
