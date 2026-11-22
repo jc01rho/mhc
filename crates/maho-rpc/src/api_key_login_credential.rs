@@ -121,8 +121,7 @@ mod tests {
     use super::*;
     use maho_ai::{
         auth::types::{ApiKeyAuth, AuthContext, AuthPromptOption, AuthResult, ProviderAuth},
-        models::Model,
-        types::ProviderEnv,
+        types::{Context, Model, ProviderEnv, SimpleStreamOptions, StreamOptions},
     };
 
     struct SelectsApiKey {
@@ -217,6 +216,24 @@ mod tests {
 
         fn get_models(&self) -> Vec<Model> {
             Vec::new()
+        }
+
+        fn stream(
+            &self,
+            _model: &Model,
+            _context: &Context,
+            _options: Option<StreamOptions>,
+        ) -> maho_ai::types::AssistantMessageEventStream {
+            maho_ai::types::AssistantMessageEventStream::assistant()
+        }
+
+        fn stream_simple(
+            &self,
+            _model: &Model,
+            _context: &Context,
+            _options: Option<SimpleStreamOptions>,
+        ) -> maho_ai::types::AssistantMessageEventStream {
+            maho_ai::types::AssistantMessageEventStream::assistant()
         }
     }
 

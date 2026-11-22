@@ -423,7 +423,7 @@ impl HostCore {
     }
     async fn close_parked_session(&self, session_id: &str) {
         if let Some(binding) = self.bindings.lock().await.remove(session_id) {
-            binding.cancel_pending_extension_ui_requests().await;
+            binding.cancel_pending_extension_ui_requests();
         }
         {
             let mut registry = self.registry.lock().await;
@@ -3341,7 +3341,6 @@ impl HostCore {
         if session_path.is_some()
             || durable_session_id.is_some()
             || expected_host_instance.is_some()
-            || command.admission_id.is_some()
             || attended.as_ref() == Some(&serde_json::Value::Bool(false))
             || raw.get("retry").is_some()
             || (provider.is_some() != model_id.is_some())
@@ -3399,41 +3398,31 @@ impl HostCore {
                 let set_cmd = crate::rpc_types::RpcCommand {
                     id: None,
                     session_id: Some(handle.clone()),
-                    admission_id: None,
                     body: crate::rpc_types::RpcCommandBody::SetModel {
                         provider: prov.to_owned(),
                         model_id: mid.to_owned(),
-                        scope: Some(crate::rpc_types::SessionModelScope::Session),
                     },
                 };
                 if let Some(resp) =
                     crate::connection_handler::handle_session_command(runtime.session(), &set_cmd)
                         .await
-                        .map_err(|e| OpenRefusal::plain(e.to_string()))?
                     && let crate::rpc_types::RpcResponseResult::Error { error, .. } = resp.result
                 {
                     return Err(OpenRefusal::plain(error));
                 }
             }
             if let Some(level) = thinking_level.as_deref() {
-                let Some(parsed) = maho_ai::types::ModelThinkingLevel::parse(level) else {
-                    return Err(OpenRefusal::plain(format!(
-                        "Invalid thinking level: {level}"
-                    )));
-                };
                 let set_cmd = crate::rpc_types::RpcCommand {
                     id: None,
                     session_id: Some(handle.clone()),
-                    admission_id: None,
                     body: crate::rpc_types::RpcCommandBody::SetThinkingLevel {
-                        level: parsed,
-                        scope: Some(crate::rpc_types::SessionModelScope::Turn),
+                        level: level.to_owned(),
+                        scope: None,
                     },
                 };
                 if let Some(resp) =
                     crate::connection_handler::handle_session_command(runtime.session(), &set_cmd)
                         .await
-                        .map_err(|e| OpenRefusal::plain(e.to_string()))?
                     && let crate::rpc_types::RpcResponseResult::Error { error, .. } = resp.result
                 {
                     return Err(OpenRefusal::plain(error));
@@ -5484,7 +5473,7 @@ impl crate::session_unload::SessionUnloadPort for HostUnloadPort<'_> {
             .lock()
             .await
             .get(session_id)
-            .map(|binding| binding.pending_requests());
+            .map(|binding| binding.ui().pending_requests());
         let mut registry = self.release.core.registry.lock().await;
         let entry = registry
             .get_for_command(session_id, "unload_session", now)

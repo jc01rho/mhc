@@ -4181,11 +4181,14 @@ mod new_session_tests {
     #[tokio::test]
     async fn login_api_key_stores_kimi_region_and_refuses_invalid_regions() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json").to_string_lossy().into_owned();
         let auth_storage =
-            maho_core::auth_storage::AuthStorage::create(dir.path().join("auth.json"));
+            std::sync::Arc::new(maho_core::auth_storage::AuthStorage::create(&auth_path));
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
             maho_core::model_runtime::CreateModelRuntimeOptions {
-                auth_storage: Some(auth_storage),
+                credentials: Some(auth_storage),
+                allow_model_network: Some(false),
+                refresh_on_create: Some(false),
                 ..Default::default()
             },
         )
@@ -4213,18 +4216,18 @@ mod new_session_tests {
             flag_values: Default::default(),
             custom_tools: vec![],
             model_runtime: Some(runtime),
-            prompt_templates: vec![],
-            slash_commands: vec![],
-            skills: vec![],
-            context_files: vec![],
-            resource_diagnostics: vec![],
-            auto_title_sessions: None,
-            compaction_Flush_hooks: false,
-            prompt_surface: None,
-            browser_engine: None,
-            tool_runtime: None,
-            initial_thinking_level_source: None,
-        });
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
+        })
+        .expect("session");
 
         let unknown = serde_json::to_value(
             handle_session_command(
@@ -4497,8 +4500,9 @@ mod new_session_tests {
     #[tokio::test]
     async fn account_reset_unblocks_named_account_and_validates_selectors() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let auth_path = dir.path().join("auth.json");
-        let auth_storage = maho_core::auth_storage::AuthStorage::create(&auth_path);
+        let auth_path = dir.path().join("auth.json").to_string_lossy().into_owned();
+        let auth_storage =
+            std::sync::Arc::new(maho_core::auth_storage::AuthStorage::create(&auth_path));
         auth_storage
             .set(
                 "openai",
@@ -4530,7 +4534,7 @@ mod new_session_tests {
             .expect("seed auth");
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
             maho_core::model_runtime::CreateModelRuntimeOptions {
-                auth_storage: Some(auth_storage),
+                credentials: Some(auth_storage),
                 providers: Some(vec![]),
                 ..Default::default()
             },
@@ -4559,18 +4563,18 @@ mod new_session_tests {
             flag_values: Default::default(),
             custom_tools: vec![],
             model_runtime: Some(runtime),
-            prompt_templates: vec![],
-            slash_commands: vec![],
-            skills: vec![],
-            context_files: vec![],
-            resource_diagnostics: vec![],
-            auto_title_sessions: None,
-            compaction_Flush_hooks: false,
-            prompt_surface: None,
-            browser_engine: None,
-            tool_runtime: None,
-            initial_thinking_level_source: None,
-        });
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
+        })
+        .expect("session");
         let reset = serde_json::to_value(
             handle_session_command(
                 &sess,
@@ -4643,11 +4647,6 @@ mod new_session_tests {
     #[tokio::test]
     async fn prompt_refuses_with_typed_error_code_when_model_not_ready() {
         let sess = session();
-        let mut fake_model = sess.model();
-        fake_model.id = "fake-model".into();
-        fake_model.provider = "fake-provider".into();
-        sess.agent.set_model(fake_model);
-
         let missing = serde_json::to_value(
             handle_session_command(
                 &sess,
@@ -4666,22 +4665,67 @@ mod new_session_tests {
         assert_eq!(missing["errorCode"], "provider_credentials_missing");
         assert_eq!(
             missing["errorData"],
-            serde_json::json!({ "provider": "fake-provider" })
+            serde_json::json!({ "provider": "unknown" })
         );
         assert!(
             missing["error"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("No API key found for fake-provider.")
+                .contains("No API key found for unknown.")
         );
 
         let mut no_model = sess.model();
         no_model.id.clear();
         no_model.provider.clear();
-        sess.agent.set_model(no_model);
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                providers: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .expect("model runtime");
+        let unselected_sess = AgentSession::new(maho_core::agent_session::AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+                initial_state: Some(maho_agent::PartialAgentState {
+                    model: Some(no_model),
+                    ..Default::default()
+                }),
+                stream_fn: Some(std::sync::Arc::new(|_, _, _| {
+                    maho_ai::types::AssistantMessageEventStream::assistant()
+                })),
+                ..Default::default()
+            }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                "/tmp", None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".into(),
+            agent_dir: Some("/tmp/maho-agent".into()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: vec![],
+            favorite_models: vec![],
+            flag_values: Default::default(),
+            custom_tools: vec![],
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
+        })
+        .expect("session");
         let unselected = serde_json::to_value(
             handle_session_command(
-                &sess,
+                &unselected_sess,
                 &serde_json::from_value(serde_json::json!({
                     "id": "nk2",
                     "type": "prompt",

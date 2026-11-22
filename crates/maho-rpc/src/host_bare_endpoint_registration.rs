@@ -75,9 +75,9 @@ mod tests {
         .await;
 
         assert!(recorded_during_bind);
-        let endpoints = list_host_endpoints(&agent_dir).expect("list endpoints");
+        let endpoints = list_host_endpoints(&agent_dir);
         assert_eq!(endpoints.len(), 1);
-        assert_eq!(endpoints[0].socket, socket);
+        assert_eq!(endpoints[0].socket.as_deref(), Some(socket.as_str()));
         assert_eq!(endpoints[0].endpoint_kind, EndpointKind::RpcHost);
     }
 

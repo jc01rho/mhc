@@ -342,6 +342,7 @@ async fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded
             detail: pending.join(", "),
             action: Some(ACTION_WORK_PENDING),
             deliveries: unwritten,
+            ..Default::default()
         });
     }
     let force = command["force"] == true;

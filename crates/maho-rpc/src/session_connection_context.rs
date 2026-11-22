@@ -32,7 +32,10 @@ impl SessionConnectionContext {
                 CURRENT_CAPTURE.with(|cell| *cell.borrow_mut() = prev);
             }
         }
-        let prev = CURRENT_CAPTURE.with(|cell| cell.borrow_mut().replace(next).flatten());
+        let prev = CURRENT_CAPTURE.with(|cell| {
+            let mut borrowed = cell.borrow_mut();
+            std::mem::replace(&mut *borrowed, next)
+        });
         let _guard = Guard(prev);
         task()
     }
