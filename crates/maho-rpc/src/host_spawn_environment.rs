@@ -75,6 +75,14 @@ fn process_env() -> BTreeMap<String, String> {
     std::env::vars().collect()
 }
 
+fn trust_hand_off(platform: &str) -> HostEnvironment {
+    crate::engine_trust::adopted_engine_trust()
+        .and_then(|marker| {
+            crate::engine_trust::engine_trust_hand_off_environment(&marker, platform).ok()
+        })
+        .unwrap_or_default()
+}
+
 pub fn initial_host_environment(
     options: &InitialHostEnvironment<'_>,
     platform: &str,
@@ -87,7 +95,12 @@ pub fn initial_host_environment_from(
     options: &InitialHostEnvironment<'_>,
     platform: &str,
 ) -> HostEnvironment {
-    let mut forced = identity(options.paths, options.instance_id, options.generation);
+    let mut forced = trust_hand_off(platform);
+    forced.extend(identity(
+        options.paths,
+        options.instance_id,
+        options.generation,
+    ));
     let agent_dir = options
         .agent_dir
         .map_or_else(maho_core::config::get_agent_dir, str::to_owned);
@@ -116,7 +129,12 @@ pub fn successor_host_environment_from(
     options: &SuccessorHostEnvironment<'_>,
     platform: &str,
 ) -> HostEnvironment {
-    let mut forced = identity(options.paths, options.instance_id, options.generation);
+    let mut forced = trust_hand_off(platform);
+    forced.extend(identity(
+        options.paths,
+        options.instance_id,
+        options.generation,
+    ));
     if let Some(agent_dir) = options.agent_dir.filter(|dir| !dir.is_empty()) {
         forced.insert(maho_core::config::env_agent_dir_var(), agent_dir.to_owned());
     }
@@ -188,5 +206,79 @@ mod tests {
         );
         assert_eq!(env[EXPECTED_RUNTIME_BUILD_ID_ENV], "b1");
         assert!(!env.contains_key(&maho_core::config::env_agent_dir_var()));
+    }
+
+    #[test]
+    fn daemon_never_inherits_marker_or_hop_and_receives_adopted_trust_via_forced_handoff() {
+        let marker = crate::engine_trust::EngineTrustMarker {
+            v: 1,
+            file: "/home/u/.omo/engine-trust/aaaa.pem".into(),
+            sha256: "a".repeat(64),
+            automatic: "os".into(),
+            fallback_reason: None,
+            owner: "server".into(),
+            user: None,
+            defaults: Some(crate::engine_trust::EngineTrustDefaults {
+                file: "/home/u/.omo/engine-trust/defaults/empty.pem".into(),
+                dir: "/home/u/.omo/engine-trust/defaults/empty.d".into(),
+            }),
+            restore: BTreeMap::from([("NODE_USE_SYSTEM_CA".to_owned(), Some("1".to_owned()))]),
+        };
+        let serialized =
+            crate::engine_trust::serialize_engine_trust_marker(&marker).expect("serialize");
+        for platform in ["linux", "win32"] {
+            let env = daemon_environment(
+                &BTreeMap::from([
+                    ("PATH".to_owned(), "/bin".to_owned()),
+                    ("SENPI_ENGINE_TRUST".to_owned(), serialized.clone()),
+                    ("SENPI_ENGINE_TRUST_HOP".to_owned(), "1".to_owned()),
+                ]),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                platform,
+            );
+            assert_eq!(
+                env,
+                BTreeMap::from([("PATH".to_owned(), "/bin".to_owned())])
+            );
+        }
+
+        crate::engine_trust::clear_adopted_engine_trust();
+        let paths = host_daemon_directory_paths(Path::new("/d/x"));
+        let empty = BTreeMap::new();
+        let before = initial_host_environment_from(
+            &BTreeMap::new(),
+            &InitialHostEnvironment {
+                agent_dir: Some("/agent"),
+                env: &empty,
+                paths: &paths,
+                instance_id: "i",
+                generation: 1,
+            },
+            "linux",
+        );
+        assert!(!before.contains_key("SENPI_ENGINE_TRUST"));
+
+        crate::engine_trust::record_adopted_engine_trust(marker.clone());
+        let after = initial_host_environment_from(
+            &BTreeMap::new(),
+            &InitialHostEnvironment {
+                agent_dir: Some("/agent"),
+                env: &empty,
+                paths: &paths,
+                instance_id: "i",
+                generation: 1,
+            },
+            "linux",
+        );
+        crate::engine_trust::clear_adopted_engine_trust();
+        assert_eq!(
+            after.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+            Some(marker.file.as_str())
+        );
+        let parsed = crate::engine_trust::parse_engine_trust_marker(&after["SENPI_ENGINE_TRUST"])
+            .expect("parsed handoff marker");
+        assert!(parsed.restore.is_empty());
+        assert!(!after.contains_key("SENPI_ENGINE_TRUST_HOP"));
     }
 }

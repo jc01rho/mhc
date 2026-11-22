@@ -51,6 +51,7 @@ pub mod effect_record;
 pub mod effect_session;
 pub mod effect_status;
 pub mod effect_transcript_lookup;
+pub mod engine_trust;
 pub mod event_output_buffer;
 pub mod extension_ui_response;
 pub mod get_entries_command;

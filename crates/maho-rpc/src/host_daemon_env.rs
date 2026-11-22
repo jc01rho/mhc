@@ -28,6 +28,8 @@ pub fn daemon_env_is_allowed(name: &str, platform: &str) -> bool {
         "SENPI_RPC_HOST_GENERATION",
         "SENPI_RPC_HOST_DAEMON_DIR",
         "SENPI_RPC_HOST_EXPECTED_RUNTIME_BUILD_ID",
+        "SENPI_ENGINE_TRUST",
+        "SENPI_ENGINE_TRUST_HOP",
     ];
     if TRANSIENT.contains(&name) {
         return false;
