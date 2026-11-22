@@ -10,13 +10,22 @@ pub struct Principal {
     pub sealing_public_key: String,
     pub signing_public_key: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Survivable {
     Synced,
     Roaming,
     /// A recovery-phrase key: its rp_id is the reserved phrase marker (#13330).
     Phrase,
+}
+impl Survivable {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Synced => "synced",
+            Self::Roaming => "roaming",
+            Self::Phrase => "phrase",
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -274,5 +283,128 @@ pub fn parse_body(b: &Value) -> Option<ParsedBody> {
             })
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::crypto::recovery_kind::{PHRASE_RECOVERY_RP_ID, is_phrase_key};
+    use crate::sync::crypto::testing::{fixtures, row};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use serde_json::json;
+
+    fn phrase_key() -> Value {
+        json!({
+            "credential_id": URL_SAFE_NO_PAD.encode([1u8; 16]),
+            "rp_id": PHRASE_RECOVERY_RP_ID,
+            "enrollment_nonce": URL_SAFE_NO_PAD.encode([2u8; 32]),
+            "sealing_public_key": URL_SAFE_NO_PAD.encode([3u8; 32]),
+            "signing_public_key": URL_SAFE_NO_PAD.encode([4u8; 32]),
+            "survivable": "phrase",
+        })
+    }
+
+    fn genesis_with(key: Value) -> Value {
+        let mut body = row(&fixtures(), "genesis")["body"].clone();
+        body["bootstrap"]["recovery_key"] = key;
+        body
+    }
+
+    fn recovery_key_with(key: Value) -> Value {
+        let mut body = row(&fixtures(), "recovery_key")["body"].clone();
+        for (field, value) in key.as_object().expect("key object") {
+            body[field] = value.clone();
+        }
+        body
+    }
+
+    fn fork_state_with(key: Value) -> Value {
+        let mut body = row(&fixtures(), "fork_resolution")["body"].clone();
+        body["state"]["recovery_keys"]
+            .as_array_mut()
+            .expect("recovery keys")
+            .push(key);
+        body
+    }
+
+    fn recovery_keys_of(body: &Value) -> Vec<RecoveryKey> {
+        match parse_body(body).expect("body parses") {
+            ParsedBody::Genesis { recovery_key, .. } => vec![recovery_key],
+            ParsedBody::RecoveryKey { key, .. } => vec![key],
+            ParsedBody::ForkResolution { recovery_keys, .. } => recovery_keys,
+            other => panic!("unexpected body kind: {}", other.kind()),
+        }
+    }
+
+    #[test]
+    fn phrase_key_parses_across_every_keyring_body_site() {
+        assert_eq!(PHRASE_RECOVERY_RP_ID, "omo-sync/v1/recovery-phrase");
+        let key = phrase_key();
+        let expected_id = key["credential_id"].as_str().expect("id").to_string();
+        for body in [
+            genesis_with(key.clone()),
+            recovery_key_with(key.clone()),
+            fork_state_with(key.clone()),
+        ] {
+            let parsed = recovery_keys_of(&body);
+            let found = parsed
+                .iter()
+                .find(|candidate| candidate.credential_id == expected_id)
+                .expect("phrase key present");
+            assert_eq!(found.survivable, Survivable::Phrase);
+            assert_eq!(found.rp_id, PHRASE_RECOVERY_RP_ID);
+            assert!(is_phrase_key(found));
+            assert_eq!(parsed.iter().filter(|k| is_phrase_key(k)).count(), 1);
+        }
+    }
+
+    #[test]
+    fn passkey_kinds_still_parse_unchanged_at_every_site() {
+        let mut passkey = row(&fixtures(), "genesis")["body"]["bootstrap"]["recovery_key"].clone();
+        passkey["credential_id"] = json!("cGFzc2tleS1yZWdyZXNzaW9u");
+        for body in [
+            genesis_with(passkey.clone()),
+            recovery_key_with(passkey.clone()),
+            fork_state_with(passkey),
+        ] {
+            let parsed = recovery_keys_of(&body);
+            assert!(!parsed.iter().any(is_phrase_key));
+            let found = parsed
+                .iter()
+                .find(|k| k.credential_id == "cGFzc2tleS1yZWdyZXNzaW9u")
+                .expect("passkey present");
+            assert_eq!(found.survivable, Survivable::Synced);
+        }
+    }
+
+    #[test]
+    fn refused_kind_pairs_and_credential_lengths_are_rejected_at_every_boundary() {
+        let refused_pairs = [
+            json!({"survivable": "phrase", "rp_id": "recovery.omo.dev"}),
+            json!({"survivable": "synced", "rp_id": PHRASE_RECOVERY_RP_ID}),
+            json!({"survivable": "roaming", "rp_id": PHRASE_RECOVERY_RP_ID}),
+            json!({"survivable": "synced", "rp_id": "omo-sync/v2/other"}),
+            json!({"survivable": "roaming", "rp_id": "omo-sync/"}),
+            json!({"survivable": "paper", "rp_id": PHRASE_RECOVERY_RP_ID}),
+        ];
+        for pair in refused_pairs {
+            let mut key = phrase_key();
+            for (field, value) in pair.as_object().expect("pair") {
+                key[field] = value.clone();
+            }
+            assert!(parse_recovery(&key).is_none(), "pair {pair} parsed");
+            assert!(parse_body(&genesis_with(key.clone())).is_none());
+            assert!(parse_body(&recovery_key_with(key.clone())).is_none());
+            assert!(parse_body(&fork_state_with(key)).is_none());
+        }
+        for len in [15usize, 17, 32] {
+            let mut key = phrase_key();
+            key["credential_id"] = json!(URL_SAFE_NO_PAD.encode(vec![7u8; len]));
+            assert!(parse_recovery(&key).is_none(), "{len}-byte id parsed");
+            assert!(parse_body(&genesis_with(key.clone())).is_none());
+            assert!(parse_body(&recovery_key_with(key.clone())).is_none());
+            assert!(parse_body(&fork_state_with(key)).is_none());
+        }
     }
 }

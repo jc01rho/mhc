@@ -483,3 +483,29 @@ async fn removal_pending_resumes_rotation_without_a_second_removal() {
         1
     );
 }
+
+#[test]
+fn salt_inputs_exclude_phrase_keys_and_reserved_rp_while_keeping_bound() {
+    use crate::sync::crypto::recovery_kind::PHRASE_RECOVERY_RP_ID;
+    let genesis = json!({"body":{"kind":"genesis","bootstrap":{"recovery_key":{"credential_id":"passkey-1","rp_id":RP,"enrollment_nonce":"n1","survivable":"synced"}}}});
+    let phrase = json!({"body":{"kind":"recovery-key","credential_id":"phrase-1","rp_id":PHRASE_RECOVERY_RP_ID,"enrollment_nonce":"n2","survivable":"phrase"}});
+    let reserved = json!({"body":{"kind":"recovery-key","credential_id":"reserved-1","rp_id":"omo-sync/v2/other","enrollment_nonce":"n3","survivable":"synced"}});
+    let salts = parse_salt_inputs(&json!([genesis, phrase.clone(), reserved]))
+        .expect("salts exclude phrase and reserved rp");
+    assert_eq!(
+        salts,
+        vec![RecoverySaltInput {
+            credential_id: "passkey-1".into(),
+            enrollment_nonce: "n1".into(),
+        }]
+    );
+
+    let mut overflow: Vec<_> = (0..MAX_RECOVERY_KEYS)
+        .map(|id| json!({"body":{"kind":"recovery-key","credential_id":format!("pk-{id}"),"rp_id":RP,"enrollment_nonce":"n","survivable":"synced"}}))
+        .collect();
+    overflow.push(phrase);
+    assert_eq!(
+        parse_salt_inputs(&json!(overflow)),
+        Err(SaltRefusal::TooManyRecoveryKeys)
+    );
+}

@@ -37,6 +37,7 @@ mod tests {
     #[test]
     fn the_embedded_wordlist_is_the_pinned_file() {
         let words = words();
+        assert_eq!(BIP39_ENGLISH_TXT.len(), 13_116);
         assert_eq!(words.len(), WORD_COUNT);
         assert_eq!(words[0], "abandon");
         assert_eq!(words[2047], "zoo");

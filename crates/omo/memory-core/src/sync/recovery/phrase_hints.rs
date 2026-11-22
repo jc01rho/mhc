@@ -95,3 +95,93 @@ pub async fn served_phrase_hints(
         found.into_iter().filter_map(|served| served.hint).collect(),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::recovery::ports::{AppendResult, KeyringAppendRequest, PortFuture};
+    use serde_json::json;
+
+    struct HintTransport(Value);
+
+    impl RecoveryTransport for HintTransport {
+        fn list_keys(&self) -> PortFuture<'_, Value> {
+            Box::pin(async { Ok(self.0.clone()) })
+        }
+        fn list_entries(&self) -> PortFuture<'_, Value> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+        fn list_recovery_wraps(&self) -> PortFuture<'_, Value> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+        fn append_keys(&self, _request: KeyringAppendRequest) -> PortFuture<'_, AppendResult> {
+            Box::pin(async { Ok(Err(crate::sync::recovery::ports::TransportRefusal::Refused)) })
+        }
+        fn recovery_join(&self, _request: KeyringAppendRequest) -> PortFuture<'_, AppendResult> {
+            Box::pin(async { Ok(Err(crate::sync::recovery::ports::TransportRefusal::Refused)) })
+        }
+    }
+
+    #[tokio::test]
+    async fn served_phrase_hints_keep_served_order_drop_removals_and_bound_both_kinds() {
+        let phrase = |id: &str| {
+            json!({
+                "body": {
+                    "kind": "recovery-key",
+                    "credential_id": id,
+                    "enrollment_nonce": "n",
+                    "sealing_public_key": "s",
+                    "signing_public_key": "g",
+                    "survivable": "phrase",
+                }
+            })
+        };
+        let rows = json!([
+            {"body":{"kind":"genesis","bootstrap":{"recovery_key":{"credential_id":"passkey","enrollment_nonce":"n","sealing_public_key":"s","signing_public_key":"g","survivable":"synced"}}}},
+            phrase("z-phrase"),
+            phrase("a-phrase"),
+            phrase("z-phrase"),
+            {"body":{"kind":"recovery-key-removed","credential_id":"a-phrase"}},
+        ]);
+        let hints = served_phrase_hints(&HintTransport(rows))
+            .await
+            .expect("hints");
+        assert_eq!(
+            hints,
+            ServedPhraseHints::Ok(vec![PhraseRecoveryHint {
+                credential_id: "z-phrase".into(),
+                enrollment_nonce: "n".into(),
+                sealing_public_key: "s".into(),
+                signing_public_key: "g".into(),
+            }])
+        );
+
+        let mut mixed: Vec<Value> = (0..MAX_RECOVERY_KEYS)
+            .map(|id| {
+                json!({
+                    "body": {
+                        "kind": "recovery-key",
+                        "credential_id": format!("passkey-{id}"),
+                        "enrollment_nonce": "n",
+                        "sealing_public_key": "s",
+                        "signing_public_key": "g",
+                        "survivable": "synced",
+                    }
+                })
+            })
+            .collect();
+        mixed.push(phrase("overflow-phrase"));
+        assert_eq!(
+            served_phrase_hints(&HintTransport(json!(mixed)))
+                .await
+                .expect("bound"),
+            ServedPhraseHints::TooManyRecoveryKeys
+        );
+        assert_eq!(
+            served_phrase_hints(&HintTransport(json!({"rows": []})))
+                .await
+                .expect("unavailable"),
+            ServedPhraseHints::Unavailable
+        );
+    }
+}

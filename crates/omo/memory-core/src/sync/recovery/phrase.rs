@@ -138,11 +138,11 @@ impl RecoveryPhrase {
 
 /// Text a person typed as a recovery phrase, redacted the same way; [`parse_recovery_phrase`]
 /// consumes it.
-pub struct TypedPhrase(String);
+pub struct TypedPhrase(Zeroizing<String>);
 
 impl TypedPhrase {
     pub fn new(text: impl Into<String>) -> Self {
-        Self(text.into())
+        Self(Zeroizing::new(text.into()))
     }
 }
 
@@ -185,7 +185,7 @@ impl std::error::Error for PhraseParseFailure {}
 /// NFKD, lowercase, trim, and any whitespace run as one separator; then exactly 24 listed words and
 /// a matching checksum, all before any derivation can run.
 pub fn parse_recovery_phrase(typed: &TypedPhrase) -> Result<RecoveryPhrase, PhraseParseFailure> {
-    let normalized: String = typed.0.nfkd().collect::<String>().to_lowercase();
+    let normalized = Zeroizing::new(typed.0.nfkd().collect::<String>().to_lowercase());
     let words: Vec<&str> = normalized.split_whitespace().collect();
     if words.len() != WORD_COUNT {
         return Err(PhraseParseFailure::WrongWordCount);
@@ -302,25 +302,34 @@ pub fn derive_phrase_keys(
     }))
 }
 
-/// Distinct 1-based word positions the person must type back, chosen uniformly at random and
-/// sorted.
-pub fn confirmation_positions(count: usize) -> Vec<usize> {
-    use aws_lc_rs::rand::{SecureRandom, SystemRandom};
+fn confirmation_positions_with(
+    count: usize,
+    mut draw: impl FnMut() -> Result<u32, RecoveryError>,
+) -> Result<Vec<usize>, RecoveryError> {
+    let target = count.min(WORD_COUNT);
     let mut chosen = std::collections::BTreeSet::new();
-    let random = SystemRandom::new();
-    let mut draw = [0u8; 4];
-    while chosen.len() < count {
-        if random.fill(&mut draw).is_err() {
-            break;
-        }
-        let value = u32::from_be_bytes(draw);
+    let bound = (u32::MAX / 24) * 24;
+    while chosen.len() < target {
+        let value = draw()?;
         // Rejection sampling keeps each of the 24 positions equally likely.
-        let bound = (u32::MAX / 24) * 24;
         if value < bound {
             chosen.insert(usize::try_from(value % 24).unwrap_or(0) + 1);
         }
     }
-    chosen.into_iter().collect()
+    Ok(chosen.into_iter().collect())
+}
+
+/// Distinct 1-based word positions the person must type back, chosen uniformly at random and
+/// sorted.
+pub fn confirmation_positions(count: usize) -> Vec<usize> {
+    use aws_lc_rs::rand::{SecureRandom, SystemRandom};
+    let random = SystemRandom::new();
+    confirmation_positions_with(count, || {
+        let mut draw = [0u8; 4];
+        random.fill(&mut draw).map_err(|_| RecoveryError::Crypto)?;
+        Ok(u32::from_be_bytes(draw))
+    })
+    .unwrap_or_default()
 }
 
 /// Whether the typed words equal the phrase's words at `positions`, normalised like
@@ -330,7 +339,7 @@ pub fn confirmation_matches(
     positions: &[usize],
     typed: &TypedPhrase,
 ) -> bool {
-    let normalized: String = typed.0.nfkd().collect::<String>().to_lowercase();
+    let normalized = Zeroizing::new(typed.0.nfkd().collect::<String>().to_lowercase());
     let answer: Vec<&str> = normalized.split_whitespace().collect();
     let mut indices = indices_of(&*phrase.entropy);
     let words = bip39::words();

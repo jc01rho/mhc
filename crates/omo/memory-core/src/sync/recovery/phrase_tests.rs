@@ -1,7 +1,9 @@
 use super::*;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use crate::support::sha256::{hex, sha256_hex};
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 
 const FIXTURE: &str = include_str!("fixtures/phrase-v1.json");
+const PHRASE_V1_SHA256: &str = "474cb3779f849b3af5f16aaaf61605f6f444a99fc60f4c5f8cedb35548ad8d98";
 
 fn fixture() -> serde_json::Value {
     serde_json::from_str(FIXTURE).expect("the vendored phrase-v1 fixture parses")
@@ -143,10 +145,62 @@ fn refusals_name_the_problem_and_never_echo_a_word() {
 }
 
 #[test]
+fn the_committed_vector_file_is_the_pinned_oracle_output() {
+    assert_eq!(sha256_hex(FIXTURE.as_bytes()), PHRASE_V1_SHA256);
+    assert!(fixture()["vectors"].as_array().expect("vectors").len() >= 7);
+}
+
+#[test]
+fn thirty_two_zero_bytes_encode_to_abandon_then_art() {
+    let words = RecoveryPhrase::from_entropy([0u8; ENTROPY_BYTES]).reveal();
+    assert_eq!(words.len(), WORD_COUNT);
+    assert!(words[..23].iter().all(|word| *word == "abandon"));
+    assert_eq!(words[23], "art");
+}
+
+#[test]
+fn the_account_is_nfc_normalised() {
+    let fixture = fixture();
+    let vector = fixture["vectors"]
+        .as_array()
+        .expect("vectors")
+        .iter()
+        .find(|v| v["name"] == "non-ascii-account-nfd-input")
+        .expect("nfd vector");
+    let account = vector["account"].as_str().expect("account");
+    let nfc: String = account.nfc().collect();
+    assert_ne!(nfc, account);
+    let nonce = b64(vector["enrollment_nonce"].as_str().expect("nonce"));
+    assert_eq!(
+        phrase_salt(&nfc, &nonce).expect("nfc salt"),
+        b64(vector["salt"].as_str().expect("salt"))
+    );
+}
+
+#[test]
+fn a_generated_phrase_is_fresh_listed_words_and_round_trips() {
+    let listed = bip39::words();
+    let first = RecoveryPhrase::generate().expect("generate").reveal();
+    let second = RecoveryPhrase::generate().expect("generate").reveal();
+    assert_eq!(first.len(), WORD_COUNT);
+    assert!(first.iter().all(|word| listed.contains(word)));
+    assert_ne!(first, second);
+    let round_tripped =
+        parse_recovery_phrase(&TypedPhrase::new(first.join(" "))).expect("round-trip");
+    assert_eq!(round_tripped.reveal(), first);
+}
+
+#[test]
 fn no_text_or_debug_surface_carries_a_word_or_a_key() {
     let fixture = fixture();
-    let vector = &fixture["vectors"][0];
+    let vector = fixture["vectors"]
+        .as_array()
+        .expect("vectors")
+        .iter()
+        .find(|v| v["name"] == "account-a")
+        .expect("account-a vector");
     let words = vector["words"].as_str().unwrap_or("");
+    let entropy_bytes = hex_bytes(vector["entropy_hex"].as_str().unwrap_or(""));
     let phrase = parse_recovery_phrase(&TypedPhrase::new(words)).expect("phrase");
     let typed = TypedPhrase::new(words);
     let keys = derive_phrase_keys(
@@ -155,6 +209,20 @@ fn no_text_or_debug_surface_carries_a_word_or_a_key() {
         &b64(vector["enrollment_nonce"].as_str().unwrap_or("")),
     )
     .expect("keys");
+    let split: Vec<&str> = words.split(' ').collect();
+    let replaced = |pos: usize, word: &str| {
+        let mut changed = split.clone();
+        changed[pos] = word;
+        changed.join(" ")
+    };
+    let short_err =
+        parse_recovery_phrase(&TypedPhrase::new(split[..23].join(" "))).expect_err("23 words");
+    let unknown_err =
+        parse_recovery_phrase(&TypedPhrase::new(replaced(6, "notaword"))).expect_err("unknown");
+    let checksum_err =
+        parse_recovery_phrase(&TypedPhrase::new(replaced(23, "sentence"))).expect_err("checksum");
+    let nonce_err = derive_phrase_keys(&phrase, "account", &[0u8; 31]).expect_err("short nonce");
+
     let surfaces = [
         format!("{phrase:?}"),
         format!("{phrase}"),
@@ -162,22 +230,54 @@ fn no_text_or_debug_surface_carries_a_word_or_a_key() {
         format!("{typed}"),
         format!("{keys:?}"),
         format!("{keys}"),
+        format!("{short_err:?}"),
+        format!("{short_err}"),
+        format!("{unknown_err:?}"),
+        format!("{unknown_err}"),
+        format!("{checksum_err:?}"),
+        format!("{checksum_err}"),
+        format!("{nonce_err:?}"),
+        format!("{nonce_err}"),
         format!("{:?}", keys.public_key_text()),
-    ];
-    let leaked_word = words
-        .split(' ')
-        .filter(|word| word.len() > 4)
-        .find(|word| surfaces.iter().any(|surface| surface.contains(word)));
-    assert_eq!(leaked_word, None, "{surfaces:?}");
-    let leaked_key = URL_SAFE_NO_PAD.encode(keys.sign_seed());
-    assert!(
-        surfaces
-            .iter()
-            .all(|surface| !surface.contains(&leaked_key))
-    );
+    ]
+    .join("\n");
+
+    let tokens: Vec<&str> = surfaces
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let leaked_word = split.iter().find(|word| tokens.contains(word));
+    assert_eq!(leaked_word, None, "{surfaces}");
+
+    for secret in [&entropy_bytes[..], keys.seal_private(), keys.sign_seed()] {
+        for encoding in [
+            URL_SAFE_NO_PAD.encode(secret),
+            STANDARD.encode(secret),
+            hex(secret),
+        ] {
+            assert!(!surfaces.contains(&encoding), "leaked secret encoding");
+        }
+    }
     assert_eq!(format!("{phrase:?}"), "[recovery phrase]");
     assert_eq!(format!("{typed}"), "[typed recovery phrase]");
     assert_eq!(format!("{keys}"), "[recovery keys]");
+}
+
+#[test]
+fn confirmation_positions_reject_the_biased_tail_and_sort() {
+    let tail = 0xffff_fff0u32;
+    let mut draws = vec![tail, 5, tail, 5, 47, 0];
+    let positions = confirmation_positions_with(3, || {
+        Ok(if draws.is_empty() {
+            tail
+        } else {
+            draws.remove(0)
+        })
+    })
+    .expect("positions");
+    assert_eq!(positions, vec![1, 6, 24]);
+    assert!(draws.is_empty());
+    assert_eq!(confirmation_positions(30).len(), WORD_COUNT);
 }
 
 #[test]
@@ -193,7 +293,13 @@ fn a_confirmation_checks_only_the_drawn_positions() {
     assert!(confirmation_matches(
         &phrase,
         &positions,
-        &TypedPhrase::new(drawn.join("  "))
+        &TypedPhrase::new(format!("  {} ", drawn.join("  ").to_uppercase()))
+    ));
+    let reversed: Vec<&str> = drawn.iter().copied().rev().collect();
+    assert!(!confirmation_matches(
+        &phrase,
+        &positions,
+        &TypedPhrase::new(reversed.join(" "))
     ));
     assert!(!confirmation_matches(
         &phrase,
@@ -215,7 +321,16 @@ fn a_confirmation_checks_only_the_drawn_positions() {
 
 #[test]
 fn a_wrong_length_nonce_is_refused_before_any_hash_runs() {
-    assert!(phrase_salt("account", &[0u8; 31]).is_err());
     let phrase = RecoveryPhrase::from_entropy([7u8; 32]);
-    assert!(derive_phrase_keys(&phrase, "account", &[]).is_err());
+    for len in [0usize, 16, 31, 33] {
+        let bad = vec![0u8; len];
+        assert!(matches!(
+            phrase_salt("account", &bad),
+            Err(RecoveryError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            derive_phrase_keys(&phrase, "account", &bad),
+            Err(RecoveryError::InvalidInput(_))
+        ));
+    }
 }
