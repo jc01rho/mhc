@@ -25,8 +25,8 @@ export const WEBVIEW_METHODS = [
 	"scroll",
 	"scrollTo",
 	"resize",
-	"back",
-	"forward",
+	"goBack",
+	"goForward",
 	"reload",
 	"cdp",
 ];
@@ -96,7 +96,7 @@ export class WebViewNotReadyError extends Error {
 
 	constructor(launches, policy) {
 		super(
-			`Chrome-backed WebView never became ready: phase cdp-target-attach (Chrome did not attach a CDP session to the new view within ${policy.attachBoundMs} ms) on ${launches} launch(es); each stalled Chrome was retired`,
+			`WebView never became ready: phase cdp-target-attach (the new view did not finish its first navigation within ${policy.attachBoundMs} ms) on ${launches} launch(es); each stalled launch was retired`,
 		);
 		this.name = "WebViewNotReadyError";
 	}
@@ -409,6 +409,8 @@ export class WebViewService {
 	#retireChrome;
 	#onRetireFailure;
 	#clients = new Map();
+	// senpi#5936: one drop per client, so a release after the port-close drop awaits that same drop.
+	#drops = new WeakMap();
 	#retiring = Promise.resolve();
 	#chromeInUse = false;
 	// Views being constructed and not yet adopted by their client: Chrome must outlive them.
@@ -523,12 +525,23 @@ export class WebViewService {
 		}
 	}
 
-	async #drop(client) {
-		if (this.#clients.get(client.id) !== client) return await this.#retiring;
-		this.#clients.delete(client.id);
+	#drop(client) {
+		let dropped = this.#drops.get(client);
+		if (!dropped) {
+			dropped = this.#retireClient(client);
+			this.#drops.set(client, dropped);
+		}
+		return dropped;
+	}
+
+	async #retireClient(client) {
 		client.release();
-		await client.settled();
-		await this.#retireIfIdle();
+		try {
+			await client.settled();
+			await this.#retireIfIdle();
+		} finally {
+			this.#clients.delete(client.id);
+		}
 	}
 
 	/** Retires Chrome once no view uses it and no launch is pending; resolves when retirement ends. */

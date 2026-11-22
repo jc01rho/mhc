@@ -215,3 +215,43 @@ async fn escaped_static_sources_execute_in_actual_worker() {
     assert_eq!(result["ok"], true, "{result}");
     assert_eq!(result["valueRepr"], "\"answer\"");
 }
+
+#[tokio::test]
+async fn file_url_imports_execute_in_external_worker() {
+    use maho_codemode::kernels::{
+        js::context_manager::JavaScriptKernel, shared::subprocess_contract::KernelRunInput,
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let module_path = dir.path().join("answer.mjs");
+    std::fs::write(&module_path, "export const value = 42;\n").expect("write module");
+    let file_url = url::Url::from_file_path(&module_path)
+        .expect("file url")
+        .to_string();
+    let loader = LocalModuleLoader::new(&LocalModuleLoaderOptions {
+        cwd: dir.path().into(),
+        local_roots: None,
+        artifacts_dir: None,
+    })
+    .expect("loader");
+    let kernel = JavaScriptKernel::start(dir.path(), "file-url-import", 4, None)
+        .await
+        .expect("kernel");
+    let code = format!(
+        "import {{ value }} from {}; value;",
+        serde_json::to_string(&file_url).expect("serialize url")
+    );
+    let result = kernel
+        .run(
+            KernelRunInput {
+                cell_id: "file-url".into(),
+                code: loader.prepare_cell(&code, &[]),
+                timeout_ms: Some(5000),
+            },
+            |_| {},
+        )
+        .await
+        .expect("run");
+    kernel.close().await.expect("close");
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["valueRepr"], "42");
+}

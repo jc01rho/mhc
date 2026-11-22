@@ -164,6 +164,67 @@ describe.skipIf(!bunWebViewAvailable)("a Chrome launch that never becomes ready"
 	);
 
 	it(
+		"resolves a release after a port-close drop only after the in-flight launch's Chrome retired",
+		async () => {
+			let launches = 0;
+			const keptClosed = Promise.withResolvers();
+			const webViewClass = new Proxy(nativeClass(), {
+				construct(target, args) {
+					launches += 1;
+					const view = Reflect.construct(target, args);
+					if (launches === 1) {
+						const close = view.close.bind(view);
+						Object.defineProperty(view, "close", {
+							value: () => {
+								close();
+								keptClosed.resolve();
+							},
+						});
+					}
+					return view;
+				},
+			});
+			let deadlines = 0;
+			const stalled = Promise.withResolvers();
+			const bound = Promise.withResolvers();
+			const attachDeadline = () => {
+				deadlines += 1;
+				if (deadlines === 1) return { reached: new Promise(() => {}), cancel: () => {} };
+				stalled.resolve();
+				return { reached: bound.promise, cancel: () => {} };
+			};
+			const order = [];
+			const service = new WebViewService(webViewClass, {
+				attachDeadline,
+				retireChrome: async (chrome) => {
+					await retireBunChrome(chrome);
+					order.push("retired");
+				},
+			});
+			const grant = service.connect(owner);
+			grants.push({ service, grant });
+			expect(await create(grant.port, "kept")).toMatchObject({ ok: true });
+			grant.port.postMessage({
+				kind: "create",
+				id: 0,
+				viewId: "in-flight",
+				options: { backend: "chrome" },
+				captureConsole: false,
+			});
+			await stalled.promise;
+			grant.port.close();
+			await keptClosed.promise;
+			const released = service.release(grant.clientId, owner).then(() => order.push("released"));
+			bound.resolve();
+			await released;
+			expect(order).toEqual(["retired", "released"]);
+			expect(await bunChromeChildren()).toEqual([]);
+			expect(launches).toBe(2);
+		},
+		60_000,
+	);
+
+	it(
 		"retires the Chrome a launch starts after its kernel was released mid-launch",
 		async () => {
 			const native = nativeClass();

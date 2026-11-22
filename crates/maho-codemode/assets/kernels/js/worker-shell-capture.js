@@ -136,12 +136,12 @@ function capturedSpawnSync(originalSpawnSync, pinEnv) {
 		if (!pinEnv) return originalSpawnSync(...args);
 		const [first, second] = args;
 		if (Array.isArray(first)) {
-			const spawnOptions = second === undefined ? {} : second;
-			if (spawnOptions === null || typeof spawnOptions !== "object" || spawnOptions.env !== undefined)
+			const spawnOptions = second ?? {};
+			if (typeof spawnOptions !== "object" || spawnOptions.env != null)
 				return originalSpawnSync(...args);
 			return originalSpawnSync(first, { ...spawnOptions, env: { ...process.env } });
 		}
-		if (first !== null && typeof first === "object" && first.env === undefined)
+		if (first !== null && typeof first === "object" && first.env == null)
 			return originalSpawnSync({ ...first, env: { ...process.env } });
 		return originalSpawnSync(...args);
 	};
@@ -149,14 +149,23 @@ function capturedSpawnSync(originalSpawnSync, pinEnv) {
 
 function capturedSpawn(originalSpawn, options, pinEnv) {
 	return (...args) => {
-		if (!options.isActive()) return originalSpawn(...args);
 		const [first, second] = args;
+		if (!options.isActive()) {
+			if (!pinEnv) return originalSpawn(...args);
+			if (Array.isArray(first)) {
+				const spawnOptions = second ?? {};
+				return spawnOptions.env == null ? originalSpawn(first, { ...spawnOptions, env: { ...process.env } }) : originalSpawn(...args);
+			}
+			return first !== null && typeof first === "object" && first.env == null
+				? originalSpawn({ ...first, env: { ...process.env } })
+				: originalSpawn(...args);
+		}
 		let child;
 		if (Array.isArray(first)) {
-			const spawnOptions = second === undefined ? {} : second;
+			const spawnOptions = second ?? {};
 			const effective = {
 				...spawnOptions,
-				...(pinEnv && spawnOptions.env === undefined ? { env: { ...process.env } } : {}),
+				...(pinEnv && spawnOptions.env == null ? { env: { ...process.env } } : {}),
 			};
 			const capture = needsStderrCapture(effective);
 			child = capture
@@ -168,7 +177,7 @@ function capturedSpawn(originalSpawn, options, pinEnv) {
 			const spawnOptions = first !== null && typeof first === "object" ? first : {};
 			const effective = {
 				...spawnOptions,
-				...(pinEnv && spawnOptions.env === undefined ? { env: { ...process.env } } : {}),
+				...(pinEnv && spawnOptions.env == null ? { env: { ...process.env } } : {}),
 			};
 			const capture = needsStderrCapture(effective);
 			child = capture
