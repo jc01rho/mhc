@@ -1,7 +1,8 @@
 //! Port of `dynamic-prompt/handoff.ts`.
-use super::PromptSurface;
+use super::{PromptSurface, SharedSections};
 
 pub const HANDOFF_LANGUAGE_RULE: &str = "Keep the labels Ask, wanted, For you, Now, and Next exactly as written; write everything else - the routing line, slot contents, todo labels, and the reply itself - in the user's language (the one their instructions name, else the one they write in), with Now and Next repeating the todo labels verbatim.";
+pub const FULL_HANDOFF_LANGUAGE_RULE: &str = HANDOFF_LANGUAGE_RULE;
 
 /// The app surface has no routing line, so its language rule drops that clause; kept as the same
 /// derivation upstream uses so the two rules cannot drift apart.
@@ -36,6 +37,7 @@ pub struct HandoffSectionOptions {
     pub brief_updates_between_handoffs: bool,
     /// The app surface has no routing line, so the block stops referring to one; chat has no block at all.
     pub surface: PromptSurface,
+    pub shared_sections: Option<SharedSections>,
 }
 
 pub fn build_handoff_section(options: HandoffSectionOptions) -> String {

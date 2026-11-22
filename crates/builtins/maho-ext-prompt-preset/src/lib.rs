@@ -1,3 +1,4 @@
+pub mod active_preset;
 pub mod claude_fable_5;
 pub mod claude_fable_5_1;
 pub mod claude_fable_5_2;

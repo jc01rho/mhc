@@ -14204,6 +14204,7 @@ impl AgentSession {
                             crate::dynamic_prompt::PromptSurface::Chat
                         }
                     },
+                    ..Default::default()
                 },
             )
         });

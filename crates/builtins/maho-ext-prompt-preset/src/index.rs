@@ -103,12 +103,7 @@ fn metadata<'a>(
     }
 }
 fn preset_name(ctx: &ExtensionContext, model: Option<&Model>) -> Option<PromptPresetName> {
-    let model = model.or(ctx.model.as_ref())?;
-    if has_user_system_prompt(&ctx.get_system_prompt_options()) {
-        return None;
-    }
-    let prompt_preset = ctx.model_registry.prompt_preset(model);
-    resolve_preset_name(metadata(model, prompt_preset.as_deref()), settings(ctx))
+    crate::active_preset::resolve_active_preset_name(ctx, model)
 }
 struct PresetHeader(String);
 impl Component for PresetHeader {
@@ -235,6 +230,7 @@ fn builder_input(
             maho_ext_api::PromptSurface::App => maho_core::dynamic_prompt::PromptSurface::App,
             maho_ext_api::PromptSurface::Chat => maho_core::dynamic_prompt::PromptSurface::Chat,
         },
+        ..Default::default()
     }
 }
 pub fn has_user_system_prompt(options: &BuildSystemPromptOptions) -> bool {

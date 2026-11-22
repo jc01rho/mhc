@@ -224,6 +224,7 @@ mod tests {
             core_prompt: None,
             workstation_dialect: None,
             surface: Default::default(),
+            ..Default::default()
         };
         assert!(build_dynamic_system_prompt(&options).contains(&section));
     }

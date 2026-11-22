@@ -24,6 +24,7 @@ fn render(model_id: &str, surface: PromptSurface, selected_tools: &[&str]) -> St
         core_prompt: None,
         workstation_dialect: None,
         surface,
+        ..Default::default()
     };
     resolve_preset(
         ModelMetadata {
@@ -70,6 +71,7 @@ fn every_gpt_6_2_tier_renders_the_standalone_core() {
                 core_prompt: None,
                 workstation_dialect: None,
                 surface: PromptSurface::Terminal,
+                ..Default::default()
             },
         )
         .unwrap_or_else(|| panic!("{id} resolves"));

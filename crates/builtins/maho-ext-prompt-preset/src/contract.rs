@@ -225,6 +225,36 @@ pub fn resolve_preset_name(model: ContractModel<'_>) -> Option<PromptPresetName>
     None
 }
 
+/// Presets that render the shared prompt generators' full wording (senpi#5665): after the senpi#5335 diet
+/// shipped, Opus and Fable got slower and worse, so these keep the pre-diet text and every other preset,
+/// gpt-6-astra included, keeps the diet.
+pub const FULL_SHARED_SECTION_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[
+        P::ClaudeFable5,
+        P::ClaudeFable51,
+        P::ClaudeFable52,
+        P::ClaudeFable55,
+        P::ClaudeOpus55,
+        P::ClaudeOpus5,
+        P::ClaudeOpus48,
+        P::ClaudeOpus47,
+        P::ClaudeOpus46,
+        P::ClaudeOpus45,
+    ]
+};
+
+/// The shared-section wording a preset declares; no preset (the default prompt) renders `Diet`.
+pub fn preset_shared_sections(
+    name: Option<PromptPresetName>,
+) -> maho_core::dynamic_prompt::SharedSections {
+    if name.is_some_and(|name| FULL_SHARED_SECTION_PRESETS.contains(&name)) {
+        maho_core::dynamic_prompt::SharedSections::Full
+    } else {
+        maho_core::dynamic_prompt::SharedSections::Diet
+    }
+}
+
 /// `PromptPresetModelCase`.
 #[derive(Clone, Copy, Debug)]
 pub struct PromptPresetModelCase {
@@ -402,6 +432,29 @@ mod tests {
             .collect();
         exposed.sort_unstable();
         assert_eq!(exposed, auto);
+    }
+
+    #[test]
+    fn declares_full_shared_sections_for_exactly_the_opus_and_fable_presets() {
+        use maho_core::dynamic_prompt::SharedSections;
+        for name in std::iter::once(&PromptPresetName::Gpt5).chain(AUTO_RESOLVED_PRESET_NAMES) {
+            let expected = if FULL_SHARED_SECTION_PRESETS.contains(name) {
+                SharedSections::Full
+            } else {
+                SharedSections::Diet
+            };
+            assert_eq!(
+                preset_shared_sections(Some(*name)),
+                expected,
+                "{}",
+                name.as_str()
+            );
+        }
+        assert_eq!(preset_shared_sections(None), SharedSections::Diet);
+        assert_eq!(
+            preset_shared_sections(Some(PromptPresetName::Gpt6Astra)),
+            SharedSections::Diet
+        );
     }
 
     #[test]
@@ -587,6 +640,7 @@ mod tests {
                 core_prompt: None,
                 workstation_dialect: None,
                 surface: PromptSurface::Terminal,
+                ..Default::default()
             },
         )
         .expect("preset");

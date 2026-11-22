@@ -55,3 +55,4 @@ A request with three or more distinct steps gets a phased todo before the first 
 - Test run: require passing output, or state the pre-existing failure.
 </Task_Management>
 ";
+pub const FULL_TASK_MANAGEMENT_SECTION: &str = TASK_MANAGEMENT_SECTION;

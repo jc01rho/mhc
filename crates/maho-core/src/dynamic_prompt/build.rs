@@ -8,7 +8,9 @@ use super::policies::build_policies_section;
 use super::style::build_style_section;
 use super::tool_categorization::categorize_tools;
 use super::tool_section::build_tool_section;
-use super::types::{AvailableTool, PromptSurface};
+pub use super::types::{
+    AvailableTool, PromptSurface, SharedSections, TerminalOrApp, terminal_or_app,
+};
 use super::verification::build_verification_section;
 use super::working_task::build_working_task_section;
 use super::workstation::{
@@ -35,14 +37,24 @@ pub fn resolve_prompt_surface(env: impl Fn(&str) -> Option<String>) -> PromptSur
 }
 
 /// `DynamicPromptCoreContext`: what a `corePrompt` override may reuse.
+#[derive(Default)]
 pub struct DynamicPromptCoreContext {
     pub tools: Vec<AvailableTool>,
     pub tool_section: String,
     pub surface: PromptSurface,
+    pub shared_sections: SharedSections,
+}
+
+/// Tool snippets and guidelines as the pre-diet prompt listed them, rendered for `shared_sections: Full`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FullToolPrompt {
+    pub tool_snippets: HashMap<String, String>,
+    pub prompt_guidelines: Vec<String>,
 }
 
 pub type PromptPartsObserver<'a> = &'a dyn Fn(&[DynamicSystemPromptPart]);
 /// `BuildDynamicSystemPromptOptions`.
+#[derive(Default)]
 pub struct BuildDynamicSystemPromptOptions<'a> {
     pub custom_prompt: Option<String>,
     pub append_system_prompt: Option<String>,
@@ -51,6 +63,8 @@ pub struct BuildDynamicSystemPromptOptions<'a> {
     pub selected_tools: Vec<String>,
     pub tool_snippets: HashMap<String, String>,
     pub prompt_guidelines: Vec<String>,
+    pub full_tool_prompt: Option<FullToolPrompt>,
+    pub shared_sections: Option<SharedSections>,
     pub context_files: Vec<ContextFile>,
     pub skills: Vec<Skill>,
     pub tuning_section: Option<String>,
@@ -92,15 +106,25 @@ pub fn build_dynamic_system_prompt_parts(
         return parts;
     }
     let tools = categorize_tools(&options.selected_tools);
+    let shared_sections = options.shared_sections.unwrap_or(SharedSections::Diet);
+    let tool_prompt = (shared_sections == SharedSections::Full)
+        .then_some(options.full_tool_prompt.as_ref())
+        .flatten();
 
-    let tool_section =
-        build_tool_section(&tools, &options.tool_snippets, &options.prompt_guidelines);
+    let tool_section = build_tool_section(
+        &tools,
+        tool_prompt.map_or(&options.tool_snippets, |prompt| &prompt.tool_snippets),
+        tool_prompt.map_or(&options.prompt_guidelines, |prompt| {
+            &prompt.prompt_guidelines
+        }),
+    );
 
     let sections: Vec<String> = match options.core_prompt {
         Some(core_prompt) => vec![core_prompt(&DynamicPromptCoreContext {
             tools: tools.clone(),
             tool_section: tool_section.clone(),
             surface: options.surface,
+            shared_sections,
         })],
         None => vec![
             build_identity_section(),
@@ -117,6 +141,7 @@ pub fn build_dynamic_system_prompt_parts(
             String::new(),
             super::handoff::build_handoff_section(super::handoff::HandoffSectionOptions {
                 surface: options.surface,
+                shared_sections: Some(shared_sections),
                 ..Default::default()
             }),
             String::new(),
@@ -212,6 +237,7 @@ mod tests {
             core_prompt: None,
             workstation_dialect: None,
             surface: PromptSurface::Terminal,
+            ..Default::default()
         }
     }
 

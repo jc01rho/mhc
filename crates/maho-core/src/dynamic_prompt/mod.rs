@@ -14,8 +14,8 @@ pub mod working_task;
 pub mod workstation;
 
 pub use build::{
-    BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, PROMPT_SURFACE_ENV_VAR,
-    build_dynamic_system_prompt, resolve_prompt_surface,
+    BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, FullToolPrompt,
+    PROMPT_SURFACE_ENV_VAR, build_dynamic_system_prompt, resolve_prompt_surface,
 };
 pub use identity::build_identity_section;
 pub use intent_gate::build_intent_gate;
@@ -23,7 +23,9 @@ pub use policies::build_policies_section;
 pub use style::build_style_section;
 pub use tool_categorization::{categorize_tools, get_tool_category, get_tools_prompt_display};
 pub use tool_section::{CATEGORY_ORDER, build_tool_section, category_label};
-pub use types::{AvailableTool, PromptSurface, ToolCategory};
+pub use types::{
+    AvailableTool, PromptSurface, SharedSections, TerminalOrApp, ToolCategory, terminal_or_app,
+};
 pub use verification::{
     TEST_DISCIPLINE_RULES, TestDisciplineRule, build_test_discipline_section,
     build_verification_section,
