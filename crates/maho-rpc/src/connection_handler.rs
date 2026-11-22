@@ -727,7 +727,7 @@ pub fn build_rpc_session_state_with_dialogs(
 }
 /// The classic `get_protocol_info` capabilities that precede the tool-runtime and negotiated ones (senpi
 /// connection-handler.ts), `entries_tail` last.
-const CLASSIC_CAPABILITIES: [&str; 17] = [
+const CLASSIC_CAPABILITIES: [&str; 18] = [
     "multi_session",
     crate::custom_capability::SNAPSHOT_CURSOR_CAPABILITY,
     crate::custom_capability::UI_ANSWER_LEDGER_CAPABILITY,
@@ -740,6 +740,7 @@ const CLASSIC_CAPABILITIES: [&str; 17] = [
     "continue_from_leaf",
     "eval_cells",
     "auth_key_verify",
+    crate::custom_capability::ACCOUNT_RESET_CAPABILITY,
     crate::rpc_types::QUEUED_MESSAGE_REVISION_CAPABILITY,
     "tool_barrier",
     crate::rpc_types::USER_ACTIVITY_CAPABILITY,
@@ -3734,6 +3735,7 @@ mod new_session_tests {
                 "continue_from_leaf",
                 "eval_cells",
                 "auth_key_verify",
+                "account_reset",
                 "queued_message_revision",
                 "tool_barrier",
                 "user_activity",

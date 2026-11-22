@@ -93,6 +93,8 @@ pub const MEMORY_FORGET_CAPABILITY: &str = "memory_forget";
 pub const OWNER_MEMORY_REQUESTS: [&str; 3] = ["memory_receipts", "memory_forget", "memory_correct"];
 /// errorCode of an owner memory request no handler serves in this session.
 pub const MEMORY_UNAVAILABLE_ERROR_CODE: &str = "memory_unavailable";
+/// `account_reset`: reset one named account's local health, keeping its credentials (senpi#4879, senpi#5698).
+pub const ACCOUNT_RESET_CAPABILITY: &str = "account_reset";
 pub const RPC_CLIENT_CAPABILITIES_ENV: &str = "SENPI_RPC_CLIENT_CAPABILITIES";
 pub const DEFAULT_CUSTOM_EXTENSION_LABEL: &str = "custom UI component";
 

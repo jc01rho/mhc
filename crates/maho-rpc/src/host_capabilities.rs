@@ -147,6 +147,7 @@ pub fn multi_session_host_capabilities(
         "continue_from_leaf",
         "eval_cells",
         "auth_key_verify",
+        ACCOUNT_RESET_CAPABILITY,
         crate::rpc_types::QUEUED_MESSAGE_REVISION_CAPABILITY,
         "tool_barrier",
         crate::rpc_types::USER_ACTIVITY_CAPABILITY,
@@ -308,6 +309,7 @@ mod tests {
             SUBSCRIPTION_LIMITS_CAPABILITY,
             RESOLVE_PATH_CAPABILITY,
             FIND_SESSION_CAPABILITY,
+            crate::custom_capability::ACCOUNT_RESET_CAPABILITY,
         ] {
             assert!(
                 plain.iter().any(|capability| capability == wanted),
