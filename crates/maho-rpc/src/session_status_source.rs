@@ -68,6 +68,7 @@ pub fn session_runtime_view(
         follow_up: session.get_follow_up_messages().len(),
         // The host's pending question frames are counted by the fanout (`SessionStatusDelivery`).
         pending_questions: 0,
+        waiting: session.retry_wait(),
     }
 }
 
@@ -85,6 +86,9 @@ pub fn worker_runtime_view(state: &Value) -> SessionStatusRuntimeView {
         steering: count("steering"),
         follow_up: count("followUp"),
         pending_questions: count("pendingQuestions"),
+        waiting: state
+            .get("retryWait")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
     }
 }
 

@@ -762,6 +762,7 @@ struct AgentSessionState {
     turn_index: u64,
     message_replacements: Vec<(AgentMessage, AgentMessage)>,
     retry_attempt: u32,
+    retry_wait: Option<crate::retry_wait::RetryWait>,
     /// senpi `_modelConfigErrors`: one `model_config_error` warning per model and session (senpi#4282).
     model_config_errors: crate::retry_fallback::model_config_error::ModelConfigErrorReporter,
     retry_abort_controller: Option<maho_ai::utils::abort::AbortController>,
@@ -4687,6 +4688,7 @@ impl AgentSession {
             turn_index: 0,
             message_replacements: Vec::new(),
             retry_attempt: 0,
+            retry_wait: None,
             model_config_errors: Default::default(),
             retry_abort_controller: None,
             user_aborted: false,
@@ -9577,6 +9579,10 @@ impl AgentSession {
 
     pub fn retry_attempt(&self) -> u32 {
         self.state().retry_attempt
+    }
+
+    pub fn retry_wait(&self) -> Option<crate::retry_wait::RetryWait> {
+        self.state().retry_wait.clone()
     }
 
     /// senpi `currentAbortSource`: the abort owner for the current turn boundary, used by renderers.
@@ -20486,6 +20492,12 @@ impl AgentSession {
 
     /// Emit an event to all listeners.
     pub fn emit(&self, event: AgentSessionEvent) {
+        let next_wait = crate::retry_wait::next_retry_wait(
+            self.state().retry_wait.clone(),
+            &event,
+            maho_ai::utils::diagnostics::now_ms(),
+        );
+        self.state().retry_wait = next_wait;
         let carrier = match &event {
             AgentSessionEvent::Agent(event) => self.observe_recovery(event),
             _ => None,

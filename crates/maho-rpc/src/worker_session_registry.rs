@@ -670,6 +670,7 @@ impl WorkerSessionRegistry {
             if let Some(id)=state.and_then(|state|state["sessionId"].as_str()).map(str::to_owned).or_else(||entry.durable_session_id.clone()){row["durableSessionId"]=id.into();}
             if let Some(path)=state.and_then(|state|state["sessionFile"].as_str()).map(str::to_owned).or_else(||entry.session_path.clone()){row["sessionPath"]=path.into();}
             if let Some(name)=state.and_then(|state|state["sessionName"].as_str()){row["name"]=name.into();}
+            if state.is_some_and(|state|state["isStreaming"]==true) && let Some(wait)=state.and_then(|state|state.get("retryWait")).and_then(|value|serde_json::from_value::<maho_core::retry_wait::RetryWait>(value.clone()).ok()) && let Ok(redacted)=serde_json::to_value(maho_core::retry_wait::redacted_retry_wait(&wait)){row["waiting"]=redacted;}
             if include_workers{row["context"]=serde_json::Value::Object(crate::session_context_patch::published_session_context(&entry.identity.context,entry.context_overlay.as_ref()));}
             row
         }).collect()

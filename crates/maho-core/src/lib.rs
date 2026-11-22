@@ -158,6 +158,7 @@ pub mod repository_identity;
 pub mod resolve_config_command;
 pub mod resolved_paths_memo;
 pub mod resume_target;
+pub mod retry_wait;
 pub mod run_holds;
 pub mod run_resume_turn;
 pub mod runtime_credentials;

@@ -534,6 +534,7 @@ impl RpcSessionRegistry {
             if let Some(id)=&entry.durable_session_id{row["durableSessionId"]=id.clone().into();}
             if let Some(path)=&entry.session_path{row["sessionPath"]=path.clone().into();}
             if let Some(name)=entry.runtime.as_ref().and_then(|runtime|runtime.session().session_name()){row["name"]=name.into();}
+            if let Some(runtime)=&entry.runtime && runtime.session().is_streaming() && let Some(wait)=runtime.session().retry_wait() && let Ok(redacted)=serde_json::to_value(maho_core::retry_wait::redacted_retry_wait(&wait)){row["waiting"]=redacted;}
             if include_workers{row["context"]=serde_json::Value::Object(crate::session_context_patch::published_session_context(&entry.identity.context,entry.context_overlay.as_ref()));}
             row
         }).collect()

@@ -699,6 +699,11 @@ pub fn build_rpc_session_state_with_dialogs(
     {
         state["thinkingSelection"] = value;
     }
+    if let Some(retry_wait) = session.retry_wait()
+        && let Ok(value) = serde_json::to_value(retry_wait)
+    {
+        state["retryWait"] = value;
+    }
     if let Some(abort_source) = last_abort_source {
         state["lastAbortSource"] = abort_source.into();
     }
