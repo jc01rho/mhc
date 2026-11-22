@@ -1,5 +1,6 @@
 pub mod claude_fable_5;
 pub mod claude_fable_5_1;
+pub mod claude_fable_5_2;
 pub mod claude_fable_5_5;
 pub mod claude_haiku_5_5;
 pub mod claude_opus_4_5;

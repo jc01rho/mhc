@@ -53,13 +53,14 @@ impl ModelConfig {
             providers.insert(canonical, provider);
         }
         Self {
-            providers,
+            providers: providers.clone(),
             disabled_providers: config
                 .disabled_providers
                 .unwrap_or_default()
                 .iter()
                 .map(|id| normalize_provider_id(id))
                 .collect(),
+            warnings: crate::provider_base_url_notice::fixed_address_base_url_notices(&providers),
             ..Self::default()
         }
     }

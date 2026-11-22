@@ -77,6 +77,7 @@ fn all_explicit_presets_dispatch_to_nonempty_prompts() {
     for preset in [
         ClaudeFable5,
         ClaudeFable51,
+        ClaudeFable52,
         ClaudeFable55,
         ClaudeOpus55,
         ClaudeSonnet55,

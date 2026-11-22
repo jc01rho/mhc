@@ -6,12 +6,12 @@ pub mod transport;
 use auth::{StoredProviderEnvReader, VertexModelGardenAmbientAuth};
 use maho_ext_api::{Extension, ExtensionApi, ProviderConfig};
 use std::sync::Arc;
-use transport::{ResolveVertexAccess, default_resolve_vertex_access, stream_vertex_model_garden};
+use transport::{
+    ResolveVertexAccess, VERTEX_MODEL_GARDEN_REGISTRATION_BASE_URL, default_resolve_vertex_access,
+    stream_vertex_model_garden,
+};
 
 pub const VERTEX_MODEL_GARDEN_PROVIDER_ID: &str = "vertex-garden";
-
-// The request URL is built per call from the ADC-resolved project; this only satisfies registration.
-const REGISTRATION_BASE_URL: &str = "https://aiplatform.googleapis.com/v1";
 
 pub fn register_vertex_model_garden(
     api: &mut ExtensionApi,
@@ -26,7 +26,7 @@ pub fn register_vertex_model_garden(
         ProviderConfig {
             name: Some("Vertex AI Model Garden".into()),
             api: Some("openai-completions".into()),
-            base_url: Some(REGISTRATION_BASE_URL.into()),
+            base_url: Some(VERTEX_MODEL_GARDEN_REGISTRATION_BASE_URL.into()),
             // Ambient like the builtin google-vertex ADC lane (senpi#2327): available while the ADC chain
             // is present, never an explicitly configured provider, and never the automatic default over
             // one the user configured.

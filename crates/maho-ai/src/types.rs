@@ -1113,10 +1113,13 @@ pub fn sanitize_provider_diagnostic(value: &ProviderDiagnostic) -> Option<Provid
                 };
             }
             let (category, compatible) = match code {
-                "authentication_error" | "invalid_api_key" => {
+                "authentication_error" | "invalid_api_key" | "account_pool_auth_blocked" => {
                     (Category::Auth, status.is_none_or(|s| s == 401))
                 }
-                "rate_limit_error" | "rate_limit_exceeded" => {
+                "rate_limit_error"
+                | "rate_limit_exceeded"
+                | "account_pool_blocked"
+                | "credential_pool_blocked" => {
                     (Category::RateLimit, status.is_none_or(|s| s == 429))
                 }
                 "insufficient_quota" | "usage_limit_reached" | "usage_not_included" => {

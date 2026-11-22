@@ -7,27 +7,72 @@ pub fn with_auth_guidance(error: &anyhow::Error) -> String {
     with_account_auth_guidance(error, None)
 }
 
-/// senpi `withAuthGuidance` with the attempt's account context (`errorAccountContext`): a billing error or "out of
-/// extra usage" names the account the turn ran on and how to move off it.
 pub fn with_account_auth_guidance(
     error: &anyhow::Error,
     account: Option<&crate::account_context::AccountContext>,
 ) -> String {
+    with_account_auth_guidance_at(error, account, maho_ai::utils::diagnostics::now_ms() as f64)
+}
+
+fn model_limit_sentence(blocked: &AllAccountsBlockedError, model: &str, now: f64) -> String {
+    let subject = match &blocked.unavailable_account {
+        None => "All Anthropic Subscription accounts have".to_owned(),
+        Some(account) => format!("Claude account '{}' has", account.name),
+    };
+    let Some(until) = blocked.soonest_unblock_at.filter(|until| until.is_finite()) else {
+        return format!("{subject} hit the usage limit for model {model}.");
+    };
+    let wait_ms = (until - now).max(0.0);
+    let minutes = (wait_ms / 60_000.0).ceil() as u64;
+    format!(
+        "{subject} hit the usage limit for model {model}; it resets in {} hours {} minutes, at {}.",
+        minutes / 60,
+        minutes % 60,
+        crate::model_blocks::iso_ms(until)
+    )
+}
+
+fn retry_after_marker(blocked: &AllAccountsBlockedError, now: f64) -> String {
+    match blocked.soonest_unblock_at.filter(|until| until.is_finite()) {
+        Some(until) if blocked.block_reason != Some("auth_error") => {
+            format!(
+                " (retry-after-ms: {})",
+                (until - now).max(0.0).ceil() as u64
+            )
+        }
+        _ => String::new(),
+    }
+}
+
+/// senpi `withAuthGuidance` with the attempt's account context (`errorAccountContext`): a billing error or "out of
+/// extra usage" names the account the turn ran on and how to move off it.
+pub fn with_account_auth_guidance_at(
+    error: &anyhow::Error,
+    account: Option<&crate::account_context::AccountContext>,
+    now: f64,
+) -> String {
     let message = error.to_string();
     if let Some(blocked) = error.downcast_ref::<AllAccountsBlockedError>() {
-        if let Some(account) = &blocked.unavailable_account {
-            return crate::guidance::single_account_unavailable_guidance(
+        let guidance = if let Some(account) = &blocked.unavailable_account {
+            crate::guidance::single_account_unavailable_guidance(
                 account,
                 blocked.soonest_unblock_at,
                 blocked.block_reason,
-            );
-        }
-        return if blocked.block_reason == Some("auth_error") {
+            )
+        } else if blocked.block_reason == Some("auth_error") {
             "All Claude accounts for anthropic-subscription are currently blocked (authentication error).\n  /login anthropic-subscription - re-authenticate to refresh the blocked account\n  /claude-account list - inspect account states".into()
         } else {
             format!(
                 "{message}\n  /claude-account list - inspect account states\n  /login anthropic-subscription - add another account"
             )
+        };
+        let marker = retry_after_marker(blocked, now);
+        return match &blocked.limited_model {
+            Some(model) => format!(
+                "{}\n{guidance}{marker}",
+                model_limit_sentence(blocked, model, now)
+            ),
+            None => format!("{guidance}{marker}"),
         };
     }
     let kind = classify_sdk_error(&serde_json::Value::String(message.clone())).kind;
@@ -56,6 +101,9 @@ pub fn with_account_auth_guidance(
         ),
         SdkErrorKind::Billing => Some(
             "The selected Claude account has a billing problem. Check the plan at claude.com or switch accounts with /claude-account pin <name>.",
+        ),
+        SdkErrorKind::LoginUnreadable => Some(
+            "Claude Code could not read this account's login. If your Mac's keychain is locked, unlock it (security unlock-keychain) and retry; otherwise run /login anthropic-subscription.",
         ),
         SdkErrorKind::AuthError => Some(
             "The account's OAuth token was rejected. Re-run /login anthropic-subscription to refresh it, or remove the account with /claude-account remove <name>.",
@@ -131,5 +179,23 @@ mod tests {
             with_account_auth_guidance(&other, Some(&account(AccountContextSource::Login, None))),
             "connection reset"
         );
+    }
+
+    #[test]
+    fn model_scoped_pool_block_emits_model_limit_sentence_and_retry_after_marker() {
+        let blocked = AllAccountsBlockedError {
+            soonest_unblock_at: Some(3_900_000.0),
+            block_reason: Some("rate_limit"),
+            unavailable_account: None,
+            limited_model: Some("claude-opus-5".into()),
+        };
+        let text = with_account_auth_guidance_at(&anyhow::Error::new(blocked), None, 0.0);
+        assert!(
+            text.starts_with(
+                "All Anthropic Subscription accounts have hit the usage limit for model claude-opus-5; it resets in 1 hours 5 minutes, at 1970-01-01T01:05:00.000Z.\n"
+            ),
+            "{text}"
+        );
+        assert!(text.ends_with(" (retry-after-ms: 3900000)"), "{text}");
     }
 }

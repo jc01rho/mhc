@@ -4,6 +4,7 @@ pub enum PromptPresetName {
     Auto,
     ClaudeFable5,
     ClaudeFable51,
+    ClaudeFable52,
     ClaudeFable55,
     ClaudeOpus55,
     ClaudeOpus5,
@@ -42,6 +43,7 @@ impl PromptPresetName {
         match self {
             Self::Auto => "auto",
             Self::ClaudeFable5 => "claude-fable-5",
+            Self::ClaudeFable52 => "claude-fable-5-2",
             Self::ClaudeFable55 => "claude-fable-5-5",
             Self::ClaudeFable51 => "claude-fable-5-1",
             Self::ClaudeOpus55 => "claude-opus-5-5",
@@ -82,6 +84,7 @@ pub fn parse_prompt_preset(value: Option<&str>) -> Option<PromptPresetName> {
     match value? {
         "auto" => Some(PromptPresetName::Auto),
         "claude-fable-5" => Some(PromptPresetName::ClaudeFable5),
+        "claude-fable-5-2" => Some(PromptPresetName::ClaudeFable52),
         "claude-fable-5-5" => Some(PromptPresetName::ClaudeFable55),
         "claude-fable-5-1" => Some(PromptPresetName::ClaudeFable51),
         "claude-opus-5-5" => Some(PromptPresetName::ClaudeOpus55),
@@ -129,6 +132,7 @@ pub fn load_prompt_preset_settings(
 
 pub const VALID_PRESETS: &[&str] = &[
     "auto",
+    "claude-fable-5-2",
     "claude-fable-5-5",
     "claude-fable-5",
     "claude-fable-5-1",

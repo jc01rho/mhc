@@ -9,6 +9,7 @@ use maho_ai::{
 use std::{future::Future, pin::Pin, sync::Arc};
 
 pub const VERTEX_MODEL_GARDEN_LOCATION: &str = "global";
+pub const VERTEX_MODEL_GARDEN_REGISTRATION_BASE_URL: &str = "https://aiplatform.googleapis.com/v1";
 
 pub type ResolveVertexAccess = Arc<
     dyn Fn(
@@ -64,8 +65,10 @@ pub fn stream_vertex_model_garden(
         let mut options = options.unwrap_or_default();
         let access = resolve_access(options.stream.request.env.clone()).await?;
         let mut target = target_model;
-        target.base_url =
-            build_vertex_openapi_base_url(&access.project, VERTEX_MODEL_GARDEN_LOCATION);
+        if target.base_url == VERTEX_MODEL_GARDEN_REGISTRATION_BASE_URL {
+            target.base_url =
+                build_vertex_openapi_base_url(&access.project, VERTEX_MODEL_GARDEN_LOCATION);
+        }
         options.stream.request.api_key = Some(access.access_token);
         options
             .stream

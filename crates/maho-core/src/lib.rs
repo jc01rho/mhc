@@ -60,6 +60,7 @@ pub mod paths;
 pub mod prompt_size_inventory;
 pub mod prompt_templates;
 pub mod provider_api_key_auth;
+pub mod provider_base_url_notice;
 pub mod provider_composer;
 pub mod provider_consent;
 pub mod resolve_config_value;

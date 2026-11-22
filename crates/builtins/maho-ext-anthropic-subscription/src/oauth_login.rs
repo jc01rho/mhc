@@ -140,15 +140,15 @@ impl AnthropicSubscriptionOAuth {
     }
 }
 
-fn recovery_target(accounts: &[AccountSlot]) -> Option<&str> {
-    if accounts.len() == 1 {
-        return Some(&accounts[0].name);
-    }
-    let mut blocked = accounts
+pub fn recovery_target(accounts: &[AccountSlot]) -> Option<&str> {
+    let mut auth_blocked = accounts
         .iter()
         .filter(|slot| slot.block_reason.as_deref() == Some("auth_error"));
-    let target = blocked.next()?;
-    blocked.next().is_none().then_some(target.name.as_str())
+    let target = auth_blocked.next()?;
+    auth_blocked
+        .next()
+        .is_none()
+        .then_some(target.name.as_str())
 }
 fn to_slot(credential: OAuthCredential, name: String, source: AccountSource) -> AccountSlot {
     AccountSlot {
@@ -383,5 +383,29 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["work"]
         );
+    }
+
+    #[test]
+    fn lone_healthy_slot_is_not_a_recovery_target() {
+        let healthy = to_slot(
+            OAuthCredential::new("a", "r", 1.0),
+            "default".into(),
+            AccountSource::Login,
+        );
+        assert_eq!(recovery_target(std::slice::from_ref(&healthy)), None);
+        let mut blocked = healthy.clone();
+        blocked.name = "expired".into();
+        blocked.block_reason = Some("auth_error".into());
+        assert_eq!(
+            recovery_target(std::slice::from_ref(&blocked)),
+            Some("expired")
+        );
+        assert_eq!(
+            recovery_target(&[healthy, blocked.clone()]),
+            Some("expired")
+        );
+        let mut second_blocked = blocked.clone();
+        second_blocked.name = "expired-2".into();
+        assert_eq!(recovery_target(&[blocked, second_blocked]), None);
     }
 }
