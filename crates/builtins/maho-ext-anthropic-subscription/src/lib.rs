@@ -12,6 +12,13 @@ pub mod auth_environment;
 pub mod auth_lane;
 pub mod availability;
 pub mod bounded_queue;
+pub mod claude_cli_auth;
+pub mod claude_cli_auth_status;
+pub mod claude_cli_browser_capture;
+pub mod claude_cli_environment;
+pub mod claude_cli_process;
+#[cfg(all(test, unix))]
+mod claude_cli_test_support;
 pub mod claude_settings_env;
 pub mod cold_seed_budget;
 pub mod cold_seed_images;
