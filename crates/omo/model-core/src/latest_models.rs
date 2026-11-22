@@ -1,5 +1,6 @@
 //! Current member of each family; aliases read this registry. Deliberate older rungs
-//! (`claude-opus-4-6`, `gpt-5.6-sol`, and the GPT-6 / GPT-6.1 rungs behind GPT-6.2) stay literal.
+//! (`claude-opus-4-6`, `gpt-5.6-sol`, `claude-fable-5-1`, and the GPT-6 / GPT-6.1 rungs behind
+//! GPT-6.2) stay literal.
 //! `kimiK3` is the previous Kimi generation, kept for the rungs of providers that do not serve
 //! `kimi` yet (OpenCode Zen, Bailian, Firmware, Ollama Cloud, AIHubMix).
 pub const CLAUDE_OPUS: &str = "claude-opus-5-5";
@@ -9,7 +10,7 @@ pub const LATEST_MODEL_BY_FAMILY: &[(&str, &str)] = &[
     ("claudeOpus", CLAUDE_OPUS),
     ("claudeSonnet", CLAUDE_SONNET),
     ("claudeHaiku", CLAUDE_HAIKU),
-    ("claudeFable", "claude-fable-5-1"),
+    ("claudeFable", "claude-fable-5-2"),
     ("gptAstra", "gpt-6.2-astra"),
     ("gptSol", "gpt-6.2-sol"),
     ("gptSolFast", "gpt-6.2-sol-fast"),

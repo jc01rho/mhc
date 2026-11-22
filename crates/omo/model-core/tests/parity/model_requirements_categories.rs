@@ -190,7 +190,7 @@ fn visual_engineering_starts_with_argon_low() {
 }
 
 #[test]
-fn visual_engineering_follows_the_approved_4_rung_chain_without_fable() {
+fn visual_engineering_follows_the_approved_6_rung_chain() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain,
         vec![
@@ -198,6 +198,16 @@ fn visual_engineering_follows_the_approved_4_rung_chain_without_fable() {
                 &["google", "google-vertex", "opencode"],
                 "gemini-4-argon",
                 Some("low")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-2",
+                Some("max")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-1",
+                Some("max")
             ),
             entry(
                 &["anthropic", "anthropic-api", "github-copilot", "opencode"],
@@ -328,10 +338,20 @@ fn unspecified_high_follows_the_approved_opus_first_3_rung_chain() {
 }
 
 #[test]
-fn artistry_follows_the_approved_3_rung_chain_without_fable() {
+fn artistry_follows_the_approved_5_rung_chain() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,
         vec![
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-2",
+                Some("max")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-1",
+                Some("max")
+            ),
             entry(
                 &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-opus-5-5",
@@ -351,7 +371,7 @@ fn artistry_follows_the_approved_3_rung_chain_without_fable() {
 fn writing_leads_with_argon_low_then_opus_without_fable() {
     let chain = &CATEGORY_MODEL_REQUIREMENTS["writing"].fallback_chain;
 
-    assert!(!chain.iter().any(|entry| entry.model.contains("fable")));
+    assert!(!chain.iter().any(|entry| entry.model == "claude-fable-5-1"));
     assert_eq!(
         chain,
         &vec![

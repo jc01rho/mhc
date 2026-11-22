@@ -9,8 +9,7 @@
 //! use - and NOT a single `provider/model` string, so a Copilot-only, Bedrock-only or gateway-only
 //! user still resolves the model instead of reading "unavailable" while the model sits right there
 //! in the registry. Provider spellings are copied from those chains: senpi-only `kimi-coding` plus
-//! the leftover OpenCode `kimi-for-coding` alias those chains keep, and the engine GLM ids `zai` /
-//! `zai-coding-cn` (not OpenCode's `zai-coding-plan`; #8824).
+//! the leftover OpenCode `kimi-for-coding` alias those chains keep.
 //!
 //! The table is additive data: an `omo.json` `model_profiles.<name>` entry replaces the builtin of
 //! the same name WHOLESALE (see [`crate::resolve`]), so a later change here can never silently
@@ -103,8 +102,6 @@ const KIMI_PROVIDERS: &[&str] = &[
     "moonshotai",
     "opencode-go",
 ];
-// Engine Z.AI ids. `omo setup` imports OpenCode's `zai-coding-plan` key as `zai` (#8799).
-const GLM_PROVIDERS: &[&str] = &["zai", "zai-coding-cn", "opencode-go"];
 const GPT_PROVIDERS: &[&str] = &[
     "chatgpt-subscription",
     "openai",
@@ -128,23 +125,28 @@ const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
         variant: Some("medium"),
     },
     BuiltinRung {
+        providers: CLAUDE_PROVIDERS,
+        model: "claude-fable-5-2",
+        variant: Some("medium"),
+    },
+    BuiltinRung {
         providers: KIMI_PROVIDERS,
         model: "kimi-k3.1-pro",
         variant: Some("max"),
     },
+];
+const DAILY_HEAVY_MODELS: &[BuiltinRung] = &[
     BuiltinRung {
-        providers: GLM_PROVIDERS,
-        model: "glm-5.3",
-        variant: Some("max"),
+        providers: CLAUDE_PROVIDERS,
+        model: "claude-fable-5-2",
+        variant: Some("high"),
+    },
+    BuiltinRung {
+        providers: CLAUDE_PROVIDERS,
+        model: "claude-fable-5-1",
+        variant: Some("xhigh"),
     },
 ];
-// Daily · Heavy carries no Claude Fable rung (owner policy): it runs Claude Opus 5.5 at the xhigh
-// effort the Fable rung used.
-const DAILY_HEAVY_MODELS: &[BuiltinRung] = &[BuiltinRung {
-    providers: CLAUDE_PROVIDERS,
-    model: "claude-opus-5-5",
-    variant: Some("xhigh"),
-}];
 const GEEKY_NORMAL_MODELS: &[BuiltinRung] = &[
     BuiltinRung {
         providers: GPT_6_2_ASTRA_PROVIDERS,
@@ -280,18 +282,11 @@ mod tests {
     }
 
     #[test]
-    fn no_builtin_lane_routes_to_a_claude_fable_model() {
-        for (id, profile) in builtin_model_profiles() {
-            assert!(
-                profile
-                    .models
-                    .iter()
-                    .all(|rung| !rung.model.contains("fable")),
-                "{id}"
-            );
-        }
+    fn daily_heavy_runs_fable_5_2_high_then_fable_5_1_xhigh() {
         let heavy = &builtin_model_profiles()["daily-heavy"];
-        assert_eq!(heavy.models[0].model, "claude-opus-5-5");
-        assert_eq!(heavy.models[0].variant, Some("xhigh"));
+        assert_eq!(heavy.models[0].model, "claude-fable-5-2");
+        assert_eq!(heavy.models[0].variant, Some("high"));
+        assert_eq!(heavy.models[1].model, "claude-fable-5-1");
+        assert_eq!(heavy.models[1].variant, Some("xhigh"));
     }
 }

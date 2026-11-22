@@ -143,6 +143,10 @@ pub fn gate_rungs(
         .collect()
 }
 
+fn same_family_top_model() -> &'static str {
+    maho_ext_recommended_models::recommended_fable_model()
+}
+
 /// Built-in profiles plus the rungs the launch gate dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuiltProfiles {
@@ -186,7 +190,11 @@ pub fn build_builtin_profiles(released: bool, warn: &mut dyn FnMut(&str)) -> Bui
             "daily-heavy",
             "daily",
             "heavy",
-            vec![recommended_rung("claude-opus-5-5", Some("xhigh"))],
+            vec![
+                recommended_rung(LAUNCH_GATED_MODEL, Some("xhigh")),
+                recommended_rung(same_family_top_model(), Some("xhigh")),
+                recommended_rung("claude-opus-5-5", Some("high")),
+            ],
         ),
         (
             "geeky-normal",

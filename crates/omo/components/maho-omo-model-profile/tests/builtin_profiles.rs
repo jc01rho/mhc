@@ -164,23 +164,6 @@ fn ranks_the_chatgpt_subscription_ahead_of_the_openai_api_lane_on_every_gpt_rung
 }
 
 #[test]
-fn heads_every_glm_rung_with_engine_zai_then_zai_coding_cn() {
-    let glm: Vec<(&str, Vec<&str>, &str)> = rungs()
-        .into_iter()
-        .filter(|(_, _, model)| model.starts_with("glm-"))
-        .collect();
-    assert!(!glm.is_empty());
-    let misordered: Vec<String> = glm
-        .iter()
-        .filter(|(_, providers, _)| {
-            providers.first() != Some(&"zai") || providers.get(1) != Some(&"zai-coding-cn")
-        })
-        .map(|(profile, providers, model)| format!("{profile}: {}/{model}", providers.join("|")))
-        .collect();
-    assert_eq!(misordered, Vec::<String>::new());
-}
-
-#[test]
 fn heads_every_claude_rung_with_the_anthropic_subscription_lane() {
     let claude: Vec<(&str, Vec<&str>, &str)> = rungs()
         .into_iter()
@@ -196,15 +179,19 @@ fn heads_every_claude_rung_with_the_anthropic_subscription_lane() {
 }
 
 #[test]
-fn orders_daily_normal_opus_medium_then_kimi_max_then_glm_max() {
+fn orders_daily_normal_opus_medium_then_fable_5_2_medium_then_kimi_max_and_nothing_else() {
     assert_eq!(
         chain_of("daily-normal"),
-        ["claude-opus-5-5 medium", "kimi-k3.1-pro max", "glm-5.3 max"]
+        [
+            "claude-opus-5-5 medium",
+            "claude-fable-5-2 medium",
+            "kimi-k3.1-pro max"
+        ]
     );
 }
 
 #[test]
-fn runs_daily_heavy_as_opus_xhigh_only_without_fable() {
+fn runs_daily_heavy_as_fable_5_2_at_high_then_fable_5_1_at_xhigh() {
     let models: Vec<(Vec<&str>, &str, Option<&str>)> = profiles()["daily-heavy"]
         .models
         .iter()
@@ -212,17 +199,30 @@ fn runs_daily_heavy_as_opus_xhigh_only_without_fable() {
         .collect();
     assert_eq!(
         models,
-        [(
-            vec![
-                "anthropic-subscription",
-                "anthropic",
-                "anthropic-api",
-                "github-copilot",
-                "opencode"
-            ],
-            "claude-opus-5-5",
-            Some("xhigh")
-        )]
+        [
+            (
+                vec![
+                    "anthropic-subscription",
+                    "anthropic",
+                    "anthropic-api",
+                    "github-copilot",
+                    "opencode"
+                ],
+                "claude-fable-5-2",
+                Some("high")
+            ),
+            (
+                vec![
+                    "anthropic-subscription",
+                    "anthropic",
+                    "anthropic-api",
+                    "github-copilot",
+                    "opencode"
+                ],
+                "claude-fable-5-1",
+                Some("xhigh")
+            )
+        ]
     );
 }
 

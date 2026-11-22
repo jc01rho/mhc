@@ -8,7 +8,6 @@ use super::gpt_6_2_entries::GPT_6_2_MODEL_CAPABILITIES;
 use super::types::ModelCapabilitiesSnapshotEntry;
 use super::types::SnapshotLimit;
 use super::types::SnapshotModalities;
-use crate::fable_55_launch::FABLE_55_LAUNCH;
 
 fn strings(values: &[&str]) -> Option<Vec<String>> {
     Some(values.iter().map(|value| (*value).to_string()).collect())
@@ -19,7 +18,6 @@ pub static SUPPLEMENTAL_MODEL_CAPABILITIES: LazyLock<
 > = LazyLock::new(|| {
     let mut entries = GPT_6_2_MODEL_CAPABILITIES.clone();
     entries.extend([
-        (FABLE_55_LAUNCH.id.clone(), FABLE_55_LAUNCH.clone()),
         (
             "kimi-k3".to_string(),
             ModelCapabilitiesSnapshotEntry {
@@ -102,6 +100,25 @@ pub static SUPPLEMENTAL_MODEL_CAPABILITIES: LazyLock<
             "claude-fable-5-1".to_string(),
             ModelCapabilitiesSnapshotEntry {
                 id: "claude-fable-5-1".to_string(),
+                family: Some("claude-fable".to_string()),
+                reasoning: Some(true),
+                temperature: Some(false),
+                tool_call: Some(true),
+                modalities: Some(SnapshotModalities {
+                    input: strings(&["text", "image", "pdf"]),
+                    output: strings(&["text"]),
+                }),
+                limit: Some(SnapshotLimit {
+                    context: Some(1000000),
+                    input: None,
+                    output: Some(128000),
+                }),
+            },
+        ),
+        (
+            "claude-fable-5-2".to_string(),
+            ModelCapabilitiesSnapshotEntry {
+                id: "claude-fable-5-2".to_string(),
                 family: Some("claude-fable".to_string()),
                 reasoning: Some(true),
                 temperature: Some(false),

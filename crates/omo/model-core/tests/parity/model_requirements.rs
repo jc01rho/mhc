@@ -199,12 +199,29 @@ fn multimodal_looker_keeps_vision_capable_fallback_order() {
 }
 
 #[test]
-fn prometheus_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_without_fable() {
+fn prometheus_uses_fable_5_2_xhigh_then_fable_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max()
+ {
     let chain = chain("prometheus");
 
-    assert_eq!(chain.len(), 3);
+    assert_eq!(chain.len(), 5);
     assert_eq!(
         chain[0],
+        entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-2",
+            Some("xhigh")
+        )
+    );
+    assert_eq!(
+        chain[1],
+        entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-1",
+            Some("xhigh")
+        )
+    );
+    assert_eq!(
+        chain[2],
         entry(
             &["anthropic", "github-copilot", "opencode"],
             "claude-opus-5-5",
@@ -212,24 +229,40 @@ fn prometheus_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_w
         )
     );
     assert_eq!(
-        chain[1],
+        chain[3],
         entry(
             &["opencode-go", "kimi-for-coding", "moonshotai"],
             "kimi-k3.1-pro",
             Some("max")
         )
     );
-    assert_eq!(chain[2], entry(&["opencode"], "kimi-k3", Some("max")));
-    assert!(!chain.iter().any(|entry| entry.model.contains("fable")));
+    assert_eq!(chain[4], entry(&["opencode"], "kimi-k3", Some("max")));
 }
 
 #[test]
-fn metis_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_without_fable() {
+fn metis_uses_fable_5_2_max_then_fable_5_1_max_then_opus_5_5_max_then_kimi_k3_1_pro_max_and_kimi_k3_max()
+ {
     let chain = chain("metis");
 
-    assert_eq!(chain.len(), 3);
+    assert_eq!(chain.len(), 5);
     assert_eq!(
         chain[0],
+        entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-2",
+            Some("max")
+        )
+    );
+    assert_eq!(
+        chain[1],
+        entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-1",
+            Some("max")
+        )
+    );
+    assert_eq!(
+        chain[2],
         entry(
             &["anthropic", "github-copilot", "opencode"],
             "claude-opus-5-5",
@@ -237,15 +270,14 @@ fn metis_leads_with_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max_withou
         )
     );
     assert_eq!(
-        chain[1],
+        chain[3],
         entry(
             &["opencode-go", "kimi-for-coding", "moonshotai"],
             "kimi-k3.1-pro",
             Some("max")
         )
     );
-    assert_eq!(chain[2], entry(&["opencode"], "kimi-k3", Some("max")));
-    assert!(!chain.iter().any(|entry| entry.model.contains("fable")));
+    assert_eq!(chain[4], entry(&["opencode"], "kimi-k3", Some("max")));
 }
 
 #[test]
@@ -634,7 +666,7 @@ fn visual_engineering_starts_with_argon_low() {
 }
 
 #[test]
-fn visual_engineering_follows_the_approved_4_rung_chain_without_fable() {
+fn visual_engineering_follows_the_approved_6_rung_chain() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain,
         vec![
@@ -642,6 +674,16 @@ fn visual_engineering_follows_the_approved_4_rung_chain_without_fable() {
                 &["google", "google-vertex", "opencode"],
                 "gemini-4-argon",
                 Some("low")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-2",
+                Some("max")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-1",
+                Some("max")
             ),
             entry(
                 &["anthropic", "anthropic-api", "github-copilot", "opencode"],
@@ -772,10 +814,20 @@ fn unspecified_high_follows_the_approved_opus_first_3_rung_chain() {
 }
 
 #[test]
-fn artistry_follows_the_approved_3_rung_chain_without_fable() {
+fn artistry_follows_the_approved_5_rung_chain() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,
         vec![
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-2",
+                Some("max")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                "claude-fable-5-1",
+                Some("max")
+            ),
             entry(
                 &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-opus-5-5",
@@ -795,7 +847,7 @@ fn artistry_follows_the_approved_3_rung_chain_without_fable() {
 fn writing_leads_with_argon_low_then_opus_without_fable() {
     let chain = &CATEGORY_MODEL_REQUIREMENTS["writing"].fallback_chain;
 
-    assert!(!chain.iter().any(|entry| entry.model.contains("fable")));
+    assert!(!chain.iter().any(|entry| entry.model == "claude-fable-5-1"));
     assert_eq!(
         chain,
         &vec![
