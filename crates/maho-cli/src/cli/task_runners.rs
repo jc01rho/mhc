@@ -44,6 +44,10 @@ pub fn live_omo_config(
     };
     let initial = load();
     let config = initial.config.clone();
+    // The senpi-side selection paths (`/model`, the retry chain, the provider stream) never see the
+    // omo config, so the config the planner adopts publishes its Fable execution gate setting
+    // process-wide; a reload the provider rejects leaves the last good config's setting in force.
+    maho_ai::model_execution_gate::apply_config(&config);
     let provider = create_live_config_provider(LiveConfigProviderOptions {
         load_config: Arc::new(move || Ok(load())),
         initial,
@@ -53,6 +57,11 @@ pub fn live_omo_config(
         }),
         cache_ttl_ms: DEFAULT_LIVE_CONFIG_CACHE_TTL_MS,
         now: Arc::new(system_clock_ms),
+    });
+    let provider: maho_omo_task::planner::ResolveOmoConfig = Arc::new(move || {
+        let adopted = provider();
+        maho_ai::model_execution_gate::apply_config(&adopted);
+        adopted
     });
     (config, provider)
 }
@@ -69,9 +78,6 @@ fn live_config_load(
             env: Some(env.clone()),
             ..Default::default()
         });
-    // The senpi-side selection paths (`/model`, the retry chain, the provider stream) never see the
-    // omo config, so every load publishes its Fable execution gate setting process-wide.
-    maho_ai::model_execution_gate::apply_config(&loaded.config);
     let diagnostics = loaded
         .diagnostics
         .iter()
