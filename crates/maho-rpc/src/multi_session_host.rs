@@ -1173,9 +1173,25 @@ impl HostCore {
     /// attachment drained, the runtime disposed and the path reservation freed before this resolves, and sealed
     /// `session_closed { reason: "released" }` naming the file. `false` when another close already owns the entry.
     async fn tear_down_released(&self, session_id: &str, session_path: &str) -> bool {
+        let mut recorded_paths = std::collections::BTreeSet::from([session_path.to_owned()]);
         if let Some(workers) = &self.workers {
+            if let Some(paths) = workers.with_entry(session_id, |entry| {
+                [
+                    entry.session_path.clone(),
+                    entry.profile.session_path.clone(),
+                ]
+            }) {
+                recorded_paths.extend(paths.into_iter().flatten());
+            }
             if workers.force_close(session_id).is_none() {
                 return false;
+            }
+            // The file is another runtime's now: drop its handover-parked record entry as an explicit close does,
+            // or the next host on this endpoint would reopen it (senpi#6444).
+            if let Some(dir) = self.handover_parked_dir.get() {
+                for path in &recorded_paths {
+                    crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
+                }
             }
             if let Some(worker) = workers.worker(session_id) {
                 worker.cancel_pending_extension_ui_requests();
@@ -1190,8 +1206,27 @@ impl HostCore {
                 if entry.close.state != crate::session_registry::RpcSessionState::Open {
                     return false;
                 }
+                recorded_paths.extend(
+                    [
+                        entry.session_path.clone(),
+                        entry.profile.session_path.clone(),
+                        entry
+                            .runtime
+                            .as_ref()
+                            .and_then(|runtime| runtime.session().session_file()),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                );
                 entry.close.attachments = 0;
                 entry.close.state = crate::session_registry::RpcSessionState::Closing;
+            }
+            // The file is another runtime's now: drop its handover-parked record entry as an explicit close does,
+            // or the next host on this endpoint would reopen it (senpi#6444).
+            if let Some(dir) = self.handover_parked_dir.get() {
+                for path in &recorded_paths {
+                    crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
+                }
             }
             if let Some(binding) = self.bindings.lock().await.remove(session_id) {
                 binding.cancel_pending_extension_ui_requests();
@@ -2201,6 +2236,32 @@ impl HostCore {
                             );
                             return Ok(());
                         }
+                        if let Some(dir) = self.handover_parked_dir.get() {
+                            let paths = {
+                                let registry = self.registry.lock().await;
+                                registry
+                                    .get(&session_id)
+                                    .map(|entry| {
+                                        [
+                                            entry.session_path.clone(),
+                                            entry.profile.session_path.clone(),
+                                            entry.runtime.as_ref().and_then(|runtime| {
+                                                runtime.session().session_file()
+                                            }),
+                                        ]
+                                    })
+                                    .into_iter()
+                                    .flatten()
+                                    .flatten()
+                                    .collect::<std::collections::BTreeSet<_>>()
+                            };
+                            for path in &paths {
+                                crate::host_handover_parked::clear_handover_parked_session(
+                                    dir, path,
+                                )
+                                .await;
+                            }
+                        }
                         if let Some(binding) = self.bindings.lock().await.remove(&session_id) {
                             binding.dispose().await;
                         }
@@ -3167,6 +3228,22 @@ impl HostCore {
                 .await;
             self.success(connection, id, "close_session", None, Some(session_id));
             return;
+        }
+        if let Some(dir) = self.handover_parked_dir.get() {
+            let paths = workers
+                .with_entry(&session_id, |entry| {
+                    [
+                        entry.session_path.clone(),
+                        entry.profile.session_path.clone(),
+                    ]
+                })
+                .into_iter()
+                .flatten()
+                .flatten()
+                .collect::<std::collections::BTreeSet<_>>();
+            for path in &paths {
+                crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
+            }
         }
         if let Some(worker) = workers.worker(&session_id) {
             worker.dispose();
@@ -5868,6 +5945,129 @@ mod handoff_tests {
         drop(first);
         assert!(core.opens_by_connection.lock().unwrap().is_empty());
     }
+    // senpi#6444 / senpi#6449: `release_session` (for `move` or `takeover`) and `close_session` drop the
+    // session's entry in the endpoint's handover-parked record so the next host on the same endpoint never
+    // reopens a file handed to another runtime or explicitly closed, while a refused release keeps it.
+    #[tokio::test]
+    async fn a_released_or_closed_session_leaves_no_handover_parked_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon_dir = temp.path().join("daemon");
+        std::fs::create_dir_all(&daemon_dir).unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        core.set_handover_parked_dir(daemon_dir.clone());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+
+        for (index, command_fn, expected_success, expected_kept) in [
+            (
+                1,
+                Box::new(|session_id: String| {
+                    serde_json::json!({
+                        "id": "rel-move",
+                        "type": "release_session",
+                        "sessionId": session_id,
+                        "reason": "move",
+                        "moveId": "move-6444",
+                        "target": "laptop"
+                    })
+                }) as Box<dyn FnOnce(String) -> serde_json::Value + Send>,
+                true,
+                0usize,
+            ),
+            (
+                2,
+                Box::new(|session_id: String| {
+                    serde_json::json!({
+                        "id": "rel-takeover",
+                        "type": "release_session",
+                        "sessionId": session_id,
+                        "reason": "takeover"
+                    })
+                }),
+                true,
+                0usize,
+            ),
+            (
+                3,
+                Box::new(|session_id: String| {
+                    serde_json::json!({
+                        "id": "close-last",
+                        "type": "close_session",
+                        "sessionId": session_id
+                    })
+                }),
+                true,
+                0usize,
+            ),
+            (
+                4,
+                Box::new(|session_id: String| {
+                    serde_json::json!({
+                        "id": "rel-unknown",
+                        "type": "release_session",
+                        "sessionId": session_id,
+                        "reason": "archive"
+                    })
+                }),
+                false,
+                1usize,
+            ),
+        ] {
+            let path = temp
+                .path()
+                .join(format!("s-{index}.jsonl"))
+                .to_string_lossy()
+                .into_owned();
+            let open_id = format!("open-{index}");
+            core.handle(
+                Some("c"),
+                &serde_json::json!({
+                    "id": open_id,
+                    "type": "open_session",
+                    "cwd": cwd,
+                    "sessionPath": path,
+                    "retain_on_disconnect": true
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+            let session_id = reply_to(&mut client, &open_id).await["data"]["sessionId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            crate::host_handover_parked::record_handover_parked_session(
+                &daemon_dir,
+                &crate::host_handover_parked::HandoverParkedEntry {
+                    session_path: path.clone(),
+                    retain_on_disconnect: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                crate::host_handover_parked::read_handover_parked_sessions(&daemon_dir)
+                    .await
+                    .len(),
+                1
+            );
+
+            let cmd = command_fn(session_id);
+            let cmd_id = cmd["id"].as_str().unwrap().to_owned();
+            core.handle(Some("c"), &cmd.to_string()).await.unwrap();
+            let answer = reply_to(&mut client, &cmd_id).await;
+            assert_eq!(answer["success"], expected_success);
+            assert_eq!(
+                crate::host_handover_parked::read_handover_parked_sessions(&daemon_dir)
+                    .await
+                    .len(),
+                expected_kept
+            );
+            crate::host_handover_parked::clear_handover_parked_session(&daemon_dir, &path).await;
+        }
+    }
+
     #[tokio::test]
     async fn reclaim_seals_session_closed_to_attached_connections_only() {
         let temp = tempfile::tempdir().unwrap();
