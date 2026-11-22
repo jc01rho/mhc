@@ -9,32 +9,7 @@ const DENYLIST: &[&str] = &[
     "opengateway",
     "vercel-ai-gateway",
 ];
-const PRECEDENCE: &[&str] = &[
-    "anthropic-subscription",
-    "anthropic",
-    "chatgpt-subscription",
-    "openai",
-    "google",
-    "google-vertex",
-    "kimi-coding",
-    "moonshotai",
-    "moonshotai-cn",
-    "zai",
-    "zai-coding-cn",
-    "xai",
-    "deepseek",
-    "mistral",
-    "minimax",
-    "minimax-cn",
-    "xiaomi",
-    "xiaomi-token-plan-cn",
-    "xiaomi-token-plan-sgp",
-    "xiaomi-token-plan-ams",
-    "qwen-token-plan",
-    "qwen-token-plan-individual",
-    "qwen-token-plan-cn",
-    "alibaba-token-plan",
-];
+const PRECEDENCE: &[&str] = &["anthropic-subscription", "anthropic", "kimi-coding"];
 
 pub const FIRST_PARTY_PROVIDERS: &[(&[&str], &[&str])] = &[
     (&["claude-"], &["anthropic-subscription", "anthropic"]),
@@ -204,9 +179,19 @@ pub fn rank_family_models_for_session<'a>(
     limit: Option<usize>,
     session_provider: Option<&str>,
 ) -> Vec<&'a Model> {
+    let effective_session_provider = match (first_party_providers_for(family), session_provider) {
+        (None, Some(sp))
+            if !models
+                .iter()
+                .any(|m| m.provider.eq_ignore_ascii_case(sp) && matches_family(m, family)) =>
+        {
+            None
+        }
+        (_, sp) => sp,
+    };
     let mut grouped: IndexMap<&str, Vec<&'a Model>> = IndexMap::new();
     for model in models {
-        if !in_bare_scope(&model.provider, family, session_provider)
+        if !in_bare_scope(&model.provider, family, effective_session_provider)
             || !matches_family(model, family)
             || tiers.is_fallback_eligible.is_some_and(|f| !f(model))
         {
@@ -214,7 +199,7 @@ pub fn rank_family_models_for_session<'a>(
         }
         grouped.entry(&model.provider).or_default().push(model);
     }
-    if let Some(session_provider) = session_provider
+    if let Some(session_provider) = effective_session_provider
         && let Some(own_key) = grouped
             .keys()
             .find(|provider| provider.eq_ignore_ascii_case(session_provider))
