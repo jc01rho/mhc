@@ -31,6 +31,9 @@ pub fn resolve_preset(
         PromptPresetName::ClaudeFable5 => {
             crate::claude_fable_5::build_claude_fable5_prompt(options)
         }
+        PromptPresetName::ClaudeFable52 => {
+            crate::claude_fable_5_2::build_claude_fable52_prompt(options)
+        }
         PromptPresetName::ClaudeFable55 => {
             crate::claude_fable_5_5::build_claude_fable55_prompt(options)
         }
