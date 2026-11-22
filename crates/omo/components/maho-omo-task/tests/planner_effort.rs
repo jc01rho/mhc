@@ -186,9 +186,7 @@ fn builtin_agent_fails_closed_without_registry() {
 }
 #[test]
 fn variant_bearing_builtin_category_fallback_applies_variant() {
-    let registry = Arc::new(Registry(
-        json!({"provider":"zai-coding-plan","id":"glm-5.2"}),
-    ));
+    let registry = Arc::new(Registry(json!({"provider":"kimi-coding","id":"k3.1-pro"})));
     let planner =
         create_task_child_planner(json!({}), vec![], Arc::new(move || Some(registry.clone())));
     let result = planner(&ManagerStartSpec {
