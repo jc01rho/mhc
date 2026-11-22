@@ -4,7 +4,7 @@ use maho_ai::models::{
     clamp_thinking_level, get_supported_thinking_levels, infer_openai_thinking_level_map,
     supports_configuration_update, supports_max, supports_xhigh,
 };
-use maho_ai::models_generated::{MODELS, get_builtin_model};
+use maho_ai::models_generated::get_builtin_model;
 use maho_ai::types::{Model, ModelThinkingLevel as L, ServiceTierPreference};
 
 fn builtin(provider: &str, id: &str) -> Model {
@@ -137,7 +137,8 @@ fn fable_5_2_rows_ship_across_upstream_providers() {
         ("amazon-bedrock", "anthropic.claude-fable-5-2"),
         ("amazon-bedrock", "global.anthropic.claude-fable-5-2"),
         ("amazon-bedrock", "us.anthropic.claude-fable-5-2"),
-        ("google-vertex", "claude-fable-5-2"),
+        ("github-copilot", "claude-fable-5.2"),
+        ("opencode", "claude-fable-5-2"),
         ("openrouter", "anthropic/claude-fable-5.2"),
         ("vercel-ai-gateway", "anthropic/claude-fable-5.2"),
     ] {
