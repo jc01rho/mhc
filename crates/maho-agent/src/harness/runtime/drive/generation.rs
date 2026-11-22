@@ -295,6 +295,7 @@ pub async fn run_generation(
     options.stream.request.signal = Some(drive.gate.signal());
     options.stream.request.telemetry_context =
         crate::harness::context::provider_telemetry_context(&drive.context);
+    options.stream.request.cwd = lane.session().metadata().cwd.clone();
     options.stream.session_id = Some(format!("{}:{}", lane.session().metadata().id, lane.name()));
     let metadata = super::response::ResponseMetadataSlot::default();
     options.stream.request.on_response =
