@@ -667,6 +667,10 @@ pub enum RpcCommandBody {
         durable_session_id: Value,
         #[serde(default, skip_serializing_if = "Value::is_null")]
         expected_host_instance: Value,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        takeover: Value,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        holder: Value,
     },
     /// Gives up one attachment of the requesting connection (senpi `release_attachment`).
     ReleaseAttachment,

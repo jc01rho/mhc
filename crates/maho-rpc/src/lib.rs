@@ -4,6 +4,8 @@ pub mod abort_grace;
 pub mod accepted_transcript;
 pub mod agent_effect_session;
 pub mod api_key_login_credential;
+pub mod attach_ledger;
+pub mod attach_takeover;
 pub mod automatic_input_gate;
 pub mod chain_admission;
 pub mod child_reaper;

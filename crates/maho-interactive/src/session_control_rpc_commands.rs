@@ -258,6 +258,15 @@ fn attach_session(
             "read list_sessions and get_protocol_info again, then attach with their ids",
         ));
     }
+    if command["takeover"] == true {
+        return TuiRpcAnswer::Answer(refusal(
+            id,
+            "attach_session",
+            "takeover_unsupported",
+            "only a headless engine with a takeover ledger takes sessions over",
+            "attach without takeover",
+        ));
+    }
     attachments.attach(connection);
     attachments.enqueue_for(
         connection,

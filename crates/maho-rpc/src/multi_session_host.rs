@@ -201,6 +201,8 @@ pub struct HostCore {
     /// `WorkerSessionRegistry` when a `workerConfiguration` is passed); `None` is the in-process registry.
     workers: Option<std::sync::Arc<crate::worker_session_registry::WorkerSessionRegistry>>,
     warm: Option<crate::host_warm::HostWarm>,
+    session_owner: Option<String>,
+    session_takeover: Option<std::sync::Arc<dyn crate::attach_ledger::AttachLedger>>,
     /// Who each connection speaks for (senpi `SessionCommandRouter.connectionRoles`, senpi#3811).
     connection_roles: crate::session_binding::SharedConnectionRoles,
     /// `<daemonDir>` the handoff-parked record lives under (senpi `handoverParkedDir`); set once a socket host
@@ -386,6 +388,8 @@ impl HostCore {
             handoff_parks: std::sync::atomic::AtomicUsize::new(0),
             workers: None,
             warm: None,
+            session_owner: None,
+            session_takeover: None,
             connection_roles: Default::default(),
             handover_parked_dir: std::sync::OnceLock::new(),
             active_requests: Default::default(),
@@ -757,6 +761,17 @@ impl HostCore {
     }
     pub fn with_warm(mut self, warm: crate::host_warm::HostWarm) -> Self {
         self.warm = Some(warm);
+        self
+    }
+    pub fn with_session_owner(mut self, owner: impl Into<String>) -> Self {
+        self.session_owner = Some(owner.into());
+        self
+    }
+    pub fn with_session_takeover(
+        mut self,
+        ledger: std::sync::Arc<dyn crate::attach_ledger::AttachLedger>,
+    ) -> Self {
+        self.session_takeover = Some(ledger);
         self
     }
     pub fn uses_worker_runtime(&self) -> bool {
@@ -1836,6 +1851,8 @@ impl HostCore {
             crate::rpc_types::RpcCommandBody::AttachSession {
                 durable_session_id,
                 expected_host_instance,
+                takeover,
+                holder,
             } => {
                 let session_id = command.session_id.clone().unwrap_or_default();
                 match self
@@ -1844,16 +1861,16 @@ impl HostCore {
                         &session_id,
                         durable_session_id,
                         expected_host_instance,
+                        takeover,
+                        holder,
                     )
                     .await
                 {
-                    Ok(()) => self.success(
+                    Ok(reply) => self.success(
                         connection,
                         command.id.clone(),
                         "attach_session",
-                        Some(crate::session_attachment_commands::attach_reply(
-                            &session_id,
-                        )),
+                        Some(reply),
                         Some(session_id),
                     ),
                     Err((code, data)) => self.refuse(
@@ -4206,12 +4223,14 @@ impl HostCore {
     }
     /// senpi `attachSession`.
     async fn attach_session(
-        &self,
+        self: &std::sync::Arc<Self>,
         connection: Option<&str>,
         session_id: &str,
         durable_session_id: &serde_json::Value,
         expected_host_instance: &serde_json::Value,
-    ) -> Result<(), (&'static str, serde_json::Value)> {
+        takeover: &serde_json::Value,
+        holder: &serde_json::Value,
+    ) -> Result<serde_json::Value, (&'static str, serde_json::Value)> {
         if self.is_draining() {
             return Err((
                 crate::rpc_types::RPC_ERROR_SESSION_BUSY_LIFECYCLE,
@@ -4244,13 +4263,95 @@ impl HostCore {
                 serde_json::json!({"reason":"no_connection"}),
             ));
         };
+        if takeover == &serde_json::Value::Bool(true) {
+            let Some(ledger) = self
+                .session_takeover
+                .as_ref()
+                .filter(|_| self.session_owner.as_deref() == Some("machine"))
+            else {
+                return Err((
+                    crate::attach_takeover::RPC_ERROR_TAKEOVER_UNSUPPORTED,
+                    crate::attach_takeover::takeover_unsupported_detail(),
+                ));
+            };
+            let Some(holder_id) = holder.as_str().filter(|id| !id.is_empty()) else {
+                return Err((
+                    crate::attach_takeover::RPC_ERROR_TAKEOVER_HOLDER_REQUIRED,
+                    serde_json::json!({}),
+                ));
+            };
+            let durable_id = durable_session_id.as_str().unwrap_or_default();
+            let record = ledger
+                .take_over(durable_id, holder_id)
+                .await
+                .map_err(|reason| {
+                    (
+                        crate::attach_takeover::RPC_ERROR_TAKEOVER_FAILED,
+                        serde_json::json!({"reason": reason}),
+                    )
+                })?;
+            if self.is_draining() {
+                return Err((
+                    crate::rpc_types::RPC_ERROR_SESSION_BUSY_LIFECYCLE,
+                    crate::session_attachment_commands::draining_refusal_detail(),
+                ));
+            }
+            if !self
+                .fanout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_registered(owner)
+            {
+                return Err((
+                    crate::rpc_types::RPC_ERROR_SESSION_NOT_ATTACHED,
+                    serde_json::json!({"reason":"no_connection"}),
+                ));
+            }
+            if !self
+                .live_identity(session_id)
+                .await
+                .is_some_and(|(open, _, _)| open)
+            {
+                return Err(unknown());
+            }
+            self.attach_live(owner, session_id)
+                .await
+                .map_err(|code| (code, serde_json::json!({})))?;
+            let taken = self
+                .attachments
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take_other_holds(session_id, owner);
+            let released_record = crate::attach_takeover::session_released_record(session_id);
+            for (other, holds) in &taken {
+                self.release_owner_attachment(other, session_id).await;
+                let still_connected = self
+                    .fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_registered(other);
+                if still_connected {
+                    self.respond_record(Some(other), "", released_record.clone());
+                }
+                for _ in 0..*holds {
+                    let _ = self.release_disconnect_attachment(session_id).await;
+                }
+            }
+            self.publish_status(session_id, "attach", "client", false)
+                .await;
+            return Ok(crate::attach_takeover::takeover_reply(
+                session_id,
+                &record,
+                taken.len(),
+            ));
+        }
         self.attach_live(owner, session_id)
             .await
             .map_err(|code| (code, serde_json::json!({})))?;
         // senpi `attach`: every live attachment is published.
         self.publish_status(session_id, "attach", "client", false)
             .await;
-        Ok(())
+        Ok(crate::session_attachment_commands::attach_reply(session_id))
     }
     /// senpi `releaseAttachment`: gives up one of the caller's attachments; the session ends only when that was the
     /// last one, and a turn in flight runs to settlement first (`deferred: true`). A drain owns every outstanding

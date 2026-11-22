@@ -1958,6 +1958,7 @@ fn skip_stream_event(event: &Value) -> bool {
                     | "extension_ui_request"
                     | "session_replaced"
                     | "session_parked"
+                    | "session_released"
             )
         )
 }
