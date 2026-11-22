@@ -1,7 +1,10 @@
 //! Which public-socket connections count as host activity (senpi `host-observe-request.ts`).
 //! A read marks itself with `observe: true` so the supervisor does not count it as an attachment.
 pub const OBSERVE_REQUEST_FIELD: &str = "observe";
+pub const WATCH_HOST_OCCUPANCY: &str = "watch_host_occupancy";
+pub const HOST_OCCUPANCY_RECORD: &str = "host_occupancy";
 pub const ORIGIN_HOST_INSTANCE_FIELD: &str = "origin_host_instance";
+const HOLD_HOST_FIELD: &str = "hold_host";
 const OBSERVING_COMMANDS: &[&str] = &[
     "get_protocol_info",
     "get_snapshot",
@@ -14,6 +17,7 @@ const OBSERVING_COMMANDS: &[&str] = &[
     // Side-effect-free reads of a session's state and history (senpi#4267).
     "get_state",
     "get_entries",
+    WATCH_HOST_OCCUPANCY,
 ];
 pub fn is_observing_request(line: &str) -> bool {
     let Ok(serde_json::Value::Object(record)) = serde_json::from_str::<serde_json::Value>(line)
@@ -27,6 +31,40 @@ pub fn is_observing_request(line: &str) -> bool {
     }
     record.get(OBSERVE_REQUEST_FIELD) == Some(&serde_json::Value::Bool(true))
         && kind.is_some_and(|kind| OBSERVING_COMMANDS.contains(&kind))
+}
+/// Whether an observing request line asks to hold (`Some(true)`) or release (`Some(false)`) the host (senpi#5626).
+pub fn observing_hold_change(line: &str) -> Option<bool> {
+    if !is_observing_request(line) {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()?
+        .as_object()?
+        .get(HOLD_HOST_FIELD)?
+        .as_bool()
+}
+/// Whether a request line is the supervisor observer's `watch_host_occupancy` (oh-my-openagent#14272).
+pub fn is_host_occupancy_watch(line: &str) -> bool {
+    if !line.contains(WATCH_HOST_OCCUPANCY) {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
+        .as_deref()
+        == Some(WATCH_HOST_OCCUPANCY)
+}
+/// The `holders` of a `host_occupancy` record line; `None` for every other line (oh-my-openagent#14272).
+pub fn host_occupancy_holders(line: &str) -> Option<usize> {
+    if !line.contains(HOST_OCCUPANCY_RECORD) {
+        return None;
+    }
+    let record = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let object = record.as_object()?;
+    if object.get("type")?.as_str()? != HOST_OCCUPANCY_RECORD {
+        return None;
+    }
+    usize::try_from(object.get("holders")?.as_u64()?).ok()
 }
 /// The host generation this process runs in (`SENPI_RPC_HOST_INSTANCE_ID`, trimmed), or `None` outside any host.
 pub fn origin_host_instance(env: &std::collections::HashMap<String, String>) -> Option<String> {
