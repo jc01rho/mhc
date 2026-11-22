@@ -59,6 +59,13 @@ impl maho_ai::compat::extension_oauth_types::OAuthLoginCallbacks for RpcLoginPro
             serde_json::json!({"type":"auth_login_url","provider":self.provider,"url":info.verification_uri}),
         );
     }
+    // senpi#4436: a progress line (a `provider_login_start` handler's download notice) reaches the client instead
+    // of being swallowed, so a long login is not a silent one.
+    fn on_progress(&self, message: &str) {
+        (self.sink)(serde_json::json!({
+            "type":"auth_login_progress","provider":self.provider,"text":message
+        }));
+    }
     fn on_prompt(&self, prompt: OAuthPrompt) -> maho_ai::types::BoxFuture<'_, String> {
         let ui = self.ui.clone();
         let login = self.login.clone();
@@ -200,6 +207,28 @@ mod tests {
             DialogSignal::new(&source.signal(), None)
                 .signal
                 .is_aborted()
+        );
+    }
+    // senpi#4436: a progress line reaches the client as `auth_login_progress` instead of being swallowed.
+    #[test]
+    fn progress_lines_reach_the_client() {
+        use maho_ai::compat::extension_oauth_types::OAuthLoginCallbacks;
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let sink = std::sync::Arc::clone(&sent);
+        let callbacks = RpcLoginPromptCallbacks::with_sink(
+            AbortController::new().signal(),
+            "anthropic-subscription".into(),
+            std::sync::Arc::new(move |record| {
+                sink.lock().unwrap().push(record);
+            }),
+            std::sync::Arc::new(maho_ext_api::NoopExtensionUi),
+        );
+        callbacks.on_progress("downloading 40%");
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            [serde_json::json!({
+                "type":"auth_login_progress","provider":"anthropic-subscription","text":"downloading 40%"
+            })]
         );
     }
 }
