@@ -413,8 +413,16 @@ pub fn group_changed_paths(
                 continue;
             }
             matched = true;
-            // The project container only rearms discovery; newly discovered config files carry the change.
-            if target.id == "builtin-project-presence" && rearmed_containers.contains(path) {
+            // Discovery containers only rearm their watches; discovered files carry the change.
+            // An extensions directory may contain only runtime state (e.g. a park's goal/no-session).
+            if rearmed_containers.contains(path)
+                && matches!(
+                    target.id.as_str(),
+                    "builtin-project-presence"
+                        | "builtin-global-extensions"
+                        | "builtin-project-extensions"
+                )
+            {
                 continue;
             }
             let group = groups.entry(active.registration_id.clone()).or_default();

@@ -590,6 +590,7 @@ pub fn profile_from_wire(
             .get("spawnedBy")
             .and_then(|ancestry| serde_json::from_value(ancestry.clone()).ok()),
         session_start_reason: None,
+        speculative: false,
     })
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -870,6 +871,7 @@ mod tests {
                 task_id: "t".into(),
             }),
             session_start_reason: None,
+            speculative: false,
         };
         assert_eq!(
             profile_from_wire(&profile_to_wire(&profile)).unwrap(),

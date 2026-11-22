@@ -10,6 +10,8 @@ pub const ATTACH_GATE_EXEMPT: &[&str] = &[
     "unsubscribe_sessions",
     "get_subscription_limits",
     "warm",
+    "park_session",
+    "claim_session",
     "detach_connection",
     "open_session",
     "attach_session",

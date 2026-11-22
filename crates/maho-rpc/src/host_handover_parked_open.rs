@@ -182,6 +182,7 @@ mod tests {
             holder_endpoint: None,
             spawned_by: None,
             session_start_reason: None,
+            speculative: false,
         }
     }
 

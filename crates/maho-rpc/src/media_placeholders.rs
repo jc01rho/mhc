@@ -95,7 +95,14 @@ pub fn carries_inline_media(record: &Value) -> bool {
     ) || (kind == Some("response")
         && matches!(
             record.get("command").and_then(Value::as_str),
-            Some("get_messages" | "get_entries" | "get_tree" | "get_state" | "open_session")
+            Some(
+                "get_messages"
+                    | "get_entries"
+                    | "get_tree"
+                    | "get_state"
+                    | "open_session"
+                    | "claim_session"
+            )
         ))
 }
 pub fn omit_inline_media(record: &Value) -> Cow<'_, Value> {

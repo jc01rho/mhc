@@ -129,6 +129,18 @@ pub fn attach_to_open_session(
             None,
         ));
     };
+    apply_attached_profile(entry, profile);
+    entry.last_command_at = now;
+    Ok(AttachDecision::Attached {
+        session_id: handle.to_owned(),
+        durable_session_id,
+        session_path: entry.session_path.clone(),
+        resumed: was_parked,
+    })
+}
+
+/// The live launch choices shared by attach-on-open and claiming an already-built session.
+pub fn apply_attached_profile(entry: &mut RpcSessionEntry, profile: &RpcSessionLaunchProfile) {
     // The surface, browser engine and permission preset follow the client: an attach that names one moves the
     // live session to it; an attach without one keeps what the session has.
     if let Some(surface) = profile
@@ -159,13 +171,6 @@ pub fn attach_to_open_session(
     if let Some(preset) = &profile.runtime.permission_preset {
         entry.profile.runtime.permission_preset = Some(preset.clone());
     }
-    entry.last_command_at = now;
-    Ok(AttachDecision::Attached {
-        session_id: handle.to_owned(),
-        durable_session_id,
-        session_path: entry.session_path.clone(),
-        resumed: was_parked,
-    })
 }
 
 fn prompt_surface(surface: &str) -> Option<maho_ext_api::PromptSurface> {

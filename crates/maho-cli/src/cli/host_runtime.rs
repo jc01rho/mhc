@@ -1629,6 +1629,11 @@ pub fn open_profile_session_manager(
             Some(profile.runtime.cwd.as_str()),
             identity,
         ),
+        None if profile.speculative => Ok(SessionManager::in_memory(
+            &profile.runtime.cwd,
+            identity,
+            None,
+        )),
         None => Ok(SessionManager::create(
             &profile.runtime.cwd,
             config.session_dir.as_deref(),

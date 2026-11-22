@@ -615,6 +615,20 @@ impl AgentSessionRuntime {
         *self.lock_hold() = None;
     }
 
+    /// A speculative host session becomes durable only when a caller claims its already-built runtime.
+    pub fn persist_session(&self) -> Result<(), String> {
+        self.session
+            .with_session_manager_mut(|manager| manager.enable_persistence())
+            .map_err(|error| error.to_string())?;
+        let mut guard = self.lock_hold();
+        if guard.is_none() {
+            *guard = self.session.with_session_manager(|manager| {
+                hold_active_session(manager, false, self.holder_endpoint.as_ref())
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn has_session_hold(&self) -> bool {
         self.lock_hold().is_some()
     }

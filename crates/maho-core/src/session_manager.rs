@@ -2709,6 +2709,38 @@ impl SessionManager {
         self.persist
     }
 
+    /// Give an unclaimed in-memory session its first file without rebuilding or changing its identity.
+    pub fn enable_persistence(&mut self) -> std::io::Result<()> {
+        if self.persist {
+            return Ok(());
+        }
+        let dir = get_default_session_dir_path(&self.cwd, &get_agent_dir());
+        std::fs::create_dir_all(&dir)?;
+        let timestamp = self
+            .file_entries
+            .first()
+            .and_then(|entry| entry.get("timestamp"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .replace([':', '.'], "-");
+        let path = Path::new(&dir)
+            .join(format!("{timestamp}_{}.jsonl", self.session_id))
+            .to_string_lossy()
+            .into_owned();
+        crate::session_write_reservation::reserve_session_write(&path);
+        self.session_dir = dir;
+        self.session_file = Some(path);
+        self.persist = true;
+        self.writer_token
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .persisted = true;
+        crate::session_write_reservation::register_session_writer(&self.writer_owner());
+        self.sync_session_file_ownership();
+        Ok(())
+    }
+
     pub fn is_flushed(&self) -> bool {
         self.flushed
     }

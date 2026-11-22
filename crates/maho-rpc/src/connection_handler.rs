@@ -1662,14 +1662,14 @@ async fn handle_session_command_with_sink(
             // carries no `retry_fallback` command, so it is not advertised.
             let mut capabilities=CLASSIC_CAPABILITIES.map(str::to_owned).to_vec();
             // Client flags cannot advertise a host guard this classic binding does not run.
-            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if capability!=crate::custom_capability::SESSION_HELD_CAPABILITY&&!capabilities.contains(&capability){capabilities.push(capability);}}
+            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if capability!=crate::custom_capability::SESSION_HELD_CAPABILITY&&capability!=crate::custom_capability::PARK_CLAIM_CAPABILITY&&!capabilities.contains(&capability){capabilities.push(capability);}}
             data["protocolVersion"]=crate::host_decision::HOST_PROTOCOL_VERSION.into();
             data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.clone().into();
             data["capabilities"]=serde_json::json!(capabilities);
             data["mode"]="classic".into();
             return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_protocol_info".into(),session_id:None,result:RpcResponseResult::Success{data:Some(data)}});
         },
-        RpcCommandBody::OpenSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"open_session".into(),session_id:None,result:RpcResponseResult::Error{error:crate::rpc_types::RPC_ERROR_MULTI_SESSION_DISABLED.into(),error_code:None,error_data:None}}),
+        RpcCommandBody::OpenSession{..}|RpcCommandBody::ParkSession{..}|RpcCommandBody::ClaimSession{..}=>{let kind=match &command.body{RpcCommandBody::OpenSession{..}=>"open_session",RpcCommandBody::ParkSession{..}=>"park_session",_=>"claim_session"};return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:None,result:RpcResponseResult::Error{error:crate::rpc_types::RPC_ERROR_MULTI_SESSION_DISABLED.into(),error_code:None,error_data:None}});},
         RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: close_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::UnloadSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"unload_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: unload_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::ReleaseSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"release_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: release_session".into(),error_code:None,error_data:None}}),

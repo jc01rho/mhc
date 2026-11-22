@@ -121,6 +121,7 @@ pub mod host_lifetime_reader;
 pub mod host_memory_sampler;
 pub mod host_observe_request;
 pub mod host_occupancy_watch;
+pub mod host_park_ledger;
 pub mod host_pointer_election;
 pub mod host_probe;
 pub mod host_process_metrics;

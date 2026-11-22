@@ -17,6 +17,7 @@ pub const SESSION_STATUS_CAPABILITY: &str = "session_status";
 /// (`ui_request_pending`/`ui_request_settled`) without receiving command replies (senpi#4266).
 pub const DIALOG_OBSERVER_CAPABILITY: &str = "dialog_observer";
 pub const WARM_CAPABILITY: &str = "warm";
+pub const PARK_CLAIM_CAPABILITY: &str = "park_claim";
 pub const MOVED_PATH_GUARD_CAPABILITY: &str = "moved_path_guard";
 pub const PROMPT_SURFACE_CAPABILITY: &str = "prompt_surface";
 pub const BROWSER_ENGINE_CAPABILITY: &str = "browser_engine";

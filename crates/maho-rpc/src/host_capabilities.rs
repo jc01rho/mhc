@@ -89,6 +89,7 @@ pub fn host_tool_runtime_capabilities(kind: ToolRuntimeKind, negotiated: &[Strin
             .iter()
             .filter(|capability| {
                 *capability != MCP_FORM_PRESENTER_CAPABILITY
+                    && *capability != crate::custom_capability::PARK_CLAIM_CAPABILITY
                     && !is_host_owned_tool_runtime_capability(capability)
             })
             .cloned(),
