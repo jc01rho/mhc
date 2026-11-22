@@ -1,12 +1,30 @@
 use crate::session_worker_protocol::SESSION_WORKER_LIMITS;
 use serde_json::Value;
 use std::collections::BTreeMap;
+type TimeoutAction = std::sync::Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+
+fn spawn_timer(wait_ms: u64, action: TimeoutAction) -> tokio::task::AbortHandle {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    tokio::spawn(async move {
+        tokio::time::sleep_until(deadline).await;
+        let callback = action
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(callback) = callback {
+            callback();
+        }
+    })
+    .abort_handle()
+}
+
 struct Pending {
     bytes: usize,
     control: bool,
     deadline: Option<u64>,
     reply: Option<tokio::sync::oneshot::Sender<Result<Value, String>>>,
     timer: Option<tokio::task::AbortHandle>,
+    timeout: Option<TimeoutAction>,
 }
 impl Drop for Pending {
     fn drop(&mut self) {
@@ -20,7 +38,7 @@ pub struct SessionWorkerRequests {
     pending: BTreeMap<u64, Pending>,
     serial: u64,
     closed: bool,
-    opening_deadline: Option<u64>,
+    progress_deadline: u64,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum WorkerRequestError {
@@ -34,6 +52,38 @@ pub enum WorkerRequestError {
 impl SessionWorkerRequests {
     pub fn active_count(&self) -> usize {
         self.pending.len()
+    }
+    pub fn note_progress(&mut self, now: u64) {
+        if self.closed {
+            return;
+        }
+        let next_deadline = now + SESSION_WORKER_LIMITS.open_ms;
+        self.progress_deadline = next_deadline;
+        for pending in self.pending.values_mut() {
+            if pending.control || pending.deadline.is_none() {
+                continue;
+            }
+            pending.deadline = Some(next_deadline);
+            if let Some(action) = &pending.timeout {
+                if let Some(timer) = pending.timer.take() {
+                    timer.abort();
+                }
+                pending.timer = Some(spawn_timer(
+                    SESSION_WORKER_LIMITS.open_ms,
+                    std::sync::Arc::clone(action),
+                ));
+            }
+        }
+    }
+    fn progress_budget_ms(&mut self, now: u64) -> u64 {
+        let owed = self
+            .pending
+            .values()
+            .any(|pending| !pending.control && pending.deadline.is_some());
+        if !owed {
+            self.progress_deadline = now + SESSION_WORKER_LIMITS.open_ms;
+        }
+        self.progress_deadline.saturating_sub(now)
     }
     pub fn request(&mut self, message: &Value, now: u64) -> Result<Value, WorkerRequestError> {
         if self.closed {
@@ -81,11 +131,8 @@ impl SessionWorkerRequests {
         } else if control {
             Some(now + SESSION_WORKER_LIMITS.control_ms)
         } else {
-            Some(
-                *self
-                    .opening_deadline
-                    .get_or_insert(now + SESSION_WORKER_LIMITS.open_ms),
-            )
+            let budget = self.progress_budget_ms(now);
+            Some(now + budget)
         };
         self.pending.insert(
             self.serial,
@@ -95,6 +142,7 @@ impl SessionWorkerRequests {
                 deadline,
                 reply: None,
                 timer: None,
+                timeout: None,
             },
         );
         let mut request = message.clone();
@@ -135,13 +183,13 @@ impl SessionWorkerRequests {
         if let Some(pending) = self.pending.get_mut(&self.serial)
             && let Some(deadline) = pending.deadline
         {
-            let deadline = tokio::time::Instant::now()
-                + std::time::Duration::from_millis(deadline.saturating_sub(now));
-            let timer = tokio::spawn(async move {
-                tokio::time::sleep_until(deadline).await;
-                timeout();
-            });
-            pending.timer = Some(timer.abort_handle());
+            let action: TimeoutAction =
+                std::sync::Arc::new(std::sync::Mutex::new(Some(Box::new(timeout))));
+            pending.timer = Some(spawn_timer(
+                deadline.saturating_sub(now),
+                std::sync::Arc::clone(&action),
+            ));
+            pending.timeout = Some(action);
         }
         Ok(receiver)
     }
@@ -221,13 +269,59 @@ mod tests {
             .request(&serde_json::json!({"type":"commit"}), 100000)
             .unwrap();
         assert!(requests.timed_out_requests(129999).is_empty());
-        requests.receive(&serde_json::json!({"type":"ready","request":first["request"]}));
         let next = requests
             .request(&serde_json::json!({"type":"bind"}), 129000)
             .unwrap();
         assert_eq!(
             requests.timed_out_requests(130000),
-            vec![next["request"].as_u64().unwrap()]
+            vec![
+                first["request"].as_u64().unwrap(),
+                next["request"].as_u64().unwrap()
+            ]
+        );
+    }
+    #[test]
+    fn quiet_spell_after_open_starts_fresh_progress_budget() {
+        let mut requests = SessionWorkerRequests::default();
+        let first = requests
+            .request(&serde_json::json!({"type":"commit"}), 100000)
+            .unwrap();
+        requests.note_progress(101000);
+        requests.receive(&serde_json::json!({"type":"ready","request":first["request"]}));
+        let surface = requests
+            .request(
+                &serde_json::json!({"type":"prompt_surface","surface":"app"}),
+                136000,
+            )
+            .unwrap();
+        assert!(requests.timed_out_requests(165999).is_empty());
+        assert_eq!(
+            requests.timed_out_requests(166000),
+            vec![surface["request"].as_u64().unwrap()]
+        );
+    }
+    #[test]
+    fn progress_restarts_open_deadline_without_extending_control_deadline() {
+        let mut requests = SessionWorkerRequests::default();
+        let commit = requests
+            .request(&serde_json::json!({"type":"commit"}), 0)
+            .unwrap();
+        let abort = requests
+            .request(
+                &serde_json::json!({"type":"command","command":{"type":"abort"}}),
+                0,
+            )
+            .unwrap();
+        requests.note_progress(15000);
+        assert_eq!(
+            requests.timed_out_requests(15000),
+            vec![abort["request"].as_u64().unwrap()]
+        );
+        requests.receive(&serde_json::json!({"type":"result","request":abort["request"]}));
+        assert!(requests.timed_out_requests(44999).is_empty());
+        assert_eq!(
+            requests.timed_out_requests(45000),
+            vec![commit["request"].as_u64().unwrap()]
         );
     }
     #[test]

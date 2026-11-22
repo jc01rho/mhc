@@ -1,5 +1,30 @@
 use maho_rpc::session_worker_requests::*;
 #[tokio::test(start_paused = true)]
+async fn progress_restarts_the_timer_before_the_deadline() {
+    let mut requests = SessionWorkerRequests::default();
+    let (timeout, mut fired) = tokio::sync::oneshot::channel();
+    let _reply = requests
+        .submit_with_timeout(
+            &serde_json::json!({"type":"commit"}),
+            0,
+            |_| Ok(()),
+            move || {
+                let _ = timeout.send(());
+            },
+        )
+        .unwrap();
+    tokio::time::advance(std::time::Duration::from_millis(15_000)).await;
+    requests.note_progress(15_000);
+    tokio::time::advance(std::time::Duration::from_millis(15_000)).await;
+    requests.note_progress(30_000);
+    tokio::time::advance(std::time::Duration::from_millis(29_999)).await;
+    tokio::task::yield_now().await;
+    assert!(fired.try_recv().is_err());
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
+    fired.await.unwrap();
+    requests.close_with_error("session_worker_request_timeout");
+}
+#[tokio::test(start_paused = true)]
 async fn opening_timer_fires_without_retiring_request_debt() {
     let mut requests = SessionWorkerRequests::default();
     let (timeout, fired) = tokio::sync::oneshot::channel();
