@@ -2996,6 +2996,13 @@ impl RpcConnectionHandler {
     pub fn rerender_components(&self) {
         self.ui.rerender_components();
     }
+    pub fn pending_requests(
+        &self,
+    ) -> std::sync::Arc<
+        std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
+    > {
+        self.pending.clone()
+    }
     /// Cancel UI requests that can no longer be answered by this connection.
     pub fn cancel_pending_extension_ui_requests(&self) {
         self.pending

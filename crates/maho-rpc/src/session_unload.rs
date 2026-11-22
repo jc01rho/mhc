@@ -47,6 +47,9 @@ pub trait UnloadableSession: ReleasableSession {
     fn session_file(&self) -> Option<String>;
     /// The effect ledger's view of this session; `None` refuses an `effectId` unload as unsupported.
     fn effect_session(&self) -> Option<Arc<dyn EffectSession>>;
+    fn pending_dialogs(&self) -> usize {
+        0
+    }
 }
 
 /// What the router lends a live entry.
@@ -88,6 +91,7 @@ struct Refusal {
     action: Option<&'static str>,
     /// `work_pending` caused by admitted deliveries not yet written: their ids.
     deliveries: Vec<String>,
+    parked: bool,
 }
 
 const ACTION_EXTENSION_WORK: &str =
@@ -197,10 +201,9 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
         return fail(command, &first, &refusal, &[]).await;
     }
     // Never stop work for an unload that would still be refused: only interruptible blockers are interrupted.
-    if let Some(standing) = blocked
-        .iter()
-        .find(|refusal| !interruptible(refusal) || command["interrupt"] != true)
-    {
+    if let Some(standing) = blocked.iter().find(|refusal| {
+        !interruptible(refusal) || (command["interrupt"] != true && !refusal.parked)
+    }) {
         return fail(command, &first, standing, &[]).await;
     }
     let handed_back = if blocked.is_empty() {
@@ -294,7 +297,19 @@ async fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded
     .into_iter()
     .filter_map(|(on, label)| on.then_some(label))
     .collect();
-    if !running.is_empty() {
+    let parked = activity.is_streaming
+        && !activity.is_compacting
+        && !activity.has_session_work
+        && session.pending_dialogs() > 0;
+    if parked {
+        found.push(Refusal {
+            reason: "turn_active",
+            detail: "an agent run waiting on an unanswered prompt".into(),
+            action: Some(ACTION_TURN_ACTIVE),
+            parked: true,
+            ..Default::default()
+        });
+    } else if !running.is_empty() {
         found.push(Refusal {
             reason: "turn_active",
             detail: running.join(", "),
@@ -528,6 +543,7 @@ mod tests {
         taken: AtomicUsize,
         pending: Mutex<Vec<String>>,
         effects: Mutex<Option<Arc<FakeSession>>>,
+        dialogs: AtomicUsize,
     }
 
     struct Handle(Arc<Live>);
@@ -567,6 +583,7 @@ mod tests {
         }
         async fn abort(&self) {
             self.0.aborts.fetch_add(1, Ordering::SeqCst);
+            self.0.dialogs.store(0, Ordering::SeqCst);
             *self.0.activity.lock().unwrap() = SessionActivitySnapshot::default();
         }
         async fn wait_for_idle(&self) {}
@@ -602,6 +619,9 @@ mod tests {
                 .unwrap()
                 .clone()
                 .map(|fake| fake as Arc<dyn EffectSession>)
+        }
+        fn pending_dialogs(&self) -> usize {
+            self.0.dialogs.load(Ordering::SeqCst)
         }
     }
 
@@ -958,5 +978,17 @@ mod tests {
         assert_eq!(port.torn_down.load(Ordering::SeqCst), 1);
         EffectLedger::forget("unload-dropped");
         ClientAdmissions::forget("unload-dropped");
+    }
+
+    #[tokio::test]
+    async fn unload_session_without_interrupt_unloads_a_run_parked_on_an_unanswered_prompt() {
+        let port = port();
+        port.live.activity.lock().unwrap().is_streaming = true;
+        port.live.dialogs.store(1, Ordering::SeqCst);
+        let unloaded = unload_session(&port, &unload(json!({}))).await;
+        assert_eq!(unloaded["data"]["outcome"], "unloaded");
+        assert_eq!(port.live.aborts.load(Ordering::SeqCst), 1);
+        assert_eq!(port.live.dialogs.load(Ordering::SeqCst), 0);
+        assert_eq!(port.torn_down.load(Ordering::SeqCst), 1);
     }
 }

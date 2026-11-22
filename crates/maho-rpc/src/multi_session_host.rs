@@ -4733,14 +4733,25 @@ impl crate::session_unload::SessionUnloadPort for HostUnloadPort<'_> {
                 })
                 .ok_or_else(|| crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION.to_owned());
         }
+        let pending_requests = self
+            .release
+            .core
+            .bindings
+            .lock()
+            .await
+            .get(session_id)
+            .map(|binding| binding.pending_requests());
         let mut registry = self.release.core.registry.lock().await;
         let entry = registry
             .get_for_command(session_id, "unload_session", now)
             .map_err(|error| error.code)?;
         let session = entry.runtime.as_ref().map(|runtime| {
-            std::sync::Arc::new(crate::session_release_adapter::AgentSessionRelease::new(
-                runtime.session().clone(),
-            )) as std::sync::Arc<dyn crate::session_unload::UnloadableSession>
+            std::sync::Arc::new(
+                crate::session_release_adapter::AgentSessionRelease::with_pending_requests(
+                    runtime.session().clone(),
+                    pending_requests,
+                ),
+            ) as std::sync::Arc<dyn crate::session_unload::UnloadableSession>
         });
         Ok(crate::session_unload::UnloadEntry {
             open: entry.close.state == crate::session_registry::RpcSessionState::Open,
