@@ -5,13 +5,33 @@
 //! Wiring `skills::format_skills_for_prompt` (owned by the senpi-core-ext lane) to this builder is
 //! that lane's change.
 
+use std::sync::LazyLock;
+
+use regex::Regex;
+
 use crate::diagnostics::{ResourceDiagnostic, ResourceDiagnosticType};
 use crate::skills::{FileReadTool, Skill};
 
 pub const COMPACT_SKILL_CATALOG_COUNT: usize = 100;
-pub const COMPACT_SKILL_CATALOG_DESCRIPTION_BYTES: usize = 64 * 1024;
+pub const COMPACT_SKILL_CATALOG_DESCRIPTION_BYTES: usize = 16 * 1024;
 pub const MAX_SKILL_CATALOG_BYTES: usize = 48 * 1024;
 const ONE_LINE_DESCRIPTION_MAX_CHARS: usize = 160;
+const TIGHT_ONE_LINE_DESCRIPTION_MAX_CHARS: usize = 100;
+const MIN_FILL_CHARS: usize = 24;
+
+static EXPLICIT_TRIGGER_CLAUSE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?:^|[.!?;:)]\s+|\s+[-\u{2013}\u{2014}]\s+)(MUST (?:USE|READ|use|read)\b|USE ONLY WHEN\b|Use (?:when|whenever|for)\b|(?:Korean )?[Tt]riggers?(?::| -| on\b)|This skill should be used\b|Use this\b|When the user\b)",
+    )
+    .expect("explicit trigger clause regex")
+});
+
+static VERB_TRIGGER_CLAUSE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?:^|[.!?;:)]\s+|\s+[-\u{2013}\u{2014}]\s+)((?:Use|Used|Read|Load|Invoke|Apply|Run|Call)\b[^.!?]{0,40}?\b(?:when|whenever|for|before|after|if|only)\b)",
+    )
+    .expect("verb trigger clause regex")
+});
 
 /// A catalog this large is listed by name plus a one-line description.
 pub fn is_large_skill_catalog(skills: &[&Skill]) -> bool {
@@ -64,6 +84,7 @@ struct RenderOptions {
     compact: bool,
     names_only: bool,
     omitted: usize,
+    description_chars: usize,
 }
 
 pub fn build_skill_catalog(skills: &[Skill], file_read_tool: FileReadTool) -> SkillCatalog {
@@ -77,6 +98,7 @@ pub fn build_skill_catalog(skills: &[Skill], file_read_tool: FileReadTool) -> Sk
         compact,
         names_only: false,
         omitted: 0,
+        description_chars: ONE_LINE_DESCRIPTION_MAX_CHARS,
     };
     let prompt = render_skills(&visible, options);
     if prompt.len() <= MAX_SKILL_CATALOG_BYTES {
@@ -101,6 +123,22 @@ pub fn build_skill_catalog(skills: &[Skill], file_read_tool: FileReadTool) -> Sk
     if compact_prompt.len() <= MAX_SKILL_CATALOG_BYTES {
         return SkillCatalog {
             prompt: compact_prompt,
+            compact: true,
+            names_only: false,
+            omitted: 0,
+        };
+    }
+    let tight_prompt = render_skills(
+        &visible,
+        RenderOptions {
+            compact: true,
+            description_chars: TIGHT_ONE_LINE_DESCRIPTION_MAX_CHARS,
+            ..options
+        },
+    );
+    if tight_prompt.len() <= MAX_SKILL_CATALOG_BYTES {
+        return SkillCatalog {
+            prompt: tight_prompt,
             compact: true,
             names_only: false,
             omitted: 0,
@@ -149,16 +187,107 @@ pub fn format_skills_catalog_for_prompt(skills: &[Skill], file_read_tool: FileRe
     build_skill_catalog(skills, file_read_tool).prompt
 }
 
-fn one_line_description(description: &str) -> String {
-    let first_line = description.trim().split('\n').next().unwrap_or("").trim();
-    if first_line.encode_utf16().count() <= ONE_LINE_DESCRIPTION_MAX_CHARS {
-        return first_line.to_owned();
+fn sentence_end_after(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = start;
+    while i < bytes.len() {
+        if matches!(bytes[i], b'.' | b'!' | b'?')
+            && (i + 1 == bytes.len() || text[i + 1..].starts_with(char::is_whitespace))
+        {
+            return Some(i);
+        }
+        i += 1;
     }
-    let cut: String = first_line
-        .chars()
-        .take(ONE_LINE_DESCRIPTION_MAX_CHARS - 1)
-        .collect();
-    format!("{}\u{2026}", cut.trim_end())
+    None
+}
+
+fn truncate(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    let cut = match head.rfind(' ') {
+        Some(idx) if head[..idx].chars().count() > max_chars / 2 => &head[..idx],
+        _ => head.as_str(),
+    };
+    let trimmed =
+        cut.trim_end_matches(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | ':'));
+    format!("{trimmed}\u{2026}")
+}
+
+fn one_line_description(description: &str, max_chars: usize) -> String {
+    let text = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    let trigger_start = EXPLICIT_TRIGGER_CLAUSE
+        .captures(&text)
+        .and_then(|captures| captures.get(1))
+        .or_else(|| {
+            VERB_TRIGGER_CLAUSE
+                .captures(&text)
+                .and_then(|captures| captures.get(1))
+        })
+        .map(|matched| matched.start());
+    let Some(trigger_start) = trigger_start else {
+        return truncate(&text, max_chars);
+    };
+    let clause_end = sentence_end_after(&text, trigger_start)
+        .map(|idx| idx + 1)
+        .unwrap_or(text.len());
+    let clause = &text[trigger_start..clause_end];
+    let clause_chars = clause.chars().count();
+    if clause_chars >= max_chars {
+        return truncate(clause, max_chars);
+    }
+    let mut room = max_chars - clause_chars;
+    let mut fill = |part: &str| -> String {
+        if part.is_empty() || room < MIN_FILL_CHARS + 1 {
+            return String::new();
+        }
+        let kept = truncate(part, room - 1);
+        room = room.saturating_sub(kept.chars().count() + 1);
+        kept
+    };
+    let lead = fill(text[..trigger_start].trim());
+    let rest = fill(text[clause_end..].trim());
+    [lead.as_str(), clause, rest.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn compact_skill_line(
+    skill: &Skill,
+    roots: &[(String, String)],
+    description_chars: Option<usize>,
+) -> String {
+    let dir = skill_root_dir(&skill.file_path);
+    let alias = roots
+        .iter()
+        .find(|(path, _)| *path == dir)
+        .map(|(_, alias)| alias.as_str());
+    let relative = skill
+        .file_path
+        .strip_prefix(&format!("{dir}/"))
+        .unwrap_or(&skill.file_path);
+    let location = if relative == format!("{}/SKILL.md", skill.name) {
+        alias.unwrap_or(relative).to_owned()
+    } else {
+        match alias {
+            Some(alias) => format!("{alias}/{relative}"),
+            None => relative.to_owned(),
+        }
+    };
+    let head = format!("- {} [{}]", escape_xml(&skill.name), escape_xml(&location));
+    match description_chars {
+        None => head,
+        Some(max_chars) => format!(
+            "{head}: {}",
+            escape_xml(&one_line_description(&skill.description, max_chars))
+        ),
+    }
 }
 
 fn skill_root_dir(file_path: &str) -> String {
@@ -205,11 +334,31 @@ fn render_skills(visible: &[&Skill], options: RenderOptions) -> String {
     for (dir, alias) in &roots {
         lines.push(format!("  <{alias}>{}</{alias}>", escape_xml(dir)));
     }
+    let one_line = options.compact || options.names_only;
     lines.push("</skill_roots>".to_owned());
-    lines.push("A location's `rN/` prefix expands to the matching root above.".to_owned());
+    lines.push(if one_line {
+        format!(
+            "Each line is `- name [location]{}`. A location `rN` means the file `rN/<name>/SKILL.md`; a longer location is the file's path under that root.",
+            if options.names_only {
+                ""
+            } else {
+                ": when to use it"
+            }
+        )
+    } else {
+        "A location's `rN/` prefix expands to the matching root above.".to_owned()
+    });
     lines.push(String::new());
     lines.push("<available_skills>".to_owned());
     for skill in visible {
+        if one_line {
+            lines.push(compact_skill_line(
+                skill,
+                &roots,
+                (!options.names_only).then_some(options.description_chars),
+            ));
+            continue;
+        }
         let dir = skill_root_dir(&skill.file_path);
         let alias = roots
             .iter()
@@ -223,14 +372,9 @@ fn render_skills(visible: &[&Skill], options: RenderOptions) -> String {
         lines.push("  <skill>".to_owned());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
         if !options.names_only {
-            let description = if options.compact {
-                one_line_description(&skill.description)
-            } else {
-                skill.description.clone()
-            };
             lines.push(format!(
                 "    <description>{}</description>",
-                escape_xml(&description)
+                escape_xml(&skill.description)
             ));
         }
         lines.push(format!(
@@ -293,10 +437,10 @@ mod tests {
             .collect();
         let catalog = build_skill_catalog(&many, FileReadTool::Read);
         assert!(catalog.compact && !catalog.names_only);
-        assert!(catalog.prompt.contains("<description>one</description>"));
+        assert!(catalog.prompt.contains("- s0 [r0]: one two"));
         assert_eq!(warn_if_large_skill_catalog(&many).len(), 1);
 
-        let huge: Vec<Skill> = (0..2000)
+        let huge: Vec<Skill> = (0..3000)
             .map(|i| skill(&format!("skill-with-a-long-name-{i}"), "d"))
             .collect();
         let catalog = build_skill_catalog(&huge, FileReadTool::Read);
@@ -311,10 +455,20 @@ mod tests {
     }
 
     #[test]
-    fn one_line_descriptions_are_cut_with_an_ellipsis() {
+    fn one_line_descriptions_are_cut_with_an_ellipsis_and_keep_explicit_trigger_clauses() {
         let long = "x".repeat(200);
-        let cut = one_line_description(&long);
+        let cut = one_line_description(&long, ONE_LINE_DESCRIPTION_MAX_CHARS);
         assert_eq!(cut.chars().count(), ONE_LINE_DESCRIPTION_MAX_CHARS);
         assert!(cut.ends_with('\u{2026}'));
+
+        let with_imperative_and_trigger = "Builds release artifacts and packages binaries across targets. Run the formatter for each package before tagging. Verify checksums after upload. Use when asked to cut a release or build native packages.";
+        let summary = one_line_description(
+            with_imperative_and_trigger,
+            TIGHT_ONE_LINE_DESCRIPTION_MAX_CHARS,
+        );
+        assert!(
+            summary.contains("Use when asked to cut a release or build native packages."),
+            "got: {summary}"
+        );
     }
 }
