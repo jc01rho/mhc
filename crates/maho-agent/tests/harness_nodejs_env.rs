@@ -1390,3 +1390,86 @@ async fn honors_cancellation_during_a_read_and_allows_retry() {
     assert!(reader.read_line(&context).await.expect("eof").is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn remove_before_first_stat(target: PathBuf) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let removed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = removed.clone();
+    let target_str = target.to_string_lossy().into_owned();
+    maho_agent::harness::env::nodejs::register_before_list_dir_stat_hook(
+        target_str,
+        Box::new(move || {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            if target.is_dir() {
+                let _ = std::fs::remove_dir_all(&target);
+            } else {
+                let _ = std::fs::remove_file(&target);
+            }
+        }),
+    );
+    removed
+}
+
+#[tokio::test]
+async fn omits_an_entry_that_disappears_between_readdir_and_lstat() {
+    let root = unique_dir("listdir-race-entry");
+    std::fs::write(root.join("kept.txt"), b"kept").expect("write kept");
+    std::fs::write(root.join("gone.txt"), b"gone").expect("write gone");
+    let env = env_for(&root);
+    let removed = remove_before_first_stat(root.join("gone.txt"));
+
+    let entries = env.list_dir(".", &bg_context()).await.expect("list_dir");
+
+    assert!(removed.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        entries
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>(),
+        vec!["kept.txt".to_owned()]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn lists_sessions_while_another_owner_releases_a_session_lock_directory() {
+    use maho_agent::harness::session::jsonl::{
+        JsonlSessionCreateOptions, JsonlSessionRepo, JsonlSessionRepoOptions,
+    };
+    let root = unique_dir("listdir-race-lock");
+    let context = bg_context();
+    let file_system: std::sync::Arc<dyn FileSystem> = std::sync::Arc::new(env_for(&root));
+    let repo = JsonlSessionRepo::new(JsonlSessionRepoOptions {
+        file_system,
+        sessions_root: "sessions".to_owned(),
+        now: Some(std::sync::Arc::new(|| 1_700_000_000_000)),
+    });
+    let session = repo
+        .create(
+            JsonlSessionCreateOptions {
+                id: Some("demo-1".to_owned()),
+                parent_session_id: None,
+                cwd: "/workspace".to_owned(),
+            },
+            &context,
+        )
+        .await
+        .expect("create session");
+    let session_path = session
+        .metadata()
+        .path
+        .clone()
+        .expect("session metadata path");
+    session.close(&context).await;
+    let lock_directory = PathBuf::from(format!("{session_path}.lock"));
+    std::fs::create_dir_all(&lock_directory).expect("create lock directory");
+    let removed = remove_before_first_stat(lock_directory);
+
+    let listed = repo.list(None, &context).await.expect("repo list");
+
+    assert!(removed.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        listed.into_iter().map(|entry| entry.id).collect::<Vec<_>>(),
+        vec!["demo-1".to_owned()]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
