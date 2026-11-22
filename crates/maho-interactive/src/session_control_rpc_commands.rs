@@ -81,7 +81,7 @@ pub async fn run_tui_rpc_command(
         "get_snapshot" => Answer(get_snapshot(context, connection, command)),
         "open_session" => open_session(context, connection, command),
         "park_session" | "claim_session" => {
-            Answer(failure(id_of(command), kind, "multi_session_disabled"))
+            Answer(failure(command.get("id"), kind, "multi_session_disabled"))
         }
         "subscribe_sessions" => subscribe(context, connection, command),
         "unsubscribe_sessions" => Answer(unsubscribe(context, connection, command)),

@@ -263,12 +263,13 @@ impl<T: Clone + Send + Sync + 'static> HostParkLedger<T> {
     }
 
     pub async fn stop(&self) {
-        let entries: Vec<(
+        type StoppingParkEntry = (
             String,
             u64,
             Shared<BoxFuture<'static, Result<(), String>>>,
             Option<Arc<Notify>>,
-        )> = {
+        );
+        let entries: Vec<StoppingParkEntry> = {
             let mut state = self
                 .state
                 .lock()

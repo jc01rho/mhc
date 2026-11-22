@@ -61,7 +61,7 @@ fn refusal_with_extra(command: &Value, code: &str, detail: &str, extra: Option<V
 }
 
 fn is_padded_base64(value: &str) -> bool {
-    if value.len() % 4 != 0 {
+    if !value.len().is_multiple_of(4) {
         return false;
     }
     let bytes = value.as_bytes();

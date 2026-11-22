@@ -299,7 +299,7 @@ pub fn set_name(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustMarkerArrival {
     None,
-    Addressed(EngineTrustMarker),
+    Addressed(Box<EngineTrustMarker>),
     Foreign(&'static str),
 }
 
@@ -339,7 +339,7 @@ pub fn classify_trust_arrival(env: &BTreeMap<String, String>, platform: &str) ->
     }
     TrustArrival {
         hop,
-        marker: TrustMarkerArrival::Addressed(marker),
+        marker: TrustMarkerArrival::Addressed(Box::new(marker)),
     }
 }
 
@@ -518,7 +518,7 @@ mod tests {
         ]);
         assert_eq!(
             classify_trust_arrival(&lower, "win32").marker,
-            TrustMarkerArrival::Addressed(server.clone())
+            TrustMarkerArrival::Addressed(Box::new(server.clone()))
         );
         assert_eq!(
             classify_trust_arrival(&lower, "linux").marker,
@@ -539,7 +539,7 @@ mod tests {
             classify_trust_arrival(&handoff, "linux"),
             TrustArrival {
                 hop: false,
-                marker: TrustMarkerArrival::Addressed(expected),
+                marker: TrustMarkerArrival::Addressed(Box::new(expected)),
             }
         );
 
