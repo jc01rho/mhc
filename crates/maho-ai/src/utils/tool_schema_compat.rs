@@ -498,7 +498,7 @@ mod tests {
             ]
         }));
         let normalized = normalize_tool_parameters_for_openai_compat(&schema);
-        assert!(normalized["required"].is_null());
+        assert!(normalized.get("required").is_none_or(Value::is_null));
         let description = normalized["description"].as_str().expect("description");
         assert!(description.contains("Run code or control cells."));
         assert!(description.contains("REQUIRED for action=run: language, code."));
