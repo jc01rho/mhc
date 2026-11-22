@@ -142,7 +142,9 @@ impl NarrowableContext for ExtensionContext {
     }
 
     fn session_env(&self) -> Option<std::collections::BTreeMap<String, String>> {
-        maho_tools::definition::ToolContext::session_env(self)
+        self.session_manager
+            .extension_context_actions()
+            .and_then(maho_ext_api::ExtensionContextActions::get_session_env)
     }
 
     fn goal_store_file(&self) -> Option<PathBuf> {
