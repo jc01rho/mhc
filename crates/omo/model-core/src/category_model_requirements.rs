@@ -35,6 +35,16 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                         ),
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                            "claude-fable-5-2",
+                            Some("max"),
+                        ),
+                        entry(
+                            &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                            "claude-fable-5-1",
+                            Some("max"),
+                        ),
+                        entry(
+                            &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                             "claude-opus-5-5",
                             Some("max"),
                         ),
@@ -163,6 +173,16 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                 "artistry",
                 ModelRequirement {
                     fallback_chain: vec![
+                        entry(
+                            &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                            "claude-fable-5-2",
+                            Some("max"),
+                        ),
+                        entry(
+                            &["anthropic", "anthropic-api", "github-copilot", "opencode"],
+                            "claude-fable-5-1",
+                            Some("max"),
+                        ),
                         entry(
                             &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                             "claude-opus-5-5",

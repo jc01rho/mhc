@@ -143,6 +143,18 @@ pub fn gate_rungs(
         .collect()
 }
 
+fn same_family_top_model() -> &'static str {
+    use maho_ext_recommended_models::{
+        FABLE55_PROMOTE_DEFAULTS, FABLE55_RELEASED, recommended_fable_model,
+    };
+    let current = recommended_fable_model(FABLE55_RELEASED, FABLE55_PROMOTE_DEFAULTS);
+    if is_launch_gated(current) {
+        recommended_fable_model(false, false)
+    } else {
+        current
+    }
+}
+
 /// Built-in profiles plus the rungs the launch gate dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuiltProfiles {
@@ -186,7 +198,11 @@ pub fn build_builtin_profiles(released: bool, warn: &mut dyn FnMut(&str)) -> Bui
             "daily-heavy",
             "daily",
             "heavy",
-            vec![recommended_rung("claude-opus-5-5", Some("xhigh"))],
+            vec![
+                recommended_rung(LAUNCH_GATED_MODEL, Some("xhigh")),
+                recommended_rung(same_family_top_model(), Some("xhigh")),
+                recommended_rung("claude-opus-5-5", Some("high")),
+            ],
         ),
         (
             "geeky-normal",
