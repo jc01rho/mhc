@@ -93,6 +93,7 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
             oauth: config.oauth,
             fallback_eligible: config.fallback_eligible,
             owns_account_selection: config.owns_account_selection,
+            local_only: config.local_only,
             refresh_models,
             retry_policy,
             ambient_auth: config.ambient_auth,

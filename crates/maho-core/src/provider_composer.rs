@@ -28,6 +28,7 @@ pub struct ProviderConfigInput {
     pub oauth: Option<Arc<dyn maho_ai::auth::types::OAuthAuth>>,
     pub fallback_eligible: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     pub owns_account_selection: bool,
+    pub local_only: bool,
     pub refresh_models: Option<ExtensionRefresh>,
     pub retry_policy: Option<maho_ai::utils::retry_profile::types::RetryPolicyProfile>,
     pub ambient_auth: Option<Arc<dyn maho_ai::auth::types::ApiKeyAuth>>,
