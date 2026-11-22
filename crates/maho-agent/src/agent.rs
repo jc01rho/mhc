@@ -274,6 +274,11 @@ impl PendingMessageQueue {
         snapshot.drain()
     }
 
+    /// Every queued message, whatever the drain mode.
+    fn all(&self) -> Vec<AgentMessage> {
+        self.messages.clone()
+    }
+
     fn prepend(&mut self, messages: Vec<AgentMessage>) {
         let mut combined = messages;
         combined.append(&mut self.messages);
@@ -359,6 +364,8 @@ struct AgentInner {
     listeners: Mutex<Listeners>,
     steering_queue: Mutex<PendingMessageQueue>,
     follow_up_queue: Mutex<PendingMessageQueue>,
+    /// The last run ended in a provider error with follow-ups queued: the next run takes them at its first turn.
+    follow_ups_parked: AtomicBool,
     active_run: Mutex<Option<ActiveRun>>,
     settings: Mutex<AgentSettings>,
 }
@@ -471,6 +478,7 @@ impl Agent {
                 follow_up_queue: Mutex::new(PendingMessageQueue::new(
                     options.follow_up_mode.unwrap_or(QueueMode::OneAtATime),
                 )),
+                follow_ups_parked: AtomicBool::new(false),
                 active_run: Mutex::new(None),
                 settings: Mutex::new(settings),
             }),
@@ -678,12 +686,16 @@ impl Agent {
             || lock(&self.inner.follow_up_queue).has_items()
     }
 
-    /// Preview selected messages without consuming them; `all` includes both queues.
+    /// Preview selected messages without consuming them; `all` returns every queued message
+    /// regardless of the queues' one-at-a-time drain mode (omo#14428).
     pub fn peek_queued_messages(&self, all: bool) -> Vec<AgentMessage> {
-        let mut steering = lock(&self.inner.steering_queue).peek();
         if all {
-            steering.extend(lock(&self.inner.follow_up_queue).peek());
-        } else if steering.is_empty() {
+            let mut steering = lock(&self.inner.steering_queue).all();
+            steering.extend(lock(&self.inner.follow_up_queue).all());
+            return steering;
+        }
+        let steering = lock(&self.inner.steering_queue).peek();
+        if steering.is_empty() {
             return lock(&self.inner.follow_up_queue).peek();
         }
         steering
@@ -781,6 +793,7 @@ impl Agent {
         }
         self.clear_follow_up_queue();
         self.clear_steering_queue();
+        self.inner.follow_ups_parked.store(false, Ordering::SeqCst);
     }
 
     /// Start a new prompt from text, a single message, or a batch of messages.
@@ -939,7 +952,12 @@ impl Agent {
             let messages = messages.clone();
             async move {
                 let context = self.create_context_snapshot();
-                let config = self.create_loop_config(options);
+                let mut config = self.create_loop_config(options);
+                // A run started from new input takes follow-ups an error-ended run parked; a retry
+                // or other continuation leaves them for that run (omo#14428).
+                if self.inner.follow_ups_parked.swap(false, Ordering::SeqCst) {
+                    config.take_follow_ups_at_start = true;
+                }
                 crate::heap_future::heap_future(|| {
                     run_agent_loop(
                         messages,
@@ -969,6 +987,8 @@ impl Agent {
         options: PromptRunOptions,
         signal: Option<AbortSignal>,
     ) {
+        // This run starts from the queue itself, so it takes the parked input in the queue's own drain order.
+        self.inner.follow_ups_parked.store(false, Ordering::SeqCst);
         let config = self.create_loop_config(options);
         let messages = match self.take_queued_messages(queue).await {
             Ok(messages) => messages,
@@ -1334,6 +1354,23 @@ impl Agent {
             self.run_queued_messages_after_agent_end(Some(abort_controller.signal()))
                 .await;
         }
+
+        // Follow-ups an error-ended run parked join the next run's first turn boundary, so their
+        // entries are written even when that run's provider request fails too (omo#14428). A
+        // suppressed drain only hands this run's post-run decision to its owner (a retry, a
+        // compaction, agent_before_settle); the mark affects only the next run, so it holds either way.
+        let follow_ups_parked = !abort_controller.signal().aborted()
+            && lock(&self.inner.follow_up_queue).has_items()
+            && lock(&self.inner.state)
+                .messages()
+                .last()
+                .and_then(|last| last.as_assistant())
+                .is_some_and(|assistant| {
+                    assistant.stop_reason == maho_ai::types::StopReason::Error
+                });
+        self.inner
+            .follow_ups_parked
+            .store(follow_ups_parked, Ordering::SeqCst);
 
         self.finish_run();
     }

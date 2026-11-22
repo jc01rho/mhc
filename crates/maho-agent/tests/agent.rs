@@ -366,3 +366,88 @@ async fn finish_turn_end_suppresses_queue_drain() {
     // The steering queue is empty, so the next batch is the follow-up queue.
     assert_eq!(agent.peek_queued_messages(false), vec![follow_up]);
 }
+
+#[tokio::test]
+async fn peek_queued_messages_all_returns_every_item_in_one_at_a_time_mode() {
+    let agent = agent_with(unused_stream_fn());
+    let s1 = user_message("steer-1");
+    let s2 = user_message("steer-2");
+    let f1 = user_message("follow-1");
+    let f2 = user_message("follow-2");
+    agent.steer(s1.clone());
+    agent.steer(s2.clone());
+    agent.follow_up(f1.clone());
+    agent.follow_up(f2.clone());
+
+    assert_eq!(agent.peek_queued_messages(false), vec![s1.clone()]);
+    assert_eq!(agent.peek_queued_messages(true), vec![s1, s2, f1, f2]);
+}
+
+#[tokio::test]
+async fn parked_follow_up_from_error_ended_run_joins_next_prompt_first_turn_even_if_it_fails() {
+    use maho_ai::types::{ContentBlock, Message, UserContent};
+    use std::sync::Mutex;
+
+    let provider_user_texts: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let stream_fn: StreamFn = {
+        let recorded = provider_user_texts.clone();
+        Arc::new(move |_model, context, _options| {
+            let texts = context
+                .messages
+                .iter()
+                .filter_map(|message| match message {
+                    Message::User(user) => match &user.content {
+                        UserContent::Text(text) => Some(text.clone()),
+                        UserContent::Blocks(blocks) => {
+                            blocks.iter().find_map(|block| match block {
+                                ContentBlock::Text(text) => Some(text.text.clone()),
+                                _ => None,
+                            })
+                        }
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            recorded
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(texts);
+            support::error_stream(support::assistant_with(
+                vec![text_block("")],
+                StopReason::Error,
+                Some("provider error".to_owned()),
+                None,
+            ))
+        })
+    };
+    let agent = Agent::new(AgentOptions {
+        stream_fn: Some(stream_fn),
+        ..AgentOptions::default()
+    });
+    agent.follow_up(user_message("retained queued input"));
+
+    agent
+        .prompt(AgentPromptInput::text("initial request"))
+        .await;
+    // The first run ended in StopReason::Error, so the follow-up remained parked in the queue.
+    assert!(agent.has_queued_messages());
+
+    agent
+        .prompt(AgentPromptInput::text("later admitted prompt"))
+        .await;
+
+    assert!(!agent.has_queued_messages());
+    assert_eq!(
+        *provider_user_texts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![
+            vec!["initial request".to_owned()],
+            vec![
+                "initial request".to_owned(),
+                "later admitted prompt".to_owned(),
+                "retained queued input".to_owned(),
+            ],
+        ]
+    );
+}

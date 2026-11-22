@@ -342,6 +342,8 @@ pub struct AgentLoopConfig {
     /// Receives loop events together with the assistant capture they carry (the TS WeakMap
     /// carrier on the event object). Without it the loop emits bare events through the sink.
     pub(crate) captured_event_sink: Option<crate::internal_events::CapturedEventSink>,
+    /// Poll the follow-up queue at the first turn boundary when no steering is queued (omo#14428).
+    pub(crate) take_follow_ups_at_start: bool,
 }
 
 impl AgentLoopConfig {
@@ -373,6 +375,7 @@ impl AgentLoopConfig {
             after_tool_call: None,
             internal_progress_sink: None,
             captured_event_sink: None,
+            take_follow_ups_at_start: false,
         }
     }
 
