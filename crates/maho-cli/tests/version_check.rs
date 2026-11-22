@@ -80,6 +80,64 @@ fn upstream_orders_same_day_calver_revisions_after_the_bare_release() {
     assert!(is_newer_package_version("2026.7.30-2", "2026.7.30"));
 }
 #[test]
+fn upstream_orders_padded_and_revision_calver() {
+    let cases: [(&str, &str, i8); 7] = [
+        ("2026.11.02-1", "2026.11.2", 0),
+        ("2026.11.02-1", "2026.11.2-1", 0),
+        ("2026.11.02-1", "2026.11.3", -1),
+        ("2026.11.02-1", "2026.11.2-2", -1),
+        ("2026.11.2-10", "2026.11.2-9", 1),
+        ("2026.10.31-2", "2026.11.02-1", -1),
+        ("9999.0.0", "2026.11.02-1", 1),
+    ];
+    for (left, right, expected) in cases {
+        assert_eq!(
+            compare_package_versions(left, right),
+            Some(expected),
+            "{left} vs {right}"
+        );
+        assert_eq!(
+            compare_package_versions(right, left),
+            Some(-expected),
+            "{right} vs {left}"
+        );
+        assert_eq!(
+            is_newer_package_version(left, right),
+            expected > 0,
+            "newer {left} vs {right}"
+        );
+    }
+}
+#[test]
+fn upstream_reads_release_tag_version_and_refuses_drafts_and_prereleases() {
+    assert_eq!(
+        read_latest_release_version(&serde_json::json!({"tag_name": "v2026.11.13-1"})).as_deref(),
+        Some("2026.11.13-1")
+    );
+    assert_eq!(
+        read_latest_release_version(&serde_json::json!({"tag_name": "2026.11.13"})).as_deref(),
+        Some("2026.11.13")
+    );
+    assert_eq!(
+        read_latest_release_version(
+            &serde_json::json!({"tag_name": "v2026.11.13-1", "draft": true})
+        ),
+        None
+    );
+    assert_eq!(
+        read_latest_release_version(
+            &serde_json::json!({"tag_name": "v2026.11.13-1", "prerelease": true})
+        ),
+        None
+    );
+    assert_eq!(
+        read_latest_release_version(&serde_json::json!({"tag_name": ""})),
+        None
+    );
+    assert_eq!(read_latest_release_version(&serde_json::json!({})), None);
+    assert_eq!(read_latest_release_version(&serde_json::Value::Null), None);
+}
+#[test]
 fn upstream_never_advertises_an_update_for_branded_build_labels() {
     let label = "omo@c6e7dd7 2026-09-04 10:17 +09:00";
     assert!(!is_newer_package_version("2026.9.3-3", label));
