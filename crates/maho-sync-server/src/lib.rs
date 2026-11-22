@@ -1,29 +1,19 @@
 //! A self-hostable memory-sync server: a dumb, per-account ciphertext log that the mhc memory-sync
-//! client already knows how to talk to (`/v1/sync/*` plus `/v1/me/events`). It never sees plaintext:
-//! objects and keyring records arrive already sealed and signed by the devices, and the server only
-//! orders them, checks that a writer starts from the head it read, keeps one append per idempotency
-//! key, and tells connected devices that the head moved. Every account is confined to its own rows.
+//! client already knows how to talk to (`/v1/sync/*`, `/v1/account/sync`, `/v1/devices*`, plus
+//! `/v1/me/events`). It never sees plaintext: objects and keyring records arrive already sealed and
+//! signed by the devices, and the server only orders them, checks that a writer starts from the
+//! head it read, keeps one append per idempotency key, and tells connected devices that the head
+//! moved. Every account is confined to its own rows.
 //!
-//! Route contract, as the client sends it (`crates/omo/memory-core/src/sync`):
-//! - `GET  /v1/sync/state` -> `{head:{seq,link,keyring_link},current_epoch,rotation_pending,oldest_retained_seq,snapshot:null}`
-//! - `GET  /v1/sync/batches?after=n` -> `{entries:[{seq,kind,author:{kind,id},digest,object_id,batch_id}]}`
-//! - `GET  /v1/sync/entries?after=n` -> the same rows, keyring rows included, for the account walk
-//! - `GET  /v1/sync/keys` -> `{entries:[<full keyring rows>]}`
-//! - `GET  /v1/sync/objects/{id}` -> the stored bytes; `GET /v1/sync/recovery-wraps` -> `{wraps:[{record,entry}]}`
-//! - `POST /v1/sync/uploads {kind,bytes,sha256}` -> `{upload_id}`, then `PUT /v1/sync/uploads/{id}` raw bytes
-//! - `POST /v1/sync/batches` / `PUT /v1/sync/keys` / `POST /v1/sync/recovery/join` -> `{seq}` or a
-//!   `{error:{code}}` refusal (`stale_base` while `rotation_pending` or on a moved base)
-//! - `GET  /v1/me/events` -> an SSE stream of `sync.advanced` / `sync.keyring.changed` frames carrying the head
-//!
-//! Tokens come from a small file (`token account device principal`, one per line): there is no
-//! registration route and no hosted service behind it.
+//! Tokens come from a small file (`token account device-id sync-principal [admin] [seal=...] [sign=...]`,
+//! one per line): there is no registration route and no hosted service behind it.
 
 use std::convert::Infallible;
 use std::path::Path;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path as UrlPath, Query, State};
+use axum::extract::{DefaultBodyLimit, Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -50,6 +40,9 @@ pub struct DeviceToken {
     pub account: String,
     pub device_id: String,
     pub sync_principal: String,
+    pub sealing_public_key: String,
+    pub signing_public_key: String,
+    pub admin: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -60,7 +53,8 @@ impl Tokens {
         self.0.iter().find(|row| row.token == token)
     }
 
-    /// `token account device-id sync-principal` per line; blank lines and `#` comments are skipped.
+    /// `token account device-id sync-principal [admin] [seal=...] [sign=...]` per line; blank
+    /// lines and `#` comments are skipped.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut rows = Vec::new();
         for (index, line) in text.lines().enumerate() {
@@ -69,17 +63,41 @@ impl Tokens {
                 continue;
             }
             let fields: Vec<&str> = line.split_whitespace().collect();
-            let [token, account, device_id, principal] = fields.as_slice() else {
+            let [token, account, device_id, principal, rest @ ..] = fields.as_slice() else {
                 return Err(format!(
                     "tokens line {}: expected `token account device-id sync-principal`",
                     index + 1
                 ));
             };
+            let mut admin = false;
+            let mut sealing_public_key = (*device_id).to_string();
+            let mut signing_public_key = (*device_id).to_string();
+            for option in rest {
+                if *option == "admin" {
+                    admin = true;
+                } else if let Some(key) = option.strip_prefix("seal=")
+                    && !key.is_empty()
+                {
+                    sealing_public_key = key.to_string();
+                } else if let Some(key) = option.strip_prefix("sign=")
+                    && !key.is_empty()
+                {
+                    signing_public_key = key.to_string();
+                } else {
+                    return Err(format!(
+                        "tokens line {}: unknown field `{option}`",
+                        index + 1
+                    ));
+                }
+            }
             rows.push(DeviceToken {
                 token: (*token).into(),
                 account: (*account).into(),
                 device_id: (*device_id).into(),
                 sync_principal: (*principal).into(),
+                sealing_public_key,
+                signing_public_key,
+                admin,
             });
         }
         Ok(Self(rows))
@@ -104,15 +122,20 @@ pub struct ServerState {
     store: Store,
     tokens: Arc<Tokens>,
     events: broadcast::Sender<HeadEvent>,
+    confirmations: Arc<storage::Confirmations>,
 }
 
 impl ServerState {
     pub fn new(store: Store, tokens: Tokens) -> Self {
+        for device in &tokens.0 {
+            let _ = store.ensure_device(device);
+        }
         let (events, _) = broadcast::channel(256);
         Self {
             store,
             tokens: Arc::new(tokens),
             events,
+            confirmations: Arc::new(storage::Confirmations::default()),
         }
     }
 
@@ -150,7 +173,21 @@ pub fn router(state: ServerState) -> Router {
         .route("/v1/sync/uploads/{id}", put(upload_route))
         .route("/v1/sync/recovery-wraps", get(recovery_wraps_route))
         .route("/v1/sync/recovery/join", post(append_key))
+        .route(
+            "/v1/sync/pending",
+            put(open_pending_route).get(list_pending_route),
+        )
+        .route("/v1/sync/pending/{id}", get(read_pending_route))
+        .route("/v1/sync/pending/{id}/answer", post(answer_pending_route))
+        .route("/v1/sync/pending/{id}/reveal", post(reveal_pending_route))
+        .route("/v1/account/sync", put(set_account_sync_route))
+        .route("/v1/confirm", post(confirm_route))
+        .route("/v1/devices", get(devices_route))
+        .route("/v1/devices/{id}/sync", put(set_device_sync_route))
+        .route("/v1/admin/devices/{id}/revoke", post(revoke_device_route))
         .route("/v1/me/events", get(events_route))
+        // Axum's default 2 MiB body limit is smaller than the client's 8 MiB object cap.
+        .layer(DefaultBodyLimit::max(MAX_OBJECT_BYTES + 64 * 1024))
         .with_state(state)
 }
 
@@ -176,20 +213,44 @@ impl IntoResponse for Refusal {
 fn stored(error: StoreError) -> Refusal {
     match error {
         StoreError::Stale => Refusal::new(409, "stale_base"),
+        StoreError::Refused("object_mismatch") => Refusal::new(400, "object_mismatch"),
         StoreError::Refused(code) => Refusal::new(409, code),
         StoreError::NotFound => Refusal::new(404, "not_found"),
         StoreError::Sqlite(_) => Refusal::new(503, "unavailable"),
     }
 }
 
-fn device_of(state: &ServerState, headers: &HeaderMap) -> Result<DeviceToken, Refusal> {
+fn identify(state: &ServerState, headers: &HeaderMap) -> Result<DeviceToken, Refusal> {
     let unauthenticated = Refusal::new(401, "unauthenticated");
-    let token = headers
+    let header = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
         .ok_or(unauthenticated)?;
+    let token = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))
+        .ok_or(unauthenticated)?
+        .trim();
+    if token.is_empty() {
+        return Err(unauthenticated);
+    }
     state.tokens.find(token).cloned().ok_or(unauthenticated)
+}
+
+fn device_of(state: &ServerState, headers: &HeaderMap) -> Result<DeviceToken, Refusal> {
+    let device = identify(state, headers)?;
+    if state.store.is_revoked(&device.device_id).map_err(stored)? {
+        return Err(Refusal::new(401, "device_revoked"));
+    }
+    Ok(device)
+}
+
+fn admin_only(state: &ServerState, headers: &HeaderMap) -> Result<DeviceToken, Refusal> {
+    let device = device_of(state, headers)?;
+    if !device.admin {
+        return Err(Refusal::new(403, "forbidden"));
+    }
+    Ok(device)
 }
 
 #[derive(Deserialize)]
@@ -214,7 +275,7 @@ async fn batches_route(
     let device = device_of(&state, &headers)?;
     let rows = state
         .store
-        .rows_after(&device.account, query.after, MAX_PAGE, false)
+        .rows_after(&device.account, query.after, MAX_PAGE)
         .map_err(stored)?;
     Ok(Json(json!({ "entries": rows })))
 }
@@ -227,7 +288,7 @@ async fn entries_route(
     let device = device_of(&state, &headers)?;
     let rows = state
         .store
-        .rows_after(&device.account, query.after, MAX_PAGE, true)
+        .chain_rows_after(&device.account, query.after, MAX_PAGE)
         .map_err(stored)?;
     Ok(Json(json!({ "entries": rows })))
 }
@@ -265,6 +326,8 @@ async fn object_route(
 
 #[derive(Deserialize)]
 struct ReserveBody {
+    #[serde(default)]
+    kind: Option<String>,
     bytes: usize,
     #[serde(default)]
     sha256: Option<String>,
@@ -274,6 +337,9 @@ fn decode_digest(text: &str) -> Result<String, Refusal> {
     let bytes = URL_SAFE_NO_PAD
         .decode(text.trim_end_matches('='))
         .map_err(|_| Refusal::new(400, "malformed_digest"))?;
+    if bytes.len() != 32 {
+        return Err(Refusal::new(400, "malformed_digest"));
+    }
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -285,6 +351,11 @@ async fn reserve_route(
     let device = device_of(&state, &headers)?;
     if body.bytes > MAX_OBJECT_BYTES {
         return Err(Refusal::new(413, "too_large"));
+    }
+    if let Some(kind) = &body.kind
+        && kind != "batch"
+    {
+        return Err(Refusal::new(400, "malformed"));
     }
     let digest = body.sha256.as_deref().map(decode_digest).transpose()?;
     let upload_id = state
@@ -314,6 +385,8 @@ async fn upload_route(
 #[derive(Deserialize)]
 struct BatchBody {
     upload_id: String,
+    #[serde(default)]
+    digest: Option<String>,
     base_seq: u64,
     #[serde(default)]
     idempotency_key: Option<String>,
@@ -331,12 +404,21 @@ async fn append_batch(
     Json(body): Json<BatchBody>,
 ) -> Result<Json<Value>, Refusal> {
     let device = device_of(&state, &headers)?;
+    if body
+        .idempotency_key
+        .as_deref()
+        .is_some_and(|key| key.is_empty() || key.len() > 64)
+    {
+        return Err(Refusal::new(400, "malformed"));
+    }
+    let digest = body.digest.as_deref().map(decode_digest).transpose()?;
     let seq = state
         .store
         .append_batch(
             &device,
             storage::BatchAppend {
                 upload_id: body.upload_id,
+                digest,
                 base_seq: body.base_seq,
                 idempotency_key: body.idempotency_key,
                 epoch: body.epoch.max(1),
@@ -369,6 +451,14 @@ async fn append_key(
     Json(body): Json<KeyringBody>,
 ) -> Result<Json<Value>, Refusal> {
     let device = device_of(&state, &headers)?;
+    if !body.record.is_object() {
+        return Err(Refusal::new(400, "malformed"));
+    }
+    if let Some(account) = body.record["account"].as_str()
+        && account != device.account
+    {
+        return Err(Refusal::new(401, "cross_account"));
+    }
     let seq = state
         .store
         .append_keyring(
@@ -385,6 +475,234 @@ async fn append_key(
         .map_err(stored)?;
     state.announce(&device.account, seq, true);
     Ok(Json(json!({ "seq": seq })))
+}
+
+// `devices_route` authenticates with `identify` rather than `device_of` so a revoked device can
+// still read `GET /v1/devices` and discover its own revocation.
+async fn devices_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, Refusal> {
+    let device = identify(&state, &headers)?;
+    let rows = state.store.devices(&device.account).map_err(stored)?;
+    let devices: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "syncPrincipal": row.principal,
+                "revokedAt": row.revoked_at,
+                "current": row.device == device.device_id,
+                "syncEnabled": row.sync_enabled,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "devices": devices })))
+}
+
+async fn revoke_device_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> Result<Json<Value>, Refusal> {
+    admin_only(&state, &headers)?;
+    let account = state
+        .store
+        .revoke(&id)
+        .map_err(stored)?
+        .ok_or_else(|| Refusal::new(404, "not_found"))?;
+    Ok(Json(json!({
+        "device": id,
+        "account": account,
+        "revoked": true,
+    })))
+}
+
+#[derive(Deserialize)]
+struct EnabledBody {
+    enabled: bool,
+    #[serde(default, rename = "confirmToken")]
+    confirm_token: Option<String>,
+}
+
+async fn set_account_sync_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(body): Json<EnabledBody>,
+) -> Result<StatusCode, Refusal> {
+    let device = device_of(&state, &headers)?;
+    state
+        .store
+        .set_account_sync(&device.account, body.enabled)
+        .map_err(stored)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct ConfirmBody {
+    action: String,
+    target: String,
+}
+
+async fn confirm_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(body): Json<ConfirmBody>,
+) -> Result<Json<Value>, Refusal> {
+    let device = device_of(&state, &headers)?;
+    if body.action != "sync.disable_device" {
+        return Err(Refusal::new(400, "malformed"));
+    }
+    let exists = state
+        .store
+        .devices(&device.account)
+        .map_err(stored)?
+        .iter()
+        .any(|row| row.device == body.target);
+    if !exists {
+        return Err(Refusal::new(404, "not_found"));
+    }
+    let token = state.confirmations.issue(&device.account, &body.target);
+    Ok(Json(json!({ "ready": true, "token": token })))
+}
+
+async fn set_device_sync_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    Json(body): Json<EnabledBody>,
+) -> Result<StatusCode, Refusal> {
+    let device = device_of(&state, &headers)?;
+    if !body.enabled
+        && let Some(token) = body.confirm_token.as_deref()
+        && !state.confirmations.spend(&device.account, &id, token)
+    {
+        return Err(Refusal::new(403, "forbidden"));
+    }
+    let changed = state
+        .store
+        .set_device_sync(&device.account, &id, body.enabled)
+        .map_err(stored)?;
+    if !changed {
+        return Err(Refusal::new(404, "not_found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct PendingOpen {
+    account: String,
+    commitment: String,
+}
+
+#[derive(Deserialize)]
+struct PendingAnswer {
+    principal: Value,
+    approver_nonce: String,
+}
+
+#[derive(Deserialize)]
+struct PendingReveal {
+    principal: Value,
+    joining_nonce: String,
+}
+
+fn pending_json(row: &storage::PendingRow) -> Value {
+    json!({
+        "id": row.id,
+        "account": row.account,
+        "commitment": row.commitment,
+        "answer": row.answer,
+        "reveal": row.reveal,
+        "expires_at": row.expires_at,
+    })
+}
+
+async fn open_pending_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(body): Json<PendingOpen>,
+) -> Result<Json<Value>, Refusal> {
+    let device = device_of(&state, &headers)?;
+    if body.account != device.account {
+        return Err(Refusal::new(401, "cross_account"));
+    }
+    if body.commitment.is_empty() {
+        return Err(Refusal::new(400, "malformed"));
+    }
+    let row = state
+        .store
+        .open_pending(&device.account, &body.commitment)
+        .map_err(stored)?;
+    Ok(Json(pending_json(&row)))
+}
+
+async fn list_pending_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, Refusal> {
+    let device = device_of(&state, &headers)?;
+    let rows = state.store.list_pending(&device.account).map_err(stored)?;
+    Ok(Json(json!({
+        "pending": rows.iter().map(pending_json).collect::<Vec<_>>()
+    })))
+}
+
+async fn read_pending_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> Result<Json<Value>, Refusal> {
+    let device = device_of(&state, &headers)?;
+    let row = state
+        .store
+        .pending(&device.account, &id)
+        .map_err(stored)?
+        .ok_or_else(|| Refusal::new(404, "not_found"))?;
+    Ok(Json(pending_json(&row)))
+}
+
+async fn answer_pending_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    Json(body): Json<PendingAnswer>,
+) -> Result<Json<Value>, Refusal> {
+    let device = device_of(&state, &headers)?;
+    let value = json!({ "principal": body.principal, "approver_nonce": body.approver_nonce });
+    settle_pending(&state, &device, &id, storage::PendingField::Answer, &value)
+}
+
+async fn reveal_pending_route(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    Json(body): Json<PendingReveal>,
+) -> Result<Json<Value>, Refusal> {
+    let device = device_of(&state, &headers)?;
+    let value = json!({ "principal": body.principal, "joining_nonce": body.joining_nonce });
+    settle_pending(&state, &device, &id, storage::PendingField::Reveal, &value)
+}
+
+fn settle_pending(
+    state: &ServerState,
+    device: &DeviceToken,
+    id: &str,
+    field: storage::PendingField,
+    value: &Value,
+) -> Result<Json<Value>, Refusal> {
+    let written = state
+        .store
+        .set_pending_field(&device.account, id, field, value)
+        .map_err(stored)?;
+    if !written {
+        return Err(Refusal::new(409, "not_found"));
+    }
+    let row = state
+        .store
+        .pending(&device.account, id)
+        .map_err(stored)?
+        .ok_or_else(|| Refusal::new(404, "not_found"))?;
+    Ok(Json(pending_json(&row)))
 }
 
 fn frame(event: &HeadEvent) -> Event {
