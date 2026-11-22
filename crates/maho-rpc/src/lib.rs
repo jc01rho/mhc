@@ -61,6 +61,7 @@ pub mod held_input_commands;
 pub mod host_admission;
 pub mod host_admission_proxy;
 pub mod host_attach_hold;
+pub mod host_bare_endpoint_registration;
 pub mod host_capabilities;
 pub mod host_child_exit;
 pub mod host_cleanup_paths;

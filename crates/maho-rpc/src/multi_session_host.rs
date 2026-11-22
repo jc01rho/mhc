@@ -7110,7 +7110,19 @@ async fn run_socket_host(
             .await;
         });
     }
-    let mut listener = HostListener::bind(&path, secret.as_deref().map(Vec::as_slice))?;
+    let mut listener = if handoff_public_socket.is_none() {
+        crate::host_bare_endpoint_registration::bind_registered_endpoint(
+            crate::host_bare_endpoint_registration::BareEndpointRegistration {
+                agent_dir: &core.options.agent_dir,
+                socket: &path,
+                log: &|message| eprintln!("senpi rpc host: {message}"),
+            },
+            || HostListener::bind(&path, secret.as_deref().map(Vec::as_slice)),
+        )
+        .await?
+    } else {
+        HostListener::bind(&path, secret.as_deref().map(Vec::as_slice))?
+    };
     let bound = crate::socket_ownership::stat_socket_identity(std::path::Path::new(&path))?;
     // A key record that cannot be published safely ends this host: held connections are refused, never served
     // keyless (senpi `transport.publish(() => shutdown(1))`).
