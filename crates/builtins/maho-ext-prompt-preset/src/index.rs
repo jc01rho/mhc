@@ -1,5 +1,5 @@
 use crate::{
-    presets::{ModelMetadata, resolve_preset, resolve_preset_name},
+    presets::{ModelMetadata, resolve_preset},
     settings::{PromptPresetName, load_prompt_preset_settings},
 };
 use maho_core::{
