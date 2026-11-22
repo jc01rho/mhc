@@ -1519,6 +1519,23 @@ async fn handle_session_command_with_sink(
             let result=session.model_registry().remove_credential_account(provider,name,&session.agent_dir()).await.map(|()|None);
             ("account_remove",result)
         },
+        RpcCommandBody::AccountReset{provider,name}=>{
+            let (Some(provider),Some(name))=(provider.as_ref().and_then(serde_json::Value::as_str),name.as_ref().and_then(serde_json::Value::as_str)) else {
+                return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"account_reset".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"provider and name must be strings".into(),error_code:Some(crate::rpc_types::RPC_ERROR_INVALID_ARGUMENT.into()),error_data:default_error_data(session,"account_reset")}});
+            };
+            match session.model_registry().reset_credential_account(provider,name,&session.agent_dir()).await {
+                Ok(())=>{
+                    maho_core::emit_provider_accounts_changed(provider);
+                    ("account_reset",Ok(None))
+                }
+                Err(error) if error.starts_with(maho_core::credential_accounts::CREDENTIAL_ACCOUNT_NOT_FOUND_PREFIX)=>{
+                    return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"account_reset".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Provider account not found. Refresh the account list.".into(),error_code:Some(maho_core::credential_accounts::CREDENTIAL_ACCOUNT_NOT_FOUND_CODE.into()),error_data:default_error_data(session,"account_reset")}});
+                }
+                Err(_)=>{
+                    return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"account_reset".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Could not reset this account. Try again.".into(),error_code:Some("account_reset_failed".into()),error_data:default_error_data(session,"account_reset")}});
+                }
+            }
+        },
         RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state_with_dialogs(session,current_abort_source(session,last_abort_source),Vec::new())))),
         // senpi connection-handler.ts: `runQueuedInputChange(effectContext(), command)` / `runGetEffectStatus(...)`.
         RpcCommandBody::DequeueMessage{..}|RpcCommandBody::EditQueuedMessage{..}|RpcCommandBody::GetEffectStatus{..}=>{
@@ -4334,6 +4351,152 @@ mod new_session_tests {
         assert_eq!(response["command"], "account_remove");
         assert_eq!(response["success"], false);
         assert_eq!(response["error"], "Provider account not found: missing");
+    }
+    #[tokio::test]
+    async fn account_reset_unblocks_named_account_and_validates_selectors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        let auth_storage = maho_core::auth_storage::AuthStorage::create(&auth_path);
+        auth_storage
+            .set(
+                "openai",
+                Some(serde_json::json!({
+                    "type": "api_key",
+                    "key": "synthetic-a",
+                    "accounts": [
+                        {
+                            "name": "a",
+                            "key": "synthetic-a",
+                            "blockReason": "account_disabled",
+                            "blockedUntil": 4_102_444_800_000_i64
+                        },
+                        {
+                            "name": "b",
+                            "key": "synthetic-b",
+                            "blockReason": "account_disabled",
+                            "blockedUntil": 4_102_444_800_000_i64
+                        }
+                    ],
+                    "pinned": "b",
+                    "order": ["b", "a"],
+                    "slotState": {
+                        "a": {"blockReason": "account_disabled", "blockedUntil": 4_102_444_800_000_i64},
+                        "b": {"blockReason": "account_disabled", "blockedUntil": 4_102_444_800_000_i64}
+                    }
+                })),
+            )
+            .expect("seed auth");
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                auth_storage: Some(auth_storage),
+                providers: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .expect("model runtime");
+        let sess = AgentSession::new(maho_core::agent_session::AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+                stream_fn: Some(std::sync::Arc::new(|_, _, _| {
+                    maho_ai::types::AssistantMessageEventStream::assistant()
+                })),
+                ..Default::default()
+            }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                "/tmp", None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".into(),
+            agent_dir: Some(dir.path().to_string_lossy().into_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: vec![],
+            favorite_models: vec![],
+            flag_values: Default::default(),
+            custom_tools: vec![],
+            model_runtime: Some(runtime),
+            prompt_templates: vec![],
+            slash_commands: vec![],
+            skills: vec![],
+            context_files: vec![],
+            resource_diagnostics: vec![],
+            auto_title_sessions: None,
+            compaction_Flush_hooks: false,
+            prompt_surface: None,
+            browser_engine: None,
+            tool_runtime: None,
+            initial_thinking_level_source: None,
+        });
+        let reset = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(
+                    serde_json::json!({"id":"r1","type":"account_reset","provider":"openai","name":"b"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reset["command"], "account_reset");
+        assert_eq!(reset["success"], true);
+        let after = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(
+                    serde_json::json!({"type":"get_provider_accounts","provider":"openai"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after["data"]["accounts"][0]["name"], "b");
+        assert_eq!(after["data"]["accounts"][0]["blocked"], false);
+        assert_eq!(after["data"]["accounts"][1]["name"], "a");
+        assert_eq!(after["data"]["accounts"][1]["blocked"], true);
+
+        let missing = serde_json::to_value(
+            handle_session_command(
+                &sess,
+                &serde_json::from_value(
+                    serde_json::json!({"id":"m1","type":"account_reset","provider":"openai","name":"missing"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(missing["success"], false);
+        assert_eq!(missing["errorCode"], "account_not_found");
+        assert_eq!(
+            missing["error"],
+            "Provider account not found. Refresh the account list."
+        );
+
+        for invalid in [
+            serde_json::json!({"type":"account_reset","provider":null,"name":"b"}),
+            serde_json::json!({"type":"account_reset","provider":1,"name":"b"}),
+            serde_json::json!({"type":"account_reset","name":"b"}),
+            serde_json::json!({"type":"account_reset","provider":"openai","name":null}),
+            serde_json::json!({"type":"account_reset","provider":"openai","name":1}),
+            serde_json::json!({"type":"account_reset","provider":"openai"}),
+        ] {
+            let response = serde_json::to_value(
+                handle_session_command(&sess, &serde_json::from_value(invalid).unwrap())
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(response["command"], "account_reset");
+            assert_eq!(response["success"], false);
+            assert_eq!(response["errorCode"], "invalid_argument");
+        }
     }
 }
 

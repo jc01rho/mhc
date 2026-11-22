@@ -525,6 +525,12 @@ pub enum RpcCommandBody {
         provider: String,
         name: String,
     },
+    AccountReset {
+        #[serde(default)]
+        provider: Option<Value>,
+        #[serde(default)]
+        name: Option<Value>,
+    },
     SetClientInfo {
         width: f64,
         #[serde(skip_serializing_if = "Option::is_none")]

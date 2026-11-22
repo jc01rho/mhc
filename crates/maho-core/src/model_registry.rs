@@ -340,6 +340,15 @@ impl ModelRegistry {
         .await
         .map(|_| ())
     }
+    pub async fn reset_credential_account(
+        &self,
+        provider: &str,
+        name: &str,
+        agent_dir: &str,
+    ) -> Result<(), String> {
+        self.reset_credential_account_guarded(provider, name, agent_dir, &|| Ok(()))
+            .await
+    }
     pub(crate) async fn reset_credential_account_guarded(
         &self,
         provider: &str,
