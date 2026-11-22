@@ -14,6 +14,8 @@ use std::error::Error as StdError;
 pub struct OAuthTokenEndpointError {
     pub message: String,
     pub status: u16,
+    pub oauth_error: Option<String>,
+    pub credential_refused: bool,
 }
 
 impl OAuthTokenEndpointError {
@@ -21,6 +23,22 @@ impl OAuthTokenEndpointError {
         Self {
             message: message.into(),
             status,
+            oauth_error: None,
+            credential_refused: false,
+        }
+    }
+
+    pub fn with_facts(
+        message: impl Into<String>,
+        status: u16,
+        oauth_error: Option<String>,
+        credential_refused: bool,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            status,
+            oauth_error,
+            credential_refused,
         }
     }
 }

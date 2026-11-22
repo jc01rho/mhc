@@ -431,6 +431,27 @@ fn assert_request_auth(
     Err(format!("No API key for provider: {provider}"))
 }
 
+const CLAUDE_OAUTH_TOKEN_MARKER: &str = "sk-ant-oat";
+
+pub fn is_claude_oauth_token_refused_message(message: &str) -> bool {
+    message
+        .contains("is not accepted as an API key; senpi does not send Claude subscription tokens")
+}
+
+pub fn assert_not_claude_oauth_token(
+    provider: &str,
+    model_id: &str,
+    api_key: Option<&str>,
+) -> Result<(), String> {
+    let Some(key) = api_key.filter(|key| key.contains(CLAUDE_OAUTH_TOKEN_MARKER)) else {
+        return Ok(());
+    };
+    let _ = key;
+    Err(format!(
+        "{provider}/{model_id}: a Claude OAuth token ({CLAUDE_OAUTH_TOKEN_MARKER}...) is not accepted as an API key; senpi does not send Claude subscription tokens to the Anthropic API directly. For a Claude Pro/Max subscription sign in with /login anthropic-subscription (or set CLAUDE_CODE_OAUTH_TOKEN) and use anthropic-subscription/{model_id}; otherwise use an Anthropic API key."
+    ))
+}
+
 /// `removeAnthropicBetaHeaders`: drop the beta features `should_remove_beta` rejects.
 fn remove_anthropic_beta_headers(
     headers: Option<&BTreeMap<String, Option<String>>>,
@@ -3383,16 +3404,53 @@ async fn attempt_request(
     let mut version_retried = false;
     let mut version_client = None;
     let mut federation_retried = false;
+    let mut thinking_recovery =
+        crate::api::anthropic_thinking_binding::ThinkingBindingRecovery::new(
+            fallback_key.map(str::to_owned),
+        );
     loop {
         let client = version_client.as_ref().unwrap_or(client);
+        let (stripped_context, replayed_thinking_removed) = thinking_recovery.strip(context);
         let mut prepared = build_prepared_request(
             model,
-            context,
+            &stripped_context,
             client.is_oauth_token,
             options,
             replay_mode(unsigned_thinking_replay),
         )
         .await?;
+        if thinking_recovery.binding_allowed()
+            && thinking_enabled(options) == Some(true)
+            && model.reasoning
+            && crate::api::anthropic_thinking_binding::accepts_thinking_binding(model)
+            && crate::api::anthropic_thinking_binding::replays_signed_thinking(
+                &stripped_context.messages,
+            )
+        {
+            crate::api::anthropic_thinking_binding::bind_replayed_thinking(&mut prepared.params);
+        }
+        if replayed_thinking_removed
+            && prepared
+                .params
+                .get("thinking")
+                .and_then(|t| t.get("type"))
+                .and_then(Value::as_str)
+                == Some("enabled")
+            && final_assistant_turn_starts_with_tool_use(
+                &prepared
+                    .params
+                    .get("messages")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        {
+            disable_thinking_for_request(
+                &mut prepared.params,
+                model,
+                get_anthropic_compat(model).supports_disabled_thinking,
+            );
+        }
         let demoted = demote_tool_reference_replay(&prepared.params);
         let replays_references = demoted != prepared.params;
         if demote_references {
@@ -3575,6 +3633,50 @@ async fn attempt_request(
                 continue;
             }
         }
+        if crate::api::anthropic_thinking_binding::is_thinking_binding_control_refused_error(
+            response.status(),
+            &message,
+        ) && thinking_recovery.binding_allowed()
+            && model
+                .compat
+                .as_ref()
+                .and_then(|c| c.anthropic_messages().supports_mid_convo_effort)
+                != Some(true)
+        {
+            thinking_recovery.refuse_binding();
+            continue;
+        }
+        if crate::api::anthropic_thinking_binding::is_thinking_binding_mismatch_error(
+            response.status(),
+            &message,
+        ) {
+            let removed = thinking_recovery.reject_replayed_thinking(&context.messages);
+            if removed > 0 {
+                anthropic_request_shape_log::log_anthropic_recovery(
+                    &model.provider,
+                    &model.id,
+                    "thinking_binding_mismatch",
+                    &[("removedThinkingBlocks", removed)],
+                    options.request.env.as_ref(),
+                    None,
+                );
+                continue;
+            }
+            return Err(match response {
+                AnthropicStreamError::Http {
+                    status,
+                    message,
+                    headers,
+                    parsed_body,
+                } => AnthropicStreamError::Http {
+                    status,
+                    message: crate::api::anthropic_thinking_binding::thinking_binding_unrecoverable_message(&message),
+                    headers,
+                    parsed_body,
+                },
+                other => other,
+            });
+        }
         return Err(response);
     }
 }
@@ -3611,6 +3713,8 @@ async fn drive(
     if federation.is_none() {
         auth.map_err(AnthropicStreamError::Message)?;
     }
+    assert_not_claude_oauth_token(&model.provider, &model.id, api_key.as_deref())
+        .map_err(AnthropicStreamError::Message)?;
 
     let dynamic_headers = (model.provider == "github-copilot").then(|| {
         let has_images = has_copilot_vision_input(&context.messages);
@@ -4032,6 +4136,11 @@ pub fn stream_simple(
         api_key.as_deref(),
         options_headers.as_ref(),
     ) && anthropic_federation::resolve(model, &simple.stream, false).is_none()
+    {
+        return crate::utils::lazy::error_stream(model, &message);
+    }
+    if let Err(message) =
+        assert_not_claude_oauth_token(&model.provider, &model.id, api_key.as_deref())
     {
         return crate::utils::lazy::error_stream(model, &message);
     }

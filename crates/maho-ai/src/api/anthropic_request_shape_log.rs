@@ -110,6 +110,35 @@ pub fn log_anthropic_request_shape(
     }
 }
 
+pub fn log_anthropic_recovery(
+    provider: &str,
+    model_id: &str,
+    recovery: &str,
+    details: &[(&str, usize)],
+    env: Option<&ProviderEnv>,
+    append: Option<AppendLine<'_>>,
+) {
+    let Some(path) = get_provider_env_value(REQUEST_SHAPE_LOG_ENV, env) else {
+        return;
+    };
+    let ts = chrono::DateTime::from_timestamp_millis(crate::utils::diagnostics::now_ms())
+        .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_default();
+    let mut record = Map::new();
+    record.insert("ts".into(), json!(ts));
+    record.insert("provider".into(), json!(provider));
+    record.insert("model".into(), json!(model_id));
+    record.insert("recovery".into(), json!(recovery));
+    for (k, v) in details {
+        record.insert((*k).into(), json!(v));
+    }
+    let line = format!("{}\n", Value::Object(record));
+    match append {
+        Some(append) => append(&path, &line),
+        None => append_file(&path, &line),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

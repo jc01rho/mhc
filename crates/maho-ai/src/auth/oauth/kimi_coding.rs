@@ -384,17 +384,29 @@ async fn refresh_token(
         let error_code = json
             .as_ref()
             .and_then(|json| json.get("error"))
-            .and_then(Value::as_str);
-        if response.status == 401 || response.status == 403 || error_code == Some("invalid_grant") {
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if response.status == 401
+            || response.status == 403
+            || error_code.as_deref() == Some("invalid_grant")
+        {
             let description = json
                 .as_ref()
                 .and_then(|json| json.get("error_description"))
                 .and_then(Value::as_str)
                 .map(|description| format!(": {description}"))
                 .unwrap_or_default();
-            anyhow::bail!(
-                "Kimi Code token refresh unauthorized (status {}){description}",
-                response.status
+            return Err(
+                crate::utils::oauth_refresh_error::OAuthTokenEndpointError::with_facts(
+                    format!(
+                        "Kimi Code token refresh unauthorized (status {}){description}",
+                        response.status
+                    ),
+                    response.status,
+                    error_code,
+                    true,
+                )
+                .into(),
             );
         }
 
@@ -412,9 +424,17 @@ async fn refresh_token(
         } else {
             format!(": {text}")
         };
-        anyhow::bail!(
-            "Kimi Code token refresh failed with status {}{suffix}",
-            response.status
+        return Err(
+            crate::utils::oauth_refresh_error::OAuthTokenEndpointError::with_facts(
+                format!(
+                    "Kimi Code token refresh failed with status {}{suffix}",
+                    response.status
+                ),
+                response.status,
+                error_code,
+                false,
+            )
+            .into(),
         );
     }
 

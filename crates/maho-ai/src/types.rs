@@ -1122,9 +1122,10 @@ pub fn sanitize_provider_diagnostic(value: &ProviderDiagnostic) -> Option<Provid
                 | "credential_pool_blocked" => {
                     (Category::RateLimit, status.is_none_or(|s| s == 429))
                 }
-                "insufficient_quota" | "usage_limit_reached" | "usage_not_included" => {
-                    (Category::Quota, status.is_none_or(|s| s == 429))
-                }
+                "insufficient_quota"
+                | "exceeded_current_quota_error"
+                | "usage_limit_reached"
+                | "usage_not_included" => (Category::Quota, status.is_none_or(|s| s == 429)),
                 "context_length_exceeded" => {
                     (Category::ContextLimit, status.is_none_or(|s| s == 400))
                 }
@@ -1772,6 +1773,8 @@ pub struct OpenAICompletionsCompat {
     pub supports_openai_grammar_tools: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_strict_mode: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mixed_strict_tools: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_schema_flavor: Option<ToolSchemaFlavor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

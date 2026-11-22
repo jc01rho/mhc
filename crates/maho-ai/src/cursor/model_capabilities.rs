@@ -242,6 +242,10 @@ mod tests {
         assert_eq!(fable.window, 1_000_000.0);
         assert_eq!(fable.max_window, Some(1_000_000.0));
         assert_eq!(fable.default_context, Some("300k".to_owned()));
+        let fable52 = get_cursor_capability_for_base("claude-fable-5-2").expect("fable 5.2");
+        assert_eq!(fable52.window, 300_000.0);
+        assert_eq!(fable52.max_window, Some(1_000_000.0));
+        assert_eq!(fable52.default_context, Some("300k".to_owned()));
         let kimi = get_cursor_capability_for_base("kimi-k3").expect("kimi");
         assert_eq!(kimi.window, 1_048_576.0);
         assert_eq!(kimi.max_window, None);

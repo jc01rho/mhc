@@ -129,3 +129,20 @@ fn the_gpt_6_2_rows_opt_into_configuration_updates() {
         );
     }
 }
+
+#[test]
+fn fable_5_2_rows_ship_across_upstream_providers() {
+    for (provider, id) in [
+        ("anthropic", "claude-fable-5-2"),
+        ("amazon-bedrock", "anthropic.claude-fable-5-2"),
+        ("amazon-bedrock", "global.anthropic.claude-fable-5-2"),
+        ("amazon-bedrock", "us.anthropic.claude-fable-5-2"),
+        ("github-copilot", "claude-fable-5.2"),
+        ("opencode", "claude-fable-5-2"),
+        ("openrouter", "anthropic/claude-fable-5.2"),
+        ("vercel-ai-gateway", "anthropic/claude-fable-5.2"),
+    ] {
+        let model = builtin(provider, id);
+        assert_eq!(model.id, id, "{provider}/{id}");
+    }
+}

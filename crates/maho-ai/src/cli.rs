@@ -76,6 +76,41 @@ fn save_auth(auth: &Map<String, Value>) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn get_or_create_device_id_in(directory: &std::path::Path) -> anyhow::Result<String> {
+    std::fs::create_dir_all(directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
+    }
+    let path = directory.join("device-id");
+    if !path.exists() {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&path) {
+            Ok(mut file) => {
+                file.write_all(uuid::Uuid::new_v4().to_string().as_bytes())?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(std::fs::read_to_string(&path)?.trim().to_owned())
+}
+
+fn get_or_create_device_id() -> anyhow::Result<String> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    get_or_create_device_id_in(&home.join(".senpi").join("ai"))
+}
+
 struct CliInteraction;
 
 #[async_trait]
@@ -143,8 +178,11 @@ async fn login(provider_id: &str) -> anyhow::Result<()> {
     let oauth = load_builtin_oauth(provider_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Unknown provider: {provider_id}"))?;
-    let interaction =
+    let mut interaction =
         ProviderAuthInteraction::new(AbortController::new().signal(), Arc::new(CliInteraction));
+    if let Ok(device_id) = get_or_create_device_id() {
+        interaction = interaction.with_device_id(device_id);
+    }
     let credential = oauth.login(&interaction).await?;
     let mut auth = load_auth();
     auth.insert(
@@ -231,5 +269,15 @@ mod tests {
                 .any(|(oauth_id, _)| oauth_id == id)
         }));
         assert!(ids.contains(&"anthropic".to_owned()));
+    }
+
+    #[test]
+    fn persists_and_reuses_installation_device_id() {
+        let dir = std::env::temp_dir().join(format!("maho-ai-device-id-{}", uuid::Uuid::new_v4()));
+        let first = get_or_create_device_id_in(&dir).expect("create device id");
+        let second = get_or_create_device_id_in(&dir).expect("reuse device id");
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 36);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

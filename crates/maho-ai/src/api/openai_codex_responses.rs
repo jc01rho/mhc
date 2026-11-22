@@ -363,22 +363,17 @@ pub fn resolve_codex_web_socket_url(base_url: Option<&str>) -> String {
     }
 }
 
-/// `resolveCodexServiceTier`.
+/// `resolveCodexServiceTier`: the backend echoes `default` or `auto` on turns it serves at the sent
+/// tier, so those (like an absent echo) carry no information and resolve to the sent tier; any other
+/// echo is authoritative (senpi#2890, oh-my-pi v18.8.1 204b8f3).
 pub fn resolve_codex_service_tier(
     response_service_tier: Option<&str>,
     request_service_tier: Option<&str>,
 ) -> Option<String> {
-    if response_service_tier == Some("default")
-        && matches!(
-            request_service_tier,
-            Some("flex") | Some("priority") | Some("fast") | Some("ultrafast")
-        )
-    {
-        return request_service_tier.map(str::to_owned);
+    match response_service_tier {
+        None | Some("default") | Some("auto") => request_service_tier.map(str::to_owned),
+        Some(tier) => Some(tier.to_owned()),
     }
-    response_service_tier
-        .or(request_service_tier)
-        .map(str::to_owned)
 }
 
 /// `getServiceTierCostMultiplier` for ChatGPT plan usage, not purchased API credits.
@@ -1177,7 +1172,10 @@ async fn run_web_socket_request(
         },
         failed.clone(),
     );
-    let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
+    let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState {
+        error: None,
+        provider: model.provider.clone(),
+    }));
     let adapter = CodexEventStream {
         body,
         buffer: String::new(),
@@ -1190,7 +1188,10 @@ async fn run_web_socket_request(
         start: Some((on_start.clone(), output.clone(), stream.clone())),
     };
     let stream_options = ResponsesStreamOptions {
-        service_tier: codex_options.service_tier.as_deref(),
+        service_tier: request_body
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .or(codex_options.service_tier.as_deref()),
         on_provider_stream_event: options.on_provider_stream_event.as_ref(),
         async_on_provider_stream_event: options.async_on_provider_stream_event.as_ref(),
         resolve_service_tier: Some(&resolve_codex_service_tier),
@@ -1441,6 +1442,18 @@ pub fn register_session_resource_cleanup() -> impl FnOnce() {
 #[derive(Default)]
 struct CodexStreamAdapterState {
     error: Option<CodexError>,
+    provider: String,
+}
+
+fn state_provider(state: &Arc<Mutex<CodexStreamAdapterState>>) -> String {
+    let guard = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.provider.is_empty() {
+        String::from("chatgpt-subscription")
+    } else {
+        guard.provider.clone()
+    }
 }
 
 /// `mapCodexEvents` + `parseSSE` as a byte stream: each Codex event is normalized onto the shared
@@ -1583,6 +1596,17 @@ fn map_codex_frame(
                         }
                     )
                 });
+            let base =
+                if super::subscription_sharing_items::is_shared_subscription_item_limit_message(
+                    &base,
+                ) {
+                    super::subscription_sharing_items::shared_subscription_item_limit_message(
+                        &state_provider(state),
+                        &base,
+                    )
+                } else {
+                    base
+                };
             let diagnostic = provider_diagnostic::codex_event_provider_diagnostic(&event, now_ms());
             fail(
                 state,
@@ -1611,6 +1635,17 @@ fn map_codex_frame(
                         message
                     }
                 });
+            let base =
+                if super::subscription_sharing_items::is_shared_subscription_item_limit_message(
+                    &base,
+                ) {
+                    super::subscription_sharing_items::shared_subscription_item_limit_message(
+                        &state_provider(state),
+                        &base,
+                    )
+                } else {
+                    base
+                };
             let diagnostic = provider_diagnostic::codex_event_provider_diagnostic(&event, now_ms());
             fail(
                 state,
@@ -2089,6 +2124,17 @@ async fn drive(
 
         let (message, friendly_message) = parse_error_response(status, "", &error_text).await;
         let mut error_message = friendly_message.unwrap_or(message);
+        if status == 400
+            && super::subscription_sharing_items::is_shared_subscription_item_limit_message(
+                &error_message,
+            )
+        {
+            error_message =
+                super::subscription_sharing_items::shared_subscription_item_limit_message(
+                    &model.provider,
+                    &error_message,
+                );
+        }
         if status == 429 {
             let hint_ms = extract_429_retry_after_ms(
                 &RetryHintInput {
@@ -2145,7 +2191,10 @@ async fn drive(
             partial: output.clone(),
         });
     }
-    let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
+    let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState {
+        error: None,
+        provider: model.provider.clone(),
+    }));
     let provenance: super::openai_responses::ResponsesFailureSlot = Arc::default();
     let adapter = CodexEventStream {
         body: super::openai_responses::observe_responses_transport(
@@ -2156,7 +2205,10 @@ async fn drive(
         done: false,
         state: adapter_state.clone(),
     };
-    let service_tier = codex_options.service_tier.as_deref();
+    let service_tier = body
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .or(codex_options.service_tier.as_deref());
     let stream_options = ResponsesStreamOptions {
         service_tier,
         on_provider_stream_event: options.on_provider_stream_event.as_ref(),
@@ -2598,5 +2650,28 @@ mod tests {
             .expect("recorded error");
         assert!(is_previous_response_not_found_error(&error));
         assert!(is_codex_non_transport_error(&error));
+    }
+
+    #[test]
+    fn resolve_codex_service_tier_treats_default_and_auto_as_sent_tier() {
+        for echo in [None, Some("default"), Some("auto")] {
+            assert_eq!(
+                resolve_codex_service_tier(echo, Some("priority")).as_deref(),
+                Some("priority")
+            );
+            assert_eq!(
+                resolve_codex_service_tier(echo, Some("fast")).as_deref(),
+                Some("fast")
+            );
+            assert_eq!(
+                resolve_codex_service_tier(echo, Some("scale")).as_deref(),
+                Some("scale")
+            );
+            assert_eq!(resolve_codex_service_tier(echo, None), None);
+        }
+        assert_eq!(
+            resolve_codex_service_tier(Some("flex"), Some("priority")).as_deref(),
+            Some("flex")
+        );
     }
 }

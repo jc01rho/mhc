@@ -46,6 +46,16 @@ pub fn legacy_provider_ids_for(canonical_id: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The id upstream pi still uses for `provider_id`: the legacy spelling of a renamed provider (the
+/// remote model catalog serves `openai-codex`, not `chatgpt-subscription`), the id itself otherwise.
+pub fn upstream_provider_id_for(provider_id: &str) -> String {
+    legacy_provider_ids_for(provider_id)
+        .first()
+        .copied()
+        .unwrap_or(provider_id)
+        .to_owned()
+}
+
 /// Reads a record keyed by provider id, preferring the canonical key over legacy spellings.
 pub fn read_by_provider_id<'a, T>(
     record: Option<&'a BTreeMap<String, T>>,
@@ -193,6 +203,19 @@ mod tests {
         let title = "returns no legacy spelling for an id that was never renamed";
         assert!(legacy_provider_ids_for("anthropic").is_empty(), "{title}");
         assert!(legacy_provider_ids_for("openai").is_empty(), "{title}");
+    }
+
+    #[test]
+    fn maps_canonical_ids_to_upstream_provider_ids() {
+        assert_eq!(
+            upstream_provider_id_for("chatgpt-subscription"),
+            "openai-codex"
+        );
+        assert_eq!(
+            upstream_provider_id_for("anthropic-subscription"),
+            "claude-sdk-oauth"
+        );
+        assert_eq!(upstream_provider_id_for("openai"), "openai");
     }
 
     #[test]

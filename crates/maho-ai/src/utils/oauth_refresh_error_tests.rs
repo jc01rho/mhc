@@ -115,3 +115,20 @@ fn recognizes_the_unavailable_error_through_its_cause_chain() {
         None
     )));
 }
+
+#[test]
+fn endpoint_error_carries_oauth_error_and_credential_refused_facts() {
+    let default = OAuthTokenEndpointError::new("failed", 500);
+    assert_eq!(default.oauth_error, None);
+    assert!(!default.credential_refused);
+
+    let refused = OAuthTokenEndpointError::with_facts(
+        "unauthorized",
+        400,
+        Some("invalid_grant".into()),
+        true,
+    );
+    assert_eq!(refused.status, 400);
+    assert_eq!(refused.oauth_error.as_deref(), Some("invalid_grant"));
+    assert!(refused.credential_refused);
+}

@@ -4,6 +4,7 @@
 pub mod anthropic_messages;
 pub mod anthropic_messages_lazy;
 pub mod anthropic_request_shape_log;
+pub mod anthropic_thinking_binding;
 pub mod anthropic_tool_pairs;
 pub mod anthropic_tool_references;
 pub mod azure_openai_responses;
@@ -72,6 +73,7 @@ mod producer_capture_native_tests;
 mod producer_capture_tests;
 pub mod responses_completion_grace;
 pub mod simple_options;
+pub mod subscription_sharing_items;
 pub mod transform_messages;
 pub mod typesafe_system_one_lazy;
 pub mod warm_prompt_cache;

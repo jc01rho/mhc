@@ -71,7 +71,7 @@ async fn system_one_maps_all_answer_types_and_prices_reported_usage() {
         },"usage":{"input_tokens":1000000,"output_tokens":10}})) }
     }));
     let (root, stop, task) = server(app).await;
-    let mut model = get_builtin_classifier_model("vercel-ai-gateway", "liquid/d1")
+    let mut model = get_builtin_classifier_model("vercel-ai-gateway", "liquid/d1.2")
         .expect("catalog model")
         .clone();
     model.base_url = format!("{root}/v1/");
@@ -242,7 +242,7 @@ fn mixed_catalog_parses_classifier_without_chat_fields() {
             .values()
             .map(|models| models.len())
             .sum::<usize>(),
-        48
+        75
     );
     assert!(serde_json::from_value::<AnyModel>(json!({"type":"unknown"})).is_err());
 }

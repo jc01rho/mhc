@@ -73,6 +73,49 @@ fn resolve_digest_alias(requested: &str, names: &BTreeSet<String>) -> Option<Str
     unique_match(names, |name| digest_prefix(name) == suffix).map(str::to_owned)
 }
 
+/// Words that turn a stray prefix into an instruction rather than noise: a call named
+/// `delete_write` or `force_bash` is refused, never run as `write` or `bash`.
+const DESTRUCTIVE_PREFIX_WORDS: &[&str] = &[
+    "delete",
+    "remove",
+    "rm",
+    "force",
+    "drop",
+    "purge",
+    "wipe",
+    "kill",
+    "reset",
+    "overwrite",
+    "truncate",
+    "destroy",
+];
+
+/// Last resort for a plain name carrying a stray word prefix (`trophy_eval` for `eval`, omo#12065).
+fn stray_prefix_match(requested: &str, names: &BTreeSet<String>) -> Option<String> {
+    if tool_name_forms(requested).len() > 1
+        || requested
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("mcp_"))
+    {
+        return None;
+    }
+    let matched = unique_match(names, |name| {
+        requested.len() > name.len() + 1
+            && requested
+                .strip_suffix(name)
+                .is_some_and(|head| head.ends_with('_') && !head.ends_with("__"))
+    })?;
+    let prefix = &requested[..requested.len() - matched.len() - 1];
+    let registered: BTreeSet<String> = names.iter().map(|n| fold_tool_name(n)).collect();
+    let meaningful = std::iter::once(prefix)
+        .chain(prefix.split(['-', '_']).filter(|w| !w.is_empty()))
+        .any(|word| {
+            let key = fold_tool_name(word);
+            DESTRUCTIVE_PREFIX_WORDS.contains(&key.as_str()) || registered.contains(&key)
+        });
+    (!meaningful).then(|| matched.to_owned())
+}
+
 pub fn resolve_tool_name_match(
     requested: &str,
     available: impl IntoIterator<Item = String>,
@@ -95,7 +138,7 @@ pub fn resolve_tool_name_match(
             return Some(name.to_owned());
         }
     }
-    resolve_digest_alias(requested, &names)
+    resolve_digest_alias(requested, &names).or_else(|| stray_prefix_match(requested, &names))
 }
 
 #[cfg(test)]
@@ -136,6 +179,16 @@ mod tests {
             ("clit_1bbd174404ef", vec!["eval"], Some("eval")),
             ("clnt_1bbd174404ef", vec!["read"], None),
             ("clnt_1bbd174404e", vec!["eval"], None),
+            ("trophy_eval", vec!["eval", "read"], Some("eval")),
+            (
+                "fringe_web_search",
+                vec!["web_search", "eval"],
+                Some("web_search"),
+            ),
+            ("delete_write", vec!["write", "read"], None),
+            ("force_bash", vec!["bash"], None),
+            ("read_write", vec!["read", "write"], None),
+            ("x_read_file", vec!["read_file", "file"], None),
         ] {
             // Given: registered tools and a provider-emitted name.
             let available = available.into_iter().map(str::to_owned);

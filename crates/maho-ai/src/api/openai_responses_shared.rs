@@ -500,7 +500,15 @@ pub fn convert_responses_messages_with_provenance(
                 }
             }
             Message::ConfigurationUpdate(update) => {
-                if !supports_configuration_update(model) {
+                // Sign in with ChatGPT rejects the item; openai-responses sends the level as
+                // reasoning.effort (senpi#6607).
+                if !supports_configuration_update(model)
+                    || model
+                        .compat
+                        .as_ref()
+                        .and_then(|compat| compat.openai_responses().siwc)
+                        == Some(true)
+                {
                     continue;
                 }
                 let next = json!({ "type": "configuration_update", "reasoning": { "effort": update.effort } });

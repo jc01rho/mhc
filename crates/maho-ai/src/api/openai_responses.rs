@@ -312,6 +312,10 @@ pub struct ResponsesCompat {
     pub supports_explicit_prompt_cache_mode: bool,
     pub supports_max_output_tokens: bool,
     pub supports_forced_tool_choice: bool,
+    /// The adapter-selected Sign in with ChatGPT route, whose direct-admission policy differs
+    /// from an API-key route (senpi#6607, #6643).
+    pub siwc: bool,
+    pub supports_configuration_update: bool,
 }
 
 /// `isOpenAIResponsesNativeEndpoint`.
@@ -364,11 +368,12 @@ pub fn get_compat(model: &Model, env: Option<&ProviderEnv>) -> ResponsesCompat {
         supports_openai_grammar_tools: compat.supports_openai_grammar_tools.unwrap_or(false),
         supports_additional_tools: compat.supports_additional_tools.unwrap_or(false),
         supports_tool_search: compat.supports_tool_search.unwrap_or(false),
-        supports_explicit_prompt_cache_mode: compat
-            .supports_explicit_prompt_cache_mode
-            .unwrap_or(false),
+        supports_explicit_prompt_cache_mode:
+            crate::api::openai_responses_prompt_cache::supports_openai_responses_explicit_prompt_cache_mode(model),
         supports_max_output_tokens: compat.supports_max_output_tokens.unwrap_or(true),
         supports_forced_tool_choice: compat.supports_forced_tool_choice.unwrap_or(true),
+        siwc: compat.siwc.unwrap_or(false),
+        supports_configuration_update: crate::models::supports_configuration_update(model),
     }
 }
 
@@ -558,6 +563,24 @@ pub fn format_openai_responses_error(error: &ResponsesApiError, provider: &str) 
         }
     );
     let message = format_provider_error(&normalize_provider_error(&thrown), Some(&label));
+    let message =
+        if crate::api::subscription_sharing_items::is_shared_subscription_item_limit_message(
+            &message,
+        ) {
+            crate::api::subscription_sharing_items::shared_subscription_item_limit_message(
+                provider, &message,
+            )
+        } else {
+            message
+        };
+    let message = if crate::utils::siwc_errors::is_siwc_missing_responses_scope(&message) {
+        format!(
+            "{message}\n{}",
+            crate::utils::siwc_errors::SIWC_MISSING_RESPONSES_SCOPE_GUIDANCE
+        )
+    } else {
+        message
+    };
     if message.contains("subscription_sharing_usage_limit_exceeded") {
         format!("{message}\nCheck your ChatGPT usage: https://chatgpt.com/settings/usage")
     } else {
@@ -740,8 +763,26 @@ pub fn build_params(
         .collect();
     let reasoning_summary = reasoning_summary(options);
     let summary_is_truthy = matches!(&reasoning_summary, Some(Some(value)) if !value.is_empty());
-    let requested_reasoning_effort = option_str(options, "reasoningEffort")
-        .or_else(|| summary_is_truthy.then(|| String::from("medium")));
+    // Sign in with ChatGPT rejects configuration_update items (senpi#6607), so the newest one, the
+    // level in force, becomes the request effort instead of the cache baseline the session sends.
+    let configured_effort = if compat.siwc && compat.supports_configuration_update {
+        context
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                crate::types::Message::ConfigurationUpdate(update) => Some(update.effort.clone()),
+                _ => None,
+            })
+    } else {
+        None
+    };
+    let requested_reasoning_effort = match configured_effort.as_deref() {
+        None => option_str(options, "reasoningEffort")
+            .or_else(|| summary_is_truthy.then(|| String::from("medium"))),
+        Some("off") => None,
+        Some(effort) => Some(effort.to_owned()),
+    };
     let thinking_level_map = infer_openai_thinking_level_map(model);
     let mapped_reasoning_effort: Option<Option<String>> = requested_reasoning_effort
         .as_deref()

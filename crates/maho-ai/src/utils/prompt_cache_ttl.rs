@@ -191,6 +191,7 @@ pub struct ResolvedOpenAICompletionsCompat {
     pub supports_thinking_token_budget: Option<bool>,
     pub thinking_token_budget_field: Option<ThinkingTokenBudgetField>,
     pub supports_strict_mode: bool,
+    pub mixed_strict_tools: bool,
     pub tool_schema_flavor: Option<ToolSchemaFlavor>,
     pub tool_call_format: Option<String>,
     pub supports_openai_grammar_tools: bool,
@@ -301,6 +302,7 @@ fn detect_openai_completions_compat(model: &Model) -> ResolvedOpenAICompletionsC
         supports_thinking_token_budget: None,
         thinking_token_budget_field: None,
         supports_strict_mode: !is_moonshot && !is_together && !is_cf_gateway && !is_nvidia,
+        mixed_strict_tools: true,
         tool_schema_flavor: is_moonshot.then_some(ToolSchemaFlavor::MoonshotMfjs),
         tool_call_format: None,
         supports_openai_grammar_tools: false,
@@ -389,6 +391,9 @@ pub fn get_openai_completions_compat(model: &Model) -> ResolvedOpenAICompletions
         supports_strict_mode: compat
             .supports_strict_mode
             .unwrap_or(detected.supports_strict_mode),
+        mixed_strict_tools: compat
+            .mixed_strict_tools
+            .unwrap_or(detected.mixed_strict_tools),
         tool_schema_flavor: compat.tool_schema_flavor.or(detected.tool_schema_flavor),
         tool_call_format: compat.tool_call_format.or(detected.tool_call_format),
         supports_openai_grammar_tools: compat
