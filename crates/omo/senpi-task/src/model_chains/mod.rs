@@ -130,6 +130,13 @@ mod upstream_cases {
     use super::*;
     use crate::host::fake::{FakeRegistry, model};
     fn report(config: Value) -> ModelChainsReport {
+        // Upstream's cases predate the Fable execution gate (GATE-1), so they run with it off.
+        let mut config = config;
+        if let Value::Object(object) = &mut config {
+            object
+                .entry("model_policy")
+                .or_insert_with(|| serde_json::json!({ "block_fable": false }));
+        }
         let models = vec![
             model("anthropic", "claude-fable-5-2"),
             model("anthropic", "claude-fable-5-1"),
