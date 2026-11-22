@@ -541,6 +541,16 @@ pub static CURSOR_MODEL_CAPABILITIES: LazyLock<BTreeMap<&'static str, CursorMode
                 LEVELS_LOW_MAX,
             ),
         );
+        // Fable 5.2 (2026-11-09) takes the Fable 5.1 shape until a live AvailableModels capture lists it.
+        m.insert(
+            "claude-fable-5-2",
+            served(
+                300_000.0,
+                Some(1_000_000.0),
+                &["thinking", "context", "effort"],
+                LEVELS_LOW_MAX,
+            ),
+        );
         m.insert(
             "claude-sonnet-5-5",
             served(

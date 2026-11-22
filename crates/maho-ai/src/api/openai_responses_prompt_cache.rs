@@ -30,14 +30,16 @@ pub struct PromptCacheDiagnostics {
     pub comparison_reusable_tokens: Option<f64>,
 }
 
+pub fn supports_openai_responses_explicit_prompt_cache_mode(model: &Model) -> bool {
+    model.compat.as_ref().is_some_and(|compat| {
+        let compat = compat.openai_responses();
+        compat.siwc != Some(true) && compat.supports_explicit_prompt_cache_mode == Some(true)
+    })
+}
+
 pub fn is_openai_responses_prompt_cache_model(model: &Model) -> bool {
     model.api == "openai-responses"
-        && model.compat.as_ref().is_some_and(|compat| {
-            compat
-                .openai_responses()
-                .supports_explicit_prompt_cache_mode
-                == Some(true)
-        })
+        && supports_openai_responses_explicit_prompt_cache_mode(model)
         && reqwest::Url::parse(if model.base_url.is_empty() {
             "https://api.openai.com/v1"
         } else {
@@ -118,6 +120,24 @@ mod tests {
             "contextWindow":1000,"maxTokens":100
         }))
         .expect("model");
+        let mut explicit = model.clone();
+        explicit.compat = Some(
+            serde_json::from_value(json!({ "supportsExplicitPromptCacheMode": true }))
+                .expect("compat"),
+        );
+        assert!(supports_openai_responses_explicit_prompt_cache_mode(
+            &explicit
+        ));
+        let mut siwc = explicit.clone();
+        siwc.compat = Some(
+            serde_json::from_value(json!({
+                "supportsExplicitPromptCacheMode": true,
+                "siwc": true
+            }))
+            .expect("compat"),
+        );
+        assert!(!supports_openai_responses_explicit_prompt_cache_mode(&siwc));
+        assert!(!is_openai_responses_prompt_cache_model(&siwc));
         for (id, stop, expected) in [
             ("resp_new", "stop", Some("resp_new")),
             ("foreign", "stop", None),

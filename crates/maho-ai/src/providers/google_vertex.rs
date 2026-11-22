@@ -202,6 +202,7 @@ impl ApiKeyAuth for VertexAuth {
             credential
                 .and_then(|c| c.env.as_ref())
                 .and_then(|env| env.get(name))
+                .filter(|value| !value.is_empty())
                 .cloned()
         };
         let adc_path = match stored_env("GOOGLE_APPLICATION_CREDENTIALS") {
@@ -366,5 +367,34 @@ mod tests {
                 .expect("resolve")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn empty_stored_vertex_env_falls_back_to_ambient_env() {
+        let signal = crate::utils::abort::AbortController::new().signal();
+        let stored: crate::types::ProviderEnv = [
+            ("GOOGLE_CLOUD_PROJECT".to_owned(), String::new()),
+            ("GOOGLE_CLOUD_LOCATION".to_owned(), String::new()),
+            ("GOOGLE_APPLICATION_CREDENTIALS".to_owned(), String::new()),
+        ]
+        .into();
+        let credential = ApiKeyCredential {
+            key: None,
+            env: Some(stored),
+            ..Default::default()
+        };
+        let ctx = Env {
+            values: [
+                ("GOOGLE_CLOUD_PROJECT".to_owned(), "proj".to_owned()),
+                ("GOOGLE_CLOUD_LOCATION".to_owned(), "us-central1".to_owned()),
+            ]
+            .into(),
+            files: vec![VERTEX_ADC_PATH.into()],
+        };
+        let resolved = VertexAuth
+            .resolve(&ctx, Some(&credential), &signal)
+            .await
+            .expect("resolve");
+        assert!(resolved.is_some());
     }
 }

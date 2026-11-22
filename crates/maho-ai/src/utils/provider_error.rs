@@ -16,6 +16,7 @@ static MODEL_CONFIG_ERROR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?i)(?-u:\b)model_not_found(?-u:\b)",
         r"|(?-u:\b)unknown provider for model(?-u:\b)",
+        r"|(?-u:\b)model\s{1,8}[A-Za-z0-9_.:/-]{1,256}\s{1,8}is not supported on /v1/images(?-u:\b)",
         r"|(?-u:\b)the model\s{1,8}[`'\x22]?[A-Za-z0-9_.:/-]{1,256}[`'\x22]?\s{1,8}does not exist(?-u:\b)",
         r"|(?-u:\b)not_found_error(?-u:\b)[^}]{0,120}?(?-u:\b)model:\s{0,8}[A-Za-z0-9_.:/-]",
         r"|(?-u:\b)models/[A-Za-z0-9_.:-]{1,256} is not found(?-u:\b)",

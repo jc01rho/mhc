@@ -242,7 +242,7 @@ fn mixed_catalog_parses_classifier_without_chat_fields() {
             .values()
             .map(|models| models.len())
             .sum::<usize>(),
-        48
+        75
     );
     assert!(serde_json::from_value::<AnyModel>(json!({"type":"unknown"})).is_err());
 }

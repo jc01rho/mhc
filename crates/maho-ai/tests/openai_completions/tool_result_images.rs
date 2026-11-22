@@ -35,6 +35,7 @@ fn tool_result_images_compat() -> ResolvedOpenAICompletionsCompat {
         supports_thinking_token_budget: Some(false),
         thinking_token_budget_field: None,
         supports_strict_mode: true,
+        mixed_strict_tools: true,
         tool_schema_flavor: None,
         tool_call_format: None,
         supports_openai_grammar_tools: false,

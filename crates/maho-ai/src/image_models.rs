@@ -95,6 +95,16 @@ mod tests {
     }
 
     #[test]
+    fn registers_gpt_image_2_6_sunburst_with_editing_and_pricing() {
+        registers_with_editing_and_pricing("gpt-image-2.6-sunburst");
+    }
+
+    #[test]
+    fn registers_gpt_image_2_6_flare_with_editing_and_pricing() {
+        registers_with_editing_and_pricing("gpt-image-2.6-flare");
+    }
+
+    #[test]
     fn unknown_image_provider_and_model_are_absent() {
         assert!(get_image_model("openai", "missing").is_none());
         assert!(get_image_models("nope").is_empty());

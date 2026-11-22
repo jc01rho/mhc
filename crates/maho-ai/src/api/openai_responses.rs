@@ -364,9 +364,8 @@ pub fn get_compat(model: &Model, env: Option<&ProviderEnv>) -> ResponsesCompat {
         supports_openai_grammar_tools: compat.supports_openai_grammar_tools.unwrap_or(false),
         supports_additional_tools: compat.supports_additional_tools.unwrap_or(false),
         supports_tool_search: compat.supports_tool_search.unwrap_or(false),
-        supports_explicit_prompt_cache_mode: compat
-            .supports_explicit_prompt_cache_mode
-            .unwrap_or(false),
+        supports_explicit_prompt_cache_mode:
+            crate::api::openai_responses_prompt_cache::supports_openai_responses_explicit_prompt_cache_mode(model),
         supports_max_output_tokens: compat.supports_max_output_tokens.unwrap_or(true),
         supports_forced_tool_choice: compat.supports_forced_tool_choice.unwrap_or(true),
     }
@@ -558,6 +557,16 @@ pub fn format_openai_responses_error(error: &ResponsesApiError, provider: &str) 
         }
     );
     let message = format_provider_error(&normalize_provider_error(&thrown), Some(&label));
+    let message =
+        if crate::api::subscription_sharing_items::is_shared_subscription_item_limit_message(
+            &message,
+        ) {
+            crate::api::subscription_sharing_items::shared_subscription_item_limit_message(
+                provider, &message,
+            )
+        } else {
+            message
+        };
     if message.contains("subscription_sharing_usage_limit_exceeded") {
         format!("{message}\nCheck your ChatGPT usage: https://chatgpt.com/settings/usage")
     } else {

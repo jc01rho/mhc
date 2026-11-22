@@ -199,6 +199,56 @@
     },
     "type": "chat"
   },
+  "claude-fable-5-2": {
+    "id": "claude-fable-5-2",
+    "name": "Claude Fable 5.2",
+    "reasoning": true,
+    "thinkingLevelMap": {
+      "off": null,
+      "xhigh": "xhigh",
+      "max": "max"
+    },
+    "input": [
+      "text",
+      "image"
+    ],
+    "contextWindow": 1000000,
+    "maxTokens": 128000,
+    "lab": "Anthropic",
+    "cost": {
+      "input": 8,
+      "output": 40,
+      "cacheRead": 0.2,
+      "cacheWrite": 10
+    },
+    "enabled": true,
+    "providers": [
+      {
+        "id": "anthropic",
+        "name": "Anthropic",
+        "credential": "radius",
+        "source": "radius"
+      }
+    ],
+    "promptCache": {
+      "short": 300,
+      "long": 3600
+    },
+    "api": "pi-messages",
+    "provider": "radius",
+    "baseUrl": "https://radius.pi.dev/v1",
+    "inputLimits": {
+      "images": {
+        "resize": {
+          "maxWidth": 2000,
+          "maxHeight": 2000,
+          "maxBytes": 4718592,
+          "jpegQuality": 80
+        }
+      }
+    },
+    "type": "chat"
+  },
   "claude-haiku-4-5": {
     "id": "claude-haiku-4-5",
     "name": "Claude Haiku 4.5",

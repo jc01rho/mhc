@@ -72,6 +72,7 @@ mod producer_capture_native_tests;
 mod producer_capture_tests;
 pub mod responses_completion_grace;
 pub mod simple_options;
+pub mod subscription_sharing_items;
 pub mod transform_messages;
 pub mod typesafe_system_one_lazy;
 pub mod warm_prompt_cache;

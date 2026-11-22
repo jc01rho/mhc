@@ -701,6 +701,23 @@ fn parse_legacy_encrypted_reasoning_detail(signature: Option<&str>) -> Option<Va
     .then_some(parsed)
 }
 
+fn with_provider_thought_signature(
+    mut call: Map<String, Value>,
+    thought_signature: Option<&str>,
+) -> Map<String, Value> {
+    let Some(signature) = thought_signature.filter(|signature| !signature.is_empty()) else {
+        return call;
+    };
+    if parse_legacy_encrypted_reasoning_detail(Some(signature)).is_some() {
+        return call;
+    }
+    call.insert(
+        String::from("provider_specific_fields"),
+        json!({ "thought_signature": signature }),
+    );
+    call
+}
+
 fn fill_missing_common_reasoning_detail_fields(
     target: &mut Map<String, Value>,
     source: &Map<String, Value>,
@@ -1254,27 +1271,39 @@ pub fn convert_messages(
                             .as_ref()
                             .and_then(|properties| properties.get(&tool_call.name));
                         if let Some(property) = custom_input_property {
-                            calls.push(json!({
-                                "id": tool_call.id,
-                                "type": "custom",
-                                "custom": {
-                                    "name": tool_call.name,
-                                    "input": sanitize_surrogates(
-                                        &get_grammar_tool_input(&tool_call.name, &tool_call.arguments, property)
-                                            .unwrap_or_default(),
-                                    ),
-                                },
-                            }));
+                            calls.push(Value::Object(with_provider_thought_signature(
+                                json!({
+                                    "id": tool_call.id,
+                                    "type": "custom",
+                                    "custom": {
+                                        "name": tool_call.name,
+                                        "input": sanitize_surrogates(
+                                            &get_grammar_tool_input(&tool_call.name, &tool_call.arguments, property)
+                                                .unwrap_or_default(),
+                                        ),
+                                    },
+                                })
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                                tool_call.thought_signature.as_deref(),
+                            )));
                             continue;
                         }
-                        calls.push(json!({
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_call.name,
-                                "arguments": safe_json_stringify(&Value::Object(tool_call.arguments.clone())),
-                            },
-                        }));
+                        calls.push(Value::Object(with_provider_thought_signature(
+                            json!({
+                                "id": tool_call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call.name,
+                                    "arguments": safe_json_stringify(&Value::Object(tool_call.arguments.clone())),
+                                },
+                            })
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default(),
+                            tool_call.thought_signature.as_deref(),
+                        )));
                     }
                     assistant_message.insert("tool_calls".to_owned(), Value::Array(calls));
                 }
@@ -1436,17 +1465,64 @@ fn convert_tools(
     tools: &[Tool],
     compat: &ResolvedOpenAICompletionsCompat,
 ) -> Result<Vec<Value>, String> {
-    let mut converted = Vec::with_capacity(tools.len());
+    let mut strict_by_tool = Vec::with_capacity(tools.len());
     for tool in tools {
-        converted.push(convert_tool(tool, compat)?);
+        let is_grammar =
+            resolve_grammar_constrained_sampling(tool, compat.supports_openai_grammar_tools)?
+                .is_some();
+        if tool.freeform.is_some() || is_grammar {
+            strict_by_tool.push(None);
+        } else {
+            strict_by_tool.push(resolve_json_schema_strict_sampling(
+                tool,
+                compat.supports_strict_mode,
+            )?);
+        }
+    }
+    if !compat.mixed_strict_tools {
+        let non_strict = tools.iter().enumerate().find_map(|(index, tool)| {
+            let is_grammar =
+                resolve_grammar_constrained_sampling(tool, compat.supports_openai_grammar_tools)
+                    .ok()
+                    .flatten()
+                    .is_some();
+            (tool.freeform.is_none() && !is_grammar && strict_by_tool[index] != Some(true))
+                .then_some(tool)
+        });
+        if let Some(non_strict_tool) = non_strict {
+            let required_tool = tools.iter().find(|tool| {
+                matches!(
+                    tool.constrained_sampling,
+                    Some(crate::types::ConstrainedSampling::Config(
+                        crate::types::ConstrainedSamplingConfig::JsonSchema {
+                            strict: crate::types::JsonSchemaStrictness::Require
+                        }
+                    ))
+                )
+            });
+            if let Some(required_tool) = required_tool {
+                return Err(format!(
+                    "Tool \"{}\" requires JSON-schema constrained sampling, but tool \"{}\" cannot be strict and this provider rejects mixed strict and non-strict tools.",
+                    required_tool.name, non_strict_tool.name
+                ));
+            }
+            strict_by_tool.fill(None);
+        }
+    }
+    let mut converted = Vec::with_capacity(tools.len());
+    for (index, tool) in tools.iter().enumerate() {
+        converted.push(convert_tool(tool, compat, strict_by_tool[index])?);
     }
     Ok(converted)
 }
 
-fn convert_tool(tool: &Tool, compat: &ResolvedOpenAICompletionsCompat) -> Result<Value, String> {
+fn convert_tool(
+    tool: &Tool,
+    compat: &ResolvedOpenAICompletionsCompat,
+    strict: Option<bool>,
+) -> Result<Value, String> {
     if let Some(grammar) =
-        resolve_grammar_constrained_sampling(tool, compat.supports_openai_grammar_tools)
-            .unwrap_or(None)
+        resolve_grammar_constrained_sampling(tool, compat.supports_openai_grammar_tools)?
     {
         return Ok(json!({
             "type": "custom",
@@ -1467,8 +1543,6 @@ fn convert_tool(tool: &Tool, compat: &ResolvedOpenAICompletionsCompat) -> Result
         );
     }
 
-    let strict =
-        resolve_json_schema_strict_sampling(tool, compat.supports_strict_mode).unwrap_or(None);
     let schema_parameters =
         get_json_schema_tool_parameters(tool, strict).unwrap_or_else(|_| tool.parameters.clone());
     let schema_parameters = schema_parameters.as_object().cloned().unwrap_or_default();
@@ -1977,7 +2051,7 @@ impl StreamBlock {
                 arguments: block.arguments.clone(),
                 incomplete: None,
                 error_message: None,
-                thought_signature: None,
+                thought_signature: block.thought_signature.clone(),
                 namespace: None,
             }),
         }
@@ -1997,6 +2071,7 @@ struct StreamingToolCall {
     partial_args_parsed_len: usize,
     custom_input: Option<CustomToolInput>,
     stream_index: Option<usize>,
+    thought_signature: Option<String>,
 }
 
 fn get_custom_tool_call_input(block: &StreamingToolCall) -> String {
@@ -2090,7 +2165,7 @@ impl StreamState {
                     arguments: block.arguments.clone(),
                     incomplete: None,
                     error_message: None,
-                    thought_signature: None,
+                    thought_signature: block.thought_signature.clone(),
                     namespace: None,
                 });
             }
@@ -2265,6 +2340,7 @@ impl StreamState {
                         json_buffer: GrammarToolInputJsonBuffer::default(),
                     }),
                     stream_index,
+                    thought_signature: None,
                 };
                 let new_index = self.blocks.len();
                 self.blocks.push(StreamBlock::ToolCall(block));
@@ -2907,6 +2983,14 @@ async fn run_stream_inner(
                             && let Some(name) = name
                         {
                             block.name = name.to_owned();
+                        }
+                        let thought_signature = tool_call
+                            .get("provider_specific_fields")
+                            .and_then(|fields| fields.get("thought_signature"))
+                            .and_then(Value::as_str)
+                            .filter(|signature| !signature.is_empty());
+                        if let Some(signature) = thought_signature {
+                            block.thought_signature = Some(signature.to_owned());
                         }
                     }
                     if let Some(id) = tool_call_id.filter(|id| !id.is_empty()) {
@@ -3568,5 +3652,82 @@ mod audit_compat_tests {
             "later"
         );
         assert_eq!(params["messages"][3]["role"], "developer");
+    }
+
+    #[test]
+    fn mixed_strict_tools_disables_prefer_when_sibling_cannot_be_strict_and_rejects_required() {
+        let mut model = crate::models_generated::get_builtin_provider_models("openai")
+            .expect("models")[0]
+            .clone();
+        model.api = "openai-completions".into();
+        model.compat = Some(crate::model::ModelCompat(
+            json!({
+                "supportsStrictMode": true,
+                "mixedStrictTools": false
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        ));
+        let compat = get_compat(&model);
+        let strict_prefer: Tool = serde_json::from_value(json!({
+            "name": "strict_capable",
+            "description": "Strict-capable tool",
+            "parameters": { "type": "object", "properties": { "value": { "type": "string" } } },
+            "constrainedSampling": { "type": "json_schema", "strict": "prefer" }
+        }))
+        .expect("strict_prefer");
+        let incompatible: Tool = serde_json::from_value(json!({
+            "name": "incompatible",
+            "description": "Incompatible tool",
+            "parameters": { "type": "object", "properties": { "value": { "oneOf": [{ "type": "string" }, { "type": "number" }] } } },
+            "constrainedSampling": { "type": "json_schema", "strict": "prefer" }
+        }))
+        .expect("incompatible");
+        let converted = convert_tools(&[strict_prefer, incompatible.clone()], &compat)
+            .expect("prefer falls back");
+        assert_eq!(converted[0]["function"]["strict"], json!(false));
+        assert_eq!(converted[1]["function"]["strict"], json!(false));
+
+        let required_strict: Tool = serde_json::from_value(json!({
+            "name": "required_strict",
+            "description": "Requires strict",
+            "parameters": { "type": "object", "properties": { "value": { "type": "string" } }, "required": ["value"] },
+            "constrainedSampling": { "type": "json_schema", "strict": "require" }
+        }))
+        .expect("required_strict");
+        let err = convert_tools(&[required_strict, incompatible], &compat)
+            .expect_err("mixed required strict must fail");
+        assert!(err.contains("required_strict"));
+        assert!(err.contains("incompatible"));
+    }
+
+    #[test]
+    fn replays_provider_thought_signature_without_duplicating_legacy_encrypted_details() {
+        let plain = with_provider_thought_signature(
+            json!({ "id": "call_1", "type": "function" })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            Some("gemini-sig-123"),
+        );
+        assert_eq!(
+            plain.get("provider_specific_fields"),
+            Some(&json!({ "thought_signature": "gemini-sig-123" }))
+        );
+        let encrypted = json!({
+            "type": "reasoning.encrypted",
+            "id": "rs_1",
+            "data": "ciphertext"
+        })
+        .to_string();
+        let legacy = with_provider_thought_signature(
+            json!({ "id": "call_2", "type": "function" })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            Some(&encrypted),
+        );
+        assert!(!legacy.contains_key("provider_specific_fields"));
     }
 }

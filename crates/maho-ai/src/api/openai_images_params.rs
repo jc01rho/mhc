@@ -10,6 +10,7 @@ pub const OPENAI_IMAGE_QUALITIES: &[&str] = &["auto", "low", "medium", "high", "
 pub const OPENAI_IMAGE_BACKGROUNDS: &[&str] = &["auto", "transparent", "opaque"];
 pub const OPENAI_IMAGE_OUTPUT_FORMATS: &[&str] = &["png", "jpeg", "webp"];
 pub const OPENAI_IMAGE_MODERATIONS: &[&str] = &["auto", "low"];
+pub const OPENAI_IMAGE_COMPLEXITIES: &[&str] = &["low", "medium", "high"];
 
 pub fn option_str(options: Option<&ImagesOptions>, key: &str) -> Option<String> {
     options?
@@ -245,6 +246,9 @@ pub fn build_params(
     if let Some(moderation) = option_str(options, "moderation") {
         params.insert("moderation".into(), Value::from(moderation));
     }
+    if let Some(complexity) = option_str(options, "complexity") {
+        params.insert("complexity".into(), Value::from(complexity));
+    }
     Ok(params)
 }
 
@@ -416,6 +420,7 @@ mod tests {
         options.extra.insert("outputFormat".into(), json!("webp"));
         options.extra.insert("outputCompression".into(), json!(80));
         options.extra.insert("moderation".into(), json!("low"));
+        options.extra.insert("complexity".into(), json!("high"));
         let params =
             build_params(&model(), &context_with_texts(&["x"]), Some(&options)).expect("params");
         assert_eq!(params.get("size"), Some(&Value::from("1024x1024")));
@@ -425,6 +430,7 @@ mod tests {
         assert_eq!(params.get("output_format"), Some(&Value::from("webp")));
         assert_eq!(params.get("output_compression"), Some(&Value::from(80)));
         assert_eq!(params.get("moderation"), Some(&Value::from("low")));
+        assert_eq!(params.get("complexity"), Some(&Value::from("high")));
     }
 
     #[test]

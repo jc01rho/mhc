@@ -278,6 +278,316 @@ fn format_validation_path(issue: &engine::Issue) -> String {
     if base.is_empty() { "root".into() } else { base }
 }
 
+fn accepted_json_types(schema: &Value) -> Option<std::collections::BTreeSet<String>> {
+    let schema = schema.as_object()?;
+    let types = schema_types(schema);
+    if !types.is_empty() {
+        return Some(types.into_iter().map(str::to_owned).collect());
+    }
+    let members = schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(Value::as_array)?;
+    if members.is_empty() {
+        return None;
+    }
+    let mut accepted = std::collections::BTreeSet::new();
+    for member in members {
+        let member_types = accepted_json_types(member)?;
+        accepted.extend(member_types);
+    }
+    Some(accepted)
+}
+
+fn parse_json_structure(
+    text: &str,
+    accepted: &std::collections::BTreeSet<String>,
+) -> Option<Value> {
+    let trimmed = trim(text);
+    let wants_array = accepted.contains("array") && trimmed.starts_with('[');
+    let wants_object = accepted.contains("object") && trimmed.starts_with('{');
+    if !wants_array && !wants_object {
+        return None;
+    }
+    let parsed: Value = serde_json::from_str(trimmed).ok()?;
+    if wants_array && parsed.is_array() {
+        return Some(parsed);
+    }
+    if wants_object && parsed.is_object() {
+        return Some(parsed);
+    }
+    None
+}
+
+fn decode_json_encoded_structures(value: Value, schema: &Value) -> Value {
+    if let Value::String(ref text) = value {
+        let Some(accepted) = accepted_json_types(schema) else {
+            return value;
+        };
+        if accepted.contains("string") {
+            return value;
+        }
+        return match parse_json_structure(text, &accepted) {
+            Some(decoded) => decode_json_encoded_structures(decoded, schema),
+            None => value,
+        };
+    }
+    let Some(schema_obj) = schema.as_object() else {
+        return value;
+    };
+    let types = schema_types(schema_obj);
+    match value {
+        Value::Array(mut items) if types.contains(&"array") => {
+            match schema_obj.get("items") {
+                Some(Value::Array(tuple)) => {
+                    for (slot, item_schema) in items.iter_mut().zip(tuple) {
+                        *slot = decode_json_encoded_structures(slot.take(), item_schema);
+                    }
+                }
+                Some(item_schema @ Value::Object(_)) => {
+                    for slot in items.iter_mut() {
+                        *slot = decode_json_encoded_structures(slot.take(), item_schema);
+                    }
+                }
+                _ => {}
+            }
+            Value::Array(items)
+        }
+        Value::Object(mut record) if types.contains(&"object") => {
+            let properties = schema_obj.get("properties").and_then(Value::as_object);
+            let additional = schema_obj
+                .get("additionalProperties")
+                .filter(|v| v.is_object());
+            let keys: Vec<String> = record.keys().cloned().collect();
+            for key in keys {
+                let property_schema = properties.and_then(|props| props.get(&key)).or(additional);
+                if let (Some(prop_schema), Some(slot)) = (property_schema, record.get_mut(&key)) {
+                    *slot = decode_json_encoded_structures(slot.take(), prop_schema);
+                }
+            }
+            Value::Object(record)
+        }
+        other => other,
+    }
+}
+
+struct DiscriminatedBranch<'a> {
+    schema: &'a Value,
+    values: Vec<Value>,
+    optional: bool,
+    default_value: Option<Value>,
+}
+
+struct DiscriminatedUnion<'a> {
+    property: String,
+    branches: Vec<DiscriminatedBranch<'a>>,
+    default_value: Option<Value>,
+}
+
+enum SelectedBranch<'a> {
+    Branch {
+        branch: &'a DiscriminatedBranch<'a>,
+        value: Value,
+        defaulted: bool,
+    },
+    Unknown,
+    None,
+}
+
+fn const_values(schema: Option<&Value>) -> Option<Vec<Value>> {
+    let schema = schema?.as_object()?;
+    if let Some(val) = schema.get("const") {
+        return Some(vec![val.clone()]);
+    }
+    if let Some(Value::Array(items)) = schema.get("enum")
+        && !items.is_empty()
+    {
+        return Some(items.clone());
+    }
+    let members = schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(Value::as_array)?;
+    if members.is_empty() {
+        return None;
+    }
+    let mut values = Vec::new();
+    for member in members {
+        let member_values = const_values(Some(member))?;
+        values.extend(member_values);
+    }
+    Some(values)
+}
+
+fn discriminated_branches<'a>(
+    members: &'a [Value],
+    property: &str,
+) -> Option<Vec<DiscriminatedBranch<'a>>> {
+    let mut seen: Vec<Value> = Vec::new();
+    let mut branches = Vec::new();
+    for member in members {
+        let member_obj = member.as_object()?;
+        let property_schema = member_obj
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|props| props.get(property));
+        let values = const_values(property_schema)?;
+        if values.is_empty() || values.iter().any(|v| seen.contains(v)) {
+            return None;
+        }
+        seen.extend(values.iter().cloned());
+        let optional = !member_obj
+            .get("required")
+            .and_then(Value::as_array)
+            .is_some_and(|req| req.iter().any(|r| r.as_str() == Some(property)));
+        let default_value = property_schema
+            .and_then(Value::as_object)
+            .and_then(|s| s.get("default"))
+            .cloned();
+        branches.push(DiscriminatedBranch {
+            schema: member,
+            values,
+            optional,
+            default_value,
+        });
+    }
+    Some(branches)
+}
+
+fn find_discriminated_union(schema: &Value) -> Option<DiscriminatedUnion<'_>> {
+    let schema_obj = schema.as_object()?;
+    let members = schema_obj
+        .get("anyOf")
+        .or_else(|| schema_obj.get("oneOf"))
+        .and_then(Value::as_array)?;
+    if members.len() < 2 {
+        return None;
+    }
+    let first_props = members
+        .first()?
+        .as_object()?
+        .get("properties")
+        .and_then(Value::as_object)?;
+    if !members.iter().all(|m| {
+        m.as_object()
+            .and_then(|o| o.get("properties"))
+            .and_then(Value::as_object)
+            .is_some()
+    }) {
+        return None;
+    }
+    for property in first_props.keys() {
+        let Some(branches) = discriminated_branches(members, property) else {
+            continue;
+        };
+        let default_value = schema_obj
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|props| props.get(property))
+            .and_then(Value::as_object)
+            .and_then(|s| s.get("default"))
+            .cloned()
+            .or_else(|| branches.iter().find_map(|b| b.default_value.clone()));
+        return Some(DiscriminatedUnion {
+            property: property.clone(),
+            branches,
+            default_value,
+        });
+    }
+    None
+}
+
+fn select_branch<'a>(
+    union: &'a DiscriminatedUnion<'a>,
+    value: Option<&Value>,
+) -> SelectedBranch<'a> {
+    if let Some(val) = value {
+        return match union.branches.iter().find(|c| c.values.contains(val)) {
+            Some(branch) => SelectedBranch::Branch {
+                branch,
+                value: val.clone(),
+                defaulted: false,
+            },
+            None => SelectedBranch::Unknown,
+        };
+    }
+    if let Some(def) = &union.default_value
+        && let Some(branch) = union.branches.iter().find(|c| c.values.contains(def))
+    {
+        return SelectedBranch::Branch {
+            branch,
+            value: def.clone(),
+            defaulted: true,
+        };
+    }
+    let optional: Vec<_> = union.branches.iter().filter(|c| c.optional).collect();
+    if optional.len() == 1 && optional[0].values.len() == 1 {
+        return SelectedBranch::Branch {
+            branch: optional[0],
+            value: optional[0].values[0].clone(),
+            defaulted: true,
+        };
+    }
+    SelectedBranch::None
+}
+
+fn format_discriminated_union_error(schema: &Value, args: &Value) -> Option<String> {
+    let args_obj = args.as_object()?;
+    let union = find_discriminated_union(schema)?;
+    let received = args_obj.get(&union.property);
+    match select_branch(&union, received) {
+        SelectedBranch::None => None,
+        SelectedBranch::Unknown => {
+            let received_json = received
+                .map(|v| serde_json::to_string(v).unwrap_or_default())
+                .unwrap_or_default();
+            let allowed: Vec<String> = union
+                .branches
+                .iter()
+                .flat_map(|b| b.values.iter())
+                .map(|v| serde_json::to_string(v).unwrap_or_default())
+                .collect();
+            Some(format!(
+                "  - {}: must be one of {} (received {received_json})",
+                union.property,
+                allowed.join(", ")
+            ))
+        }
+        SelectedBranch::Branch {
+            branch,
+            value,
+            defaulted,
+        } => {
+            let mut root_schema = schema.as_object()?.clone();
+            root_schema.shift_remove("anyOf");
+            root_schema.shift_remove("oneOf");
+            let root_errors = engine::errors(&Value::Object(root_schema), args);
+            let branch_errors = engine::errors(branch.schema, args);
+            let mut unique: Vec<String> = Vec::new();
+            for issue in root_errors.iter().chain(branch_errors.iter()) {
+                let msg = format!("{}: {}", format_validation_path(issue), issue.message);
+                if !unique.contains(&msg) {
+                    unique.push(msg);
+                }
+            }
+            if unique.is_empty() {
+                return None;
+            }
+            let val_json = serde_json::to_string(&value).unwrap_or_default();
+            let default_note = if defaulted {
+                format!(" (default when {} is omitted)", union.property)
+            } else {
+                String::new()
+            };
+            Some(format!(
+                "  - for {} {val_json}{default_note}: {}",
+                union.property,
+                unique.join("; ")
+            ))
+        }
+    }
+}
+
 pub fn validate_tool_call(tools: &[Tool], tool_call: &ToolCall) -> Result<Value, ValidationError> {
     let tool = tools
         .iter()
@@ -372,6 +682,7 @@ fn validate_value(
     }
     let mut args = received.clone();
     normalize_optional_nulls(&mut args, parameters);
+    args = decode_json_encoded_structures(args, parameters);
     let coerced = coerce_with_json_schema(args.clone(), parameters);
     if args.is_object() && coerced.is_object() {
         args = coerced;
@@ -386,13 +697,19 @@ fn validate_value(
     if issues.is_empty() {
         return Ok(args);
     }
-    let lines: Vec<String> = issues
-        .iter()
-        .map(|issue| format!("  - {}: {}", format_validation_path(issue), issue.message))
-        .collect();
+    let body = format_discriminated_union_error(parameters, &args).unwrap_or_else(|| {
+        let lines: Vec<String> = issues
+            .iter()
+            .map(|issue| format!("  - {}: {}", format_validation_path(issue), issue.message))
+            .collect();
+        if lines.is_empty() {
+            "Unknown validation error".to_owned()
+        } else {
+            lines.join("\n")
+        }
+    });
     Err(ValidationError::Invalid(format!(
-        "Validation failed for tool \"{tool_name}\":\n{}\n\nReceived arguments:\n{}",
-        lines.join("\n"),
+        "Validation failed for tool \"{tool_name}\":\n{body}\n\nReceived arguments:\n{}",
         json_stringify_pretty(received)
     )))
 }
@@ -675,6 +992,171 @@ mod tests {
     fn validate_tool_call_reports_unknown_tools() {
         let err = validate_tool_call(&[], &call(json!({}))).expect_err("unknown tool");
         assert_eq!(err.to_string(), "Tool \"echo\" not found");
+    }
+
+    #[test]
+    fn decodes_json_encoded_arrays_and_objects_for_serialized_plain_json_schemas() {
+        let (array_tool, array_call) = plain(
+            json!({ "type": "array", "items": { "type": "string" } }),
+            json!("[\"/refs/a.png\",\"/refs/b.png\"]"),
+        );
+        let (object_tool, object_call) = plain(
+            json!({
+                "type": "object",
+                "properties": { "paths": { "type": "array", "items": { "type": "string" } } }
+            }),
+            json!("{\"paths\":[\"/refs/a.png\"]}"),
+        );
+        assert_eq!(
+            validate_tool_arguments(&array_tool, &array_call),
+            Ok(json!({ "value": ["/refs/a.png", "/refs/b.png"] }))
+        );
+        assert_eq!(
+            validate_tool_arguments(&object_tool, &object_call),
+            Ok(json!({ "value": { "paths": ["/refs/a.png"] } }))
+        );
+    }
+
+    #[test]
+    fn decodes_json_encoded_structures_nested_inside_arrays_and_objects() {
+        let batch_tool = tool(json!({
+            "type": "object",
+            "properties": {
+                "jobs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "paths": { "type": "array", "items": { "type": "string" } }
+                        }
+                    }
+                }
+            }
+        }));
+        let batch_call = call(json!({
+            "jobs": [
+                { "paths": "[\"/refs/a.png\"]" },
+                "{\"paths\":[\"/refs/b.png\"]}"
+            ]
+        }));
+        assert_eq!(
+            validate_tool_arguments(&batch_tool, &batch_call),
+            Ok(json!({
+                "jobs": [
+                    { "paths": ["/refs/a.png"] },
+                    { "paths": ["/refs/b.png"] }
+                ]
+            }))
+        );
+    }
+
+    #[test]
+    fn leaves_strings_alone_where_schema_accepts_a_string() {
+        let echo_tool = tool(json!({
+            "type": "object",
+            "properties": {
+                "text": { "type": "string" },
+                "either": {
+                    "anyOf": [
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": "string" } }
+                    ]
+                }
+            }
+        }));
+        let echo_call = call(json!({
+            "text": "[\"kept\"]",
+            "either": "[\"kept\"]"
+        }));
+        assert_eq!(
+            validate_tool_arguments(&echo_tool, &echo_call),
+            Ok(json!({
+                "text": "[\"kept\"]",
+                "either": "[\"kept\"]"
+            }))
+        );
+    }
+
+    #[test]
+    fn discriminated_unions_report_selected_or_default_branch_and_allowed_values() {
+        let run_props = json!({
+            "action": {
+                "anyOf": [
+                    { "const": "run" },
+                    { "const": "list" },
+                    { "const": "peek" },
+                    { "const": "stop" }
+                ]
+            },
+            "language": { "anyOf": [{ "const": "js" }, { "const": "py" }] },
+            "code": { "type": "string" },
+            "summary": { "type": "string" },
+            "timeout": { "type": "number", "minimum": 1 },
+            "cell_id": { "type": "string", "minLength": 1 }
+        });
+        let union_tool = tool(json!({
+            "type": "object",
+            "properties": run_props,
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "action": { "const": "run" },
+                        "language": { "anyOf": [{ "const": "js" }, { "const": "py" }] },
+                        "code": { "type": "string" },
+                        "summary": { "type": "string" },
+                        "timeout": { "type": "number", "minimum": 1 },
+                        "cell_id": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["language", "code", "summary"]
+                },
+                {
+                    "type": "object",
+                    "properties": { "action": { "const": "list" } },
+                    "required": ["action"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "action": { "anyOf": [{ "const": "peek" }, { "const": "stop" }] },
+                        "cell_id": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["action", "cell_id"]
+                }
+            ]
+        }));
+        let error_lines = |t: &Tool, args: Value| -> Vec<String> {
+            let Err(ValidationError::Invalid(msg)) = validate_tool_arguments(t, &call(args)) else {
+                panic!("expected validation failure");
+            };
+            msg.split("\n\nReceived arguments:")
+                .next()
+                .unwrap_or("")
+                .lines()
+                .filter(|line| line.starts_with("  - "))
+                .map(str::to_owned)
+                .collect()
+        };
+        assert_eq!(
+            error_lines(&union_tool, json!({ "code": "1", "summary": "s" })),
+            vec![
+                "  - for action \"run\" (default when action is omitted): language: must have required properties language"
+            ]
+        );
+        assert_eq!(
+            error_lines(&union_tool, json!({ "action": "peek" })),
+            vec!["  - for action \"peek\": cell_id: must have required properties cell_id"]
+        );
+        assert_eq!(
+            error_lines(&union_tool, json!({ "action": "list", "timeout": "soon" })),
+            vec!["  - for action \"list\": timeout: must be number"]
+        );
+        assert_eq!(
+            error_lines(&union_tool, json!({ "action": "peak", "cell_id": "x" })),
+            vec![
+                "  - action: must be one of \"run\", \"list\", \"peek\", \"stop\" (received \"peak\")"
+            ]
+        );
     }
 
     fn fixture() -> Value {

@@ -767,6 +767,7 @@ fn model_config_error_recognizes_each_route_shape() {
     for text in [
         "error code model_not_found",
         "Unknown provider for model x",
+        "Model gpt-image-2.6-sunburst is not supported on /v1/images/generations",
         "The model `gpt-9` does not exist or you do not have access",
         r#"{"type":"not_found_error","message":"model: claude-x"}"#,
         "models/gemini-9 is not found for API version v1",

@@ -9,7 +9,10 @@ pub fn category_for_provider_code(code: &str) -> Option<Category> {
     Some(match code {
         "authentication_error" | "invalid_api_key" => Category::Auth,
         "rate_limit_error" | "rate_limit_exceeded" => Category::RateLimit,
-        "insufficient_quota" | "usage_limit_reached" | "usage_not_included" => Category::Quota,
+        "insufficient_quota"
+        | "exceeded_current_quota_error"
+        | "usage_limit_reached"
+        | "usage_not_included" => Category::Quota,
         "context_length_exceeded" => Category::ContextLimit,
         "invalid_request_error" => Category::InvalidRequest,
         "overloaded_error" | "api_error" | "timeout_error" => Category::ProviderUnavailable,
@@ -74,6 +77,20 @@ pub struct ProviderFailureFacts<'a> {
     pub code: Option<&'a str>,
 }
 
+/// senpi#4950: `error.type` values an OpenAI-compatible server uses for exactly one failure, so
+/// they stand in for a missing `error.code`. Coarse buckets such as `invalid_request_error` never do.
+pub const OPENAI_COMPATIBLE_PRECISE_TYPES: &[&str] =
+    &["exceeded_current_quota_error", "insufficient_quota"];
+
+/// The token to classify: the precise `error.code` when present, else a precise `error.type` from
+/// [`OPENAI_COMPATIBLE_PRECISE_TYPES`], else `None`.
+pub fn precise_provider_token<'a>(code: Option<&'a str>, kind: Option<&'a str>) -> Option<&'a str> {
+    match code {
+        Some(code) => Some(code),
+        None => kind.filter(|value| OPENAI_COMPATIBLE_PRECISE_TYPES.contains(value)),
+    }
+}
+
 pub fn classify_provider_failure(facts: ProviderFailureFacts<'_>) -> Option<ProviderDiagnostic> {
     let status = match facts.status {
         None | Some(serde_json::Value::Null) => None,
@@ -130,5 +147,42 @@ mod tests {
             code: Some("invalid_api_key"),
         });
         assert!(result.is_none());
+    }
+
+    /// senpi#4950: a precise `error.type` stands in for a missing `error.code`, a coarse bucket
+    /// never does, and an explicit code always wins over the type.
+    #[test]
+    fn precise_error_type_stands_in_for_a_missing_code() {
+        let status = json!(429);
+        assert_eq!(
+            precise_provider_token(None, Some("exceeded_current_quota_error")),
+            Some("exceeded_current_quota_error")
+        );
+        assert_eq!(
+            precise_provider_token(None, Some("insufficient_quota")),
+            Some("insufficient_quota")
+        );
+        assert_eq!(
+            precise_provider_token(None, Some("invalid_request_error")),
+            None
+        );
+        assert_eq!(
+            precise_provider_token(Some("rate_limit_exceeded"), Some("insufficient_quota")),
+            Some("rate_limit_exceeded")
+        );
+        let classified = classify_provider_failure(ProviderFailureFacts {
+            status: Some(&status),
+            code: precise_provider_token(None, Some("exceeded_current_quota_error")),
+        })
+        .expect("quota classification");
+        assert_eq!(classified.category, Category::Quota);
+        assert!(is_provider_code_status_compatible(
+            "exceeded_current_quota_error",
+            429
+        ));
+        assert!(!is_provider_code_status_compatible(
+            "exceeded_current_quota_error",
+            400
+        ));
     }
 }
