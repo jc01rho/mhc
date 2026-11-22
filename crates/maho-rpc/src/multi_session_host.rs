@@ -200,6 +200,7 @@ pub struct HostCore {
     /// Set when the host runs every session in its own worker process (senpi `createHostCore` selects
     /// `WorkerSessionRegistry` when a `workerConfiguration` is passed); `None` is the in-process registry.
     workers: Option<std::sync::Arc<crate::worker_session_registry::WorkerSessionRegistry>>,
+    warm: Option<crate::host_warm::HostWarm>,
     /// Who each connection speaks for (senpi `SessionCommandRouter.connectionRoles`, senpi#3811).
     connection_roles: crate::session_binding::SharedConnectionRoles,
     /// `<daemonDir>` the handoff-parked record lives under (senpi `handoverParkedDir`); set once a socket host
@@ -383,6 +384,7 @@ impl HostCore {
             drain_held_sessions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             handoff_parks: std::sync::atomic::AtomicUsize::new(0),
             workers: None,
+            warm: None,
             connection_roles: Default::default(),
             handover_parked_dir: std::sync::OnceLock::new(),
             active_requests: Default::default(),
@@ -742,6 +744,10 @@ impl HostCore {
         self.workers = Some(std::sync::Arc::new(workers));
         self
     }
+    pub fn with_warm(mut self, warm: crate::host_warm::HostWarm) -> Self {
+        self.warm = Some(warm);
+        self
+    }
     pub fn uses_worker_runtime(&self) -> bool {
         self.workers.is_some()
     }
@@ -834,9 +840,11 @@ impl HostCore {
             RECLAIM_SESSION_CAPABILITY,
             AUTO_TITLE_SESSIONS_CAPABILITY,
             MEDIA_PLACEHOLDERS_CAPABILITY,
+            ACCOUNT_RESET_CAPABILITY,
             crate::rpc_types::STEER_WHEN_IDLE_CAPABILITY,
             crate::rpc_types::QUEUED_MESSAGE_REVISION_CAPABILITY,
             crate::rpc_types::USER_ACTIVITY_CAPABILITY,
+            crate::rpc_types::SESSION_MODEL_SCOPE_CAPABILITY,
             SESSION_HELD_CAPABILITY,
             RESUME_SESSION_CAPABILITY,
             ATTENDED_CAPABILITY,
@@ -870,6 +878,13 @@ impl HostCore {
             if !capabilities.iter().any(|existing| existing == capability) {
                 capabilities.push(capability.to_owned());
             }
+        }
+        if self.warm.is_some()
+            && !capabilities
+                .iter()
+                .any(|capability| capability == WARM_CAPABILITY)
+        {
+            capabilities.push(WARM_CAPABILITY.into());
         }
         if self.handover.get().is_some() {
             capabilities
@@ -2018,7 +2033,7 @@ impl HostCore {
                     &value,
                     crate::host_warm::WarmHost {
                         draining: self.is_draining(),
-                        warm: None,
+                        warm: self.warm.as_ref(),
                         cwd: &self.options.cwd,
                         host_context: None,
                     },
@@ -6725,6 +6740,15 @@ async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
     let mut empty_exit =
         tokio::spawn(async move { idle_core.run_idle_policy(policy, || true, stopped).await });
     let mut empty_exit_done = false;
+    let _ = crate::host_boot_extensions::warm_at_boot_for_private_fds(
+        core.warm.as_ref(),
+        crate::host_warm::HostWarmProfile {
+            cwd: core.options.cwd.clone(),
+            session_kind: None,
+            session_context: None,
+        },
+        std::sync::Arc::new(|message| eprintln!("senpi rpc host: {message}")),
+    );
     let result = loop {
         let count = tokio::select! {
             result=poll_host_commands(&mut commands),if !commands.is_empty()=>{if let Err(error)=result{break Err(std::io::Error::other(error));}continue;},
@@ -7170,6 +7194,15 @@ async fn run_socket_host(
         crate::child_reaper::start_host_child_reaper(&env, std::env::consts::OS, |message| {
             eprintln!("senpi rpc host: {message}")
         });
+    let _ = crate::host_boot_extensions::warm_at_boot_for_private_fds(
+        core.warm.as_ref(),
+        crate::host_warm::HostWarmProfile {
+            cwd: core.options.cwd.clone(),
+            session_kind: None,
+            session_context: None,
+        },
+        std::sync::Arc::new(|message| eprintln!("senpi rpc host: {message}")),
+    );
     loop {
         tokio::select! {
             biased;
