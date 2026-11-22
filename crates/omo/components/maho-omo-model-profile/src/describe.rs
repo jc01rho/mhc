@@ -8,6 +8,7 @@
 //! and loads no custom providers - a rung that would only resolve through a `models.json`
 //! declaration reads `no-login` here, which is exactly what the caller can then explain.
 
+use maho_ai::model_execution_gate::{BLOCK_FABLE_SETTING, fable_blocked_in, is_execution_blocked};
 use maho_ext_api::JsonValue;
 use omo_config_core::excluded_model_pattern;
 
@@ -154,6 +155,7 @@ fn view(
         _ => (None, -1),
     };
     let patterns = exclude_models(config);
+    let block_fable = fable_blocked_in(config);
     let rungs = rungs_of(profile, config)
         .into_iter()
         .enumerate()
@@ -173,6 +175,16 @@ fn view(
                     source,
                     state: ModelProfileRungState::Excluded,
                     excluded_by: Some(excluded_by),
+                };
+            }
+            // mhc GATE-1 (docs/divergences.md): the session-start walk skips a rung the Fable
+            // execution gate blocks, so the view names the setting that excludes it.
+            if is_execution_blocked(&label, block_fable) {
+                return ModelProfileRungView {
+                    model: label,
+                    source,
+                    state: ModelProfileRungState::Excluded,
+                    excluded_by: Some(BLOCK_FABLE_SETTING.to_owned()),
                 };
             }
             let state = if applied_index != -1 && index > applied_index {
@@ -207,9 +219,13 @@ fn view(
 /// resolves. `exclude_models` is applied the way the session-start component applies it.
 pub fn describe_model_profile(config: &JsonValue, available_models: &[String]) -> ModelProfileView {
     let patterns = exclude_models(config);
+    let block_fable = fable_blocked_in(config);
     let available: Vec<String> = available_models
         .iter()
-        .filter(|selector| excluded_model_pattern(selector.as_str(), patterns.as_deref()).is_none())
+        .filter(|selector| {
+            excluded_model_pattern(selector.as_str(), patterns.as_deref()).is_none()
+                && !is_execution_blocked(selector, block_fable)
+        })
         .cloned()
         .collect();
     let configured = config

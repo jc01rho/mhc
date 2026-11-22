@@ -75,8 +75,9 @@ While it is on:
 - A direct selection is refused with a one-line message naming `model_policy.block_fable`: `/model`
   and model cycling, a task `model` pin, a `model_profile` pin, and an omo.json `model` that points
   at a Fable id.
-- A request that still reaches a Fable model (for example a session started with `--model` on one)
-  fails before any provider is contacted, with the same message.
+- A request that still reaches a Fable model (for example a session started with `--model` on one,
+  or a model whose `upstream_model_id` names a Fable id) fails before any provider is contacted, with
+  the same message.
 
 The setting follows the usual omo.json(c) layering (user, project, `[senpi]`, profile). mhc reads it
 when it loads the omo config at session start and on each live reload. The MIT build

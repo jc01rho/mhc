@@ -12239,6 +12239,16 @@ impl AgentSession {
             .filter(|entry| !models_are_equal(Some(&entry.model), Some(&current)))
             .collect();
         if let [only] = alternatives.as_slice() {
+            // A sole alternative the Fable execution gate blocks is never switched to, so no switch is
+            // held for compaction.
+            if maho_ai::model_execution_gate::execution_refusal(
+                &only.model.provider,
+                &only.model.id,
+            )
+            .is_some()
+            {
+                return Ok(Some(stay(skipped_models)));
+            }
             let model = only.model.clone();
             let live = downswitch_live(&model)?;
             let (budget, repairable) = self.model_budget(&model, live, false)?;

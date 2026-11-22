@@ -17,8 +17,10 @@ static BLOCK_FABLE: AtomicBool = AtomicBool::new(true);
 
 /// A Claude Fable model id in any spelling a catalog uses: `claude-fable-5-2`, `claude-fable-5.1`,
 /// `anthropic/claude-fable-5-2`, `us.anthropic.claude-fable-5-1`, cursor's `claude-fable-5-thinking`.
+/// Only the model id after the last `/` counts, so a provider name never makes a model Fable.
 pub fn is_fable_model(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("claude-fable")
+    let id = model.rsplit_once('/').map_or(model, |(_, id)| id);
+    id.to_ascii_lowercase().contains("claude-fable")
 }
 
 /// The setting as an omo config view spells it; `None` when the view leaves it unset.
@@ -87,6 +89,7 @@ mod tests {
             "claude-mythos-5",
             "anthropic/claude-sonnet-5-5",
             "kimi-k3.1-pro",
+            "claude-fable-proxy/gpt-6-sol",
         ] {
             assert!(!is_fable_model(model), "{model}");
         }

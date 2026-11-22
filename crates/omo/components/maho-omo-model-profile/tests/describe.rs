@@ -33,7 +33,10 @@ fn kimi_rung_label() -> String {
 
 #[test]
 fn the_unset_walk_picks_the_first_resolving_lane_and_reports_its_rung_states() {
-    let view = describe_model_profile(&json!({}), &available(&[FABLE_52, KIMI]));
+    let view = describe_model_profile(
+        &json!({"model_policy": {"block_fable": false}}),
+        &available(&[FABLE_52, KIMI]),
+    );
     assert_eq!(view.profile, "daily-normal");
     assert_eq!(view.selection, ModelProfileSelection::Default);
     assert_eq!(view.applied.as_deref(), Some(FABLE_52));
@@ -54,6 +57,25 @@ fn the_unset_walk_picks_the_first_resolving_lane_and_reports_its_rung_states() {
             .all(|rung| rung.source == ModelProfileRungSource::BuiltIn)
     );
     assert_eq!(view.reason, None);
+}
+
+#[test]
+fn the_execution_gate_marks_a_fable_rung_excluded_and_the_walk_applies_the_next_rung() {
+    let view = describe_model_profile(&json!({}), &available(&[FABLE_52, KIMI]));
+    assert_eq!(view.applied.as_deref(), Some(KIMI));
+    assert_eq!(
+        view.rungs.iter().map(|rung| rung.state).collect::<Vec<_>>(),
+        [
+            ModelProfileRungState::NoLogin,
+            ModelProfileRungState::Excluded,
+            ModelProfileRungState::Applied,
+        ]
+    );
+    assert_eq!(view.rungs[1].model, fable_rung_label());
+    assert_eq!(
+        view.rungs[1].excluded_by.as_deref(),
+        Some("model_policy.block_fable")
+    );
 }
 
 #[test]
@@ -139,7 +161,11 @@ fn an_unknown_name_and_an_empty_profile_carry_their_reason() {
 
 #[test]
 fn a_default_lane_that_cannot_resolve_reports_its_rungs_as_no_login() {
-    let view = describe_model_profile(&json!({}), &available(&["example/nothing-in-any-chain"]));
+    // With the execution gate on, the Fable rung reads as excluded by it instead of no login.
+    let view = describe_model_profile(
+        &json!({"model_policy": {"block_fable": false}}),
+        &available(&["example/nothing-in-any-chain"]),
+    );
     assert_eq!(view.profile, "daily-normal");
     assert_eq!(view.selection, ModelProfileSelection::Default);
     assert_eq!(view.applied, None);

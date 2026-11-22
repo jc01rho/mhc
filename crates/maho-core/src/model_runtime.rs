@@ -2171,9 +2171,10 @@ impl ModelRuntime {
     /// Consent gate for every request path (`stream`, `stream_simple`, `complete`): returns a
     /// terminal error stream before any rotation, refresh, header or network work starts.
     /// The Fable execution gate (`maho_ai::model_execution_gate`) refuses a blocked model before any
-    /// provider request, whichever selection path put it on the session.
-    fn blocked_model_stream(model: &Model) -> Option<AssistantMessageEventStream> {
-        let message = maho_ai::model_execution_gate::execution_refusal(&model.provider, &model.id)?;
+    /// provider request, whichever selection path put it on the session. `sent` is the model the
+    /// request names: the session's model, or the id a `upstream_model_id` maps it onto.
+    fn blocked_model_stream(model: &Model, sent: &Model) -> Option<AssistantMessageEventStream> {
+        let message = maho_ai::model_execution_gate::execution_refusal(&sent.provider, &sent.id)?;
         let error = maho_ai::utils::lazy::setup_error_message(model, &message);
         let stream = AssistantMessageEventStream::assistant();
         stream.push(maho_ai::types::AssistantMessageEvent::Error {
@@ -2220,12 +2221,15 @@ impl ModelRuntime {
         options: Option<StreamOptions>,
     ) -> AssistantMessageEventStream {
         if let Some(failed) =
-            Self::blocked_model_stream(model).or_else(|| self.consent_error_stream(model))
+            Self::blocked_model_stream(model, model).or_else(|| self.consent_error_stream(model))
         {
             return failed;
         }
         let mut options = options.unwrap_or_default();
         let (request_model, config, extension) = self.prepare_request(model, &mut options);
+        if let Some(failed) = Self::blocked_model_stream(model, &request_model) {
+            return failed;
+        }
         let models = self.models.clone();
         let context = context.clone();
         let original = model.clone();
@@ -2299,12 +2303,15 @@ impl ModelRuntime {
         transforms: ModelsRequestTransforms,
     ) -> AssistantMessageEventStream {
         if let Some(failed) =
-            Self::blocked_model_stream(model).or_else(|| self.consent_error_stream(model))
+            Self::blocked_model_stream(model, model).or_else(|| self.consent_error_stream(model))
         {
             return failed;
         }
         let mut options = options.unwrap_or_default();
         let (request_model, config, extension) = self.prepare_request(model, &mut options.stream);
+        if let Some(failed) = Self::blocked_model_stream(model, &request_model) {
+            return failed;
+        }
         let models = self.models.clone();
         let context = context.clone();
         let original = model.clone();
@@ -3735,10 +3742,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_gate_blocked_fable_model_fails_on_every_runtime_path_without_a_call() {
+        // The second case reaches Fable only through `upstream_model_id`, the id the request sends.
+        for (id, upstream_model_id) in [
+            ("claude-fable-5-2", None),
+            ("fable-alias", Some("claude-fable-5-2")),
+        ] {
+            assert_gate_blocks_every_runtime_path(id, upstream_model_id).await;
+        }
+    }
+
+    async fn assert_gate_blocks_every_runtime_path(id: &str, upstream_model_id: Option<&str>) {
         let dir = tempfile::tempdir().expect("tempdir");
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let model = Model {
-            id: "claude-fable-5-2".into(),
+            id: id.into(),
+            upstream_model_id: upstream_model_id.map(str::to_owned),
             provider: "fable-fixture".into(),
             api: "openai-completions".into(),
             base_url: "http://127.0.0.1:9/v1".into(),
@@ -3796,7 +3814,7 @@ mod tests {
         let stream = runtime.stream_simple(&model, &context, None);
         while let Ok(Some(_)) = stream.next().await {}
         check(stream.result().await.expect("simple result"));
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "{id}");
     }
 
     #[tokio::test]
