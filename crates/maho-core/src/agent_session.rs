@@ -8111,11 +8111,11 @@ impl AgentSession {
             Some(SessionTitlePrompt::Text(prompt)) => Some(prompt),
             None => Some(text),
         };
-        self.state().pending_session_title_prompt = self
-            .state()
-            .auto_title_sessions
-            .then_some(title_prompt)
-            .flatten();
+        {
+            let mut state = self.state();
+            state.pending_session_title_prompt =
+                state.auto_title_sessions.then_some(title_prompt).flatten();
+        }
         // Every large callee future in this function is built on the heap (`heap_future`): built
         // inline, each one takes its own slot in this frame in unoptimized builds, and the frames of
         // the prompt -> agent run -> retry recovery chain then overflow a 2 MiB thread stack.
@@ -13799,8 +13799,14 @@ impl AgentSession {
     }
 
     async fn settle_session_title(&self) {
-        let first_prompt = self.state().pending_session_title_prompt.take();
-        if self.state().user_aborted {
+        let (first_prompt, user_aborted) = {
+            let mut state = self.state();
+            (
+                state.pending_session_title_prompt.take(),
+                state.user_aborted,
+            )
+        };
+        if user_aborted {
             return;
         }
         let Some(first_prompt) = first_prompt else {
