@@ -20,6 +20,10 @@ pub struct SessionPathOwner {
     pub attached: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current: Option<bool>,
+    /// The owner removes this claim itself when the session leaves it, so it stands while the owner runs
+    /// (senpi#7098).
+    #[serde(rename = "strict_transfer", skip_serializing_if = "Option::is_none")]
+    pub strict_transfer: Option<bool>,
 }
 pub struct SessionPathClaim {
     pub file: PathBuf,
@@ -198,6 +202,7 @@ fn read_owner(file: &Path) -> Option<SessionPathOwner> {
         process_start_time: value["processStartTime"].as_str().map(str::to_owned),
         attached: value["attached"].as_bool(),
         current: None,
+        strict_transfer: (value["strict_transfer"] == true).then_some(true),
     })
 }
 pub fn read_session_path_claims(dir: &Path) -> Vec<SessionPathClaim> {
@@ -263,7 +268,7 @@ pub fn standing_owner(
     {
         return StandingVerdict::PresumedDone;
     }
-    if current || owner.attached != Some(false) {
+    if current || owner.strict_transfer == Some(true) || owner.attached != Some(false) {
         owner.current = Some(current);
         StandingVerdict::Stands(owner)
     } else {
@@ -412,6 +417,7 @@ impl SessionPathReservations {
             session_path: session_path.into(),
             attached: Some(attached),
             current: None,
+            strict_transfer: Some(true),
         };
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
@@ -678,11 +684,21 @@ mod tests {
             session_path: "/session".into(),
             attached: Some(false),
             current: None,
+            strict_transfer: None,
         };
         assert_eq!(
             standing_owner(owner.clone(), &paths),
             StandingVerdict::Released
         );
+        // senpi#7098: a strict-transfer claim stands while its owner runs even after its last client detached.
+        let strict = SessionPathOwner {
+            strict_transfer: Some(true),
+            ..owner.clone()
+        };
+        assert!(matches!(
+            standing_owner(strict, &paths),
+            StandingVerdict::Stands(stands) if stands.current == Some(false) && stands.strict_transfer == Some(true)
+        ));
         fs::write(&pointer, r#"{"instance_id":"one"}"#).unwrap();
         assert!(
             matches!(standing_owner(owner.clone(),&paths),StandingVerdict::Stands(stands) if stands.current==Some(true))
@@ -713,6 +729,7 @@ mod tests {
             session_path: "/session".into(),
             attached: Some(true),
             current: None,
+            strict_transfer: None,
         };
         assert_eq!(claim_owner_identity(&owner), ClaimIdentity::Gone);
         assert!(!claim_owner_is_live(&owner));
@@ -783,6 +800,7 @@ mod tests {
             session_path: temp.path().join("s.jsonl").to_string_lossy().into_owned(),
             attached: Some(true),
             current: None,
+            strict_transfer: None,
         };
         assert_eq!(
             standing_owner(owner.clone(), &paths),
