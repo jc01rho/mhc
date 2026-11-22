@@ -494,11 +494,12 @@ pub fn register_first_turn_hooks(api: &mut maho_ext_api::ExtensionApi) {
         );
     }
 }
+#[cfg(test)]
 fn prompt_hook_result(event: &maho_ext_api::ExtensionEvent) -> maho_ext_api::EventResult {
     prompt_hook_result_with_context(event, None)
 }
 
-fn prompt_hook_result_with_context(
+pub fn prompt_hook_result_with_context(
     event: &maho_ext_api::ExtensionEvent,
     ctx: Option<&maho_ext_api::ExtensionContext>,
 ) -> maho_ext_api::EventResult {
