@@ -72,7 +72,7 @@ fn status_phrase(status: u16) -> &'static str {
         503 => "service unavailable",
         504 => "gateway timeout",
         529 => "overloaded",
-        500..=599 => "server error",
+        s if s >= 500 => "server error",
         _ => "request failed",
     }
 }
