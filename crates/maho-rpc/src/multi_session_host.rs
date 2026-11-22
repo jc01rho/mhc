@@ -234,6 +234,7 @@ pub struct HostCore {
     handover_answering: std::sync::atomic::AtomicUsize,
     /// Woken whenever a `begin_handover` answer was delivered.
     handover_answered: tokio::sync::Notify,
+    inherited_handover: std::sync::Mutex<Option<crate::host_handover_reopen::InheritedHandover>>,
 }
 /// senpi `HostCoreGate`'s state: the idle handover, this host's endpoint (a `begin_handover` naming another agent
 /// dir is refused), and the runtime build id `get_protocol_info` reports.
@@ -398,7 +399,17 @@ impl HostCore {
             sessionless_requests: std::sync::atomic::AtomicUsize::new(0),
             handover_answering: std::sync::atomic::AtomicUsize::new(0),
             handover_answered: tokio::sync::Notify::new(),
+            inherited_handover: std::sync::Mutex::new(None),
         }
+    }
+    pub fn set_inherited_handover(
+        &self,
+        state: Option<crate::host_handover_reopen::InheritedHandover>,
+    ) {
+        *self
+            .inherited_handover
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
     }
     /// Installs the conditional idle handover (senpi `runSocketHost` `canHandOver`): the operation judges idleness
     /// over this core and performs the successor launch with this host's successor enrollment channel
@@ -2094,11 +2105,22 @@ impl HostCore {
                     let memory = session_memory(&kernels, row["sessionId"].as_str().unwrap_or(""));
                     row["memory"] = memory;
                 }
+                let mut data = serde_json::json!({"sessions":sessions});
+                if let Some(handover) = *self
+                    .inherited_handover
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                {
+                    data["handover"] = serde_json::json!({
+                        "pending": handover.pending,
+                        "predecessor_draining": handover.predecessor_draining,
+                    });
+                }
                 self.success(
                     connection,
                     command.id.clone(),
                     "list_sessions",
-                    Some(serde_json::json!({"sessions":sessions})),
+                    Some(data),
                     None,
                 );
             }
@@ -7121,10 +7143,21 @@ async fn run_socket_host(
                     >
             };
             let still_serving = || !core.is_draining();
+            let progress_core = core.clone();
+            let on_progress =
+                move |state: Option<crate::host_handover_reopen::InheritedHandover>| {
+                    progress_core.set_inherited_handover(state);
+                };
+            let paths = crate::host_daemon_paths::create_host_daemon_paths(
+                &host_socket,
+                &core.options.agent_dir,
+            );
             let holder = crate::host_handover_reopen::ReopenHolder {
                 host_instance: crate::protocol_identity::host_instance_id().to_owned(),
                 host_socket: Some(host_socket),
                 should_reopen: Some(&still_serving),
+                paths: Some(paths),
+                on_progress: Some(&on_progress),
             };
             crate::host_handover_reopen::reopen_handover_parked_sessions(
                 &store,
