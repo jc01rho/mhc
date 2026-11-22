@@ -194,19 +194,11 @@ fn newer(client: &HostDecisionClient, host: &HostProtocolInfo) -> bool {
     let Some(ordinal) = host.engine_ordinal else {
         return false;
     };
-    for (candidate, running) in client.identity.ordinal.iter().take(4).zip(ordinal.iter()) {
-        let candidate = serde_json::Number::from(*candidate).as_f64().unwrap_or(0.0);
-        if candidate > *running {
-            return true;
-        }
-        if candidate < *running {
-            return false;
-        }
-    }
-    let epoch = serde_json::Number::from(client.identity.ordinal[4])
-        .as_f64()
-        .unwrap_or(0.0);
-    epoch > 0.0 && ordinal[4] > 0.0 && epoch > ordinal[4]
+    let running = maho_core::engine_build_identity::engine_identity_of(
+        host.engine_version.as_deref().unwrap_or_default(),
+        ordinal,
+    );
+    maho_core::engine_build_identity::compare_engine_ordinal(&client.identity, &running) > 0
 }
 fn same_release(client: &HostDecisionClient, host: &HostProtocolInfo) -> bool {
     host.engine_ordinal.is_some_and(|ordinal| {
@@ -610,6 +602,20 @@ mod tests {
                 ..
             }
         ));
+    }
+    #[test]
+    fn a_calver_client_never_supersedes_a_host_whose_ordinal_is_an_omo_version() {
+        let mut h = host();
+        h.engine_version = Some("5.1.78".into());
+        h.engine_ordinal = Some([5.0, 1.0, 78.0, 0.0, 0.0]);
+        assert_eq!(
+            decide_host_action(&client(), Some(&h), HostDecisionPolicy::Upgrade),
+            HostDecision::Reuse {
+                reason: ReuseReason::Compatible,
+                upgradeable: true,
+                warning: None,
+            }
+        );
     }
     #[test]
     fn absent_host_ordinal_never_wins_upgrade() {

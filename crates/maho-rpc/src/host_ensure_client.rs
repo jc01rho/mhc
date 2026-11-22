@@ -65,6 +65,35 @@ pub fn requested_tool_runtime(host_args: &[String]) -> Vec<String> {
     Vec::new()
 }
 
+/// An upgrade that could not be judged is said out loud (senpi#7040): a host whose engine ordinal is not senpi
+/// CalVer (a compiled omo through 5.1.78 advertised its omo version) is never ordered against this build, so it is
+/// kept whichever engine is newer.
+pub fn report_uncomparable_engine(
+    client: &maho_core::engine_build_identity::EngineBuildIdentity,
+    host: Option<&HostProtocolInfo>,
+) {
+    let Some(host) = host else {
+        return;
+    };
+    let Some(ordinal) = host.engine_ordinal else {
+        return;
+    };
+    let running = maho_core::engine_build_identity::engine_identity_of(
+        host.engine_version.as_deref().unwrap_or_default(),
+        ordinal,
+    );
+    if maho_core::engine_build_identity::comparable_engines(client, &running) {
+        return;
+    }
+    eprintln!(
+        "senpi host: engine order uncomparable: this build {} [{}], the running host {} [{}]; only senpi CalVer ordinals are ordered, so the running host is kept",
+        client.text,
+        client.ordinal.map(|n| n.to_string()).join(","),
+        running.text,
+        running.ordinal.map(|n| n.to_string()).join(","),
+    );
+}
+
 /// Compatibility, for the attach decision and the readiness gate alike: a host is compatible exactly
 /// when a client that is forbidden to upgrade would attach to it. Never a version-string comparison (I2).
 pub fn is_compatible(protocol: Option<&HostProtocolInfo>) -> bool {
