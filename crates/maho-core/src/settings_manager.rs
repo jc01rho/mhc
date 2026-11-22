@@ -926,18 +926,23 @@ impl SettingsManager {
         self.trust_epoch
     }
 
-    /// senpi `getTodoFirstTurnPlan`: `remind` and `off` are honored; anything else is `force`.
-    pub fn get_todo_first_turn_plan(&self) -> &'static str {
+    /// senpi `getTodoFirstTurnPlan`: the user's `todo.firstTurnPlan`, else `fallback`.
+    pub fn get_todo_first_turn_plan_with_fallback(&self, fallback: &'static str) -> &'static str {
         match self
             .settings
             .get("todo")
             .and_then(|todo| todo.get("firstTurnPlan"))
             .and_then(Value::as_str)
         {
+            Some("force") => "force",
             Some("remind") => "remind",
             Some("off") => "off",
-            _ => "force",
+            _ => fallback,
         }
+    }
+
+    pub fn get_todo_first_turn_plan(&self) -> &'static str {
+        self.get_todo_first_turn_plan_with_fallback("force")
     }
 
     /// senpi `getAskUserSettings`.

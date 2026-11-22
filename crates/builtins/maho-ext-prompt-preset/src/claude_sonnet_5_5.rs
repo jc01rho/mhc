@@ -60,3 +60,33 @@ pub fn build_claude_sonnet55_prompt(mut options: BuildDynamicSystemPromptOptions
     options.workstation_dialect = Some(WorkstationDialect::Claude);
     build_dynamic_system_prompt(&options)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        presets::{ModelMetadata, resolve_preset},
+        settings::PromptPresetName,
+    };
+
+    #[test]
+    fn keeps_the_sonnet_prompt_unchanged_when_only_anthropic_native_search_is_available() {
+        let prompt = resolve_preset(
+            ModelMetadata {
+                id: "claude-sonnet-5-5",
+                provider: "anthropic",
+                name: None,
+                prompt_preset: None,
+            },
+            PromptPresetName::Auto,
+            BuildDynamicSystemPromptOptions {
+                selected_tools: vec!["read".into()],
+                native_search_available: true,
+                ..Default::default()
+            },
+        )
+        .expect("sonnet 5.5 preset")
+        .prompt;
+        assert!(!prompt.contains("your training data ends well before it"));
+    }
+}

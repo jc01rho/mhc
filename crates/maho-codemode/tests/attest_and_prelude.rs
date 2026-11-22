@@ -63,9 +63,50 @@ fn the_eval_description_names_the_eval_only_tools() {
         .lines()
         .find(|line| line.contains("Eval-only tools"))
         .expect("eval-only line");
-    assert!(line.trim_end().ends_with(": grep, bash."), "{line}");
+    assert!(
+        line.trim_end()
+            .ends_with(": grep, bash. Call them inside a cell as `tool.<name>(args)`."),
+        "{line}"
+    );
     let without = build_eval_prompt(&enabled, &EvalPromptOptions::default()).unwrap();
     assert!(!without.description.contains("Eval-only tools"));
+}
+
+#[test]
+fn names_the_eval_only_tools_within_claude_code_mcp_description_cap() {
+    const CLAUDE_CODE_MCP_DESCRIPTION_CAP: usize = 4096;
+    let names = [
+        "bash",
+        "monitor",
+        "thread_create",
+        "thread_list",
+        "thread_read",
+        "thread_send",
+        "workflow",
+    ];
+    let enabled = Languages { js: true };
+    let prompt = build_eval_prompt(
+        &enabled,
+        &EvalPromptOptions {
+            spawns: true,
+            monitor: true,
+            host_line: Some("linux x64 · 16 cores".into()),
+            eval_only_tools: names.iter().map(|name| (*name).to_owned()).collect(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let kept = &prompt.description[..prompt
+        .description
+        .len()
+        .min(CLAUDE_CODE_MCP_DESCRIPTION_CAP)];
+    let line = kept
+        .lines()
+        .find(|entry| entry.contains("Eval-only tools"))
+        .expect("eval-only tools line within first 4096 chars");
+    for name in names {
+        assert!(line.contains(name), "{name} missing from {line}");
+    }
 }
 
 #[cfg(unix)]

@@ -1,7 +1,20 @@
 //! Port of `dynamic-prompt/handoff.ts`.
-use super::PromptSurface;
+use super::{PromptSurface, SharedSections};
 
 pub const HANDOFF_LANGUAGE_RULE: &str = "Keep the labels Ask, wanted, For you, Now, and Next exactly as written; write everything else - the routing line, slot contents, todo labels, and the reply itself - in the user's language (the one their instructions name, else the one they write in), with Now and Next repeating the todo labels verbatim.";
+pub const FULL_HANDOFF_LANGUAGE_RULE: &str = HANDOFF_LANGUAGE_RULE;
+
+pub const FULL_HANDOFF_LABEL_RULE: &str = "Keep the labels Ask, wanted, For you, Now, and Next exactly as written, with Now and Next repeating the todo labels verbatim.";
+
+pub const REPLY_LANGUAGE_RULE_TERMINAL: &str = "Write every reply in the user's language (the one their instructions name, else the one they write in), the routing line, handoff slots, and todo labels included; only the handoff labels stay as written.";
+pub const REPLY_LANGUAGE_RULE_APP: &str = "Write every reply in the user's language (the one their instructions name, else the one they write in), handoff slots and todo labels included; only the handoff labels stay as written.";
+
+pub const fn reply_language_rule(surface: PromptSurface) -> &'static str {
+    match surface {
+        PromptSurface::Terminal => REPLY_LANGUAGE_RULE_TERMINAL,
+        PromptSurface::App | PromptSurface::Chat => REPLY_LANGUAGE_RULE_APP,
+    }
+}
 
 /// The app surface has no routing line, so its language rule drops that clause; kept as the same
 /// derivation upstream uses so the two rules cannot drift apart.
@@ -28,6 +41,9 @@ pub struct HandoffSectionOptions {
     /// so the block drops its own "a Next with nothing after it is a defect" clause instead of
     /// stating that rule twice.
     pub turn_end_rule_stated_elsewhere: bool,
+    /// The caller's core states the reply language in its Style section (`reply_language_rule`), so the block
+    /// keeps only the label half of its language rule (senpi#7113 / senpi#7114).
+    pub language_rule_stated_elsewhere: bool,
     /// The model under-reports during long tool chains by default (Claude Fable 5.1 guide, "Ask for
     /// user-facing progress updates": remove narration-suppressing lines, then say when user-facing
     /// text is wanted and what each update contains), so the quiet-between-handoffs sentence becomes
@@ -36,6 +52,7 @@ pub struct HandoffSectionOptions {
     pub brief_updates_between_handoffs: bool,
     /// The app surface has no routing line, so the block stops referring to one; chat has no block at all.
     pub surface: PromptSurface,
+    pub shared_sections: Option<SharedSections>,
 }
 
 pub fn build_handoff_section(options: HandoffSectionOptions) -> String {
@@ -53,10 +70,17 @@ pub fn build_handoff_section(options: HandoffSectionOptions) -> String {
     } else {
         "Between handoffs, work without narration."
     };
-    let (moment, language_rule) = if surface == PromptSurface::App {
-        (HANDOFF_MOMENTS_APP, app_handoff_language_rule())
+    let moment = if surface == PromptSurface::App {
+        HANDOFF_MOMENTS_APP
     } else {
-        (HANDOFF_MOMENTS_TERMINAL, HANDOFF_LANGUAGE_RULE.to_owned())
+        HANDOFF_MOMENTS_TERMINAL
+    };
+    let language_rule = if options.language_rule_stated_elsewhere {
+        FULL_HANDOFF_LABEL_RULE.to_owned()
+    } else if surface == PromptSurface::App {
+        app_handoff_language_rule()
+    } else {
+        HANDOFF_LANGUAGE_RULE.to_owned()
     };
     format!(
         "## Handoff\n\n{moment} Before writing one, weigh what the user originally asked for and what they would want to know right now; then state it in one short block:\n\nAsk: [the user's original request] - wanted: [the outcome they asked for]. For you: [what they need to know now - ledger N/M done, findings, blockers]. Now: [the todo task in progress]. Next: [the next open task].\n\n{language_rule} {next_rule} {between_rule}"

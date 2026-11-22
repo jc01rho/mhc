@@ -40,6 +40,7 @@ mod tests {
             core_prompt: None,
             workstation_dialect: None,
             surface: public::PromptSurface::Terminal,
+            ..Default::default()
         }
     }
 

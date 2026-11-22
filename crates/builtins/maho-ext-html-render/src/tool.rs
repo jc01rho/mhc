@@ -28,7 +28,42 @@ pub fn params_schema() -> Value {
     })
 }
 
-pub const SHOW_HTML_PAGE_DESCRIPTION: &str = "Show a finished self-contained HTML page (chart, table, diagram, mockup) to the reader. Load the visualize skill before building the page. No network: inline every script, style and image (data: URIs). A <script src>, stylesheet link, font, image or fetch that points at a URL (a CDN included) is refused, and the page comes out blank or broken. Local images written as absolute file paths are inlined automatically after a byte check. In the desktop thread this renders inline above your reply; elsewhere it is written to a file you can open in the desktop.";
+pub const SHOW_HTML_PAGE_DESCRIPTION: &str = "Show a finished self-contained HTML page (chart, table, diagram, mockup) to the reader. Load the visualize skill before building the page. No network: inline every script, style and image (data: URIs). A <script src>, stylesheet link, font, image or fetch that points at a URL (a CDN included) is refused, and the page comes out blank or broken. Local images written as absolute file paths are inlined automatically after a byte check. In the OmO desktop thread the page renders inline above your reply; elsewhere it is only saved to a file and not displayed. The result says which happened.";
+
+/// Whether this session's host shows the page inline (senpi#6273 / senpi#6331).
+pub fn host_renders_page(
+    surface: Option<maho_ext_api::PromptSurface>,
+    env_surface: Option<&str>,
+) -> bool {
+    match surface {
+        Some(maho_ext_api::PromptSurface::App) => true,
+        Some(maho_ext_api::PromptSurface::Chat) => false,
+        Some(maho_ext_api::PromptSurface::Terminal) | None => env_surface == Some("app"),
+    }
+}
+
+pub fn format_show_html_page_result_text(
+    path: &str,
+    rendered_inline: bool,
+    missing: &[String],
+) -> String {
+    let lead = if rendered_inline {
+        format!(
+            "The page was shown to the reader inline above your reply. A copy is saved at {path}."
+        )
+    } else {
+        format!("Wrote the page to {path}. It was not displayed in this interface.")
+    };
+    let note = if missing.is_empty() {
+        "Local images were inlined.".to_owned()
+    } else {
+        format!(
+            "Some local images could not be read and were left as written: {}.",
+            missing.join(", ")
+        )
+    };
+    format!("{lead} {note}")
+}
 
 fn fail(message: impl Into<String>) -> ExtensionFailure {
     ExtensionFailure::new(message.into())
@@ -138,18 +173,18 @@ pub fn register_show_html_page_tool(api: &mut ExtensionApi) {
                 let path = dir.join(format!("{}-{}.html", safe_name(title), base36(millis)));
                 tokio::fs::write(&path, prepared).await.map_err(|error| fail(error.to_string()))?;
                 let path = path.to_string_lossy().into_owned();
-                let note = if missing.is_empty() {
-                    "Local images were inlined.".to_owned()
-                } else {
-                    format!("Some local images could not be read and were left as written: {}.", missing.join(", "))
-                };
+                let rendered_inline = host_renders_page(
+                    Some(ctx.get_system_prompt_options().surface),
+                    std::env::var("SENPI_PROMPT_SURFACE").ok().as_deref(),
+                );
+                let text = format_show_html_page_result_text(&path, rendered_inline, &missing);
                 let mut details = json!({"path": path, "title": title, "height": height, "prepared": true, "html": html});
                 if !missing.is_empty() {
                     details["missingImages"] = json!(missing);
                 }
                 Ok(AgentToolResult {
                     content: vec![ContentBlock::Text(TextContent {
-                        text: format!("Wrote the page to {path}. Open it in the desktop to see it rendered with your theme. {note}"),
+                        text,
                         audience: None,
                         text_signature: None,
                     })],
@@ -196,5 +231,43 @@ mod tests {
     #[test]
     fn schema_requires_html_and_title() {
         assert_eq!(params_schema()["required"], json!(["html", "title"]));
+    }
+
+    #[test]
+    fn desktop_thread_says_the_page_was_shown_inline_and_names_the_saved_file() {
+        let path = "/tmp/chart.html";
+        let rendered = host_renders_page(Some(maho_ext_api::PromptSurface::App), None);
+        assert!(rendered);
+        let text = format_show_html_page_result_text(path, rendered, &[]);
+        assert!(text.contains("shown to the reader inline"));
+        assert!(text.contains(path));
+        assert!(!text.to_lowercase().contains("open it in the desktop"));
+        assert!(!text.to_lowercase().contains("not displayed"));
+    }
+
+    #[test]
+    fn reads_the_surface_from_senpi_prompt_surface_when_the_session_names_none() {
+        let rendered = host_renders_page(None, Some("app"));
+        assert!(rendered);
+        let text = format_show_html_page_result_text("/tmp/chart.html", rendered, &[]);
+        assert!(text.contains("shown to the reader inline"));
+    }
+
+    #[test]
+    fn non_rendering_host_surfaces_say_the_page_was_written_and_not_displayed() {
+        let path = "/tmp/chart.html";
+        for surface in [
+            Some(maho_ext_api::PromptSurface::Terminal),
+            Some(maho_ext_api::PromptSurface::Chat),
+            None,
+        ] {
+            let rendered = host_renders_page(surface, None);
+            assert!(!rendered);
+            let text = format_show_html_page_result_text(path, rendered, &[]);
+            assert!(text.contains(&format!("Wrote the page to {path}.")));
+            assert!(text.contains("not displayed"));
+            assert!(!text.to_lowercase().contains("open it in the desktop"));
+            assert!(!text.contains("inline above"));
+        }
     }
 }

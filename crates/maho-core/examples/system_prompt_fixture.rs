@@ -65,6 +65,7 @@ fn main() {
         core_prompt: None,
         workstation_dialect: None,
         surface: maho_core::dynamic_prompt::PromptSurface::Terminal,
+        ..Default::default()
     });
 
     print!("{prompt}");

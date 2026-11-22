@@ -14,6 +14,7 @@ pub fn resolve_preset(
     options.tuning_section = None;
     options.core_prompt = None;
     options.workstation_dialect = None;
+    options.shared_sections = Some(crate::contract::preset_shared_sections(Some(name)));
     let captured = std::cell::RefCell::new(Vec::new());
     let on_parts = options.on_parts;
     let observer = |parts: &[maho_ext_api::DynamicSystemPromptPart]| {

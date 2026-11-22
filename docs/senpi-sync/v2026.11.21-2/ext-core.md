@@ -3,7 +3,7 @@
 Source range: senpi `59d58cee5` (v2026.10.27-2) to `f01af13491` (v2026.11.21-2).
 Track input: `/tmp/omo-mig2/tracks/ext-core.tsv` (92 rows).
 
-Summary: **92** rows — `ported`: **40**, `port`: **7**, `n/a`: **42**, `golden`: **3**.
+Summary: **92** rows — `ported`: **40**, `port`: **11**, `n/a`: **27**, `gap`: **12**, `golden`: **2**.
 
 | senpi PR | merge_sha | verdict | mhc location or reason |
 |---|---|---|---|
@@ -72,7 +72,7 @@ Summary: **92** rows — `ported`: **40**, `port`: **7**, `n/a`: **42**, `golden
 | #6260 | `5f3e39a14d` | `n/a` | Dynamic TS extension module SHA-256 cache (`extension-module-cache.ts`) and `scripts/bench-open-session.ts`; mhc has no dynamic TS extension loader |
 | #6272 | `7769efce34` | `golden` | Golden fixture regeneration for eval-only `generate_image` (`.agents/skills/senpi-qa/scenarios/fused-equivalence/golden/**`); codemode eval-only reachability was ported in PR #35 (`a3c44520a`) |
 | #6301 | `3705da617b` | `ported` | `crates/builtins/maho-ext-goal/src/{continuation_recovery,lifecycle_helpers,persistence,store,types}.rs` (recover a crashed goal-continuation stop on session start) |
-| #6331 | `999646e6ce` | `n/a` | Changes the `show_html_page` tool description and output string for the OmO desktop app surface; deferred because the `SENPI_PIN` golden fixtures pin the existing tool description |
+| #6331 | `999646e6ce` | `port` | `crates/builtins/maho-ext-html-render/src/tool.rs` (`SHOW_HTML_PAGE_DESCRIPTION`, `host_renders_page`, `format_show_html_page_result_text`, and unit tests for inline `app` vs non-rendering surfaces) |
 | #6366 | `b8fe5e0e91` | `ported` | `crates/builtins/maho-ext-mcp/src/auth/{oauth_provider,oauth_refresh,oauth,token_store}.rs` and `crates/builtins/maho-ext-mcp/src/{catalog_cache,service_register,service_tools_changed,startup_race}.rs` (OAuth grant continuity across token refresh) |
 | #6388 | `f3768f7049` | `ported` | `crates/builtins/maho-ext-goal/src/{continuation,lifecycle_helpers,monitor_continuation,parked_wait,provider_retry,store}.rs` (a goal parked on a rate limit outlasts the limited accounts) |
 | #6401 | `d82dae866f` | `n/a` | TS knip unused-export removal (`GOAL_LIMIT_WAIT_PARKED_EVENT` in `monitor-continuation.ts`) |
@@ -93,11 +93,11 @@ Summary: **92** rows — `ported`: **40**, `port`: **7**, `n/a`: **42**, `golden
 | #6926 | `4acf6f7341` | `n/a` | `PendingHandedPages` in-memory ledger for the loopless-hand and desktop-app transcript hydration race; mhc writes the prepared HTML file directly in `maho-ext-html-render/src/tool.rs` |
 | #6930 | `ad99b0243d` | `n/a` | Follow-up to #6926 that makes `pending: PendingHandedPages` a required parameter of `createShowHtmlPageTool` |
 | #6950 | `1dcc99c8c9` | `port` | `crates/builtins/maho-ext-compaction/src/context_pipeline.rs` (`build_compaction_context` skips `engaged_emergency_prune` when `append_only_transcript` is true, with a unit test) |
-| #6982 | `5899433b27` | `gap` | GPT-block todo handoff cue wording (`GPT_HANDOFF_CUES`) coupled to the #7114 prompt-preset rewrite; deferred with the golden prompt-preset regeneration |
-| #6992 | `309ced6868` | `gap` | Follow-up to #6982 interpolating `GPT_HANDOFF_LABELS` in the `all-closed` handoff cue |
+| #6982 | `5899433b27` | `port` | `crates/builtins/maho-ext-prompt-preset/src/contract.rs` (`HandoffCueKind`, `preset_handoff_cue_kind`), `crates/builtins/maho-ext-todotools/src/{todo_format,tools_todo,index}.rs` (`GPT_HANDOFF_LABELS`, `gpt_handoff_cue_text`, `format_handoff_cue_with_kind`, and unit tests) |
+| #6992 | `309ced6868` | `port` | `crates/builtins/maho-ext-todotools/src/todo_format.rs` (interpolates `GPT_HANDOFF_LABELS` in `HandoffMoment::AllClosed` and verifies every label against the rendered GPT block presets) |
 | #7069 | `b3078f50e0` | `ported` | Ported in round-1 PR #38 (`f515c537b`): `crates/maho-ext-host/src/{tool_hook_wait,runner}.rs` (120s `tool_result` handler deadline and turn-abort cancellation) |
 | #7073 | `589f951e18` | `ported` | Ported in round-1 PR #38 (`f515c537b`): `crates/maho-ext-host/src/runner.rs` (only a live turn's abort signal cancels the `tool_result` hook wait; `docs/fork/senpi-agent-tools-delta.md`) |
-| #7114 | `b3bc2fc840` | `golden` | Prompt-preset wording and `token-budget-reminder.ts` removal across the `claude_opus_5_5` and `claude_fable_5_2` presets (`prompt-presets-native-baseline.json`); coupled to golden fixture regeneration after the pin bump |
+| #7114 | `b3bc2fc840` | `port` | `crates/maho-core/src/dynamic_prompt/handoff.rs` (`FULL_HANDOFF_LABEL_RULE`, `REPLY_LANGUAGE_RULE_TERMINAL`, `REPLY_LANGUAGE_RULE_APP`, `reply_language_rule`, `language_rule_stated_elsewhere`), `crates/builtins/maho-ext-prompt-preset/src/{claude_opus_5_5,claude_fable_5_2}.rs` (five sentence fixes and Style-section reply-language rule, with unit tests); compaction `token-budget-reminder` remains retained while `maho-ext-compaction/tests/golden-lifecycle.json` and `parity.d/{23,9240}.md` pin it |
 | #7151 | `48d3377fe2` | `port` | `crates/builtins/maho-ext-permission-system/src/external_pattern.rs` (`swap_case` and `may_have_other_case` avoid `read_dir` when a path component's case spelling cannot differ, with unit tests) |
 
 Lead audit (2026-11-22): 14 rows first recorded as `n/a` are re-labelled `gap`: the upstream change is a real capability that mhc lacks because the subsystem it lives in is not ported. The track's own summary line above predates this audit.

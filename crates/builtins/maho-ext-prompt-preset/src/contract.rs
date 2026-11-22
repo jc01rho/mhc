@@ -225,6 +225,114 @@ pub fn resolve_preset_name(model: ContractModel<'_>) -> Option<PromptPresetName>
     None
 }
 
+/// Presets that render the shared prompt generators' full wording (senpi#5665): after the senpi#5335 diet
+/// shipped, Opus and Fable got slower and worse, so these keep the pre-diet text and every other preset,
+/// gpt-6-astra included, keeps the diet.
+pub const FULL_SHARED_SECTION_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[
+        P::ClaudeFable5,
+        P::ClaudeFable51,
+        P::ClaudeFable52,
+        P::ClaudeFable55,
+        P::ClaudeOpus55,
+        P::ClaudeOpus5,
+        P::ClaudeOpus48,
+        P::ClaudeOpus47,
+        P::ClaudeOpus46,
+        P::ClaudeOpus45,
+    ]
+};
+
+/// The shared-section wording a preset declares; no preset (the default prompt) renders `Diet`.
+pub fn preset_shared_sections(
+    name: Option<PromptPresetName>,
+) -> maho_core::dynamic_prompt::SharedSections {
+    if name.is_some_and(|name| FULL_SHARED_SECTION_PRESETS.contains(&name)) {
+        maho_core::dynamic_prompt::SharedSections::Full
+    } else {
+        maho_core::dynamic_prompt::SharedSections::Diet
+    }
+}
+
+/// The handoff block a preset's prompt defines, so the todo tool's cue can name that block in the
+/// prompt's own words instead of the default core's (senpi#6977).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HandoffCueKind {
+    #[default]
+    Default,
+    GptBlock,
+    None,
+}
+
+impl HandoffCueKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::GptBlock => "gpt-block",
+            Self::None => "none",
+        }
+    }
+}
+
+pub const GPT_BLOCK_HANDOFF_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[P::Gpt55, P::Gpt56, P::Gpt6Astra]
+};
+
+pub const NO_HANDOFF_BLOCK_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[P::Gpt62, P::DeepseekV41Flash]
+};
+
+pub fn preset_handoff_cue_kind(name: Option<PromptPresetName>) -> HandoffCueKind {
+    let Some(name) = name else {
+        return HandoffCueKind::Default;
+    };
+    if GPT_BLOCK_HANDOFF_PRESETS.contains(&name) {
+        HandoffCueKind::GptBlock
+    } else if NO_HANDOFF_BLOCK_PRESETS.contains(&name) {
+        HandoffCueKind::None
+    } else {
+        HandoffCueKind::Default
+    }
+}
+
+/// Presets whose model plans after it has read (senpi#7101).
+pub const PLAN_AFTER_READING_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[
+        P::Gpt62,
+        P::Gpt6Astra,
+        P::Gpt56,
+        P::Gpt55,
+        P::Gpt54,
+        P::Gpt53Codex,
+        P::Gpt52,
+        P::Gpt5,
+        P::DeepseekV41Flash,
+    ]
+};
+
+pub fn preset_first_turn_plan_default(name: Option<PromptPresetName>) -> &'static str {
+    if name.is_some_and(|name| PLAN_AFTER_READING_PRESETS.contains(&name)) {
+        "off"
+    } else {
+        "force"
+    }
+}
+
+/// Presets whose core states the todo rules itself, so the todotools extension does not append the
+/// shared `Task_Management` block after them (senpi#7101).
+pub const TODO_RULE_OWNER_PRESETS: &[PromptPresetName] = {
+    use PromptPresetName as P;
+    &[P::Gpt62, P::DeepseekV41Flash]
+};
+
+pub fn preset_owns_todo_rules(name: Option<PromptPresetName>) -> bool {
+    name.is_some_and(|name| TODO_RULE_OWNER_PRESETS.contains(&name))
+}
+
 /// `PromptPresetModelCase`.
 #[derive(Clone, Copy, Debug)]
 pub struct PromptPresetModelCase {
@@ -402,6 +510,45 @@ mod tests {
             .collect();
         exposed.sort_unstable();
         assert_eq!(exposed, auto);
+    }
+
+    #[test]
+    fn declares_full_shared_sections_for_exactly_the_opus_and_fable_presets() {
+        use maho_core::dynamic_prompt::SharedSections;
+        for name in std::iter::once(&PromptPresetName::Gpt5).chain(AUTO_RESOLVED_PRESET_NAMES) {
+            let expected = if FULL_SHARED_SECTION_PRESETS.contains(name) {
+                SharedSections::Full
+            } else {
+                SharedSections::Diet
+            };
+            assert_eq!(
+                preset_shared_sections(Some(*name)),
+                expected,
+                "{}",
+                name.as_str()
+            );
+        }
+        assert_eq!(preset_shared_sections(None), SharedSections::Diet);
+        assert_eq!(
+            preset_shared_sections(Some(PromptPresetName::Gpt6Astra)),
+            SharedSections::Diet
+        );
+    }
+
+    #[test]
+    fn defaults_the_first_turn_plan_to_off_under_every_gpt_preset_and_deepseek_v4_1_flash() {
+        for preset in std::iter::once(&PromptPresetName::Gpt5).chain(AUTO_RESOLVED_PRESET_NAMES) {
+            let plans_after_reading = preset.as_str().starts_with("gpt-")
+                || *preset == PromptPresetName::DeepseekV41Flash;
+            let expected = if plans_after_reading { "off" } else { "force" };
+            assert_eq!(
+                preset_first_turn_plan_default(Some(*preset)),
+                expected,
+                "{}",
+                preset.as_str()
+            );
+        }
+        assert_eq!(preset_first_turn_plan_default(None), "force");
     }
 
     #[test]
@@ -587,6 +734,7 @@ mod tests {
                 core_prompt: None,
                 workstation_dialect: None,
                 surface: PromptSurface::Terminal,
+                ..Default::default()
             },
         )
         .expect("preset");

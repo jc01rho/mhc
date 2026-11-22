@@ -1,5 +1,5 @@
 use crate::{
-    presets::{ModelMetadata, resolve_preset, resolve_preset_name},
+    presets::{ModelMetadata, resolve_preset},
     settings::{PromptPresetName, load_prompt_preset_settings},
 };
 use maho_core::{
@@ -32,7 +32,7 @@ impl Extension for PromptPreset {
                     let Some(preset) = resolve_preset(
                         metadata(model, prompt_preset.as_deref()),
                         settings(ctx),
-                        builder_input(&event.system_prompt_options, ctx),
+                        builder_input(&event.system_prompt_options, ctx, Some(model)),
                     ) else {
                         return Ok(EventResult::None);
                     };
@@ -77,7 +77,7 @@ impl Extension for PromptPreset {
                     let preset = resolve_preset(
                         metadata(&event.model, prompt_preset.as_deref()),
                         settings(ctx),
-                        builder_input(&event.system_prompt_options, ctx),
+                        builder_input(&event.system_prompt_options, ctx, Some(&event.model)),
                     );
                     let name = preset.as_ref().map(|preset| preset.name.as_str().into());
                     Ok(EventResult::ModelSelect(ModelSelectEventResult {
@@ -103,12 +103,7 @@ fn metadata<'a>(
     }
 }
 fn preset_name(ctx: &ExtensionContext, model: Option<&Model>) -> Option<PromptPresetName> {
-    let model = model.or(ctx.model.as_ref())?;
-    if has_user_system_prompt(&ctx.get_system_prompt_options()) {
-        return None;
-    }
-    let prompt_preset = ctx.model_registry.prompt_preset(model);
-    resolve_preset_name(metadata(model, prompt_preset.as_deref()), settings(ctx))
+    crate::active_preset::resolve_active_preset_name(ctx, model)
 }
 struct PresetHeader(String);
 impl Component for PresetHeader {
@@ -156,9 +151,38 @@ fn settings(ctx: &ExtensionContext) -> PromptPresetName {
             .and_then(|value| value.as_str()),
     )
 }
+fn has_native_anthropic_search(model: Option<&Model>) -> bool {
+    let Some(model) = model.filter(|model| model.api == "anthropic-messages") else {
+        return false;
+    };
+    let enabled = !std::env::var("PI_ANTHROPIC_WEB_SEARCH")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        });
+    if !enabled {
+        return false;
+    }
+    model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.get("supportsWebSearch"))
+        .and_then(maho_ext_api::JsonValue::as_bool)
+        .unwrap_or_else(|| {
+            model.base_url == "https://api.anthropic.com"
+                || model.base_url.starts_with("https://api.anthropic.com/")
+                || model.base_url.starts_with("https://api.anthropic.com:")
+                || model.base_url.starts_with("https://api.anthropic.com?")
+        })
+}
+
 fn builder_input(
     options: &BuildSystemPromptOptions,
     ctx: &ExtensionContext,
+    model: Option<&Model>,
 ) -> BuildDynamicSystemPromptOptions<'static> {
     BuildDynamicSystemPromptOptions {
         custom_prompt: None,
@@ -170,6 +194,7 @@ fn builder_input(
             options.cwd.to_string_lossy().into_owned()
         },
         selected_tools: options.tools.clone(),
+        native_search_available: has_native_anthropic_search(model),
         tool_snippets: options
             .tool_snippets
             .iter()
@@ -235,6 +260,7 @@ fn builder_input(
             maho_ext_api::PromptSurface::App => maho_core::dynamic_prompt::PromptSurface::App,
             maho_ext_api::PromptSurface::Chat => maho_core::dynamic_prompt::PromptSurface::Chat,
         },
+        ..Default::default()
     }
 }
 pub fn has_user_system_prompt(options: &BuildSystemPromptOptions) -> bool {
