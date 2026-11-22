@@ -4,7 +4,7 @@ import { join } from "node:path";
 const root = process.env.SENPI_SRC;
 if (!root) throw new Error("SENPI_SRC is required");
 const pin = Bun.spawn(["git", "--no-pager", "-C", root, "rev-parse", "HEAD"], { stdout: "pipe" });
-if ((await new Response(pin.stdout).text()).trim() !== "59d58cee59d76bbecc83be828b59ff5420eb74df" || await pin.exited !== 0) throw new Error("senpi pin mismatch");
+if ((await new Response(pin.stdout).text()).trim() !== "f01af134919f0bbf24b2887000e2142dfd290567" || await pin.exited !== 0) throw new Error("senpi pin mismatch");
 if (process.env.GOLDEN_PLATFORM === "darwin") Object.defineProperty(process, "platform", { value: "darwin" });
 const home = mkdtempSync("/tmp/lane35-screen-");
 const agentDir = join(home,"agent"); mkdirSync(agentDir);
