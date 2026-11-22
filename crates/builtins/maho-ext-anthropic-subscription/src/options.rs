@@ -1,4 +1,43 @@
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
+
+pub const MCP_DESCRIPTION_LENGTH_VARIABLE: &str = "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH";
+/// Claude Code's own ceiling for a tool loaded through its tool search; its default prompt cap is 4096.
+pub const MCP_DESCRIPTION_LENGTH: &str = "16384";
+
+pub fn claude_code_query_environment(
+    model: &Value,
+    senpi_owns_compaction: bool,
+    host_environment: &BTreeMap<String, String>,
+) -> Map<String, Value> {
+    let mut environment = Map::new();
+    if !host_environment.contains_key(MCP_DESCRIPTION_LENGTH_VARIABLE) {
+        environment.insert(
+            MCP_DESCRIPTION_LENGTH_VARIABLE.into(),
+            json!(MCP_DESCRIPTION_LENGTH),
+        );
+    }
+    if senpi_owns_compaction {
+        let window = crate::context_window::planned_context_window_now(
+            model["id"].as_str().unwrap_or_default(),
+            model["contextWindow"].as_u64().unwrap_or(0),
+        );
+        environment.insert("CLAUDE_CODE_TOTAL_TOKENS_REMINDER".into(), json!("off"));
+        environment.insert(
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
+            json!(window.to_string()),
+        );
+        environment.insert("DISABLE_COMPACT".into(), json!("1"));
+    }
+    if let Some(base_url) = model["baseUrl"]
+        .as_str()
+        .filter(|url| !url.is_empty() && *url != crate::api_id::CLAUDE_SDK_OAUTH_API_ID)
+    {
+        environment.insert("ANTHROPIC_BASE_URL".into(), json!(base_url));
+    }
+    environment
+}
+
 pub struct QueryOptionsInput<'a> {
     pub model: &'a Value,
     pub context: &'a Value,
@@ -54,14 +93,16 @@ pub fn build_query_configuration(input: QueryOptionsInput<'_>) -> anyhow::Result
         input.stream_options.get("thinkingBudgets"),
     ));
     options.extend(json!({"cwd":input.cwd,"model":crate::context_window::sdk_model_id_now(input.model["id"].as_str().unwrap_or_default(),input.model["contextWindow"].as_u64().unwrap_or(0)),"permissionMode":"dontAsk","includePartialMessages":true,"systemPrompt":system_prompt,"settings":{"autoCompactEnabled":crate::settings::resolve_compaction_owner(input.settings)=="senpi"},"settingSources":setting_sources(input.settings,&mode,input.lane)}).as_object().expect("configuration object").clone());
-    if crate::settings::resolve_compaction_owner(input.settings) == "senpi" {
-        // With DISABLE_COMPACT set, Claude Code takes CLAUDE_CODE_MAX_CONTEXT_TOKENS over every model rule of its own (senpi#3801).
-        let window = crate::context_window::planned_context_window_now(
-            input.model["id"].as_str().unwrap_or_default(),
-            input.model["contextWindow"].as_u64().unwrap_or(0),
-        );
-        options.insert("env".into(),json!({"CLAUDE_CODE_TOTAL_TOKENS_REMINDER":"off","CLAUDE_CODE_MAX_CONTEXT_TOKENS":window.to_string(),"DISABLE_COMPACT":"1"}));
-    }
+    let senpi_owns_compaction =
+        crate::settings::resolve_compaction_owner(input.settings) == "senpi";
+    options.insert(
+        "env".into(),
+        Value::Object(claude_code_query_environment(
+            input.model,
+            senpi_owns_compaction,
+            &BTreeMap::new(),
+        )),
+    );
     if let Some(executable) = input.executable.filter(|value| !value.is_empty()) {
         options.insert("pathToClaudeCodeExecutable".into(), json!(executable));
     }
@@ -256,7 +297,13 @@ mod tests {
         let options = build(&settings);
         assert_eq!(
             options["env"],
-            json!({"CLAUDE_CODE_TOTAL_TOKENS_REMINDER":"off","CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000","DISABLE_COMPACT":"1","CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"})
+            json!({
+                "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH":"16384",
+                "CLAUDE_CODE_TOTAL_TOKENS_REMINDER":"off",
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000",
+                "DISABLE_COMPACT":"1",
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"
+            })
         );
         assert_eq!(options["model"], "claude-opus-5-5");
         let sdk = crate::settings::load(
@@ -266,7 +313,10 @@ mod tests {
         );
         assert_eq!(
             build(&sdk)["env"],
-            json!({"CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"})
+            json!({
+                "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH":"16384",
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"
+            })
         );
     }
     #[test]
@@ -382,5 +432,32 @@ mod tests {
         assert_eq!(options["tools"], json!([]));
         assert!(!options.contains_key("maxTurns"));
         assert!(!options.contains_key("extraArgs"));
+    }
+    #[test]
+    fn lifts_claude_code_mcp_description_cap_and_respects_host_override() {
+        const CLAUDE_CODE_DEFAULT_MCP_DESCRIPTION_CAP: usize = 4096;
+        const LONGEST_SENPI_TOOL_DESCRIPTION: usize = 8120;
+        let model = json!({
+            "id": "claude-sonnet-4-6",
+            "baseUrl": crate::api_id::CLAUDE_SDK_OAUTH_API_ID,
+            "contextWindow": 200_000
+        });
+        for senpi_owns_compaction in [true, false] {
+            let env =
+                claude_code_query_environment(&model, senpi_owns_compaction, &BTreeMap::new());
+            let cap: usize = env[MCP_DESCRIPTION_LENGTH_VARIABLE]
+                .as_str()
+                .expect("cap string")
+                .parse()
+                .expect("numeric cap");
+            assert!(cap > CLAUDE_CODE_DEFAULT_MCP_DESCRIPTION_CAP);
+            assert!(cap >= LONGEST_SENPI_TOOL_DESCRIPTION);
+        }
+        let host = BTreeMap::from([(
+            MCP_DESCRIPTION_LENGTH_VARIABLE.to_owned(),
+            "2048".to_owned(),
+        )]);
+        let env = claude_code_query_environment(&model, true, &host);
+        assert!(!env.contains_key(MCP_DESCRIPTION_LENGTH_VARIABLE));
     }
 }
