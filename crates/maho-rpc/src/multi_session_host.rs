@@ -194,6 +194,7 @@ pub struct HostCore {
     drain: std::sync::Mutex<crate::session_command_router::HandoffDrain>,
     /// Sessions a drain has already claimed, so a later sweep never parks one twice.
     handoff_closed: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    drain_held_sessions: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// In-flight parks, so the drain exit waits for them (senpi `handoffParks`).
     handoff_parks: std::sync::atomic::AtomicUsize,
     /// Set when the host runs every session in its own worker process (senpi `createHostCore` selects
@@ -379,6 +380,7 @@ impl HostCore {
             handoff_enabled: std::sync::atomic::AtomicBool::new(false),
             drain: std::sync::Mutex::new(crate::session_command_router::HandoffDrain::default()),
             handoff_closed: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            drain_held_sessions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             handoff_parks: std::sync::atomic::AtomicUsize::new(0),
             workers: None,
             connection_roles: Default::default(),
@@ -1077,6 +1079,10 @@ impl HostCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .forget_session(session_id);
+        self.drain_held_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
         self.default_writer.forget_session(session_id);
     }
     /// Starts the drain this host parks itself with (senpi `SessionCommandRouter.beginDrain`).
@@ -1099,7 +1105,7 @@ impl HostCore {
         {
             return false;
         }
-        let (active_open, open) = {
+        let (active_open, open, unattended) = {
             let rows = self.list_rows(true).await;
             let active_open = rows.iter().any(|row| row["status"] == "opening");
             let open = rows
@@ -1107,9 +1113,38 @@ impl HostCore {
                 .filter(|row| row["status"] == "open")
                 .filter_map(|row| row["sessionId"].as_str().map(str::to_owned))
                 .collect::<Vec<_>>();
-            (active_open, open)
+            let held = self
+                .drain_held_sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let unattended = crate::session_drain_hold::unattended_turn_targets(&rows, &held);
+            (active_open, open, unattended)
         };
         if !active_open {
+            if !unattended.is_empty() {
+                let mut sessions = Vec::new();
+                {
+                    let registry = self.registry.lock().await;
+                    let mut held = self
+                        .drain_held_sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    for handle in unattended {
+                        if let Some(session) = registry
+                            .get(&handle)
+                            .and_then(|entry| entry.runtime.as_ref())
+                            .map(|runtime| runtime.session().clone())
+                            && held.insert(handle)
+                        {
+                            sessions.push(session);
+                        }
+                    }
+                }
+                for session in sessions {
+                    session.hold_automatic_turns();
+                }
+            }
             for handle in &open {
                 if self
                     .handoff_closed
@@ -5429,6 +5464,120 @@ mod handoff_tests {
         assert!(!core.drain_sweep().await);
         core.begin_drain().await;
         assert!(core.drain_sweep().await);
+    }
+    #[test]
+    fn the_drain_holds_automatic_turns_of_unattended_sessions_only() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let temp = tempfile::tempdir().unwrap();
+                        let (core, gate, mut calls, _disposed) = gated_core(temp.path());
+                        let mut gone = peer(&core, "gone");
+                        let mut live = peer(&core, "live");
+                        let cwd = temp.path().to_string_lossy().into_owned();
+                        let child_path =
+                            temp.path().join("child.jsonl").to_string_lossy().into_owned();
+                        let top_path = temp.path().join("top.jsonl").to_string_lossy().into_owned();
+                        core.handle(
+                            Some("gone"),
+                            &serde_json::json!({
+                                "id": "o-child",
+                                "type": "open_session",
+                                "cwd": cwd,
+                                "sessionPath": child_path,
+                                "retain_on_disconnect": true
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .unwrap();
+                        let unattended = reply_to(&mut gone, "o-child").await["data"]["sessionId"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned();
+                        core.handle(
+                            Some("live"),
+                            &serde_json::json!({
+                                "id": "o-top",
+                                "type": "open_session",
+                                "cwd": cwd,
+                                "sessionPath": top_path
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .unwrap();
+                        let attended = reply_to(&mut live, "o-top").await["data"]["sessionId"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned();
+                        let child_prompt = serde_json::json!({
+                            "id": "p-child",
+                            "type": "prompt",
+                            "sessionId": unattended,
+                            "message": "hi"
+                        })
+                        .to_string();
+                        let top_prompt = serde_json::json!({
+                            "id": "p-top",
+                            "type": "prompt",
+                            "sessionId": attended,
+                            "message": "hi"
+                        })
+                        .to_string();
+                        let c1 = std::sync::Arc::clone(&core);
+                        let t1 = tokio::spawn(async move { c1.handle(Some("gone"), &child_prompt).await });
+                        let c2 = std::sync::Arc::clone(&core);
+                        let t2 = tokio::spawn(async move { c2.handle(Some("live"), &top_prompt).await });
+                        for _ in 0..2 {
+                            tokio::time::timeout(std::time::Duration::from_secs(10), calls.recv())
+                                .await
+                                .expect("both turns reach the provider")
+                                .expect("the provider stays alive");
+                        }
+                        core.release_connection("gone").await;
+                        core.unregister_connection("gone");
+                        {
+                            let registry = core.registry.lock().await;
+                            assert_eq!(registry.get(&unattended).unwrap().close.attachments, 0);
+                            assert_eq!(registry.get(&attended).unwrap().close.attachments, 1);
+                        }
+
+                        core.begin_drain().await;
+
+                        let (unattended_held, attended_held) = {
+                            let registry = core.registry.lock().await;
+                            let has_drain_hold = |id: &str| {
+                                registry
+                                    .get(id)
+                                    .and_then(|entry| entry.runtime.as_ref())
+                                    .is_some_and(|runtime| {
+                                        runtime.session().holds().iter().any(|hold| {
+                                            hold.key
+                                                == maho_core::host_restart_continuation::HOST_DRAIN_HOLD_KEY
+                                        })
+                                    })
+                            };
+                            (has_drain_hold(&unattended), has_drain_hold(&attended))
+                        };
+                        assert!(unattended_held);
+                        assert!(!attended_held);
+                        assert!(core.has_session(&unattended).await);
+                        assert!(core.has_session(&attended).await);
+
+                        gate.send(true).unwrap();
+                        let _ = t1.await.unwrap();
+                        let _ = t2.await.unwrap();
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
     fn peer(core: &HostCore, id: &str) -> tokio::io::BufReader<tokio::io::DuplexStream> {
         let (write, read) = tokio::io::duplex(64 * 1024);
