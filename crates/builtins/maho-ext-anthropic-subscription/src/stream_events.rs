@@ -30,6 +30,14 @@ impl StreamEventContext {
             self.output.response_id = id.filter(|id| !id.is_empty()).map(str::to_owned);
         }
     }
+    /// senpi `onAttemptStart` (senpi#4152): a retried attempt owns its own response id and usage, so the
+    /// previous attempt's identity never outlives it.
+    pub fn begin_attempt(&mut self) {
+        self.output.response_id = None;
+        self.output.usage = maho_ai::types::Usage::default();
+        self.indices.clear();
+        self.partial_json.clear();
+    }
     pub fn apply_stream_event(&mut self, event: &Value) -> Option<Event> {
         match event["type"].as_str() {
             Some("message_start") => {
@@ -254,5 +262,17 @@ mod tests {
         };
         assert_eq!(tool_call.name, "read");
         assert_eq!(tool_call.arguments["path"], "src");
+    }
+    #[test]
+    fn begin_attempt_resets_response_id_and_usage() {
+        let mut context = context();
+        context.apply_stream_event(&json!({"type":"message_start","message":{"id":"msg_attempt_1","usage":{"input_tokens":12,"output_tokens":3}}}));
+        assert_eq!(context.output.response_id.as_deref(), Some("msg_attempt_1"));
+        assert_eq!(context.output.usage.input, 12);
+        context.begin_attempt();
+        assert_eq!(context.output.response_id, None);
+        assert_eq!(context.output.usage.input, 0);
+        context.note_response_id(Some("msg_attempt_2"));
+        assert_eq!(context.output.response_id.as_deref(), Some("msg_attempt_2"));
     }
 }
