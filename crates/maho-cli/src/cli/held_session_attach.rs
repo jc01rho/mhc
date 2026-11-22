@@ -155,11 +155,11 @@ async fn attach_prompts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::args::{ParseArgsOptions, parse_args};
+    use crate::cli::args::{ParseArgsOptions, parse_args_with_options};
 
     fn parse(raw: &[&str]) -> Args {
         let owned: Vec<String> = raw.iter().map(|s| (*s).to_owned()).collect();
-        parse_args(&owned, ParseArgsOptions::default())
+        parse_args_with_options(&owned, ParseArgsOptions::default()).expect("parse_args")
     }
 
     #[tokio::test]

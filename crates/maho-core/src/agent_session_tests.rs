@@ -11092,7 +11092,7 @@ async fn auto_title_emits_session_info_changed_before_agent_settled_and_skips_ab
         .expect("auth");
     let order = Arc::new(Mutex::new(Vec::<String>::new()));
     let order_sink = order.clone();
-    let _sub = session.subscribe(move |event| {
+    let _sub = session.subscribe(Arc::new(move |event| {
         let label = match event {
             AgentSessionEvent::SessionInfoChanged { .. } => Some("session_info_changed"),
             AgentSessionEvent::AgentSettled => Some("agent_settled"),
@@ -11102,7 +11102,7 @@ async fn auto_title_emits_session_info_changed_before_agent_settled_and_skips_ab
         if let Some(label) = label {
             lock(&order_sink).push(label.to_owned());
         }
-    });
+    }));
     session
         .prompt("write a file", Default::default())
         .await

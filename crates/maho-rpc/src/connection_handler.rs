@@ -4601,10 +4601,10 @@ mod new_session_tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(after["data"]["accounts"][0]["name"], "b");
-        assert_eq!(after["data"]["accounts"][0]["blocked"], false);
-        assert_eq!(after["data"]["accounts"][1]["name"], "a");
-        assert_eq!(after["data"]["accounts"][1]["blocked"], true);
+        assert_eq!(after["data"]["accounts"][0]["name"], "a");
+        assert_eq!(after["data"]["accounts"][0]["blocked"], true);
+        assert_eq!(after["data"]["accounts"][1]["name"], "b");
+        assert_eq!(after["data"]["accounts"][1]["blocked"], false);
 
         let missing = serde_json::to_value(
             handle_session_command(
@@ -4671,7 +4671,7 @@ mod new_session_tests {
             missing["error"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("No API key found for unknown.")
+                .contains("No API key found for the selected model.")
         );
 
         let mut no_model = sess.model();

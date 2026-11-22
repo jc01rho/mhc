@@ -763,7 +763,6 @@ struct AgentSessionState {
     turn_index: u64,
     message_replacements: Vec<(AgentMessage, AgentMessage)>,
     retry_attempt: u32,
-    retry_wait: Option<crate::retry_wait::RetryWait>,
     /// senpi `_modelConfigErrors`: one `model_config_error` warning per model and session (senpi#4282).
     model_config_errors: crate::retry_fallback::model_config_error::ModelConfigErrorReporter,
     retry_abort_controller: Option<maho_ai::utils::abort::AbortController>,
@@ -1136,6 +1135,7 @@ pub struct AgentSessionInner {
     /// senpi agent_end `failure`: the structured provider failure of the last agent_end, naming the selected
     /// model when the failing request ran on another one (senpi#4328). `None` after a success or an abort.
     last_provider_failure: Mutex<Option<crate::provider_failure::ProviderFailure>>,
+    retry_wait: Mutex<Option<crate::retry_wait::RetryWait>>,
     lifecycle_goal: Mutex<Option<Value>>,
     lifecycle_turn_facts: Mutex<Option<Value>>,
     /// senpi `RunStopFacts` of the run whose agent_end was bound, and the run restored from disk, which keeps exactly
@@ -4693,7 +4693,6 @@ impl AgentSession {
             turn_index: 0,
             message_replacements: Vec::new(),
             retry_attempt: 0,
-            retry_wait: None,
             model_config_errors: Default::default(),
             retry_abort_controller: None,
             user_aborted: false,
@@ -4783,6 +4782,7 @@ impl AgentSession {
                 continued_start: std::sync::atomic::AtomicBool::new(false),
                 lifecycle_disposed: std::sync::atomic::AtomicBool::new(false),
                 last_provider_failure: Mutex::new(None),
+                retry_wait: Mutex::new(None),
                 lifecycle_goal: Mutex::new(None),
                 lifecycle_turn_facts: Mutex::new(None),
                 lifecycle_stop_facts: Mutex::new((None, restored_run_id)),
@@ -9587,7 +9587,7 @@ impl AgentSession {
     }
 
     pub fn retry_wait(&self) -> Option<crate::retry_wait::RetryWait> {
-        self.state().retry_wait.clone()
+        lock(&self.inner.retry_wait).clone()
     }
 
     /// senpi `currentAbortSource`: the abort owner for the current turn boundary, used by renderers.
@@ -20505,12 +20505,14 @@ impl AgentSession {
 
     /// Emit an event to all listeners.
     pub fn emit(&self, event: AgentSessionEvent) {
-        let next_wait = crate::retry_wait::next_retry_wait(
-            self.state().retry_wait.clone(),
-            &event,
-            maho_ai::utils::diagnostics::now_ms(),
-        );
-        self.state().retry_wait = next_wait;
+        {
+            let mut wait = lock(&self.inner.retry_wait);
+            *wait = crate::retry_wait::next_retry_wait(
+                wait.clone(),
+                &event,
+                maho_ai::utils::diagnostics::now_ms(),
+            );
+        }
         let carrier = match &event {
             AgentSessionEvent::Agent(event) => self.observe_recovery(event),
             _ => None,
