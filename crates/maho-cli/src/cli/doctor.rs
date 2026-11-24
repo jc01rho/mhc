@@ -137,6 +137,38 @@ fn trust_lines(cwd: &Path, env: &BTreeMap<String, String>, agent_dir: &str) -> V
     }
 }
 
+fn ast_grep_lines() -> Vec<String> {
+    // Use the MCP server's resolver so doctor reports the binary ast-grep tools will use.
+    match omo_utils::ast_grep::resolve_sg_binary_sync(
+        &omo_utils::ast_grep::SgResolverOptions::default(),
+    ) {
+        omo_utils::ast_grep::SgResolution::Found { path, tier } => {
+            let layer = match tier {
+                omo_utils::ast_grep::SgResolutionTier::EnvOverride => "environment override",
+                omo_utils::ast_grep::SgResolutionTier::OmoRuntime => "OMO runtime",
+                omo_utils::ast_grep::SgResolutionTier::SkillBin => "skill bin",
+                omo_utils::ast_grep::SgResolutionTier::Path => "PATH",
+                omo_utils::ast_grep::SgResolutionTier::Homebrew => "Homebrew",
+            };
+            vec![format!("PASS ast-grep: {path} (found via {layer})")]
+        }
+        omo_utils::ast_grep::SgResolution::NotFound { error } => {
+            // Missing ast-grep only disables its tools; it does not prevent the session working.
+            let mut lines = vec![
+                "WARN ast-grep: binary unavailable; install ast-grep or configure OMO_AST_GREP_SG_PATH"
+                    .to_owned(),
+            ];
+            lines.extend(
+                error
+                    .hints
+                    .into_iter()
+                    .map(|hint| format!("  ast-grep hint: {hint}")),
+            );
+            lines
+        }
+    }
+}
+
 fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
     struct Registry(Vec<serde_json::Value>);
     impl senpi_task::host::SenpiModelRegistry for Registry {
@@ -316,6 +348,7 @@ pub fn doctor_lines(cwd: &Path, env: &BTreeMap<String, String>, agent_dir: &str)
     lines.extend(trust_lines(cwd, env, agent_dir));
     lines.extend(category_lines(&loaded.config, agent_dir));
     lines.extend(doctor_memory_runtime_lines(cwd, env, &loaded.config));
+    lines.extend(ast_grep_lines());
     lines
 }
 

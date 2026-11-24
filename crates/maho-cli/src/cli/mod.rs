@@ -3,6 +3,8 @@
 // compiles them out. See docs/MIT-PROFILE.md.
 pub mod agent_dir_command;
 pub mod args;
+#[cfg(feature = "omo")]
+pub mod ast_grep_provision;
 pub mod attach_args;
 pub mod attach_run;
 pub mod auth_check;
