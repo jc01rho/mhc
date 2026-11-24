@@ -28,7 +28,7 @@ tokio = { version = "=1.52.3", features = ["macros", "rt", "net", "io-util"] }
 tempfile = "=3.27.0"
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
 tokio-rustls = "=0.26.4"
-rustls = { version = "=0.23.45", default-features = false, features = ["ring"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring"] }
 rustls-pki-types = "=1.14.0"
 
 [lints]
