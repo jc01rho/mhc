@@ -1156,8 +1156,8 @@ async fn stream_assistant_response(
                     }
                     AssistantRecord::Event(event) => event,
                 };
-                let event = captured.value.clone();
-                let terminal = match &event {
+                let event = &captured.value;
+                let terminal = match event {
                     AssistantMessageEvent::Done { .. } => Some(TerminalAssistantMessageEvent::Done),
                     AssistantMessageEvent::Error { reason, .. } => {
                         Some(TerminalAssistantMessageEvent::Error {
@@ -1177,7 +1177,7 @@ async fn stream_assistant_response(
                     finalized = Some((final_message, captured));
                     break;
                 }
-                match &event {
+                match event {
                     AssistantMessageEvent::Start { partial } => {
                         response_timing.started();
                         context.messages.push(assistant_event(partial));
@@ -1236,7 +1236,7 @@ async fn stream_assistant_response(
                         ..
                     } => {
                         if added_partial {
-                            response_timing.observe(&event);
+                            response_timing.observe(event);
                             let mut updated = partial.clone();
                             if let Some(timing) = thinking_timing.get(content_index) {
                                 set_thinking_block_timing(
@@ -1291,7 +1291,7 @@ async fn stream_assistant_response(
                     | AssistantMessageEvent::ToolcallDelta { partial, .. }
                     | AssistantMessageEvent::ToolcallEnd { partial, .. } => {
                         if added_partial {
-                            response_timing.observe(&event);
+                            response_timing.observe(event);
                             emit_message_update(
                                 emit,
                                 captured_sink,
