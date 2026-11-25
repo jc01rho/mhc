@@ -61,6 +61,8 @@ mod parser_diagnostics;
 mod print_runner;
 #[path = "prompt_hooks.rs"]
 mod prompt_hooks;
+#[path = "read_rpc_diagnostic.rs"]
+mod read_rpc_diagnostic;
 #[path = "reaper_timer.rs"]
 mod reaper_timer;
 #[path = "registry_admission.rs"]
@@ -89,6 +91,12 @@ mod session_state_wire;
 mod session_writer_drain;
 #[path = "socket_actor.rs"]
 mod socket_actor;
+#[path = "socket_client_edge_cases.rs"]
+mod socket_client_edge_cases;
+#[path = "socket_client_redial.rs"]
+mod socket_client_redial;
+#[path = "socket_client_world.rs"]
+mod socket_client_world;
 #[path = "socket_identity_wait.rs"]
 mod socket_identity_wait;
 #[path = "successor_launch.rs"]
