@@ -404,7 +404,7 @@ impl GatewayStoreApi for SqliteGatewayStore {
     }
 
     fn journal_mode(&self) -> Result<String, StoreError> {
-        self.checked(|ctx| super::store_ops::journal_mode(ctx))
+        self.checked(super::store_ops::journal_mode)
     }
 
     fn stats(&self) -> GatewayStoreStats {
