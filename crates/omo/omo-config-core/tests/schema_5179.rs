@@ -144,10 +144,10 @@ fn device_service_is_accepted_in_harness_blocks_and_profiles_and_rejects_strays(
 #[test]
 fn category_drops_a_retired_provider_lock() {
     for value in [true, false] {
-        let input = json!({ "model": "openai/gpt-6-astra", "provider_lock": value });
+        let input = json!({ "model": "openai/gpt-6.2-astra", "provider_lock": value });
         assert_eq!(
             parsed(&omo_category_config_schema(), input),
-            json!({ "model": "openai/gpt-6-astra" })
+            json!({ "model": "openai/gpt-6.2-astra" })
         );
     }
 }

@@ -15,6 +15,8 @@ mod models_distribution;
 mod schema;
 #[path = "schema_5179.rs"]
 mod schema_5179;
+#[path = "schema_5183.rs"]
+mod schema_5183;
 #[path = "schema_json.rs"]
 mod schema_json;
 #[path = "writer.rs"]

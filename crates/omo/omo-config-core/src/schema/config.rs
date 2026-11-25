@@ -15,10 +15,12 @@ use crate::schema::format_on_mutation::{
 use crate::schema::git_master::{
     omo_git_master_settings_layer_schema, omo_git_master_settings_schema,
 };
+use crate::schema::keyword_detector::omo_keyword_detector_settings_schema;
 use crate::schema::memory::{omo_memory_settings_layer_schema, omo_memory_settings_schema};
 use crate::schema::model_catalog::{omo_model_catalog_layer_schema, omo_model_catalog_schema};
 use crate::schema::model_pad::omo_model_pad_schema;
 use crate::schema::model_profile::{omo_model_profiles_layer_schema, omo_model_profiles_schema};
+use crate::schema::operator_alerts::omo_operator_alerts_settings_schema;
 use crate::schema::provenance::omo_provenance_settings_schema;
 use crate::schema::session_wake::omo_session_wake_settings_schema;
 use crate::schema::side_panel::{
@@ -60,6 +62,7 @@ pub fn omo_typed_harness_config_schema() -> Node {
     strict_object(vec![
         optional("provenance", omo_provenance_settings_schema()),
         optional("session_wake", omo_session_wake_settings_schema()),
+        optional("operator_alerts", omo_operator_alerts_settings_schema()),
         optional("side_panel", omo_side_panel_settings_layer_schema()),
         optional("formatOnMutation", omo_format_on_mutation_layer_schema()),
         optional("categories", omo_categories_config_schema()),
@@ -76,6 +79,7 @@ pub fn omo_typed_harness_config_schema() -> Node {
         optional("device_service", omo_device_service_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("keyword_detector", omo_keyword_detector_settings_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
         optional("model_policy", omo_model_policy_schema()),
     ])
@@ -85,6 +89,7 @@ pub fn omo_config_profile_schema() -> Node {
     strict_object(vec![
         optional("provenance", omo_provenance_settings_schema()),
         optional("session_wake", omo_session_wake_settings_schema()),
+        optional("operator_alerts", omo_operator_alerts_settings_schema()),
         optional("side_panel", omo_side_panel_settings_layer_schema()),
         optional("formatOnMutation", omo_format_on_mutation_layer_schema()),
         optional("categories", omo_categories_config_schema()),
@@ -101,6 +106,7 @@ pub fn omo_config_profile_schema() -> Node {
         optional("device_service", omo_device_service_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("keyword_detector", omo_keyword_detector_settings_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
         optional("model_policy", omo_model_policy_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
@@ -114,6 +120,7 @@ pub fn omo_config_schema() -> Node {
     strict_object(vec![
         optional("provenance", omo_provenance_settings_schema()),
         optional("session_wake", omo_session_wake_settings_schema()),
+        optional("operator_alerts", omo_operator_alerts_settings_schema()),
         optional("side_panel", omo_side_panel_settings_schema()),
         optional("formatOnMutation", omo_format_on_mutation_schema()),
         optional("$schema", string()),
@@ -131,6 +138,7 @@ pub fn omo_config_schema() -> Node {
         optional("device_service", omo_device_service_settings_schema()),
         optional("computer", omo_computer_settings_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("keyword_detector", omo_keyword_detector_settings_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
         optional("model_policy", omo_model_policy_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
@@ -151,6 +159,7 @@ pub fn omo_config_layer_schema() -> Node {
     strict_object(vec![
         optional("provenance", omo_provenance_settings_schema()),
         optional("session_wake", omo_session_wake_settings_schema()),
+        optional("operator_alerts", omo_operator_alerts_settings_schema()),
         optional("side_panel", omo_side_panel_settings_layer_schema()),
         optional("formatOnMutation", omo_format_on_mutation_layer_schema()),
         optional("$schema", string()),
@@ -168,6 +177,7 @@ pub fn omo_config_layer_schema() -> Node {
         optional("device_service", omo_device_service_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("keyword_detector", omo_keyword_detector_settings_schema()),
         optional("exclude_models", omo_excluded_models_schema()),
         optional("model_policy", omo_model_policy_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
