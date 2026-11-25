@@ -190,6 +190,12 @@ impl GatedManager {
         self.client(index) as SharedClient
     }
 
+    pub fn open_all_stops(&self) {
+        for client in self.clients.lock().expect("gated clients").iter() {
+            client.stopped.resolve();
+        }
+    }
+
     pub fn client_total(&self) -> usize {
         self.clients.lock().expect("gated clients").len()
     }

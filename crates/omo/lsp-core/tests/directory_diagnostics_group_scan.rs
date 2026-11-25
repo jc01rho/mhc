@@ -793,7 +793,7 @@ async fn given_many_groups_when_the_scan_is_aborted_while_files_are_being_checke
     .await;
 
     // then
-    let error = outcome.err().expect("the scan rethrows the abort");
+    let error = outcome.expect_err("the scan rethrows the abort");
     assert!(matches!(error, LspError::Aborted), "{error}");
     assert_eq!(error.name(), "AbortError");
     assert!(checked.load(Ordering::SeqCst) < 20);

@@ -103,7 +103,8 @@ async fn given_a_start_the_init_timeout_reaper_stopped_while_its_stop_is_pending
     assert!(second.running());
     assert_eq!(gated.pool(), vec![entry("/root", 1, 0, false)]);
     manager.release_client("/root", &server, Some(&got));
-    manager.stop_all().await;
+    gated.open_all_stops();
+    within(manager.stop_all(), "stopAll never finished").await;
 }
 
 #[tokio::test]
