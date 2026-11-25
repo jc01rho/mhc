@@ -239,16 +239,20 @@ pub fn operator_socket(agent_dir: &Path) -> PathBuf {
 
 /// Whether this machine's engine host is running (omo#14456). It does not read that engine's memory
 /// sync state: the engine answers it only inside a session, and reaching one from here would attach
-/// to (and so resume and re-park) a session another surface owns. The probe connects and closes
-/// without sending a request, which neither authenticates nor attaches.
-pub fn read_engine_sync_status(agent_dir: &Path) -> EngineSyncRead {
-    probe_socket(&operator_socket(agent_dir))
+/// to (and so resume and re-park) a session another surface owns. The probe is maho-rpc's shared
+/// `probe_socket`, the host liveness probe (omo 1f7a72d214): it connects and closes without sending
+/// a request, which neither authenticates nor attaches.
+pub async fn read_engine_sync_status(agent_dir: &Path) -> EngineSyncRead {
+    probe_socket(&operator_socket(agent_dir)).await
 }
 
 #[cfg(unix)]
-fn probe_socket(socket: &Path) -> EngineSyncRead {
+const ENGINE_PROBE_TIMEOUT_MS: u64 = 2_000;
+
+#[cfg(unix)]
+async fn probe_socket(socket: &Path) -> EngineSyncRead {
+    use maho_rpc::host_probe::SocketProbe;
     use std::os::unix::fs::FileTypeExt;
-    use std::os::unix::net::UnixStream;
     match std::fs::symlink_metadata(socket) {
         Ok(metadata) if !metadata.file_type().is_socket() => return EngineSyncRead::NoEngine,
         Ok(_) => {}
@@ -257,22 +261,19 @@ fn probe_socket(socket: &Path) -> EngineSyncRead {
         }
         Err(error) => return EngineSyncRead::Unreadable(error.to_string()),
     }
-    match UnixStream::connect(socket) {
-        Ok(stream) => {
-            drop(stream);
-            EngineSyncRead::Running
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-            EngineSyncRead::NoEngine
-        }
-        Err(error) => {
-            EngineSyncRead::Unreadable(format!("the engine host could not be checked: {error}"))
+    match maho_rpc::host_probe::probe_socket(&socket.to_string_lossy(), ENGINE_PROBE_TIMEOUT_MS)
+        .await
+    {
+        SocketProbe::Accepts => EngineSyncRead::Running,
+        SocketProbe::Refused => EngineSyncRead::NoEngine,
+        SocketProbe::Unknown { reason } => {
+            EngineSyncRead::Unreadable(format!("the engine host could not be checked: {reason}"))
         }
     }
 }
 
 #[cfg(not(unix))]
-fn probe_socket(_socket: &Path) -> EngineSyncRead {
+async fn probe_socket(_socket: &Path) -> EngineSyncRead {
     EngineSyncRead::Unreadable("the operator endpoint is not a socket here".to_owned())
 }
 
@@ -360,7 +361,7 @@ pub async fn collect_sync_status(ctx: &RemoteContext) -> SyncStatusReport {
     let device = read_device(&pin_dir, &account);
     let devices = read_devices(ctx).await;
     let pending = read_pending();
-    let engine = read_engine_sync_status(&ctx.agent_dir);
+    let engine = read_engine_sync_status(&ctx.agent_dir).await;
     SyncStatusReport {
         account,
         device_id,
@@ -568,8 +569,8 @@ mod tests {
     /// A leftover regular file at the operator socket path is no engine, and a live listener is
     /// `running`; the probe sends nothing, so the listener receives no bytes.
     #[cfg(unix)]
-    #[test]
-    fn the_operator_socket_decides_no_engine_running_or_unreadable() {
+    #[tokio::test]
+    async fn the_operator_socket_decides_no_engine_running_or_unreadable() {
         use std::io::Read;
         use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::UnixListener;
@@ -577,9 +578,15 @@ mod tests {
         let agent = directory.path().join("agent");
         std::fs::create_dir_all(agent.join("rpc")).expect("rpc dir");
         let socket = agent.join("rpc/rpc.sock");
-        assert_eq!(read_engine_sync_status(&agent), EngineSyncRead::NoEngine);
+        assert_eq!(
+            read_engine_sync_status(&agent).await,
+            EngineSyncRead::NoEngine
+        );
         std::fs::write(&socket, b"").expect("stale file");
-        assert_eq!(read_engine_sync_status(&agent), EngineSyncRead::NoEngine);
+        assert_eq!(
+            read_engine_sync_status(&agent).await,
+            EngineSyncRead::NoEngine
+        );
         std::fs::remove_file(&socket).expect("remove stale file");
         let listener = UnixListener::bind(&socket).expect("listener");
         let received = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -590,7 +597,10 @@ mod tests {
             let read = stream.read(&mut buffer).unwrap_or(0);
             counter.fetch_add(read, std::sync::atomic::Ordering::SeqCst);
         });
-        assert_eq!(read_engine_sync_status(&agent), EngineSyncRead::Running);
+        assert_eq!(
+            read_engine_sync_status(&agent).await,
+            EngineSyncRead::Running
+        );
         accepted.join().expect("listener thread");
         assert_eq!(
             received.load(std::sync::atomic::Ordering::SeqCst),
@@ -608,7 +618,7 @@ mod tests {
             let mut permissions = std::fs::metadata(&hidden).expect("metadata").permissions();
             permissions.set_mode(0o000);
             std::fs::set_permissions(&hidden, permissions).expect("mode");
-            let status = probe_socket(&hidden.join("engine.sock"));
+            let status = probe_socket(&hidden.join("engine.sock")).await;
             assert!(
                 matches!(status, EngineSyncRead::Unreadable(_)),
                 "an unreachable socket is unreadable, not {status:?}"

@@ -234,15 +234,48 @@ pub async fn probe_protocol_info_with_secret(
             .answer?,
     )
 }
+/// What a connect to a host socket found (omo `busy-host.ts` `SocketProbe`): a listener, nobody listening, or a
+/// failure that says neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocketProbe {
+    Accepts,
+    Refused,
+    Unknown { reason: String },
+}
+
+/// omo `probeSocket` (omo#14437): connects and closes without sending anything. The kernel completes a Unix socket
+/// connect from the listen backlog without the host's event loop, so a live host with a blocked loop still accepts,
+/// while a dead one is refused (refused, or no socket entry). A permission error or no answer in time is unknown,
+/// with the reason. `mhc sync status` reads its engine through this same probe.
+#[cfg(unix)]
+pub async fn probe_socket(socket_path: &str, timeout_ms: u64) -> SocketProbe {
+    let connect = tokio::net::UnixStream::connect(socket_path);
+    match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), connect).await {
+        Ok(Ok(_connection)) => SocketProbe::Accepts,
+        Ok(Err(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            SocketProbe::Refused
+        }
+        Ok(Err(error)) => SocketProbe::Unknown {
+            reason: error.to_string(),
+        },
+        Err(_elapsed) => {
+            let seconds = timeout_ms as f64 / 1000.0;
+            SocketProbe::Unknown {
+                reason: format!("no answer within {seconds}s"),
+            }
+        }
+    }
+}
+/// omo `socketAcceptsConnection`: whether something still accepts a connection on the host socket.
 pub async fn probe_socket_reachable(socket_path: &str, timeout_ms: u64) -> bool {
     #[cfg(unix)]
     {
-        return tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            tokio::net::UnixStream::connect(socket_path),
-        )
-        .await
-        .is_ok_and(|result| result.is_ok());
+        return probe_socket(socket_path, timeout_ms).await == SocketProbe::Accepts;
     }
     #[cfg(not(unix))]
     connect_and_ask(
@@ -623,5 +656,49 @@ mod tests {
     async fn absent_endpoint_is_not_reachable() {
         let temp = tempfile::tempdir().unwrap();
         assert!(!probe_socket_reachable(temp.path().join("missing").to_str().unwrap(), 1000).await);
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_live_listener_accepts() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("h.sock");
+        let _listener = tokio::net::UnixListener::bind(&path).unwrap();
+        assert_eq!(
+            probe_socket(path.to_str().unwrap(), 2_000).await,
+            SocketProbe::Accepts
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_socket_whose_host_died_and_a_missing_path_are_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("h.sock");
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        assert!(path.exists(), "the dead host left its socket entry behind");
+        assert_eq!(
+            probe_socket(path.to_str().unwrap(), 2_000).await,
+            SocketProbe::Refused
+        );
+        let missing = temp.path().join("h.sock.missing");
+        assert_eq!(
+            probe_socket(missing.to_str().unwrap(), 2_000).await,
+            SocketProbe::Refused
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_socket_this_user_may_not_open_is_unknown_with_the_reason() {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::getuid().is_root() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("h.sock");
+        let _listener = tokio::net::UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        match probe_socket(path.to_str().unwrap(), 2_000).await {
+            SocketProbe::Unknown { reason } => assert!(!reason.is_empty()),
+            other => panic!("a denied socket is neither accepts nor refused, got {other:?}"),
+        }
     }
 }
