@@ -8,10 +8,10 @@ mhc counterpart: `crates/omo/components/maho-omo-gateway/src/thread/`.
 
 | verdict | rows |
 |---|---:|
-| port | 9 |
+| port | 10 |
 | ported | 3 |
 | n/a | 6 |
-| gap | 17 |
+| gap | 16 |
 | total | 35 |
 
 One row per upstream PR, or per commit group where a change carries no PR number; a PR whose slice is partly portable
@@ -41,7 +41,7 @@ written with an older schema.
 | omo PR | verdict | mhc location or reason |
 |---|---|---|
 | #14622 review M4, M5, M7 (27731e71d4, 3d29c8e416) | port | Every store op runs inside the read snapshot its schema check opens and every write lock re-checks the schema before anything is written: `store_ops.rs` `in_checked_snapshot`, `end_read_snapshot`, `begin_immediate` (locked check), `SqlAccess::run`; `store.rs` `SqliteGatewayStore::checked` wraps every connection op. A store another binary migrated past this one since it opened answers `gateway_schema_too_new` and is never written. The reader-floor half of these commits is the #14382 gap. Tests: `store_ops.rs` `a_write_lock_on_a_store_another_binary_migrated_is_refused_and_released`, `an_op_reads_inside_the_snapshot_its_schema_check_opened`; `tests/gateway_store_tests.rs` `a_store_another_binary_migrated_since_it_opened_refuses_every_op_and_writes_nothing`. |
-| #14622 review M9, round 3 (98657b14a4, 30b3a2efd6, 5546223cc6, f7bca224a0) | gap | The source-build guard keys on the agent-home dev-build runtime (`isDevBuildRuntime`, `isSharedAgentDir`, `isSharedStoreFile`, account-home detection in `components/agent-home`, misc-core's path), which mhc does not have. mhc's own migrations stop at v10, so no mhc build moves a shared store past a released schema today. The floor edge cases follow #14382; f7bca224a0 pins a TS worker bundle. |
+| #14622 review M9, round 3 (98657b14a4, 30b3a2efd6, 5546223cc6, f7bca224a0) | port | The source-build guard is ported: `maho-omo-agent-home` `is_dev_build_runtime`, `is_shared_agent_dir`, `is_shared_store_file` and the account-home detection (`account_home.rs`, `dev_build_runtime.rs`), wired into `store_ops.rs` `migrate_guarded` (refuses before any pending step when the agent dir, its `gateway/`, its `gateway.sqlite`, or the file `SQLite` actually opened is one a released session shares). mhc's own migrations stop at v10, so today the guard protects a store an omob source build would otherwise move; the floor edge cases that follow #14382 stay a gap with that row. `f7bca224a0` pins a TS worker bundle (n/a). |
 | #14842 (713d705656) | n/a | TS test of the pinned v14 worker bundle (`testing/v14`); no Rust counterpart. |
 | #14831 (94c544a861) | n/a | TS source-build guard test opening a refused WAL store on macOS; follows the #14622 M9 gap. |
 | #14382 (5036654c32, 7e666c8c1e, 50c3da8323, 63133463e9, 9d13dad6e2, 84a952da4a) | gap | The reader floor lets a binary keep a store that later reader-compatible steps (v15, v16) reached. It needs gateway schema v11-v14 (#13014 `wait_kind`, #13037 intake ledger, woken sessions, session waits): mhc's store stops at v10, so every newer store carries a floor of at least 11 and stays refused. Writing mhc's own floor (equal to its version) could be left stale by a pre-floor omo (v5.1.79 or older) migrating the shared `gateway.sqlite` to v14, and reading it would then admit a store this binary cannot read, so mhc neither writes nor reads the floor until it reaches v14. |

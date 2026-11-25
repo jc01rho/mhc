@@ -7,9 +7,9 @@ Upstream paths: `packages/omo-config-core`, `packages/model-core`, `packages/get
 
 | verdict | count |
 |---|---:|
-| port | 8 |
+| port | 10 |
 | ported | 1 |
-| gap | 2 |
+| gap | 0 |
 | n/a | 2 |
 | **total** | **13** |
 
@@ -26,7 +26,7 @@ Upstream paths: `packages/omo-config-core`, `packages/model-core`, `packages/get
 | `70d3e049d9` (no PR) | port | `crates/omo/components/maho-omo-claim-receipt/tests/invocations.rs` (`mengmota` -> `studio-mac`; `crates/omo/model-core/src/context_overflow.rs` already uses the neutral senpi repository header comment) |
 | `ca7e2139e3` (no PR) | port | `crates/omo/components/maho-omo-telemetry/src/product_identity.rs` (`BUILTIN_SKILL_NAMES` adds `"omo-relay"`, propagated into `event_schemas.rs` `omo_native_event_schemas()`) |
 | #14344 (`edd8d0734e`, `1baf721b91`) | ported | `crates/omo/get-worker/assets/install.sh` (`refuse_sudo_install`) and `crates/omo/get-worker/tests/parity/install_sh_root_guard.rs` (8 tests, registered in `tests/parity/main.rs`) |
-| #14622 (`5ad49782d7`, `0c56060059`, `27731e71d4`, `3d29c8e416`, `5546223cc6`, `30b3a2efd6`, `98657b14a4`; reviews M2-M9, round 3) | gap | Source-build guard (`isDevBuildRuntime`, `isSharedAgentDir`, `isSharedStoreFile`) and `@oh-my-opencode/omo-opencode/account-home` OS user-record reader (`userRecordHome`) require the `omob` `OMO_PACKAGE_DIR`/`omoBuild` dev-build runtime and gateway schema v11-v14 reader floor (`#14382`), which `mhc` lacks (`maho-omo-agent-home` holds only `resolve_agent_home` and `install_plugin_artifacts`; `mhc` has no `omo-opencode` crate; `maho-omo-gateway` already ported the snapshot/write-lock schema re-check in PR #70) |
-| #14382 (`5036654c32`) | gap | Creates `agent-home/dev-build-runtime.ts` and moves `isDevBuildRuntime` out of `native-badge/footer-badge.ts` for the gateway store reader floor; `mhc` lacks the `native-badge` component, the `omob` `OMO_PACKAGE_DIR` dev-build launcher payload, and gateway schema v11-v14 (`docs/omo-sync/v5.1.83/thread-gateway.md`) |
+| #14622 (`5ad49782d7`, `0c56060059`, `27731e71d4`, `3d29c8e416`, `5546223cc6`, `30b3a2efd6`, `98657b14a4`; reviews M2-M9, round 3) | port | `crates/omo/components/maho-omo-agent-home/src/account_home.rs` (`PlatformFacts`, `user_record_home`: passwd by uid on Linux, `id -P` on macOS, System32 `whoami.exe`/`reg.exe` profile path on Windows, `None` when unreadable) and `src/dev_build_runtime.rs` (`is_dev_build_runtime`, `account_homes`, `is_shared_agent_dir`, `is_shared_store_file`: every account home counts, device+inode identity, dangling links resolved, case folded on macOS/Windows, unknown homes fail closed). Consumed by `maho-omo-gateway/src/thread/store_ops.rs` (`migrate_guarded`, `source_build_migration_refusal`, `StoreError::Migration`, code `gateway_migration_failed`). Unit tests live beside both modules; the gateway cases are in `store_ops.rs`. Differences: the dev-build marker is still the omob `OMO_PACKAGE_DIR` payload stamp (no mhc binary sets it, so the guard only fires for an omob-launched runtime sharing the store); child tools run without upstream's 5 s timeout and Windows `windowsHide`; Bun's `homedir()` quirk has no Rust counterpart. |
+| #14382 (`5036654c32`) | port | `crates/omo/components/maho-omo-agent-home/src/dev_build_runtime.rs` (`is_dev_build_runtime` moved out of the native badge into agent-home, as upstream did), consumed by the gateway migrate guard (see #14622 above). The `native-badge` caller is n/a (mhc has no such component). The reader floor itself, which needs gateway schema v11-v14, stays a gap in `thread-gateway.md`. |
 | `5b9d744f37`, `b812183af3` (no PR) | n/a | TS Bun tests wiring `createDefaultPostHogTransport` against `Bun.serve` to assert `flushAt === 20` isolation from the `flushAt === 1` legacy ping; `crates/omo/components/maho-omo-telemetry/src/omo_native_summary_wiring.rs` tests `NativeCaptureState::publish` via in-memory `CaptureFn` closures without constructing `PostHogTelemetryTransport` |
 | `041a683066` (no PR) | n/a | TS Bun `beforeEach`/`afterEach` shared `TEST_DIR` cleanup fix in `claude-code-mcp-loader/loader.test.ts`; Rust tests in `crates/omo/claude-code-compat-core/src/features/claude_code_mcp_loader/loader.rs` already isolate every test with `tempfile::tempdir()` |
