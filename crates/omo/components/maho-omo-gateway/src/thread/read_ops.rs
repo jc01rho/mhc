@@ -14,28 +14,41 @@ use super::address_book::{
     DiskSession, find_disk_sessions, scan_disk_sessions, session_directory_prefix,
 };
 use super::addressing::{to_thread_address_entries, workspace_directories, workspace_entries};
+use super::backlog::TargetBacklog;
 use super::contracts_results::{
-    ThreadListOk, ThreadReadOk, ThreadStatus, ThreadTranscriptItem, thread_link,
+    ThreadBacklog, ThreadListOk, ThreadReadOk, ThreadResultSummary, ThreadStatus,
+    ThreadTranscriptItem, thread_link,
 };
 use super::contracts_state::ThreadState;
 use super::control::locate::{LocatedControl, ThreadCall, book_of, locate_control};
 use super::control::operations::{error_json, ok_json};
 use super::control::port::{ControlResult, control_identity};
 use super::errors::thread_tool_failure;
+use super::host_view::ThreadHostView;
+use super::read_item::read_item;
 use super::reader::{ReadSource, read_transcript};
+use super::store_api::GatewayStoreApi;
+use super::store_ops::rfc3339;
 use super::thread_row::{degraded_row, live_row};
 use super::thread_state::listed_states;
 
-/// The most session files one list reads, newest first; older inactive threads are left out (`inactive_truncated`).
+/// The most session files one list reads, newest first; older inactive threads are left out and counted instead.
 pub const LIST_DISK_LIMIT: usize = 200;
 
-/// The session files in the caller's workspace directories (every directory with `all_scope`), newest first, and
-/// whether more were there than one list reads.
+/// The session files one listing read, and the durable ids of the files in scope it did not read (a session file is
+/// named `<creation time>_<id>.jsonl`, so the id is known without reading it).
+pub struct ScannedSessions {
+    pub sessions: Vec<DiskSession>,
+    pub unread: Vec<String>,
+}
+
+/// The session files in the caller's workspace directories (every directory with `all_scope`), newest first, and the
+/// ids of those past what one list reads.
 pub fn scan_listed_sessions(
     sessions_directory: &Path,
     all_scope: bool,
     caller_workspace_root: &str,
-) -> (Vec<DiskSession>, bool) {
+) -> ScannedSessions {
     let prefixes: Vec<String> = workspace_directories(caller_workspace_root)
         .iter()
         .map(|root| session_directory_prefix(root.as_str()))
@@ -56,28 +69,34 @@ pub fn scan_listed_sessions(
         .into_iter()
         .filter(in_scope)
         .collect();
-    let truncated = sessions.len() > LIST_DISK_LIMIT;
+    let unread = sessions
+        .get(LIST_DISK_LIMIT..)
+        .map(|rest| {
+            rest.iter()
+                .map(|session| session.durable_id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     sessions.truncate(LIST_DISK_LIMIT);
-    (sessions, truncated)
+    ScannedSessions { sessions, unread }
 }
 
 /// `thread_list`: the live sessions in scope with their listing facts, then the inactive threads the book holds, in
 /// the address book's order (newest first), filtered by `states` (every state but `archived` by default).
 pub fn list_threads(
-    call: &ThreadCall,
-    scanned: &[DiskSession],
-    truncated: bool,
+    view: &ThreadHostView,
+    now: &str,
+    caller_workspace_root: &str,
+    scanned: &ScannedSessions,
     all_scope: bool,
     states: Option<&[ThreadState]>,
-) -> Value {
-    let book = book_of(&call.view, scanned, &call.now);
-    let scoped: BTreeSet<String> = workspace_entries(
-        &to_thread_address_entries(&book),
-        &call.caller_workspace_root,
-    )
-    .into_iter()
-    .map(|entry| entry.thread_id)
-    .collect();
+) -> ThreadListOk {
+    let book = book_of(view, &scanned.sessions, now);
+    let scoped: BTreeSet<String> =
+        workspace_entries(&to_thread_address_entries(&book), caller_workspace_root)
+            .into_iter()
+            .map(|entry| entry.thread_id)
+            .collect();
     let in_scope = |thread_id: &str| all_scope || scoped.contains(thread_id);
     let order: BTreeMap<&str, usize> = book
         .iter()
@@ -85,12 +104,13 @@ pub fn list_threads(
         .map(|(index, entry)| (entry.thread_id.as_str(), index))
         .collect();
     let scanned_ids: BTreeSet<&str> = scanned
+        .sessions
         .iter()
         .map(|session| session.durable_id.as_str())
         .collect();
-    let mut rows: Vec<(usize, super::contracts_results::ThreadResultSummary)> = Vec::new();
+    let mut rows: Vec<(usize, ThreadResultSummary)> = Vec::new();
     let mut listed: BTreeSet<&str> = BTreeSet::new();
-    for session in &call.view.sessions {
+    for session in &view.sessions {
         let thread_id = session.thread_id();
         if !in_scope(thread_id) {
             continue;
@@ -105,7 +125,7 @@ pub fn list_threads(
         });
         rows.push((
             order.get(thread_id).copied().unwrap_or(usize::MAX),
-            live_row(session, entry, &call.now),
+            live_row(session, entry, now),
         ));
     }
     for entry in &book {
@@ -124,10 +144,82 @@ pub fn list_threads(
     let shown = listed_states(states);
     rows.retain(|(_, row)| shown.contains(&row.state));
     rows.sort_by_key(|(index, _)| *index);
-    ok_json(&ThreadListOk {
-        threads: rows.into_iter().map(|(_, row)| row).collect(),
+    let threads: Vec<ThreadResultSummary> = rows.into_iter().map(|(_, row)| row).collect();
+    let row_ids: BTreeSet<&str> = threads.iter().map(|row| row.thread.as_str()).collect();
+    // An unread file's thread is inactive or archived (only its file knows which), so a filter showing either is
+    // partial: how many of those threads this listing dropped.
+    let dropped =
+        if shown.contains(&ThreadState::Inactive) || shown.contains(&ThreadState::Archived) {
+            scanned
+                .unread
+                .iter()
+                .filter(|id| !listed.contains(id.as_str()) && !row_ids.contains(id.as_str()))
+                .count()
+        } else {
+            0
+        };
+    // An endpoint that did not answer (timed out, an auth or protocol failure) may hold threads this listing reads from
+    // their files as inactive; one known dead (its socket gone or refusing) holds none, so only the former makes the
+    // listing partial.
+    let unanswered = view
+        .hosts
+        .iter()
+        .filter(|host| {
+            let failed = host
+                .list_sessions
+                .as_ref()
+                .is_some_and(|listing| listing.error.is_some());
+            (failed || host.alive == Some(false)) && host.reason.as_deref() != Some("dead")
+        })
+        .count();
+    let dropped = i64::try_from(dropped).unwrap_or(i64::MAX);
+    let unanswered = i64::try_from(unanswered).unwrap_or(i64::MAX);
+    ThreadListOk {
+        threads,
         scope: if all_scope { "all" } else { "workspace" }.to_owned(),
-        inactive_truncated: truncated.then_some(true),
+        inactive_truncated: (dropped > 0).then_some(true),
+        inactive_dropped: (dropped > 0).then_some(dropped),
+        listing: (unanswered > 0).then(|| "incomplete".to_owned()),
+        unanswered_endpoints: (unanswered > 0).then_some(unanswered),
+        backlog_error: None,
+    }
+}
+
+/// Names each listed thread's undelivered messages from this device's gateway store: how many, where, since when. The
+/// backlog is an optional detail, so a store that cannot be read (a newer schema, a worker that failed to start) never
+/// costs the listing, which is how a stuck gateway is diagnosed: the listing names why the backlog is missing.
+pub fn with_backlog(store: &dyn GatewayStoreApi, mut listed: ThreadListOk) -> ThreadListOk {
+    if listed.threads.is_empty() {
+        return listed;
+    }
+    let targets: Vec<String> = listed
+        .threads
+        .iter()
+        .map(|thread| thread.thread.clone())
+        .collect();
+    let backlogs = match store.backlogs(&targets) {
+        Ok(backlogs) => backlogs,
+        Err(error) => {
+            listed.backlog_error = Some(error.message());
+            return listed;
+        }
+    };
+    for thread in &mut listed.threads {
+        let Some(found) = backlogs.get(&thread.thread) else {
+            continue;
+        };
+        thread.backlog = backlog_of(found);
+    }
+    listed
+}
+
+/// One thread's backlog as a listing row shows it; a thread holding nothing (or nothing with a time) shows none.
+fn backlog_of(found: &TargetBacklog) -> Option<ThreadBacklog> {
+    Some(ThreadBacklog {
+        held: found.held,
+        held_by_session: found.held_by_session,
+        waiting_in_gateway: found.waiting_in_gateway,
+        oldest_at: rfc3339(found.oldest_at?),
     })
 }
 
@@ -145,12 +237,7 @@ fn items_of(messages: &[Value]) -> Vec<ThreadTranscriptItem> {
     messages
         .iter()
         .enumerate()
-        .map(|(index, message)| ThreadTranscriptItem {
-            seq: i64::try_from(index).map_or(i64::MAX, |index| index + 1),
-            role: transcript_role(message.get("role")).to_owned(),
-            content: serde_json::to_string(message.get("content").unwrap_or(message))
-                .unwrap_or_default(),
-        })
+        .map(|(index, message)| read_item(message, index))
         .collect()
 }
 
@@ -255,4 +342,128 @@ pub async fn read_thread(
         error_note: None,
         device,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::thread::address_book::{AddressBookHost, HostListSessions};
+    use crate::thread::host_view::{ThreadHostSession, ThreadHostView};
+    use crate::thread::types::GatewayEndpointKind;
+
+    fn session(id: &str) -> ThreadHostSession {
+        ThreadHostSession::from_listing(
+            &serde_json::json!({
+                "sessionId": id,
+                "durableSessionId": id,
+                "cwd": "/work/builder",
+                "status": "open",
+                "activity": "idle",
+            }),
+            "/run/i-1.sock",
+            GatewayEndpointKind::RpcHost,
+            &[],
+        )
+        .expect("session")
+    }
+
+    fn host(
+        listing: Option<HostListSessions>,
+        alive: Option<bool>,
+        reason: &str,
+    ) -> AddressBookHost {
+        AddressBookHost {
+            socket: "/run/i-1.sock".into(),
+            list_sessions: listing,
+            endpoint_kind: Some(GatewayEndpointKind::RpcHost),
+            alive,
+            reason: Some(reason.to_owned()),
+            legacy: false,
+        }
+    }
+
+    fn none() -> ScannedSessions {
+        ScannedSessions {
+            sessions: Vec::new(),
+            unread: Vec::new(),
+        }
+    }
+
+    const NOW: &str = "2026-11-02T00:00:00.000Z";
+    const ROOT: &str = "/work";
+
+    #[test]
+    fn an_unanswered_endpoint_makes_the_listing_incomplete_but_a_dead_one_does_not() {
+        let view = ThreadHostView {
+            sessions: vec![session("d-1")],
+            hosts: vec![host(
+                Some(HostListSessions::failed("timeout")),
+                None,
+                "timeout",
+            )],
+            disk: Vec::new(),
+        };
+        let ok = list_threads(&view, NOW, ROOT, &none(), false, None);
+        assert_eq!(ok.listing.as_deref(), Some("incomplete"));
+        assert_eq!(ok.unanswered_endpoints, Some(1));
+
+        let dead = ThreadHostView {
+            sessions: vec![session("d-1")],
+            hosts: vec![host(None, Some(false), "dead")],
+            disk: Vec::new(),
+        };
+        let ok = list_threads(&dead, NOW, ROOT, &none(), false, None);
+        assert_eq!(ok.listing, None);
+        assert_eq!(ok.unanswered_endpoints, None);
+    }
+
+    #[test]
+    fn unread_session_files_are_counted_only_when_the_filter_shows_inactive_or_archived() {
+        let view = ThreadHostView {
+            sessions: vec![session("d-1")],
+            hosts: vec![host(Some(HostListSessions::ok(Vec::new())), Some(true), "")],
+            disk: Vec::new(),
+        };
+        let scanned = ScannedSessions {
+            sessions: Vec::new(),
+            unread: vec!["d-2".into(), "d-3".into()],
+        };
+        let dropped = list_threads(
+            &view,
+            NOW,
+            ROOT,
+            &scanned,
+            false,
+            Some(&[ThreadState::Inactive]),
+        );
+        assert_eq!(dropped.inactive_dropped, Some(2));
+        assert_eq!(dropped.inactive_truncated, Some(true));
+        let listable = list_threads(
+            &view,
+            NOW,
+            ROOT,
+            &scanned,
+            false,
+            Some(&[ThreadState::Idle]),
+        );
+        assert_eq!(listable.inactive_dropped, None);
+        assert_eq!(listable.inactive_truncated, None);
+    }
+
+    #[test]
+    fn a_backlog_with_no_oldest_time_is_not_shown() {
+        assert_eq!(backlog_of(&TargetBacklog::default()), None);
+        let shown = backlog_of(&TargetBacklog {
+            held: 3,
+            held_bytes: 30,
+            held_by_session: 1,
+            waiting_in_gateway: 2,
+            oldest_at: Some(0),
+            frees_at: None,
+        })
+        .expect("backlog");
+        assert_eq!(shown.held, 3);
+        assert_eq!(shown.waiting_in_gateway, 2);
+        assert_eq!(shown.oldest_at, "1970-01-01T00:00:00.000Z");
+    }
 }

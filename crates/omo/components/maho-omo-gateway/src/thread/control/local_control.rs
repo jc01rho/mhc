@@ -400,6 +400,8 @@ mod tests {
             error_code: None,
             turn_id: None,
             model: None,
+            waiting: None,
+            engine_version: None,
             created_at: None,
             updated_at: None,
             endpoint_kind: kind,

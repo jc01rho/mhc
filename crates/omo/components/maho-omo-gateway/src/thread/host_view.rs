@@ -33,6 +33,10 @@ pub struct ThreadHostSession {
     pub error_code: Option<String>,
     pub turn_id: Option<String>,
     pub model: Option<ThreadModel>,
+    /// The engine's retry wait of a running thread (senpi#7025): `{kind, until, attempt, maxAttempts}` as it lists it.
+    pub waiting: Option<Value>,
+    /// The version of the engine that endpoint runs, as its `get_protocol_info` names it (#14278).
+    pub engine_version: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub endpoint_kind: GatewayEndpointKind,
@@ -76,6 +80,12 @@ impl ThreadHostSession {
             error_code: text("error_code"),
             turn_id: text("turn_id"),
             model: thread_model(value.get("model")),
+            waiting: value
+                .get("waiting")
+                .filter(|waiting| !waiting.is_null())
+                .cloned(),
+            engine_version: either("engineVersion", "engine_version")
+                .or_else(|| either("serverVersion", "server_version")),
             created_at: either("createdAt", "created_at"),
             updated_at: either("updatedAt", "updated_at"),
             endpoint_kind,
@@ -147,6 +157,8 @@ mod tests {
             "status": "open",
             "archived": true,
             "activity": "queued",
+            "waiting": { "kind": "rate_limit", "until": "2026-11-02T00:01:00.000Z", "attempt": 2, "maxAttempts": 5 },
+            "engineVersion": "2026.11.1",
             "model": { "provider": "anthropic", "id": "opus" },
             "created_at": "2026-11-01T00:00:00.000Z",
             "updatedAt": "2026-11-02T00:00:00.000Z",
@@ -161,6 +173,15 @@ mod tests {
         assert_eq!(session.thread_id(), "d-1");
         assert!(session.archived);
         assert_eq!(session.activity.as_deref(), Some("queued"));
+        assert_eq!(
+            session
+                .waiting
+                .as_ref()
+                .and_then(|waiting| waiting.get("attempt"))
+                .and_then(Value::as_i64),
+            Some(2)
+        );
+        assert_eq!(session.engine_version.as_deref(), Some("2026.11.1"));
         assert_eq!(
             session.created_at.as_deref(),
             Some("2026-11-01T00:00:00.000Z")
