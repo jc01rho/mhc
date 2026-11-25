@@ -382,3 +382,174 @@ fn an_auto_send_to_a_running_session_steers_the_turn_its_runtime_reports() {
     );
     assert_eq!(inputs[0]["expected_turn_id"], 7);
 }
+
+struct StatefulControlHost {
+    cwd: String,
+    records: Mutex<Vec<Value>>,
+    model: Mutex<(String, String)>,
+    thinking: Mutex<String>,
+    reject_level: Option<String>,
+}
+
+impl StatefulControlHost {
+    fn answer(&self, command: &Value) -> Value {
+        let kind = command["type"].as_str().unwrap_or_default().to_owned();
+        let ok = |data: Value| json!({ "type": "response", "command": kind, "success": true, "data": data });
+        match kind.as_str() {
+            "list_sessions" => ok(json!({ "sessions": [
+                { "sessionId": "rpc-1", "durableSessionId": BUILDER, "cwd": self.cwd, "name": "builder", "status": "open" },
+                { "sessionId": "rpc-2", "durableSessionId": REVIEWER, "cwd": self.cwd, "name": "reviewer", "status": "open" },
+            ] })),
+            "attach_session" | "release_attachment" => {
+                json!({ "type": "response", "command": kind, "success": true })
+            }
+            "get_protocol_info" => ok(json!({
+                "capabilities": ["unload_session", "unload_refuse_deliveries", "unload_graceful"],
+            })),
+            "get_available_models" => ok(json!({ "models": [
+                { "provider": "anthropic", "id": "claude-opus" },
+                { "provider": "openai", "id": "gpt-6" },
+            ] })),
+            "get_state" => {
+                let (provider, id) = self.model.lock().expect("model").clone();
+                let level = self.thinking.lock().expect("thinking").clone();
+                ok(json!({
+                    "model": { "provider": provider, "id": id },
+                    "thinkingLevel": level,
+                }))
+            }
+            "set_model" => {
+                let provider = command["provider"].as_str().unwrap_or_default().to_owned();
+                let id = command["modelId"].as_str().unwrap_or_default().to_owned();
+                *self.model.lock().expect("model") = (provider.clone(), id.clone());
+                ok(json!({ "provider": provider, "id": id }))
+            }
+            "get_available_thinking_levels" => ok(json!({ "levels": ["off", "medium", "max"] })),
+            "set_thinking_level" => {
+                let level = command["level"].as_str().unwrap_or_default().to_owned();
+                if self.reject_level.as_deref() == Some(level.as_str()) {
+                    json!({
+                        "type": "response",
+                        "command": kind,
+                        "success": false,
+                        "error": format!("Thinking level {level} is not supported by the active model."),
+                    })
+                } else {
+                    *self.thinking.lock().expect("thinking") = level;
+                    json!({ "type": "response", "command": kind, "success": true })
+                }
+            }
+            "unload_session" if command.get("graceful") == Some(&json!(true)) => ok(json!({
+                "outcome": "unloaded",
+                "dropped": { "deliveries": ["d-queued"], "user_messages": ["draft"] },
+                "graceful": { "turn": 4, "waited_ms": 900, "stopped": { "wake_sources": ["terminal"] } },
+            })),
+            _ => {
+                json!({ "type": "response", "command": kind, "success": false, "error": "unsupported" })
+            }
+        }
+    }
+
+    fn sent(&self, kind: &str) -> Vec<Value> {
+        self.records
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|record| record["type"] == kind)
+            .cloned()
+            .collect()
+    }
+}
+
+impl RpcTransport for StatefulControlHost {
+    fn request(
+        &self,
+        _socket: &str,
+        command: Value,
+        _durable_session_id: Option<String>,
+    ) -> BoxFuture<Result<Value, String>> {
+        let frame = self.answer(&command);
+        self.records.lock().expect("lock").push(command);
+        Box::pin(async move { Ok(frame) })
+    }
+}
+
+#[test]
+fn graceful_close_and_thinking_suffix_rollback_run_through_live_surface() {
+    use maho_omo_gateway::thread::control::locate::{
+        LocatedControl, ThreadCall, book_of, locate_control,
+    };
+    use maho_omo_gateway::thread::control::operations::{
+        close_options, close_thread_with_options, set_model_on,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let host = Arc::new(StatefulControlHost {
+        cwd: cwd.clone(),
+        records: Mutex::new(Vec::new()),
+        model: Mutex::new(("anthropic".into(), "claude-opus".into())),
+        thinking: Mutex::new("off".into()),
+        reject_level: Some("xhigh".into()),
+    });
+    let surface: Arc<dyn ThreadHost> = Arc::new(LiveThreadSurface::new(LiveThreadSurfaceOptions {
+        socket: "/run/maho-test/rpc-stateful.sock".into(),
+        transport: host.clone(),
+        status_all: None,
+        now: None,
+    }));
+    let now = "2026-11-22T00:00:00Z".to_owned();
+    let view = block_on(surface.list_view()).expect("list_view");
+    let book = book_of(&view, &[], &now);
+    let call = ThreadCall {
+        host: surface,
+        view,
+        book,
+        caller_id: BUILDER.into(),
+        caller_workspace_root: cwd,
+        sessions_directory: None,
+        remote: None,
+        now,
+    };
+    let LocatedControl::Control(control) = block_on(locate_control(&call, "reviewer", false))
+    else {
+        panic!("expected live control");
+    };
+
+    let switched = block_on(set_model_on(control.as_ref(), "gpt:max", None)).expect("switch");
+    assert_eq!(switched["kind"], "ok", "{switched}");
+    assert_eq!(
+        switched["model"],
+        json!({ "provider": "openai", "id": "gpt-6" })
+    );
+    assert_eq!(*host.thinking.lock().expect("thinking"), "max");
+
+    let rejected = block_on(set_model_on(control.as_ref(), "opus:xhigh", None)).expect("rejected");
+    assert_eq!(rejected["kind"], "error", "{rejected}");
+    assert_eq!(rejected["error"]["code"], "thinking_level_unsupported");
+    assert_eq!(
+        *host.model.lock().expect("model"),
+        ("openai".to_owned(), "gpt-6".to_owned())
+    );
+    assert_eq!(*host.thinking.lock().expect("thinking"), "max");
+
+    let closed = block_on(close_thread_with_options(
+        control.as_ref(),
+        close_options(None, Some(true), Some(5_000)),
+    ))
+    .expect("graceful close");
+    assert_eq!(closed["kind"], "ok", "{closed}");
+    assert_eq!(closed["closed"], true);
+    assert_eq!(closed["dropped_deliveries"], json!(["d-queued"]));
+    assert_eq!(closed["graceful"]["turn"], 4);
+    assert_eq!(closed["graceful"]["waited_ms"], 900);
+    let unloads = host.sent("unload_session");
+    assert_eq!(unloads.len(), 1);
+    assert_eq!(unloads[0]["graceful"], json!(true));
+    assert_eq!(unloads[0]["waitMs"], json!(5_000));
+    assert!(
+        unloads[0]["effectId"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("omo-thread-close:"))
+    );
+}

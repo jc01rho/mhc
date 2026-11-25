@@ -22,8 +22,8 @@ use crate::thread::types::GatewayEndpointKind;
 use super::close_ladder::{RecordAnswer, close_ladder, session_gone_reason};
 use super::interrupt::{InterruptOutcome, interrupt_outcome, interrupt_request};
 use super::port::{
-    CloseAnswer, ControlError, ControlResult, ModelCatalog, SESSION_ONLY_THINKING_SCOPE,
-    SessionControl, refuse,
+    CloseAnswer, CloseOptions, ControlError, ControlResult, ModelCatalog,
+    SESSION_ONLY_THINKING_SCOPE, SessionControl, SessionModelState, refuse, session_model_state,
 };
 
 const THINKING_LEVEL_UNSUPPORTED: &str = "thinking_level_unsupported:";
@@ -142,23 +142,24 @@ impl SessionControl for LocalControl {
         })
     }
 
-    fn close(&self, force: bool) -> BoxFuture<ControlResult<CloseAnswer>> {
-        if self.session.endpoint_kind == GatewayEndpointKind::Tui {
+    fn close(&self, options: CloseOptions) -> BoxFuture<ControlResult<CloseAnswer>> {
+        // A terminal closes its own session only gracefully and exits by itself afterwards (#14313).
+        if self.session.endpoint_kind == GatewayEndpointKind::Tui && !options.graceful {
             let thread_id = self.thread_id.clone();
             return Box::pin(async move {
                 Err(refuse(
                     "unsupported",
                     format!(
-                        "Thread {thread_id} belongs to an interactive terminal, which closes it when the terminal exits."
+                        "Thread {thread_id} belongs to an interactive terminal, which closes only gracefully."
                     ),
-                    "Close that terminal, or use thread_interrupt (tool.thread_interrupt() in an eval cell) to stop its turn.",
-                    Some(json!({ "command": "close_session" })),
+                    "Close it with graceful: true (the terminal exits once its turn ends), or use thread_interrupt (tool.thread_interrupt() in an eval cell) to stop its turn.",
+                    Some(json!({ "command": "close_session", "retry_with": { "graceful": true } })),
                 ))
             });
         }
         let (port, session_id) = self.routed();
         Box::pin(async move {
-            let send = move |record: Value| {
+            let send = move |record: Value, _wait_ms: Option<i64>| {
                 let port = port.clone();
                 async move {
                     match port.send(record).await {
@@ -170,7 +171,7 @@ impl SessionControl for LocalControl {
                     }
                 }
             };
-            close_ladder(&session_id, send, force).await
+            close_ladder(&session_id, send, options, None).await
         })
     }
 
@@ -208,6 +209,14 @@ impl SessionControl for LocalControl {
                 models,
                 held: false,
             })
+        })
+    }
+
+    fn get_model_state(&self) -> BoxFuture<ControlResult<Option<SessionModelState>>> {
+        let (port, session_id) = self.routed();
+        Box::pin(async move {
+            let data = command(port, "get_state", session_id, Map::new()).await?;
+            Ok(session_model_state(&Value::Object(data)))
         })
     }
 
@@ -336,5 +345,124 @@ impl SessionControl for LocalControl {
         row.name = self.title.clone();
         row.link = thread_link(&self.thread_id, &self.title);
         Box::pin(async move { Ok(row) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    use futures::executor::block_on;
+
+    use super::super::close_ladder::UNLOAD_GRACEFUL;
+    use super::super::port::CloseOutcome;
+    use super::*;
+
+    struct ScriptedPort {
+        replies: Mutex<VecDeque<Result<Value, String>>>,
+        sent: Mutex<Vec<Value>>,
+    }
+
+    impl ScriptedPort {
+        fn new(replies: Vec<Result<Value, String>>) -> Arc<Self> {
+            Arc::new(Self {
+                replies: Mutex::new(replies.into()),
+                sent: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl SessionCommandPort for ScriptedPort {
+        fn send(&self, command: Value) -> BoxFuture<Result<Value, String>> {
+            self.sent.lock().expect("sent").push(command);
+            let reply = self
+                .replies
+                .lock()
+                .expect("replies")
+                .pop_front()
+                .unwrap_or_else(|| Err("unexpected command".into()));
+            Box::pin(async move { reply })
+        }
+    }
+
+    fn control_for(kind: GatewayEndpointKind, port: Arc<ScriptedPort>) -> LocalControl {
+        let session = ThreadHostSession {
+            session_id: "tui-1".into(),
+            durable_session_id: Some("dur-tui".into()),
+            session_path: None,
+            cwd: "/work".into(),
+            name: Some("tui".into()),
+            status: None,
+            kind: None,
+            archived: false,
+            activity: None,
+            error_code: None,
+            turn_id: None,
+            model: None,
+            created_at: None,
+            updated_at: None,
+            endpoint_kind: kind,
+            controls: Vec::new(),
+            socket: "/run/tui.sock".into(),
+        };
+        LocalControl::new(
+            port,
+            session,
+            "tui".into(),
+            Vec::new(),
+            None,
+            "2026-11-20T00:00:00Z".into(),
+        )
+    }
+
+    #[test]
+    fn tui_session_refuses_non_graceful_close_and_closes_gracefully_when_asked() {
+        let port = ScriptedPort::new(vec![
+            Ok(json!({ "success": true, "data": { "capabilities": [UNLOAD_GRACEFUL] } })),
+            Ok(
+                json!({ "success": true, "data": { "outcome": "unloaded", "graceful": { "turn": 1, "waited_ms": 50 } } }),
+            ),
+        ]);
+        let control = control_for(GatewayEndpointKind::Tui, port.clone());
+        let refused =
+            block_on(control.close(CloseOptions::default())).expect_err("refuse plain close");
+        let failure = refused.refusal().expect("refusal");
+        assert_eq!(failure.code.as_str(), "unsupported");
+        assert_eq!(
+            failure.details.as_ref().and_then(|d| d.get("retry_with")),
+            Some(&json!({ "graceful": true }))
+        );
+        assert!(port.sent.lock().expect("sent").is_empty());
+
+        let closed = block_on(control.close(CloseOptions {
+            graceful: true,
+            ..Default::default()
+        }))
+        .expect("graceful close");
+        assert_eq!(closed.outcome, CloseOutcome::Closed);
+        assert_eq!(closed.graceful.expect("graceful").turn, 1);
+    }
+
+    #[test]
+    fn get_model_state_reads_model_and_thinking_level_from_get_state() {
+        let port = ScriptedPort::new(vec![Ok(json!({
+            "success": true,
+            "data": {
+                "model": { "provider": "anthropic", "id": "claude-opus" },
+                "thinkingLevel": "medium",
+            }
+        }))]);
+        let control = control_for(GatewayEndpointKind::RpcHost, port);
+        assert_eq!(
+            block_on(control.get_model_state()),
+            Ok(Some(SessionModelState {
+                model: ThreadModel {
+                    provider: "anthropic".into(),
+                    id: "claude-opus".into(),
+                },
+                thinking_level: "medium".into(),
+            }))
+        );
     }
 }

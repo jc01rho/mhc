@@ -10,6 +10,7 @@ autotests = false
 maho-ext-api = { path = "../../../maho-ext-api" }
 maho-device-service-core = { path = "../../device-service-core" }
 maho-omo-agent-home = { path = "../maho-omo-agent-home" }
+maho-omo-call-budget = { path = "../../call-budget" }
 maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
 maho-omo-config-core = { path = "../../omo-config-core" }
 maho-thread-address-core = { path = "../../thread-address-core" }
@@ -20,6 +21,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror = "=2.0.20"
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

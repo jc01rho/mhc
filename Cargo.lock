@@ -5784,6 +5784,7 @@ dependencies = [
  "maho-device-service-core",
  "maho-ext-api",
  "maho-omo-agent-home",
+ "maho-omo-call-budget",
  "maho-omo-config-core",
  "maho-omo-config-resolution",
  "maho-thread-address-core",
@@ -5795,6 +5796,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
