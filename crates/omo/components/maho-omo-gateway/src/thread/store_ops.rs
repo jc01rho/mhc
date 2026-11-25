@@ -12,18 +12,19 @@ pub type AfterCommitCallback = Mutex<Option<Vec<Box<dyn FnOnce() + Send>>>>;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use rusqlite::types::Value as SqliteValue;
 use serde_json::Value;
 
+use super::backlog::{BacklogCheck, backlog_refusal};
 use super::constants::{
-    GATEWAY_RECEIPT_RETENTION_MS, MAX_CAUSAL_DELIVERIES, MAX_FANOUT_PER_TURN, MAX_HOPS,
-    PAIR_BUCKET_BURST, PAIR_BUCKET_REFILL_MS, QUEUED_TTL_MS, ROOT_LIFETIME_MS, TARGET_MAX_BYTES,
-    TARGET_MAX_MESSAGES, is_durable_id,
+    GATEWAY_RECEIPT_RETENTION_MS, MAX_CAUSAL_DELIVERIES, MAX_HOPS, PAIR_BUCKET_BURST,
+    PAIR_BUCKET_REFILL_MS, QUEUED_TTL_MS, RETENTION_SWEEP_BATCH, ROOT_LIFETIME_MS, is_durable_id,
 };
+use super::errors::pair_loop_guard_message;
 use super::provenance_record::is_provenance;
 use super::schema::{GATEWAY_MIGRATIONS, GATEWAY_NEEDS_FK_OFF, GatewaySchemaVersionError};
 use super::types::{
@@ -135,6 +136,7 @@ impl SqlAccess for StoreContext {
     }
 
     fn run(&self, sql: &str, params: &[SqliteValue]) -> Result<usize, StoreError> {
+        end_read_snapshot(self)?;
         let changed = self
             .conn
             .execute(sql, rusqlite::params_from_iter(params.iter()))?;
@@ -210,6 +212,8 @@ pub struct StoreContext {
     events: Mutex<Vec<GatewayStoreEvent>>,
     after_commit: AfterCommitCallback,
     after_rollback: AfterCommitCallback,
+    /// Whether an op's checked read snapshot is open on `conn` (omo#14622 review M7).
+    read_snapshot: AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -243,6 +247,7 @@ impl StoreContext {
             events: Mutex::new(Vec::new()),
             after_commit: Mutex::new(None),
             after_rollback: Mutex::new(None),
+            read_snapshot: AtomicBool::new(false),
         }
     }
 
@@ -309,11 +314,18 @@ pub fn begin_immediate(
         ctx.exec("SAVEPOINT gateway_enqueue")?;
         return Ok(true);
     }
+    end_read_snapshot(ctx)?;
     let started = Instant::now();
     loop {
         match ctx.conn.execute_batch("BEGIN IMMEDIATE") {
             Ok(()) => {
                 ctx.stats.transactions.fetch_add(1, Ordering::Relaxed);
+                // A newer binary may have migrated the store after this one opened it (omo#14622 review M5): a
+                // store this binary no longer meets is refused under the lock, before anything is written.
+                if let Err(error) = schema_version(ctx) {
+                    rollback_quietly(ctx);
+                    return Err(error);
+                }
                 return Ok(true);
             }
             Err(error) if is_busy(&error) => {
@@ -346,6 +358,36 @@ pub fn rollback_quietly(ctx: &StoreContext) {
     } else {
         "ROLLBACK"
     });
+}
+
+/// Runs one store op inside the read snapshot its schema check opens (omo#14622 review M4, M7): a migration another
+/// process commits after the check stays invisible to the op's reads, so they never meet a schema the check did not
+/// accept. A write leaves the snapshot first (`begin_immediate`, `SqlAccess::run`) and is checked again under its
+/// write lock. An op that already runs inside a transaction checks the schema and runs as it is.
+pub fn in_checked_snapshot<T>(
+    ctx: &StoreContext,
+    body: impl FnOnce() -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    if !ctx.conn.is_autocommit() {
+        schema_version(ctx)?;
+        return body();
+    }
+    ctx.exec("BEGIN")?;
+    ctx.read_snapshot.store(true, Ordering::Relaxed);
+    let result = schema_version(ctx).and_then(|_| body());
+    let ended = end_read_snapshot(ctx);
+    let value = result?;
+    ended?;
+    Ok(value)
+}
+
+/// Ends the read snapshot an op opened, when it is still open; the snapshot only ever read, so its commit cannot
+/// meet a write conflict.
+fn end_read_snapshot(ctx: &StoreContext) -> Result<(), StoreError> {
+    if ctx.read_snapshot.swap(false, Ordering::Relaxed) && !ctx.conn.is_autocommit() {
+        ctx.conn.execute_batch("COMMIT")?;
+    }
+    Ok(())
 }
 
 /// Runs `body` inside the store's write transaction (or the joined outer one).
@@ -1874,5 +1916,74 @@ mod tests {
         assert!(closes_cycle(&edges, "b", "a"));
         assert!(!closes_cycle(&edges, "a", "c"));
         assert!(!closes_cycle(&[], "a", "b"));
+    }
+
+    fn file_context(dir: &tempfile::TempDir) -> StoreContext {
+        let mut config = StoreContext::test_config();
+        config.agent_dir = dir.path().to_string_lossy().into_owned();
+        let path = crate::paths::gateway_database_path(dir.path());
+        let ctx = StoreContext::new(
+            open_connection(&path, config.busy_timeout_ms).expect("open the store"),
+            config,
+            StoreContext::test_identity(),
+        );
+        migrate(&ctx).expect("migrate");
+        ctx
+    }
+
+    /// Another process's connection to the same store, as a newer binary would hold it.
+    fn other_process(dir: &tempfile::TempDir) -> Connection {
+        open_connection(&crate::paths::gateway_database_path(dir.path()), 50)
+            .expect("second connection")
+    }
+
+    fn migrate_past_this_binary(connection: &Connection) {
+        connection
+            .execute_batch(&format!(
+                "PRAGMA user_version = {}",
+                GATEWAY_MIGRATIONS.len() + 1
+            ))
+            .expect("a newer binary migrates the store");
+    }
+
+    fn user_version(ctx: &StoreContext) -> Result<i64, StoreError> {
+        Ok(ctx
+            .one("SELECT user_version FROM pragma_user_version()", &[])?
+            .map(|row| row_i64(&row, "user_version"))
+            .unwrap_or(0))
+    }
+
+    #[test]
+    fn a_write_lock_on_a_store_another_binary_migrated_is_refused_and_released() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = file_context(&dir);
+        migrate_past_this_binary(&other_process(&dir));
+        let error = begin_immediate(&ctx, "test", false).expect_err("refused under the lock");
+        assert_eq!(error.code(), "gateway_schema_too_new");
+        assert!(
+            ctx.conn.is_autocommit(),
+            "the refused write lock is released"
+        );
+    }
+
+    #[test]
+    fn an_op_reads_inside_the_snapshot_its_schema_check_opened() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = file_context(&dir);
+        let other = other_process(&dir);
+        let seen = in_checked_snapshot(&ctx, || {
+            migrate_past_this_binary(&other);
+            user_version(&ctx)
+        })
+        .expect("the op runs on the store it checked");
+        assert_eq!(seen, GATEWAY_MIGRATIONS.len() as i64);
+        assert!(ctx.conn.is_autocommit(), "the snapshot ends with its op");
+        let error = in_checked_snapshot(&ctx, || user_version(&ctx))
+            .expect_err("the next op meets the newer store");
+        assert_eq!(error.code(), "gateway_schema_too_new");
+        assert!(
+            ctx.conn.is_autocommit(),
+            "a refused op leaves no snapshot open"
+        );
     }
 }

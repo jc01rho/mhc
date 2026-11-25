@@ -22,8 +22,8 @@ use super::store_extensions::{
     StoreExtensionRegistration, StoreExtensionResult,
 };
 use super::store_ops::{
-    DeliveryReceipt, DeliveryView, SqlAccess, StoreContext, StoreError, migrate, open_connection,
-    self_identity_now,
+    DeliveryReceipt, DeliveryView, SqlAccess, StoreContext, StoreError, in_checked_snapshot,
+    migrate, open_connection, self_identity_now,
 };
 use super::store_relay_ops::{
     AnswerClaim, AnswerClaimRef, AnswerDelivered, BindInput, BindingRecord, BindingsFilter,
@@ -82,6 +82,16 @@ impl SqliteGatewayStore {
 
     fn extensions(&self) -> Result<MutexGuard<'_, StoreExtensions>, StoreError> {
         self.extensions.lock().map_err(poisoned)
+    }
+
+    /// Runs one store op on the connection inside the read snapshot its schema check opens (omo#14622 review M4,
+    /// M7): a store another binary migrated past this one since it was opened is refused typed before the op reads.
+    fn checked<T>(
+        &self,
+        op: impl FnOnce(&StoreContext) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let ctx = self.context()?;
+        in_checked_snapshot(&ctx, || op(&ctx))
     }
 
     /// The registrations the current worker holds, restored on the next worker after one exits.
@@ -290,19 +300,19 @@ impl GatewayStoreApi for SqliteGatewayStore {
     }
 
     fn enqueue(&self, request: &EnqueueRequest) -> Result<EnqueueOutcome, StoreError> {
-        super::store_ops::enqueue(&*self.context()?, request)
+        self.checked(|ctx| super::store_ops::enqueue(ctx, request))
     }
 
     fn reconcile(&self, request: &ReconcileRequest) -> Result<ReconcileOutcome, StoreError> {
-        super::store_ops::reconcile(&*self.context()?, request)
+        self.checked(|ctx| super::store_ops::reconcile(ctx, request))
     }
 
     fn claim(&self, request: &ClaimRequest) -> Result<ClaimOutcome, StoreError> {
-        super::store_ops::claim(&*self.context()?, request)
+        self.checked(|ctx| super::store_ops::claim(ctx, request))
     }
 
     fn record_outcome(&self, request: &RecordOutcomeRequest) -> Result<ClaimOutcome, StoreError> {
-        super::store_ops::record_outcome(&*self.context()?, request)
+        self.checked(|ctx| super::store_ops::record_outcome(ctx, request))
     }
 
     fn refuse_queued(
@@ -321,13 +331,9 @@ impl GatewayStoreApi for SqliteGatewayStore {
         idempotency_key: &str,
         result: &Value,
     ) -> Result<bool, StoreError> {
-        super::store_ops::complete_receipt(
-            &*self.context()?,
-            now,
-            principal,
-            idempotency_key,
-            result,
-        )
+        self.checked(|ctx| {
+            super::store_ops::complete_receipt(ctx, now, principal, idempotency_key, result)
+        })
     }
 
     fn abandon_receipt(
@@ -337,17 +343,13 @@ impl GatewayStoreApi for SqliteGatewayStore {
         idempotency_key: &str,
         error_note: &str,
     ) -> Result<bool, StoreError> {
-        super::store_ops::abandon_receipt(
-            &*self.context()?,
-            now,
-            principal,
-            idempotency_key,
-            error_note,
-        )
+        self.checked(|ctx| {
+            super::store_ops::abandon_receipt(ctx, now, principal, idempotency_key, error_note)
+        })
     }
 
     fn delivery_view(&self, delivery_id: &str) -> Result<Option<DeliveryView>, StoreError> {
-        super::store_ops::delivery_view(&*self.context()?, delivery_id)
+        self.checked(|ctx| super::store_ops::delivery_view(ctx, delivery_id))
     }
 
     fn delivery_receipt(
@@ -356,7 +358,7 @@ impl GatewayStoreApi for SqliteGatewayStore {
         principal: &str,
         idempotency_key: &str,
     ) -> Result<Option<DeliveryReceipt>, StoreError> {
-        super::store_ops::delivery_receipt(&*self.context()?, now, principal, idempotency_key)
+        self.checked(|ctx| super::store_ops::delivery_receipt(ctx, now, principal, idempotency_key))
     }
 
     fn recover_delivery(
@@ -366,13 +368,9 @@ impl GatewayStoreApi for SqliteGatewayStore {
         idempotency_key: &str,
         args_hash: &str,
     ) -> Result<Option<EnqueueOutcome>, StoreError> {
-        super::store_ops::recover_delivery(
-            &*self.context()?,
-            now,
-            principal,
-            idempotency_key,
-            args_hash,
-        )
+        self.checked(|ctx| {
+            super::store_ops::recover_delivery(ctx, now, principal, idempotency_key, args_hash)
+        })
     }
 
     fn list(
@@ -399,7 +397,7 @@ impl GatewayStoreApi for SqliteGatewayStore {
     }
 
     fn bind(&self, now: i64, input: &BindInput) -> Result<RelayOutcome<BindingRecord>, StoreError> {
-        super::store_relay_ops::bind_thread(&*self.context()?, now, input)
+        self.checked(|ctx| super::store_relay_ops::bind_thread(ctx, now, input))
     }
 
     fn unbind(
@@ -408,7 +406,9 @@ impl GatewayStoreApi for SqliteGatewayStore {
         binding_id: &str,
         expected_revision: i64,
     ) -> Result<RelayOutcome<(BindingRecord, bool, Vec<String>)>, StoreError> {
-        super::store_relay_ops::unbind_thread(&*self.context()?, now, binding_id, expected_revision)
+        self.checked(|ctx| {
+            super::store_relay_ops::unbind_thread(ctx, now, binding_id, expected_revision)
+        })
     }
 
     fn rebind(
@@ -418,13 +418,15 @@ impl GatewayStoreApi for SqliteGatewayStore {
         expected_revision: i64,
         session_durable_id: &str,
     ) -> Result<RelayOutcome<(BindingRecord, Vec<String>)>, StoreError> {
-        super::store_relay_ops::rebind_thread(
-            &*self.context()?,
-            now,
-            binding_id,
-            expected_revision,
-            session_durable_id,
-        )
+        self.checked(|ctx| {
+            super::store_relay_ops::rebind_thread(
+                ctx,
+                now,
+                binding_id,
+                expected_revision,
+                session_durable_id,
+            )
+        })
     }
 
     fn list_bindings(
@@ -434,7 +436,7 @@ impl GatewayStoreApi for SqliteGatewayStore {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> Result<RelayOutcome<(Vec<BindingRecord>, Option<String>)>, StoreError> {
-        super::store_relay_ops::list_bindings(&*self.context()?, now, filter, cursor, limit)
+        self.checked(|ctx| super::store_relay_ops::list_bindings(ctx, now, filter, cursor, limit))
     }
 
     fn binding_view(
@@ -442,7 +444,7 @@ impl GatewayStoreApi for SqliteGatewayStore {
         now: i64,
         binding_id: &str,
     ) -> Result<Option<BindingRecord>, StoreError> {
-        super::store_relay_ops::binding_view(&*self.context()?, now, binding_id)
+        self.checked(|ctx| super::store_relay_ops::binding_view(ctx, now, binding_id))
     }
 
     fn report(
@@ -450,7 +452,7 @@ impl GatewayStoreApi for SqliteGatewayStore {
         now: i64,
         request: &ReportOpRequest,
     ) -> Result<RelayOutcome<ReportOpResult>, StoreError> {
-        super::store_relay_ops::report_event(&*self.context()?, now, request)
+        self.checked(|ctx| super::store_relay_ops::report_event(ctx, now, request))
     }
 
     fn emit_completions(
@@ -460,21 +462,23 @@ impl GatewayStoreApi for SqliteGatewayStore {
         outcome: &str,
         through_arm_seq: Option<i64>,
     ) -> Result<Vec<(String, i64)>, StoreError> {
-        super::store_relay_ops::emit_completions(
-            &*self.context()?,
-            now,
-            session_durable_id,
-            outcome,
-            through_arm_seq,
-        )
+        self.checked(|ctx| {
+            super::store_relay_ops::emit_completions(
+                ctx,
+                now,
+                session_durable_id,
+                outcome,
+                through_arm_seq,
+            )
+        })
     }
 
     fn pending_completion_arms(&self, durable_id: &str) -> Result<i64, StoreError> {
-        super::store_relay_ops::pending_completion_arms(&*self.context()?, durable_id)
+        self.checked(|ctx| super::store_relay_ops::pending_completion_arms(ctx, durable_id))
     }
 
     fn latest_completion_arm(&self, durable_id: &str) -> Result<Option<i64>, StoreError> {
-        super::store_relay_ops::latest_completion_arm(&*self.context()?, durable_id)
+        self.checked(|ctx| super::store_relay_ops::latest_completion_arm(ctx, durable_id))
     }
 
     fn read_outbox(
@@ -484,14 +488,9 @@ impl GatewayStoreApi for SqliteGatewayStore {
         after_cursor: Option<i64>,
         limit: Option<i64>,
     ) -> Result<RelayOutcome<OutboxPage>, StoreError> {
-        super::store_relay_ops::read_outbox(
-            &*self.context()?,
-            now,
-            binding_id,
-            after_cursor,
-            limit,
-            false,
-        )
+        self.checked(|ctx| {
+            super::store_relay_ops::read_outbox(ctx, now, binding_id, after_cursor, limit, false)
+        })
     }
 
     fn ack_outbox(
@@ -501,13 +500,9 @@ impl GatewayStoreApi for SqliteGatewayStore {
         cursor: i64,
         provider_message_id: Option<&str>,
     ) -> Result<RelayOutcome<(i64, bool)>, StoreError> {
-        super::store_relay_ops::ack_outbox(
-            &*self.context()?,
-            now,
-            binding_id,
-            cursor,
-            provider_message_id,
-        )
+        self.checked(|ctx| {
+            super::store_relay_ops::ack_outbox(ctx, now, binding_id, cursor, provider_message_id)
+        })
     }
 
     fn claim_answer(
@@ -518,22 +513,24 @@ impl GatewayStoreApi for SqliteGatewayStore {
         answer: &str,
         answered_by: Option<&ExternalAuthor>,
     ) -> Result<RelayOutcome<AnswerClaim>, StoreError> {
-        super::store_relay_ops::claim_answer(
-            &*self.context()?,
-            now,
-            binding_id,
-            reply_token,
-            answer,
-            answered_by,
-        )
+        self.checked(|ctx| {
+            super::store_relay_ops::claim_answer(
+                ctx,
+                now,
+                binding_id,
+                reply_token,
+                answer,
+                answered_by,
+            )
+        })
     }
 
     fn release_answer(&self, claim: &AnswerClaimRef) -> Result<bool, StoreError> {
-        super::store_relay_ops::release_answer(&*self.context()?, claim)
+        self.checked(|ctx| super::store_relay_ops::release_answer(ctx, claim))
     }
 
     fn confirm_answer(&self, delivered: &AnswerDelivered) -> Result<bool, StoreError> {
-        super::store_relay_ops::confirm_answer(&*self.context()?, delivered)
+        self.checked(|ctx| super::store_relay_ops::confirm_answer(ctx, delivered))
     }
 
     fn mark_prior_delivered(
@@ -541,7 +538,7 @@ impl GatewayStoreApi for SqliteGatewayStore {
         claim: &AnswerClaimRef,
         prior: &PriorAnswer,
     ) -> Result<bool, StoreError> {
-        super::store_relay_ops::mark_prior_delivered(&*self.context()?, claim, prior)
+        self.checked(|ctx| super::store_relay_ops::mark_prior_delivered(ctx, claim, prior))
     }
 
     fn close_question(
@@ -550,12 +547,9 @@ impl GatewayStoreApi for SqliteGatewayStore {
         session_durable_id: &str,
         ui_request_id: &str,
     ) -> Result<i64, StoreError> {
-        super::store_relay_ops::close_question(
-            &*self.context()?,
-            now,
-            session_durable_id,
-            ui_request_id,
-        )
+        self.checked(|ctx| {
+            super::store_relay_ops::close_question(ctx, now, session_durable_id, ui_request_id)
+        })
     }
 
     fn register_incarnation(
@@ -565,24 +559,26 @@ impl GatewayStoreApi for SqliteGatewayStore {
         endpoint_socket: Option<&str>,
         endpoint_kind: Option<&str>,
     ) -> Result<(), StoreError> {
-        super::store_relay_ops::register_incarnation(
-            &*self.context()?,
-            durable_id,
-            incarnation,
-            endpoint_socket,
-            endpoint_kind,
-        )
+        self.checked(|ctx| {
+            super::store_relay_ops::register_incarnation(
+                ctx,
+                durable_id,
+                incarnation,
+                endpoint_socket,
+                endpoint_kind,
+            )
+        })
     }
 
     fn clear_endpoint(&self, durable_id: &str, incarnation: &str) -> Result<(), StoreError> {
-        super::store_relay_ops::clear_endpoint(&*self.context()?, durable_id, incarnation)
+        self.checked(|ctx| super::store_relay_ops::clear_endpoint(ctx, durable_id, incarnation))
     }
 
     fn session_endpoint(
         &self,
         durable_id: &str,
     ) -> Result<Option<(String, String, String)>, StoreError> {
-        super::store_relay_ops::session_endpoint(&*self.context()?, durable_id)
+        self.checked(|ctx| super::store_relay_ops::session_endpoint(ctx, durable_id))
     }
 
     fn register_store_extension(
@@ -703,12 +699,14 @@ impl GatewayStoreApi for SqliteGatewayStore {
         record: &ThreadCreationRecord,
         now: i64,
     ) -> Result<(), StoreError> {
-        super::store_extension_session_ops::record_thread_creation(
-            &*self.context()?,
-            now,
-            &record.creator_durable_id,
-            &record.created_durable_id,
-        )
+        self.checked(|ctx| {
+            super::store_extension_session_ops::record_thread_creation(
+                ctx,
+                now,
+                &record.creator_durable_id,
+                &record.created_durable_id,
+            )
+        })
     }
 }
 
