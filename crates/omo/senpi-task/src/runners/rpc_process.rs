@@ -458,7 +458,7 @@ fn with_startup_progress(
                 bounds.outer_bound.as_millis()
             ));
         }
-        let remaining_outer = bounds.outer_bound.saturating_duration_since(elapsed);
+        let remaining_outer = bounds.outer_bound.saturating_sub(elapsed);
         let step = if pid.is_some() {
             sample.min(remaining_outer)
         } else {

@@ -4,8 +4,10 @@
 //! runtime, a gone pid, a refused handle), never a guess.
 
 /// Linux clock ticks per second for `utime`/`stime`; 100 on every kernel these tests and users run.
+#[cfg(any(target_os = "linux", test))]
 const LINUX_CLK_TCK: f64 = 100.0;
 
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn parse_linux_stat_fields(stat: &str) -> Option<Vec<&str>> {
     let end = stat.rfind(')')?;
     let rest = stat.get(end + 2..)?.trim();
@@ -15,12 +17,14 @@ pub(crate) fn parse_linux_stat_fields(stat: &str) -> Option<Vec<&str>> {
     Some(rest.split_whitespace().collect())
 }
 
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn parse_linux_stat_start_identity(stat: &str) -> Option<String> {
     let fields = parse_linux_stat_fields(stat)?;
     let start_ticks = *fields.get(19)?;
     (!start_ticks.is_empty()).then(|| format!("linux-proc-start-ticks:{start_ticks}"))
 }
 
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn parse_linux_stat_cpu_seconds(stat: &str) -> Option<f64> {
     let fields = parse_linux_stat_fields(stat)?;
     let utime: u64 = fields.get(11)?.parse().ok()?;
