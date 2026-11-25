@@ -246,7 +246,7 @@ fn given_item_background_flags_without_top_level_value_when_resolved_then_hoists
 fn given_legacy_single_prompt_params_when_resolved_then_yields_exactly_one_item() {
     let params = SpawnParamsInput {
         prompt: Some("do it".to_string()),
-        subagent_type: Some("plan-reviewer".to_string()),
+        subagent_type: Some("my-reviewer".to_string()),
         model: Some("anthropic/claude-opus-4".to_string()),
         load_skills: Some(strings(&["a"])),
         ..SpawnParamsInput::default()
@@ -268,7 +268,7 @@ fn given_legacy_single_prompt_params_when_resolved_then_yields_exactly_one_item(
             load_skills: strings(&["a"]),
             tools: None,
             run_in_background: None,
-            target: SpawnTarget::SubagentType("plan-reviewer".to_string()),
+            target: SpawnTarget::SubagentType("my-reviewer".to_string()),
         }]
     );
 }
@@ -277,7 +277,7 @@ fn given_legacy_single_prompt_params_when_resolved_then_yields_exactly_one_item(
 fn given_a_three_item_batch_when_resolved_then_inherits_top_level_model_and_subagent_and_item_overrides_win()
  {
     let params = SpawnParamsInput {
-        subagent_type: Some("plan-reviewer".to_string()),
+        subagent_type: Some("my-reviewer".to_string()),
         model: Some("anthropic/claude-opus-4".to_string()),
         load_skills: Some(strings(&["shared"])),
         tasks: Some(vec![
@@ -306,22 +306,22 @@ fn given_a_three_item_batch_when_resolved_then_inherits_top_level_model_and_suba
             )
         })
         .collect();
-    let plan_reviewer = SpawnTarget::SubagentType("plan-reviewer".to_string());
+    let custom_reviewer = SpawnTarget::SubagentType("my-reviewer".to_string());
     assert_eq!(
         facts,
         vec![
             (
-                plan_reviewer.clone(),
+                custom_reviewer.clone(),
                 Some("anthropic/claude-opus-4"),
                 strings(&["shared"])
             ),
             (
-                plan_reviewer.clone(),
+                custom_reviewer.clone(),
                 Some("anthropic/claude-haiku"),
                 strings(&["shared"])
             ),
             (
-                plan_reviewer,
+                custom_reviewer,
                 Some("anthropic/claude-opus-4"),
                 strings(&["extra"])
             ),
@@ -518,11 +518,65 @@ fn given_category_with_model_when_validated_then_returns_a_typed_category_with_m
 }
 
 #[test]
-fn given_subagent_type_with_model_when_validated_then_resolves_to_a_subagent_selection() {
+fn given_custom_subagent_type_with_model_when_validated_then_resolves_to_a_subagent_selection() {
     assert_eq!(
-        target(None, Some("plan-reviewer"), Some("openai/gpt-5.6-sol")),
-        TaskTargetSelection::SubagentType("plan-reviewer".to_string())
+        target(None, Some("my-reviewer"), Some("openai/gpt-5.6-sol")),
+        TaskTargetSelection::SubagentType("my-reviewer".to_string())
     );
+}
+
+// validateTaskTarget builtin agent+model refusal
+
+#[test]
+fn given_builtin_agent_with_model_when_validated_then_returns_agent_with_model_error() {
+    for name in [
+        "explore",
+        "librarian",
+        "plan-consultant",
+        "plan-reviewer",
+        "omo-native-code-reviewer",
+        "omo-native-qa-executor",
+        "omo-native-gate-reviewer",
+        "omo-senpi-code-reviewer",
+    ] {
+        let error = target_error_of(target(None, Some(name), Some("anthropic/claude-opus-5-5")));
+        assert_eq!(error.code, TaskTargetErrorCode::AgentWithModel, "{name}");
+        assert!(error.message.contains("agent_with_model"), "{name}");
+        assert!(error.message.contains("omo.json"), "{name}");
+    }
+}
+
+#[test]
+fn given_builtin_agent_without_model_when_validated_then_resolves_to_a_subagent_selection() {
+    assert_eq!(
+        target(None, Some("explore"), None),
+        TaskTargetSelection::SubagentType("explore".to_string())
+    );
+}
+
+#[test]
+fn given_a_batch_whose_second_item_names_explore_with_a_model_when_resolved_then_fails_as_item_target()
+ {
+    let params = SpawnParamsInput {
+        tasks: Some(vec![
+            SpawnItemInput {
+                subagent_type: Some("explore".to_string()),
+                ..item("one")
+            },
+            SpawnItemInput {
+                subagent_type: Some("explore".to_string()),
+                model: Some("anthropic/claude-opus-5-5".to_string()),
+                ..item("two")
+            },
+        ]),
+        ..SpawnParamsInput::default()
+    };
+
+    let ResolveSpawnItemsError::ItemTarget { index, message } = resolve_err(&params) else {
+        panic!("expected item_target error");
+    };
+    assert_eq!(index, 1);
+    assert!(message.contains("agent_with_model"));
 }
 
 // resolveSpawnItems category+model exclusivity
@@ -580,9 +634,10 @@ fn given_a_top_level_category_and_an_item_model_then_returns_an_item_target_erro
 }
 
 #[test]
-fn given_subagent_items_inheriting_a_top_level_model_then_resolves_ok_with_the_model_attached() {
+fn given_custom_subagent_items_inheriting_a_top_level_model_then_resolves_ok_with_the_model_attached()
+ {
     let params = SpawnParamsInput {
-        subagent_type: Some("plan-reviewer".to_string()),
+        subagent_type: Some("my-reviewer".to_string()),
         model: Some("openai/gpt-5.6-sol".to_string()),
         tasks: Some(vec![item("one")]),
         ..SpawnParamsInput::default()
