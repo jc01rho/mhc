@@ -141,6 +141,16 @@ pub trait SessionCommandPort: Send + Sync {
 pub trait ThreadHost: Send + Sync {
     fn list_view(&self) -> BoxFuture<Result<ThreadHostView, String>>;
     fn session_port(&self, session: &ThreadHostSession) -> Arc<dyn SessionCommandPort>;
+    /// `open_session` on the operator endpoint (thread_create): the new session, named, with its listing row read back.
+    /// A host that cannot open answers `unsupported:open_session`; a refusal the engine answers keeps its text
+    /// (`model_unavailable: ...`).
+    fn open_host_session(
+        &self,
+        _params: Value,
+        _name: Option<String>,
+    ) -> BoxFuture<Result<ThreadHostSession, String>> {
+        Box::pin(async { Err("unsupported:open_session".to_owned()) })
+    }
 }
 
 #[cfg(test)]

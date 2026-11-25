@@ -479,6 +479,7 @@ mod tests {
             "thread_set_model",
             "thread_set_reasoning",
             "thread_archive",
+            "thread_create",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }

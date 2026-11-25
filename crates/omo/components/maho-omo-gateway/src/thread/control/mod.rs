@@ -5,9 +5,17 @@
 //! implements the same trait over its relay. Nothing past `locate.rs` reads the device again.
 
 pub mod close_ladder;
+pub mod create;
+pub mod create_folder;
+pub mod create_launch;
 pub mod interrupt;
 pub mod local_control;
+pub mod local_session_host;
 pub mod locate;
+pub mod open_reply;
 pub mod operations;
+pub mod plan_create;
 pub mod port;
+pub mod prompt_start;
 pub mod rename;
+pub mod session_host;

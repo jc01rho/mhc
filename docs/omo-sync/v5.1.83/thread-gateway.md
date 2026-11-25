@@ -8,11 +8,11 @@ mhc counterpart: `crates/omo/components/maho-omo-gateway/src/thread/`.
 
 | verdict | rows |
 |---|---:|
-| port | 14 |
+| port | 17 |
 | ported | 4 |
 | n/a | 6 |
-| gap | 13 |
-| total | 37 |
+| gap | 11 |
+| total | 38 |
 
 One row per upstream PR, or per commit group where a change carries no PR number; a PR whose slice is partly portable
 is split into two rows. Every non-merge commit in the range is named in exactly one row.
@@ -57,14 +57,15 @@ written with an older schema.
 | #14428 steer reserve and backlog facts (7baf0c1da4, 3b8289574a, f3dbf5e785, 3df4b16a50, 22aec0f4b3) | port | `crates/omo/components/maho-omo-gateway/src/thread/constants.rs` `STEER_RESERVE_MESSAGES`/`STEER_RESERVE_BYTES`; `backlog.rs` (per-lane limits, `session_not_writing`/`session_not_draining` facts, `read_target_backlogs`); the `backlogs` store op (`store_api.rs`, `store.rs`, `store_worker.rs`); `result.rs` queue_full next action. Tests: `backlog.rs` (4). The `thread_list` row `backlog` field needs its producer in thread-core's listing (`ThreadResultSummary` is built literally in `thread_row.rs`). |
 | #14428 collapse key (7baf0c1da4) | port | `crates/omo/components/maho-omo-gateway/src/thread/schema.rs` v16 `deliveries.collapse_key`; `store_ops.rs` `collapse_earlier` (the sender's queued row under the key is refused `superseded`, a row the session already took absorbs the repeat: `EnqueueOutcome::Collapsed`); `types.rs` `RefusalReason::Superseded`, `EnqueueRequest.collapse_key`; `engine.rs` `GatewayDeliverRequest.collapse_key` (in the receipt's args hash); `tools.rs` `thread_send.collapse_key`; `result.rs` `superseded` reads `not_resumable`, queue_full next action. Not carried: the SDK `send` (thread-core) and `omo thread send --collapse-key` (omo-native). Ported with schema v16 (gateway-schema track, PR #86). |
 | #14278 (67a4f3a199, 039e8efc29) | gap | `engine_version` and the provider retry wait (`waiting_on`) on `thread_list` rows need the listing producer (thread-core) and senpi#7025's published retry wait; `ThreadResultSummary` is built literally in `thread_row.rs`. |
-| #14363 (b41242db44, 0fcdd7cd47) | gap | `thread_create` (not ported in mhc) and the wake path (#13037). |
+| #14363 create half (b41242db44, 0fcdd7cd47) | port | A create answers a first prompt the thread admitted to its queue as `queued` (with what it waits on) and a prompt stored for a woken session as `queued` waiting on the wake: `crates/omo/components/maho-omo-gateway/src/thread/control/create.rs` `prompt_that_ran`, `result.rs` `admitted_wait` (the hold or approval a queued row waits on, `DeliveryWait`), `types.rs` / `contracts_results.rs` (`waiting_on` on a queued delivery). Tests: `tests/thread_create_tests.rs` `a_prompt_stored_for_a_wake_is_queued_with_a_next_action_not_to_send_it_again`, `a_prompt_not_yet_admitted_waits_for_its_start_and_answers_what_it_became`; `control/prompt_start.rs` (5). |
+| #14363 wake memory floor (b41242db44, 0fcdd7cd47) | port | The wake floor (a quarter of a limit below 4 GiB, at least one wake's measured cost) is ported by the wake runtime (PR #90): `crates/omo/components/maho-omo-gateway/src/thread/wake/memory_headroom.rs` `read_wake_memory_floor` and the carrier's `host_memory_pressure` deferral in `wake/carrier.rs` (`thread-wake.md` #14363 rows). |
 | #14305 (4960cedb07) | gap | `thread_list` row identity, `unnamed` names: listing producer (thread-core) and thread-address-core `rowName`. |
 | #14355, #14339 (640d1bd2ce) | n/a | Formatting of TS merge resolutions. |
-| #14335 (929de417e1) | gap | `thread_create` is not ported in mhc. |
+| #14335 (929de417e1) | port | `thread_create` now sends its `prompt` to a thread it opens live already: `crates/omo/components/maho-omo-gateway/src/thread/control/create.rs` (`thread-control.md` #14335). |
 | #14333 start lane (d82e7a2436) | port | `crates/omo/components/maho-omo-gateway/src/thread/types.rs` `EffectiveLane::Start`; `decision.rs` `effective_lane_of` (an idle session's followUp admission is `start`); `drain.rs` claims with it, so `effective_mode` and the header's `effective=` say `start`; `schema.rs` v15 rebuilds `deliveries` so `mode_effective` takes it. Tests: `decision.rs` `an_admitted_delivery_names_the_lane_it_took_and_an_idle_start_is_start`, `result.rs` `a_turn_begun_on_an_idle_session_reports_the_start_lane`, `provenance.rs` `the_header_names_the_lane_the_delivery_took_and_an_idle_start_is_start`, `tests/gateway_schema_tests.rs` (claim with `start` after the v15 rebuild). Ported with schema v15 (gateway-schema track, PR #86). |
 | #14333 relay lane (5825d630a4, 5c80bd4657) | ported | The relay leg reports the lane the receiver answered: `thread/remote/{device_service,outcome}.rs` (`thread-remote.md` #14333). |
 | #14333 default delivery auto (484cafd3b2) | ported | `crates/omo/components/maho-omo-gateway/src/thread/engine.rs` `deliver_inner` defaults an omitted mode to `GatewayDeliveryMode::Auto`; the thread_send schema in `tools.rs` offers auto, steer and follow_up. |
-| 9b6ee2e310 (no PR) | ported | An unknown field is refused, not dropped: every thread tool schema declares `additionalProperties: false` (`tools.rs`, `control_tools.rs` `object`) and the harness validates arguments before execute. Not carried: the did-you-mean suggestion table; `prompt: null` on a create follows `thread_create` (not ported). |
+| 9b6ee2e310 (no PR) | ported | An unknown field is refused, not dropped: every thread tool schema declares `additionalProperties: false` (`tools.rs`, `control_tools.rs` `object`) and the harness validates arguments before execute. `thread_create` carries the did-you-mean table (`message` -> `prompt`, `contracts_create_params.rs`) and answers `prompt: null` when it was given none; the other tools keep the schema-level refusal without the table. |
 | 07bec8317f (no PR) | gap | Stored session waits and holds: the v14 `session_wait` table exists (PR #86); the carrier's `waitBlocksDelivery` and the session-wait store op it reads (#13037 wake carrier) are not ported. |
 | pair loop guard (3707d9dcef, 308a8cf429, f70d96145e) | port | `crates/omo/components/maho-omo-gateway/src/thread/store_ops.rs` `take_pair_token` answers `pair_loop_guard` with `guard`, `burst`, `window_ms`, `retry_after_ms`; `errors.rs` code, `pair_loop_guard_message`, `pair_loop_guard_next_action`; `result.rs` `engine_failure`. Not ported: the intake consumer and relay transport legs (no intake consumer in mhc). Tests: `engine.rs` `a_ninth_burst_send_to_one_session_is_refused_pair_loop_guard_with_the_measured_burst`, `result.rs` `a_refusal_that_names_its_recovery_gets_the_next_action_reading_it`. |
 | 01fa0b0220 (no PR) | gap | The v13 `woken_sessions` table exists (PR #86); the woken-session store ops and the carrier that replace the count cap with measured memory (#13037) are not ported. |
@@ -75,7 +76,7 @@ written with an older schema.
 | #14304 (93d376f3c4) | gap | `thread_list` notes for archived listings and incomplete devices: listing producer (thread-core) and remote devices (thread-remote). |
 | #14308 (c6cc5178d8) | gap | `thread_list` `listing: incomplete` when an engine of this device did not answer: listing producer (thread-core). |
 | #14295 (1eb9f9b48d) | gap | `thread_list` partial devices and `inactive_dropped`: listing producer (thread-core) and remote devices (thread-remote). |
-| #14273 target_closed answer (030e18d0a8) | port | `crates/omo/components/maho-omo-gateway/src/thread/result.rs` `refusal_mapping` answers `target_closed` as `not_resumable` with a next action; the eval-form `thread_create` hint is not carried because mhc has no `thread_create`. Test: `a_row_its_closed_session_handed_back_reads_not_delivered`. |
+| #14273 target_closed answer (030e18d0a8) | port | `crates/omo/components/maho-omo-gateway/src/thread/result.rs` `refusal_mapping` answers `target_closed` as `not_resumable` with a next action; the eval-form `thread_create` hint is carried now that mhc has `thread_create`. Test: `a_row_its_closed_session_handed_back_reads_not_delivered`. |
 | #14273 closed intake settle (a397780f93) | gap | The intake ledger columns exist (v12, PR #86); settling queued intake on a close needs the intake consumer and the wake carrier (#13037, thread-wake). |
 | b4f841607a (no PR) | port | `crates/omo/components/maho-omo-gateway/src/thread/relay.rs` inbound `binding_inactive` and `unsupported` refusals name the connector's next step. |
 

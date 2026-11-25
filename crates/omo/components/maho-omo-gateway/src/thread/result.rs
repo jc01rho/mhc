@@ -4,7 +4,8 @@
 
 use super::errors::{ThreadToolFailure, pair_loop_guard_next_action, thread_tool_failure};
 use super::types::{
-    DeliveryRow, DeliveryState, GatewayDeliveryDelivery, GatewayDeliveryResult, GatewayEndpointKind,
+    DeliveryRow, DeliveryState, DeliveryWait, GatewayDeliveryDelivery, GatewayDeliveryResult,
+    GatewayEndpointKind,
 };
 
 /// How a refused row's reason maps onto the tool taxonomy.
@@ -28,7 +29,7 @@ pub fn refusal_mapping(reason: Option<&str>) -> (&'static str, &'static str) {
         ),
         Some("target_closed") => (
             "not_resumable",
-            "The thread was closed before it read this message; reopen it and send again if it still matters.",
+            "The thread was closed before it read this message; reopen it (tool.thread_create({ thread }) in an eval cell) and send again if it still matters.",
         ),
         Some("superseded") => (
             "not_resumable",
@@ -57,6 +58,20 @@ fn error(
             details: Some(serde_json::json!({ "delivery_id": delivery_id })),
         },
     }
+}
+
+/// What a row the receiver admitted to its queue waits on, if anything: the hold it was kept under, or the approval its
+/// receiver was parked on (`admittedWait`). A row carries no stamped sender device here, so the wait names none.
+pub fn admitted_wait(row: &DeliveryRow) -> Option<DeliveryWait> {
+    let kind = if row.admission_kind.as_deref() == Some("held") {
+        Some("hold")
+    } else {
+        row.wait_kind.as_deref()
+    };
+    kind.map(|kind| DeliveryWait {
+        kind: kind.to_owned(),
+        device: None,
+    })
 }
 
 /// `resultFromRow`: the outcome the sender reads, read back from the target's row.
@@ -91,6 +106,7 @@ pub fn result_from_row(
             }),
             _ => ok(GatewayDeliveryDelivery::Queued {
                 queue_position: queue_position.max(1),
+                waiting_on: admitted_wait(row),
             }),
         };
     }
@@ -125,6 +141,7 @@ pub fn result_from_row(
     }
     ok(GatewayDeliveryDelivery::Queued {
         queue_position: queue_position.max(1),
+        waiting_on: None,
     })
 }
 

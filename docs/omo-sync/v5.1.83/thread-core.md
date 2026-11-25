@@ -11,9 +11,9 @@ Counts computed programmatically from the per-PR rows below (`direct` included),
 | verdict | rows |
 |---|---:|
 | port | 22 |
-| gap | 3 |
+| gap | 2 |
 | n/a | 2 |
-| port and gap (own half ported, other half in a sibling track) | 1 |
+| port and gap (own half ported, other half in a sibling track) | 2 |
 | total | 28 |
 
 One row per upstream PR, or per commit group where a change carries no PR number; every non-merge commit in the range that touches these paths is named in exactly one row.
@@ -28,7 +28,7 @@ None of these rows changes the gateway store schema: mhc's gateway store stops a
 |---|---|---|
 | #14755 `7eda4e2d07` | port | The thread SDK answers a control's typed refusal as itself, as the tools do: `sdk.rs` `send` maps `GatewayDeliveryResult::Error` into the call's error answer instead of lifting it. |
 | #14616 `6b636d0bb9`, `32f17cc8de`, `b087c3cfcf` | port | A script's send reaches a session on another device as the person's own input (`person:` principal, `sdk.rs`); the SDK reads the account's other devices by default; the senpi projector loads from its own module so the SDK bundle stays one file (`component.rs`). |
-| no-PR `d9f50119d7` | port | Distinguish same-key create replays from first creates: `tools.rs` idempotency replay answers `deduplicated: true` on a repeated `thread_create` ok. |
+| no-PR `d9f50119d7` | port/gap | Distinguish same-key create replays from first creates: the create half is ported (`control/create.rs` answers a replay found by its key-derived thread id `deduplicated: true`, `thread-control.md` #14665); a stored tool result replayed `deduplicated: true` needs the tool-receipt wrapper, which `tools.rs` does not have (gap, `thread-control.md`). |
 | no-PR `1c280530f6` | port | Opt-in diagnostics for failed read RPCs: `live_surface.rs` reports the failure path in the read result instead of swallowing it. |
 | no-PR `649186c0df` | port | Preserve silent lookup reasons: `tools/internals.rs` keeps the probe's silent reason through the address resolution failure. |
 | no-PR `80d5731668` | port | Restore model state when the thinking suffix is refused and document both outcomes: `live_surface.rs`, `ports.rs` `ThreadHostSession` / `ThreadControl` restoration path. |
@@ -38,9 +38,9 @@ None of these rows changes the gateway store schema: mhc's gateway store stops a
 | #14430 `4c123c6ec1`, `0098c7729e`, `293610e2a2` | port | Drop an ended session's streak state; `operator_alerts` is read once from the user layer: `component.rs` alert wiring reads `user` settings only and `tools.rs` `sendAs` surfaces caller name in `thread_send`. |
 | #14428 `7baf0c1da4` | port | Steer reserve, collapse key and backlog facts for a target that stops taking its queue: `backlog.rs` is ported by thread-gateway; `read_ops.rs`/`thread_row.rs` expose `TargetBacklog` facts on `thread_list` rows (`backlog`). |
 | #14305 | gap | `resolveAddress`, `resolveStoredSession`, `replyOnDevice`, `resolveAcross` and the account-wide resolver belong to `thread-address` (its own track) once `thread-address-core` `resolve_address` lands here; `thread-core`'s half (`rowName`-based naming in `read_ops.rs`, `thread_row.rs`) is ported below, the cross-device half waits on `thread-address`. Memo (thread-address track): the account-wide resolver (`resolve_address` over `RemoteThreadSurface` ports, `resolve_on_device`, `pinned`, `probe_across`) is ported; the thread tools still resolve through the local ladder until a live surface is wired. |
-| #14394 `ca6a781cee` | n/a | A remote create whose new session the device's route does not reach is refused with nothing left: `thread_create` is not wired in mhc (remote/remote-create path owned by `thread-remote`/`thread-wake`). |
+| #14394 `ca6a781cee` | n/a | A remote create whose new session the device's route does not reach is refused with nothing left: the create exists now (`thread-control.md` #14394, `confirm_reach` is passed), but the remote leg is `RelaySessionHost`, thread-remote's. |
 | #14355 `#14339` `640d1bd2ce` | n/a | Formatting of TS merge resolutions; no Rust semantics. |
-| #14363 `b41242db44`, `0fcdd7cd47`, `f1ec5e79ae` | gap | `thread_create` first prompt admitted to a queue and the wake memory floor: `thread_create` is not ported in mhc. |
+| #14363 `b41242db44`, `0fcdd7cd47`, `f1ec5e79ae` | port | `thread_create` first prompt admitted to a queue is ported (`control/create.rs`, `result.rs` `admitted_wait`, `thread-control.md` #14363); the wake memory floor is ported by the wake runtime (`wake/memory_headroom.rs`, `thread-wake.md` #14363). |
 | #14333 `484cafd3b2`, `d82e7a2436`, `fc22f87e44` | port | One shared default delivery `auto` on every send surface and an idle start reports `effective=start`: `DEFAULT_THREAD_DELIVERY` in `tools.rs`/`ports.rs`; `gateway.rs` effective mode. |
 | #14322 (#14328) series `4b23044c34`, `cc41f926b0`, `bff7f45c76`, `0bb0d1a7c7`, `7b5ea02f79`, `1fd262161a`, `0a1fb1001d`, `ea62ff8e94`, `71fd48e112`, `372ab20d96` | port | The thread SDK resolves every address through the shared `resolveAddress` module: `sdk.rs` `locate`/`send`/`bind` use `resolve_address` over this device's book per address part; store-only operations resolve locally first and consult the account only on a local `not_found`. |
 | #14313 `336f5fa4b9` | port | `thread_close { graceful }` drains the turn and answers every unread message: ported by `thread-control` #68 (`close_options`, `close_thread_with_options`, TUI graceful-only refusal); `tools.rs` `close_body` already passes `close_options(value)`. The `session_shutdown { closed }` hook and `thread_close { graceful }` control wiring wait on `senpi#7046`'s session-closed record (mahocore gap). |
@@ -69,4 +69,4 @@ New or extended cases, all under `crates/omo/components/maho-omo-gateway`, named
 
 ## Seen, not changed here
 
-- `thread_create`, `thread_handoff`'s launch flow, worktrees, permission presets and the `gateway::delivery_view`/`admitted_wait` half of #14305 remain gaps until `thread-remote`/`thread-wake` wire `thread_create` (they are named in that track's ledger).
+- `thread_create` is ported for this device (`thread-control.md`, "The `thread_create` subsystem in mhc"); `thread_handoff`'s launch flow, worktrees and the cross-device half of #14305 remain gaps until `thread-remote` wires the account surface.

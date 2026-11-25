@@ -489,6 +489,46 @@ pub fn resolve_target(
     Err(not_found(target, scope, &visible))
 }
 
+/// A new name must not be one a visible thread already carries (`checkNameConflict`): the collision is data, so the
+/// caller picks a new name or reuses the thread it names by id.
+pub fn check_name_conflict(
+    entries: &[ThreadAddressEntry],
+    name: &str,
+) -> Result<(), Box<ThreadToolFailure>> {
+    if has_unfoldable_control(name) {
+        return Err(address_error(
+            "invalid_arguments",
+            "The thread name contains control characters.",
+            "Remove the control characters and retry, or pass an address from thread_list (tool.thread_list() in an eval cell).",
+            None,
+        ));
+    }
+    let normalized = normalize_thread_name(name);
+    if normalized.is_empty() {
+        return Err(address_error(
+            "invalid_arguments",
+            "The thread name is empty.",
+            "Pass a thread value or a unique name from thread_list (tool.thread_list() in an eval cell) as the thread name.",
+            None,
+        ));
+    }
+    let Some(conflict) = entries
+        .iter()
+        .find(|entry| normalize_thread_name(&entry.name) == normalized)
+    else {
+        return Ok(());
+    };
+    Err(address_error(
+        "name_conflict",
+        format!(
+            "A thread named \"{}\" ({}) already exists.",
+            conflict.name, conflict.thread_id
+        ),
+        "Call thread_list (tool.thread_list() in an eval cell) to reuse that thread by id, or pass a different name for the new thread.",
+        Some(&[conflict]),
+    ))
+}
+
 /// `self` is the caller's own entry, found by its durable id or a session id the host gave it; the caller's identity is
 /// never taken from an argument.
 pub fn resolve_self<'a>(

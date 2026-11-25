@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::contracts_state::{ThreadActivity, ThreadModel, ThreadRetryWait, ThreadState};
 use super::errors::ThreadToolFailure;
 use super::store_relay_ops::{BindingRecord, OutboxRow};
+use super::types::DeliveryWait;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -130,10 +131,21 @@ pub struct ThreadResultSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ThreadDelivery {
-    Steered { turn_id: String },
-    Started { turn_id: String },
-    Queued { queue_position: i64 },
-    QueuedOffline { queue_position: i64 },
+    Steered {
+        turn_id: String,
+    },
+    Started {
+        turn_id: String,
+    },
+    Queued {
+        queue_position: i64,
+        /// What the receiver waits on while the delivery is queued (#13014).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waiting_on: Option<DeliveryWait>,
+    },
+    QueuedOffline {
+        queue_position: i64,
+    },
 }
 
 /// What a send through the session gateway adds to a delivery result: the durable `delivery_id` and the lane the

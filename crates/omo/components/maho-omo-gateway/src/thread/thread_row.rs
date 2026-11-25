@@ -6,6 +6,7 @@
 //! and the last entry's time, and the surface.
 
 use maho_thread_address_core::{NamedRow, row_name};
+use serde_json::Value;
 
 use super::address_book::{AddressEntry, HostSessionStatus};
 use super::contracts_results::{ThreadResultSummary, ThreadStatus, thread_link};
@@ -131,6 +132,18 @@ pub fn degraded_row(entry: &AddressEntry) -> ThreadResultSummary {
         skills: None,
     };
     row_named(row, entry.name.as_deref(), entry.title.as_deref())
+}
+
+/// The `thread_create` answer for a session an open answered (or found live already): flat, `thread` first
+/// (`openedResult`).
+pub fn opened_result(opened: &ThreadResultSummary, deduplicated: bool) -> Value {
+    let mut result = serde_json::Map::new();
+    result.insert("kind".to_owned(), Value::String("ok".to_owned()));
+    if let Ok(Value::Object(row)) = serde_json::to_value(opened) {
+        result.extend(row);
+    }
+    result.insert("deduplicated".to_owned(), Value::Bool(deduplicated));
+    Value::Object(result)
 }
 
 #[cfg(test)]

@@ -12,10 +12,10 @@ Counts computed programmatically from the per-PR rows below, not by hand.
 
 | verdict | rows |
 |---|---:|
-| port | 14 |
+| port | 15 |
 | ported | 0 |
 | n/a | 1 |
-| gap | 2 |
+| gap | 1 |
 | total | 17 |
 
 One row per upstream PR, or per commit group where a change carries no PR number; a PR or commit group whose slice is
@@ -63,7 +63,7 @@ Not ported, each for a named reason:
 | #14383 runtime nothing_queued drained marks (`aff3383d15`) | port | `wake/runtime.rs` `RuntimeInner::wake` reports the drained marks when a wake answers `nothing_queued` (the rows a close settled during that wake), and `wake/consumer_start.rs` reports them after the startup sweep. Tests: `tests/wake_runtime_tests.rs` `given_a_delivery_from_another_device_queued_before_a_close_on_request_when_the_session_is_woken_then_it_answers_nothing_queued_and_its_drained_mark_is_reported`, `tests/wake_carrier_tests.rs` `given_rows_queued_for_a_session_that_was_then_closed_on_request_...`. |
 | #14363 memory floor (`f1ec5e79ae`, `0fcdd7cd47`, `abd077fd6a`, `b41242db44`) | port | `crates/omo/components/maho-omo-gateway/src/thread/wake/memory_headroom.rs` `WAKE_SESSION_COST_BYTES` (409 MiB) and `read_wake_memory_floor` (1/4 of cgroup v2 limit / `MemTotal`, capped at 1 GiB, floored at 409 MiB) with 6 unit tests. |
 | #14363 carrier floor (`f1ec5e79ae`, `0fcdd7cd47`, `abd077fd6a`, `b41242db44`) | port | `wake/carrier.rs` reads `memory_floor` (production: `read_default_wake_memory_floor`, `WAKE_MEMORY_FLOOR_BYTES` when absent) before a start and defers with `host_memory_pressure { available_bytes, floor_bytes }`. Tests: `given_a_768_mib_cgroup_whose_floor_is_one_wakes_cost_and_500_mib_of_room_...`, `given_room_below_that_floor_...`. |
-| #14363 create answer (`0fcdd7cd47`, `b41242db44`) | gap | `control/create.ts` answering a first prompt stored for a woken session as `queued` waiting on the wake: mhc's `thread_create` (`component.rs`) opens the session and records its creator only, with no first-prompt answer (thread-control). |
+| #14363 create answer (`0fcdd7cd47`, `b41242db44`) | port | `control/create.ts` answering a first prompt stored for a woken session as `queued` waiting on the wake: ported by the thread-create track. `thread/control/create.rs` `prompt_that_ran` answers `queued` with `waiting_on`, which `result.rs` `admitted_wait` reads off the stored row (`wait_kind`, or `hold` for a held admission). Test: `tests/thread_create_tests.rs` `a_prompt_stored_for_a_wake_is_queued_with_a_next_action_not_to_send_it_again` (a faux sender answers the stored row; the wake carrier itself is exercised by `wake_*_tests.rs`). `thread-control.md` #14363. |
 | #14355, #14339 (`640d1bd2ce`) | n/a | Formatting of TS merge resolutions in `wake/parked-resume.test.ts`. |
 | `07bec8317f`, `b7a993b53e` (no PR) | port | `wake/carrier.rs` blocks a wake on a stored hold only when `session_wait_types.rs` `wait_blocks_delivery` says so (a held state made only of `unattended` holds blocks nothing), and `store_woken_ops.rs` `waiting_on` reads the same predicate. Tests: `tests/wake_carrier_tests.rs` `given_a_session_the_carrier_handed_back_held_unattended_when_a_later_wake_comes_then_the_stored_hold_does_not_block_it`, `tests/wake_store_tests.rs` `given_stored_waits_...`. |
 | `01fa0b0220`, `a7ad9d1639` memory headroom probe (no PR) | port | `crates/omo/components/maho-omo-gateway/src/thread/wake/memory_headroom.rs` `WAKE_MEMORY_FLOOR_BYTES` (1 GiB) and `read_host_memory_headroom` (min of Linux cgroup v2 room and `/proc/meminfo` `MemAvailable`) with 5 unit tests. |
