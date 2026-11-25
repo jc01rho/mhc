@@ -40,6 +40,11 @@ pub enum WorkerRequest {
         delivery_id: String,
         reason: RefusalReason,
     },
+    RefuseReturned {
+        now: i64,
+        delivery_id: String,
+        reason: RefusalReason,
+    },
     DeliveryView {
         delivery_id: String,
     },
@@ -49,6 +54,9 @@ pub enum WorkerRequest {
     },
     IsReferenced {
         durable_id: String,
+    },
+    Backlogs {
+        targets: Vec<String>,
     },
     JournalMode,
     Stats,
@@ -131,6 +139,14 @@ pub fn handle_request(store: &dyn GatewayStoreApi, request: WorkerRequest) -> Wo
             Ok(changed) => value(&changed),
             Err(error) => WorkerReply::error(error.message(), error.code()),
         },
+        WorkerRequest::RefuseReturned {
+            now,
+            delivery_id,
+            reason,
+        } => match store.refuse_returned(now, &delivery_id, reason) {
+            Ok(changed) => value(&changed),
+            Err(error) => WorkerReply::error(error.message(), error.code()),
+        },
         WorkerRequest::DeliveryView { delivery_id } => match store.delivery_view(&delivery_id) {
             Ok(view) => value(&view),
             Err(error) => WorkerReply::error(error.message(), error.code()),
@@ -144,6 +160,10 @@ pub fn handle_request(store: &dyn GatewayStoreApi, request: WorkerRequest) -> Wo
         },
         WorkerRequest::IsReferenced { durable_id } => match store.is_referenced(&durable_id) {
             Ok(referenced) => value(&referenced),
+            Err(error) => WorkerReply::error(error.message(), error.code()),
+        },
+        WorkerRequest::Backlogs { targets } => match store.backlogs(&targets) {
+            Ok(backlogs) => value(&backlogs),
             Err(error) => WorkerReply::error(error.message(), error.code()),
         },
         WorkerRequest::JournalMode => match store.journal_mode() {

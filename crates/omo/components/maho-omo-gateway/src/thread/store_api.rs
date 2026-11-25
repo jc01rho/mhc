@@ -4,10 +4,12 @@
 //! connection and the worker protocol serializes calls onto it.
 
 pub type BindingPageResult = Result<RelayOutcome<(Vec<BindingRecord>, Option<String>)>, StoreError>;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::Value;
 
+use super::backlog::TargetBacklog;
 use super::store_extensions::{
     DeclaredSessionOp, SessionCaller, StoreExtensionRegistration, StoreExtensionResult,
 };
@@ -36,6 +38,13 @@ pub trait GatewayStoreApi: Send + Sync {
     fn claim(&self, request: &ClaimRequest) -> Result<ClaimOutcome, StoreError>;
     fn record_outcome(&self, request: &RecordOutcomeRequest) -> Result<ClaimOutcome, StoreError>;
     fn refuse_queued(
+        &self,
+        now: i64,
+        delivery_id: &str,
+        reason: RefusalReason,
+    ) -> Result<bool, StoreError>;
+    /// A delivery its session took in and handed back unread at a graceful close (omo#14313); never an applied row.
+    fn refuse_returned(
         &self,
         now: i64,
         delivery_id: &str,
@@ -75,6 +84,11 @@ pub trait GatewayStoreApi: Send + Sync {
         root_id: Option<&str>,
     ) -> Result<Vec<DeliveryRow>, StoreError>;
     fn is_referenced(&self, durable_id: &str) -> Result<bool, StoreError>;
+    /// Each session's undelivered deliveries (omo#14428), keyed by durable id; a session holding none is absent.
+    fn backlogs(
+        &self,
+        durable_ids: &[String],
+    ) -> Result<BTreeMap<String, TargetBacklog>, StoreError>;
     fn journal_mode(&self) -> Result<String, StoreError>;
     fn stats(&self) -> GatewayStoreStats;
 

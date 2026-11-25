@@ -99,6 +99,8 @@ pub enum RefusalReason {
     TurnConflict,
     Expired,
     BindingClosed,
+    /// The target was closed after the row was taken in, before it read the message (omo#14273, #14313).
+    TargetClosed,
 }
 
 impl RefusalReason {
@@ -108,6 +110,7 @@ impl RefusalReason {
             Self::TurnConflict => "turn_conflict",
             Self::Expired => "expired",
             Self::BindingClosed => "binding_closed",
+            Self::TargetClosed => "target_closed",
         }
     }
 
@@ -117,6 +120,7 @@ impl RefusalReason {
             "turn_conflict" => Some(Self::TurnConflict),
             "expired" => Some(Self::Expired),
             "binding_closed" => Some(Self::BindingClosed),
+            "target_closed" => Some(Self::TargetClosed),
             _ => None,
         }
     }
