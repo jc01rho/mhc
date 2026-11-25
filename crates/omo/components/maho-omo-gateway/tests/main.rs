@@ -17,3 +17,15 @@ mod run_alerts_tests;
 mod store_extension_tests;
 #[path = "thread_control_tests.rs"]
 mod thread_control_tests;
+#[path = "wake_carrier_tests.rs"]
+mod wake_carrier_tests;
+#[path = "wake_pending_sweep_tests.rs"]
+mod wake_pending_sweep_tests;
+#[path = "wake_runtime_tests.rs"]
+mod wake_runtime_tests;
+#[path = "wake_session_waker_tests.rs"]
+mod wake_session_waker_tests;
+#[path = "wake_store_tests.rs"]
+mod wake_store_tests;
+#[path = "wake_support.rs"]
+mod wake_support;

@@ -10,8 +10,8 @@ Counts computed programmatically from the per-PR rows below (`direct` included),
 
 | verdict | rows |
 |---|---:|
-| port | 21 |
-| gap | 4 |
+| port | 22 |
+| gap | 3 |
 | n/a | 2 |
 | port and gap (own half ported, other half in a sibling track) | 1 |
 | total | 28 |
@@ -47,7 +47,7 @@ None of these rows changes the gateway store schema: mhc's gateway store stops a
 | #14304 `#14315` `93d376f3c4` | port | A listing of archived threads reports the files it left unread; the incomplete-device refusal no longer says the device did not answer: `read_ops.rs` `inactive_dropped` / `unanswered_endpoints` / `listing: incomplete`. |
 | #14278 `67a4f3a199`, `039e8efc29` | port | `thread_list` rows name the engine version of their host and carry a running thread's provider retry wait as `waiting_on`: `live_surface.rs` reads `get_protocol_info` `engine_version`; `thread_state.rs` `retryWait`; `thread_row.rs` `engine_version`/`waiting_on`; `ports.rs` `ThreadHostSession.engine_version`/`waiting`. |
 | #14283 `395b2894ce` | port | An errored message with no content never renders the whole message with its uncapped error: new `read_item.rs` caps the provider `errorMessage` at 500 chars and `read_ops.rs` renders transcript items through `readItem`. |
-| #14273 `a397780f93` | gap | A close on request settles the queued intake it superseded: the intake ledger columns exist since schema v12 (gateway-schema track, PR #86); settling them needs the intake consumer and the wake carrier (#13037, `thread-wake`). |
+| #14273 `a397780f93` | port | A close on request settles the queued intake it superseded: the wake runtime settles rows queued at or before the close as `target_closed` before it opens anything (`wake/carrier.rs` `open_allowance`, `wake/pending_sweep.rs`, both through `wake/closed_intake.rs`), the consumer start passes each session's `closed_at` to its sweep and reports the drained marks (`wake/consumer_start.rs`), and a wake that settled them reports them too (`wake/runtime.rs`); tests in `tests/wake_carrier_tests.rs`, `tests/wake_pending_sweep_tests.rs`, `tests/wake_runtime_tests.rs` (thread-wake track). |
 | #14294 `df9fe89b0a` | port | Monitor RPC targets take thread addresses and device names: `tools/monitor_target.rs` `createMonitorTargetResolver` / `installMonitorTargetResolution` rewrites `<device>/<thread>` through `resolve_address` before senpi arms the watch. |
 | #14226 `2a6081fce4` | port | Bound `thread_send`'s reply-route device read by the call budget: `tools.rs` `this_device_of` reads `accountDevices` inside `withinCallBudget`. |
 | #14180 `3abe6eef08` | port | An older entry cursor answers `cursor_stale`: `reader.rs` treats retired `t2` cursors as this reader's cursor and answers `cursor_stale`. |

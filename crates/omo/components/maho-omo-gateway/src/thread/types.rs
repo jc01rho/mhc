@@ -112,6 +112,8 @@ pub enum RefusalReason {
     TurnConflict,
     Expired,
     BindingClosed,
+    /// The sending device lost its admission before the row it sent was taken in (omo#13037 design 5.6).
+    SenderNotAdmitted,
     /// The target was closed after the row was taken in, before it read the message (omo#14273, #14313).
     TargetClosed,
     /// A newer delivery from the same sender under the same collapse key replaced it before the target took it
@@ -126,6 +128,7 @@ impl RefusalReason {
             Self::TurnConflict => "turn_conflict",
             Self::Expired => "expired",
             Self::BindingClosed => "binding_closed",
+            Self::SenderNotAdmitted => "sender_not_admitted",
             Self::TargetClosed => "target_closed",
             Self::Superseded => "superseded",
         }
@@ -137,6 +140,7 @@ impl RefusalReason {
             "turn_conflict" => Some(Self::TurnConflict),
             "expired" => Some(Self::Expired),
             "binding_closed" => Some(Self::BindingClosed),
+            "sender_not_admitted" => Some(Self::SenderNotAdmitted),
             "target_closed" => Some(Self::TargetClosed),
             "superseded" => Some(Self::Superseded),
             _ => None,

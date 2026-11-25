@@ -15,6 +15,9 @@ pub const MAX_HOPS: i64 = 4;
 pub const PAIR_BUCKET_BURST: f64 = 8.0;
 pub const PAIR_BUCKET_REFILL_MS: f64 = 5_000.0;
 
+/// How long a carrier's lease on a woken session lasts (omo#13037 A3.1.3).
+pub const WAKE_LEASE_MS: i64 = 60_000;
+
 pub const MAX_CAUSAL_DELIVERIES: i64 = 64;
 
 pub const QUEUED_TTL_MS: i64 = 24 * 60 * 60 * 1000;

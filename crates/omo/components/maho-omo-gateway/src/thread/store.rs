@@ -87,7 +87,7 @@ impl SqliteGatewayStore {
 
     /// Runs one store op on the connection inside the read snapshot its schema check opens (omo#14622 review M4,
     /// M7): a store another binary migrated past this one since it was opened is refused typed before the op reads.
-    fn checked<T>(
+    pub(crate) fn checked<T>(
         &self,
         op: impl FnOnce(&StoreContext) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
