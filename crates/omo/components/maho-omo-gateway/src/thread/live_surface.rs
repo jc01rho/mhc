@@ -807,6 +807,26 @@ impl ThreadHost for LiveThreadSurface {
         })
     }
 
+    fn open_host_session(
+        &self,
+        params: Value,
+        name: Option<String>,
+    ) -> BoxFuture<Result<ThreadHostSession, String>> {
+        let opening = self.open_session(params, name.as_deref());
+        let socket = self.legacy.clone();
+        Box::pin(async move {
+            let opened = opening.await?;
+            let controls = accepted_controls(GatewayEndpointKind::RpcHost, None);
+            ThreadHostSession::from_listing(
+                &opened,
+                &socket,
+                GatewayEndpointKind::RpcHost,
+                &controls,
+            )
+            .ok_or_else(|| "open_session answered no session".to_owned())
+        })
+    }
+
     fn session_port(&self, session: &ThreadHostSession) -> Arc<dyn SessionCommandPort> {
         let mut terminal_commands: std::collections::BTreeSet<String> = TUI_READ_COMMANDS
             .iter()

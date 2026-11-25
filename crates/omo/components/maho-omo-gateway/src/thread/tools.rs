@@ -125,7 +125,7 @@ fn collapse_key_parameter() -> Value {
     })
 }
 
-async fn deliver_thread_send(
+pub(crate) async fn deliver_thread_send(
     options: &ThreadToolsOptions,
     caller_id: String,
     caller_name: Option<String>,
@@ -474,6 +474,7 @@ pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> 
     }
 
     tools.extend(super::control_tools::create_control_tools(&options));
+    tools.push(super::create_tool::thread_create_tool(&options));
     tools
 }
 

@@ -13,10 +13,13 @@ pub mod backlog;
 pub mod component;
 pub mod constants;
 pub mod consumer;
+pub mod contracts_create_params;
+pub mod contracts_permission_presets;
 pub mod contracts_results;
 pub mod contracts_state;
 pub mod control;
 pub mod control_tools;
+pub mod create_tool;
 pub mod decision;
 pub mod drain;
 pub mod endpoint_controls;
@@ -28,6 +31,7 @@ pub mod extension_transaction;
 pub mod gateway_replies;
 pub mod graceful_close_returns;
 pub mod host_view;
+pub mod initial_skills;
 pub mod intake_admission;
 pub mod lazy_live_surface;
 pub mod live_surface;
@@ -66,6 +70,7 @@ pub mod tools;
 pub mod types;
 pub mod wake;
 pub mod woken_types;
+pub mod worktree;
 
 pub use adapter::{
     Admission, DeliverySender, DrainWakeEvent, EndpointLiveness, GatewayAdmissionKind,

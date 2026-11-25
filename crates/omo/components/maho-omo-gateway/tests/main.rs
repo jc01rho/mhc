@@ -17,6 +17,8 @@ mod run_alerts_tests;
 mod store_extension_tests;
 #[path = "thread_control_tests.rs"]
 mod thread_control_tests;
+#[path = "thread_create_tests.rs"]
+mod thread_create_tests;
 #[path = "wake_carrier_tests.rs"]
 mod wake_carrier_tests;
 #[path = "wake_pending_sweep_tests.rs"]

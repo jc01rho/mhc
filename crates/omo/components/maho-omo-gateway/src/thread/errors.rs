@@ -31,6 +31,7 @@ pub const THREAD_ERROR_CODES: &[&str] = &[
     "idempotency_in_progress",
     "idempotency_uncertain",
     "delivered_unconfirmed",
+    "prompt_not_started",
     "approval_unavailable",
     "approval_route_locked",
     "partial_commit",
@@ -109,6 +110,28 @@ pub fn thread_tool_failure(
         next_action: next_action.into(),
         details,
     }
+}
+
+/// The one command that updates any omo build: a release updates itself, a source build answers with its own rebuild
+/// command (omo-native `compile-entry.ts`).
+pub const UPDATE_COMMAND: &str = "omo update";
+
+/// The gateway store refuses to open because a newer omo build on this machine already migrated it past the schema this
+/// build knows (`GatewaySchemaVersionError`). The refusal stands, since reading a newer schema could corrupt it; this is
+/// the one failure that names both versions and the remedy (`gatewaySchemaRefusal`).
+pub fn gateway_schema_refusal(found: i64, supported: i64) -> ThreadToolFailure {
+    thread_tool_failure(
+        "gateway_schema_too_new",
+        format!(
+            "This omo build reads gateway schema {supported}, but this machine's gateway store is at schema {found}: a newer omo build already upgraded it. Nothing was sent or changed."
+        ),
+        format!("Update omo with `{UPDATE_COMMAND}`, restart this session, then retry."),
+        Some(serde_json::json!({
+            "gateway_schema": found,
+            "binary_schema": supported,
+            "update_command": UPDATE_COMMAND,
+        })),
+    )
 }
 
 /// The pair loop guard (`store_ops.rs` `take_pair_token`): one sender spent its burst to one target within the

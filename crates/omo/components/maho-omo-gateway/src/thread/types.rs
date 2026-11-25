@@ -484,13 +484,33 @@ pub struct RecordOutcomeRequest {
     pub outcome: OutcomeRecord,
 }
 
+/// What the receiver is parked on while a delivery waits (omo#13037 5.1): an approval (a tool permission or question) a
+/// human must answer on that device, a hold on the session, or the wake of a session no engine runs. `device` is the
+/// account device it waits on; absent when this install has no device identity (#13014).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryWait {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GatewayDeliveryDelivery {
-    Started { turn_id: String },
-    Steered { turn_id: String },
-    Queued { queue_position: i64 },
-    QueuedOffline { queue_position: i64 },
+    Started {
+        turn_id: String,
+    },
+    Steered {
+        turn_id: String,
+    },
+    Queued {
+        queue_position: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waiting_on: Option<DeliveryWait>,
+    },
+    QueuedOffline {
+        queue_position: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
