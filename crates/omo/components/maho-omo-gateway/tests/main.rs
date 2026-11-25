@@ -21,6 +21,8 @@ mod thread_control_tests;
 mod wake_carrier_tests;
 #[path = "wake_pending_sweep_tests.rs"]
 mod wake_pending_sweep_tests;
+#[path = "wake_runtime_tests.rs"]
+mod wake_runtime_tests;
 #[path = "wake_session_waker_tests.rs"]
 mod wake_session_waker_tests;
 #[path = "wake_store_tests.rs"]

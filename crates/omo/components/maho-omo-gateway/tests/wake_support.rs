@@ -167,7 +167,8 @@ fn open_store(dir: &tempfile::TempDir, clock: &Arc<AtomicI64>) -> Arc<SqliteGate
 }
 
 /// Writes a session file the way the engine names it (`<sessions>/<project dir>/<timestamp>_<id>.jsonl`), header
-/// first; `header` fields override the defaults.
+/// first; `header` fields override the defaults. The header names the id both as the engine writes it (`id`) and as
+/// this crate's disk reader (`address_book::read_disk_session`) reads it (`session_id`).
 pub fn write_session_file(
     sessions: &Path,
     durable_id: &str,
@@ -181,6 +182,7 @@ pub fn write_session_file(
         "type": "session",
         "version": 3,
         "id": durable_id,
+        "session_id": durable_id,
         "timestamp": "2026-11-12T00:00:00.000Z",
         "cwd": "/work/project",
     });

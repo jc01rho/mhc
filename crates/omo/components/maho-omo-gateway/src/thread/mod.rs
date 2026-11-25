@@ -12,6 +12,7 @@ pub mod attachment_fence;
 pub mod backlog;
 pub mod component;
 pub mod constants;
+pub mod consumer;
 pub mod contracts_results;
 pub mod contracts_state;
 pub mod control;
