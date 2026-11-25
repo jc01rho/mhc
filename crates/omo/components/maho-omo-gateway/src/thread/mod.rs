@@ -5,6 +5,7 @@
 //! module here (`gateway/<name>.ts` -> `thread/<name>.rs`).
 
 pub mod adapter;
+pub mod address;
 pub mod address_book;
 pub mod addressing;
 pub mod attachment_fence;
