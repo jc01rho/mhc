@@ -79,6 +79,8 @@ impl DeliveryState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectiveLane {
+    /// The delivery began a turn on an idle session (omo#14333).
+    Start,
     Steer,
     FollowUp,
 }
@@ -86,6 +88,7 @@ pub enum EffectiveLane {
 impl EffectiveLane {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Start => "start",
             Self::Steer => "steer",
             Self::FollowUp => "follow_up",
         }

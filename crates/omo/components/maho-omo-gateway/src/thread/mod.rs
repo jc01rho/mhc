@@ -77,7 +77,10 @@ pub use errors::{ThreadErrorCode, ThreadToolFailure, thread_tool_failure};
 pub use provenance::{delivery_provenance_line, delivery_sender, render_delivery_text};
 pub use provenance_record::{PROVENANCE_MIGRATION, is_provenance};
 pub use provenance_resolver::{ProvenanceRuntime, ProvenanceWorkspace, resolve_provenance};
-pub use schema::{GATEWAY_MIGRATIONS, GATEWAY_TABLES, GatewaySchemaVersionError};
+pub use schema::{
+    GATEWAY_MIGRATIONS, GATEWAY_READER_FLOOR_KEY, GATEWAY_TABLE_REBUILDS, GATEWAY_TABLES,
+    GatewaySchemaVersionError, gateway_reader_floor, gateway_rebuild_table,
+};
 pub use store::{GatewayStoreOptions, SqliteGatewayStore, create_gateway_store};
 pub use store_api::{GatewayStoreApi, SharedGatewayStore};
 pub use store_extensions::{

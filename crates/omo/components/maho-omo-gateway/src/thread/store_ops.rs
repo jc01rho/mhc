@@ -26,7 +26,10 @@ use super::constants::{
 };
 use super::errors::pair_loop_guard_message;
 use super::provenance_record::is_provenance;
-use super::schema::{GATEWAY_MIGRATIONS, GATEWAY_NEEDS_FK_OFF, GatewaySchemaVersionError};
+use super::schema::{
+    GATEWAY_MIGRATIONS, GATEWAY_READER_FLOOR_KEY, GatewaySchemaVersionError, gateway_reader_floor,
+    gateway_rebuild_table,
+};
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, DeliveryState, DeliveryTransition, EffectiveLane,
     EnqueueOutcome, EnqueueRequest, GatewayStoreConfig, GatewayStoreEvent, GatewayStoreStats,
@@ -533,6 +536,7 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
         .unwrap_or(super::types::GatewayDeliveryMode::Auto),
         mode_effective: row_opt_str(record, "mode_effective").and_then(|lane| {
             match lane.as_str() {
+                "start" => Some(EffectiveLane::Start),
                 "steer" => Some(EffectiveLane::Steer),
                 "follow_up" => Some(EffectiveLane::FollowUp),
                 _ => None,
@@ -702,15 +706,76 @@ pub fn schema_version(ctx: &StoreContext) -> Result<i64, StoreError> {
         .as_ref()
         .map(|row| row_i64(row, "user_version"))
         .unwrap_or(0);
-    if version > GATEWAY_MIGRATIONS.len() as i64 {
-        return Err(GatewaySchemaVersionError::new(
-            version,
-            GATEWAY_MIGRATIONS.len() as i64,
-            "Gateway",
-        )
-        .into());
+    let supported = GATEWAY_MIGRATIONS.len() as i64;
+    if version > supported {
+        // A store newer than this binary stays usable when the binary that migrated it recorded a reader floor this
+        // binary meets (omo#14382); otherwise, or with no floor recorded, it is refused typed.
+        let floor = stored_reader_floor(ctx)?;
+        if floor.is_none_or(|floor| floor > supported) {
+            return Err(GatewaySchemaVersionError::new(version, supported, "Gateway").into());
+        }
     }
     Ok(version)
+}
+
+/// The reader floor a store records, when it stores one that is a plain positive integer (omo#14382).
+///
+/// Anything else — an empty value, a padded or exponent form, a negative or zero one, or no `gateway_meta` table — is
+/// no floor: an unreadable floor must never admit a store this binary cannot read.
+pub fn stored_reader_floor(ctx: &StoreContext) -> Result<Option<i64>, StoreError> {
+    let tables = ctx.one(
+        "SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table' AND name = 'gateway_meta'",
+        &[],
+    )?;
+    if tables.as_ref().map(|row| row_i64(row, "n")).unwrap_or(0) == 0 {
+        return Ok(None);
+    }
+    let Some(found) = ctx.one(
+        "SELECT value FROM gateway_meta WHERE key = ?",
+        &[v_str(GATEWAY_READER_FLOOR_KEY)],
+    )?
+    else {
+        return Ok(None);
+    };
+    let floor = match found.get("value") {
+        Some(Value::Number(number)) => number.as_i64(),
+        Some(Value::String(text)) => text
+            .parse::<i64>()
+            .ok()
+            .filter(|floor| floor.to_string() == text.as_str()),
+        _ => None,
+    };
+    Ok(floor.filter(|floor| *floor > 0))
+}
+
+fn write_reader_floor(ctx: &StoreContext, version: i64) -> Result<(), StoreError> {
+    ctx.run(
+        "INSERT INTO gateway_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        &[
+            v_str(GATEWAY_READER_FLOOR_KEY),
+            v_str(gateway_reader_floor(version).to_string()),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Records this binary's reader floor on a store at exactly its schema that lacks it (one a binary from before the
+/// floor migrated); a store already carrying it takes no write lock.
+fn record_reader_floor(ctx: &StoreContext) -> Result<(), StoreError> {
+    let supported = GATEWAY_MIGRATIONS.len() as i64;
+    let wanted = gateway_reader_floor(supported);
+    let missing = || -> Result<bool, StoreError> {
+        Ok(schema_version(ctx)? == supported && stored_reader_floor(ctx)? != Some(wanted))
+    };
+    if !missing()? {
+        return Ok(());
+    }
+    transaction(ctx, "migrate", || {
+        if missing()? {
+            write_reader_floor(ctx, supported)?;
+        }
+        Ok(())
+    })
 }
 
 /// Applies pending migrations; a current store takes no write lock.
@@ -718,9 +783,13 @@ pub fn migrate(ctx: &StoreContext) -> Result<(), StoreError> {
     loop {
         let version = schema_version(ctx)?;
         if version >= GATEWAY_MIGRATIONS.len() as i64 {
-            return Ok(());
+            return record_reader_floor(ctx);
         }
-        let needs_foreign_keys_off = GATEWAY_NEEDS_FK_OFF.contains(&(version as usize));
+        // A CHECK-widening rebuild must run with foreign_keys OFF, which SQLite only honors when the pragma is set
+        // outside the transaction: dropping the rebuilt table would otherwise fire foreign-key actions from extension
+        // tables referencing it. The violation check runs before the bump commits, so a refused step stays put.
+        let rebuilt = gateway_rebuild_table(version);
+        let needs_foreign_keys_off = rebuilt.is_some();
         if needs_foreign_keys_off {
             ctx.exec("PRAGMA foreign_keys = OFF")?;
         }
@@ -732,19 +801,19 @@ pub fn migrate(ctx: &StoreContext) -> Result<(), StoreError> {
             for statement in GATEWAY_MIGRATIONS[current as usize] {
                 ctx.exec(statement)?;
             }
-            if needs_foreign_keys_off {
+            if let Some(table) = rebuilt {
                 let violations = ctx.all("SELECT parent FROM pragma_foreign_key_check", &[])?;
-                if violations
-                    .iter()
-                    .any(|row| row_str(row, "parent") == "bindings")
-                {
+                if violations.iter().any(|row| row_str(row, "parent") == table) {
                     return Err(StoreError::Message(format!(
-                        "gateway schema {} would leave a foreign-key violation referencing bindings; staying at v{current}",
+                        "gateway schema {} would leave a foreign-key violation referencing {table}; staying at v{current}",
                         current + 1
                     )));
                 }
             }
             ctx.exec(&format!("PRAGMA user_version = {}", current + 1))?;
+            // The floor commits with the version it belongs to, so no reader ever sees a raised version with a
+            // stale floor.
+            write_reader_floor(ctx, current + 1)?;
             Ok(true)
         });
         if needs_foreign_keys_off {
@@ -2061,6 +2130,342 @@ mod tests {
         assert!(
             ctx.conn.is_autocommit(),
             "a refused op leaves no snapshot open"
+        );
+    }
+
+    /// A store migrated only up to `version` (1-based), without the reader floor later steps record.
+    fn context_at_version(dir: &tempfile::TempDir, version: usize) -> StoreContext {
+        let mut config = StoreContext::test_config();
+        config.agent_dir = dir.path().to_string_lossy().into_owned();
+        let path = crate::paths::gateway_database_path(dir.path());
+        let conn = open_connection(&path, config.busy_timeout_ms).expect("open the store");
+        for (index, step) in GATEWAY_MIGRATIONS.iter().take(version).enumerate() {
+            let off = gateway_rebuild_table(index as i64).is_some();
+            if off {
+                conn.execute_batch("PRAGMA foreign_keys = OFF")
+                    .expect("fk off");
+            }
+            conn.execute_batch("BEGIN").expect("begin");
+            for statement in *step {
+                conn.execute_batch(statement).expect("step statement");
+            }
+            conn.execute_batch(&format!("PRAGMA user_version = {}", index + 1))
+                .expect("bump version");
+            conn.execute_batch("COMMIT").expect("commit");
+            if off {
+                conn.execute_batch("PRAGMA foreign_keys = ON")
+                    .expect("fk on");
+            }
+        }
+        StoreContext::new(conn, config, StoreContext::test_identity())
+    }
+
+    fn envelope_json(id: &str) -> String {
+        serde_json::json!({
+            "provenance": { "workspace": "w", "project": "p" },
+            "origin": { "session": "A" },
+            "actor": "A",
+            "via": [],
+            "root_id": "root-1",
+            "hop": 1,
+            "delivery_id": id,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn migrating_a_v10_store_walks_v11_through_v16_and_records_reader_floor_fourteen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = context_at_version(&dir, 10);
+        ctx.run(
+            "INSERT INTO deliveries (delivery_id, target_durable_id, seq, sender, envelope, body, bytes, mode_requested, mode_effective, state, root_id, hop, created_at, updated_at, expires_at, actor_user_id)
+             VALUES ('d-v10', 'lead', 1, 'session:a', ?1, 'from v10', 8, 'auto', 'follow_up', 'queued', 'root-1', 1, 10, 20, 30, 'user-1')",
+            &[v_str(envelope_json("d-v10"))],
+        )
+        .expect("seed v10 delivery");
+
+        migrate(&ctx).expect("migrate v10 -> v16");
+
+        assert_eq!(user_version(&ctx).expect("version"), 16);
+        assert_eq!(stored_reader_floor(&ctx).expect("stored floor"), Some(14));
+        for table in [
+            "woken_sessions",
+            "session_wait",
+            "wake_counts",
+            "intake_marks",
+            "intake_commands",
+        ] {
+            let owned = ctx
+                .one(
+                    "SELECT count(*) AS n FROM extension_objects WHERE type = 'table' AND name = ? AND owner IS NULL",
+                    &[v_str(table)],
+                )
+                .expect("query extension_objects")
+                .map(|row| row_i64(&row, "n"))
+                .unwrap_or(0);
+            assert_eq!(owned, 1, "core table {table} must be registered as unowned");
+        }
+        for index in ["deliveries_ledger", "woken_sessions_state"] {
+            let owned = ctx
+                .one(
+                    "SELECT count(*) AS n FROM extension_objects WHERE type = 'index' AND name = ? AND owner IS NULL",
+                    &[v_str(index)],
+                )
+                .expect("query extension_objects")
+                .map(|row| row_i64(&row, "n"))
+                .unwrap_or(0);
+            assert_eq!(owned, 1, "core index {index} must be registered as unowned");
+        }
+        let survived = select_row(&ctx, "d-v10")
+            .expect("select row")
+            .expect("v10 row survives");
+        assert_eq!(survived.body, "from v10");
+        assert_eq!(survived.mode_effective, Some(EffectiveLane::FollowUp));
+        assert_eq!(survived.actor_user_id.as_deref(), Some("user-1"));
+    }
+
+    #[test]
+    fn each_step_from_v10_to_v16_migrates_forward_keeping_rows_written_at_that_version() {
+        // v11: wait_kind; v12: ledger_id + verbatim columns; v13: woken_sessions; v14: session_wait / wake_counts /
+        // intake_marks / intake_commands; v15: deliveries rebuild with `start`.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = context_at_version(&dir, 14);
+        assert!(
+            ctx.run(
+                "INSERT INTO deliveries (delivery_id, target_durable_id, seq, sender, envelope, body, bytes, mode_requested, mode_effective, state, root_id, hop, created_at, updated_at, expires_at)
+                 VALUES ('d-start-before', 'lead', 9, 'session:a', ?1, 'start', 5, 'auto', 'start', 'admitted', 'root-1', 1, 10, 20, 30)",
+                &[v_str(envelope_json("d-start-before"))],
+            )
+            .is_err(),
+            "v14 CHECK refuses mode_effective = 'start'"
+        );
+        // Delete and re-insert so rowid is non-contiguous (rowid 1 removed, rowid 4 kept), proving v15 preserves rowids.
+        for (id, seq, effective, wait, ledger) in [
+            ("d-drop", 1i64, Some("steer"), None, None),
+            ("d-follow", 2, Some("follow_up"), Some("approval"), None),
+            ("d-intake", 3, None, None, Some("device:b/d-intake")),
+        ] {
+            ctx.run(
+                "INSERT INTO deliveries (delivery_id, target_durable_id, seq, sender, sender_turn, envelope, body, bytes, mode_requested, mode_effective, expected_turn_id, state, reason, admitted_by, claimed_at, attempt, admission_kind, turn_epoch, root_id, hop, created_at, updated_at, expires_at, binding_id, binding_revision, actor_user_id, wait_kind, ledger_id, verbatim_text, verbatim_display_text)
+                 VALUES (?1, 'lead', ?2, 'session:a', 'turn-1', ?3, 'body', 4, 'auto', ?4, 3, 'admitted', NULL, '{\"pid\":1}', 100, 1, 'queued', 3, 'root-1', 1, 10, 20, 30, 'bnd-1', 1, 'U1', ?5, ?6, ?7, ?8)",
+                &[
+                    v_str(id),
+                    v_i64(seq),
+                    v_str(envelope_json(id)),
+                    v_opt_str(effective),
+                    v_opt_str(wait),
+                    v_opt_str(ledger),
+                    v_opt_str(ledger.map(|_| "verbatim")),
+                    v_opt_str(ledger.map(|_| "shown")),
+                ],
+            )
+            .expect("seed v14 delivery");
+        }
+        ctx.run("DELETE FROM deliveries WHERE delivery_id = 'd-drop'", &[])
+            .expect("delete first row");
+        ctx.run(
+            "INSERT INTO deliveries (delivery_id, target_durable_id, seq, sender, envelope, body, bytes, mode_requested, mode_effective, state, root_id, hop, created_at, updated_at, expires_at)
+             VALUES ('d-steer', 4, 'session:a', ?1, 'body', 4, 'auto', 'steer', 'admitted', 'root-1', 1, 10, 20, 30)",
+            &[v_str(envelope_json("d-steer"))],
+        )
+        .expect("re-insert at rowid 4");
+        ctx.run(
+            "INSERT INTO woken_sessions (durable_id, session_file, state, requested_at) VALUES ('s1', '/tmp/s1.jsonl', 'requested', 100)",
+            &[],
+        )
+        .expect("seed v13 woken_sessions");
+        ctx.run(
+            "INSERT INTO session_wait (durable_id, wait, hold_kinds, file_size, written_at) VALUES ('s1', 'waiting', '[\"question\"]', 42, 100)",
+            &[],
+        )
+        .expect("seed v14 session_wait");
+        ctx.run(
+            "INSERT INTO wake_counts (durable_id, count, human_input_revision) VALUES ('s1', 2, 7)",
+            &[],
+        )
+        .expect("seed v14 wake_counts");
+        ctx.run(
+            "INSERT INTO intake_marks (sender_device, session_id, last_command_id, updated_at) VALUES ('dev-a', 's1', 'cmd-1', 100)",
+            &[],
+        )
+        .expect("seed v14 intake_marks");
+        ctx.run(
+            "INSERT INTO intake_commands (ledger_id, command_id) VALUES ('device:b/d-intake', 'cmd-1')",
+            &[],
+        )
+        .expect("seed v14 intake_commands");
+
+        migrate(&ctx).expect("migrate v14 -> v16");
+
+        assert_eq!(user_version(&ctx).expect("version"), 16);
+        let rowids: Vec<String> = ctx            .all(
+                "SELECT rowid AS row_id, delivery_id, wait_kind, ledger_id FROM deliveries ORDER BY rowid",
+                &[],
+            )
+            .expect("rows after v15 rebuild")
+            .iter()
+            .map(|row| {
+                format!(
+                    "{}|{}|{}|{}",
+                    row_i64(row, "row_id"),
+                    row_str(row, "delivery_id"),
+                    row_opt_str(row, "wait_kind").unwrap_or_default(),
+                    row_opt_str(row, "ledger_id").unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rowids,
+            vec![
+                "2|d-follow|approval|".to_owned(),
+                "3|d-intake||device:b/d-intake".to_owned(),
+                "4|d-steer||".to_owned(),
+            ]
+        );
+        // v15 accepts `mode_effective = 'start'`, v16 accepts `collapse_key`, and v8's provenance trigger and v12's
+        // partial unique ledger index both survived the table rebuild.
+        ctx.run(
+            "INSERT INTO deliveries (delivery_id, target_durable_id, seq, sender, envelope, body, bytes, mode_requested, mode_effective, state, root_id, hop, created_at, updated_at, expires_at, collapse_key)
+                 VALUES ('d-start', 'lead', 5, 'session:a', ?1, 'started', 7, 'auto', 'start', 'admitted', 'root-1', 1, 10, 20, 30, 'ck-1')",
+            &[v_str(envelope_json("d-start"))],
+        )
+        .expect("v15 accepts start and v16 accepts collapse_key");
+        assert_eq!(
+            select_row(&ctx, "d-start")
+                .expect("select")
+                .expect("d-start")
+                .mode_effective,
+            Some(EffectiveLane::Start)
+        );
+        assert!(
+            ctx.run(
+                "INSERT INTO deliveries (delivery_id, target_durable_id, seq, sender, envelope, body, bytes, mode_requested, state, root_id, hop, created_at, updated_at, expires_at)
+                     VALUES ('d-bare', 'lead', 6, 'session:a', '{\"origin\":{}}', 'bare', 4, 'auto', 'queued', 'root-1', 1, 10, 20, 30)",
+                &[],
+            )
+            .is_err(),
+            "the provenance trigger came back with the rebuilt table"
+        );
+        assert!(
+            ctx.run(
+                "INSERT INTO deliveries (delivery_id, target_durable_id, seq, sender, envelope, body, bytes, mode_requested, state, root_id, hop, created_at, updated_at, expires_at, ledger_id)
+                     VALUES ('d-dup-ledger', 'lead', 7, 'session:a', ?1, 'dup', 3, 'auto', 'queued', 'root-1', 1, 10, 20, 30, 'device:b/d-intake')",
+                &[v_str(envelope_json("d-dup-ledger"))],
+            )
+            .is_err(),
+            "the partial unique index on ledger_id came back with the rebuilt table"
+        );
+    }
+
+    #[test]
+    fn v15_rebuild_keeps_on_delete_cascade_children_and_rolls_back_on_an_orphan() {
+        // ON DELETE CASCADE must not fire when v15 drops the old deliveries table.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = context_at_version(&dir, 14);
+        ctx.run(
+            "INSERT INTO deliveries (delivery_id, target_durable_id, seq, sender, envelope, body, bytes, mode_requested, state, root_id, hop, created_at, updated_at, expires_at)
+                 VALUES ('d-1', 'lead', 1, 'session:a', ?1, 'kept', 4, 'auto', 'queued', 'root-1', 1, 10, 20, 30)",
+            &[v_str(envelope_json("d-1"))],
+        )
+        .expect("seed delivery");
+        ctx.exec(
+            "CREATE TABLE alpha_refs (id INTEGER PRIMARY KEY, delivery_id TEXT REFERENCES deliveries ON DELETE CASCADE);
+                 INSERT INTO alpha_refs (id, delivery_id) VALUES (1, 'd-1');",
+        )
+        .expect("create referencing table");
+        migrate(&ctx).expect("migrate with valid FK");
+        let remaining = ctx
+            .one("SELECT count(*) AS n FROM alpha_refs", &[])
+            .expect("count alpha_refs")
+            .map(|row| row_i64(&row, "n"))
+            .unwrap_or(0);
+        assert_eq!(remaining, 1, "referencing row is not cascade-deleted");
+
+        // An orphaned FK row referencing deliveries rolls v15 back to v14.
+        let orphan_dir = tempfile::tempdir().expect("orphan temp dir");
+        let orphan_ctx = context_at_version(&orphan_dir, 14);
+        orphan_ctx
+            .exec(
+                "PRAGMA foreign_keys = OFF;
+                 CREATE TABLE alpha_refs (id INTEGER PRIMARY KEY, delivery_id TEXT REFERENCES deliveries);
+                 INSERT INTO alpha_refs (id, delivery_id) VALUES (1, 'd-missing');
+                 PRAGMA foreign_keys = ON;",
+            )
+            .expect("seed orphan reference");
+        let error = migrate(&orphan_ctx).expect_err("orphan FK must abort v15");
+        assert!(
+            error.to_string().contains("deliveries"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(user_version(&orphan_ctx).expect("stayed at v14"), 14);
+    }
+
+    #[test]
+    fn a_rewound_store_reruns_idempotent_v13_and_v14_without_losing_woken_rows() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = file_context(&dir);
+        ctx.run(
+            "INSERT INTO woken_sessions (durable_id, session_file, state, requested_at) VALUES ('s1', '/sessions/s1.jsonl', 'requested', 50)",
+            &[],
+        )
+        .expect("insert woken row");
+        ctx.exec("PRAGMA user_version = 12").expect("rewind to v12");
+        migrate(&ctx).expect("re-run v13..v16");
+        assert_eq!(user_version(&ctx).expect("version"), 16);
+        let kept = ctx
+            .one(
+                "SELECT session_file, state FROM woken_sessions WHERE durable_id = 's1'",
+                &[],
+            )
+            .expect("query woken_sessions")
+            .expect("woken row kept");
+        assert_eq!(row_str(&kept, "session_file"), "/sessions/s1.jsonl");
+        assert_eq!(row_str(&kept, "state"), "requested");
+    }
+
+    #[test]
+    fn reader_floor_admits_a_compatible_future_store_and_rejects_malformed_or_higher_floors() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = file_context(&dir);
+        let other = other_process(&dir);
+        let future = GATEWAY_MIGRATIONS.len() as i64 + 1;
+
+        // A future store whose reader_floor <= supported (e.g. 14 or 16) is accepted.
+        other
+            .execute_batch(&format!(
+                "PRAGMA user_version = {future};
+                 INSERT OR REPLACE INTO gateway_meta (key, value) VALUES ('{GATEWAY_READER_FLOOR_KEY}', '14');"
+            ))
+            .expect("future store with compatible floor");
+        assert_eq!(
+            schema_version(&ctx).expect("compatible floor accepted"),
+            future
+        );
+
+        // Any malformed, zero, negative, or higher floor fails closed as gateway_schema_too_new.
+        for bad in ["", " 14", "14 ", "14abc", "-1", "0", "1e1", "14.0", "17"] {
+            other
+                .execute(
+                    "INSERT OR REPLACE INTO gateway_meta (key, value) VALUES (?1, ?2)",
+                    rusqlite::params![GATEWAY_READER_FLOOR_KEY, bad],
+                )
+                .expect("write bad floor");
+            let error = schema_version(&ctx).expect_err(&format!("floor {bad:?} must be refused"));
+            assert_eq!(error.code(), "gateway_schema_too_new", "floor {bad:?}");
+        }
+
+        // A store at this binary's exact version with a missing or malformed floor heals its floor on migrate().
+        other
+            .execute_batch(&format!(
+                "PRAGMA user_version = {};
+                 DELETE FROM gateway_meta WHERE key = '{GATEWAY_READER_FLOOR_KEY}';",
+                GATEWAY_MIGRATIONS.len()
+            ))
+            .expect("clear floor at supported version");
+        migrate(&ctx).expect("record_reader_floor heals missing floor");
+        assert_eq!(
+            stored_reader_floor(&ctx).expect("healed floor"),
+            Some(gateway_reader_floor(GATEWAY_MIGRATIONS.len() as i64))
         );
     }
 }

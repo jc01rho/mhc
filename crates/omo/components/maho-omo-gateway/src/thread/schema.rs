@@ -123,6 +123,42 @@ const BINDINGS_V7_TABLE: &str = r#"CREATE TABLE bindings_v7 (
       CHECK (direction_inbound = 1 OR direction_outbound = 1)
     )"#;
 
+/// The `deliveries` table as v15 rebuilds it: `mode_effective` takes `start`, the lane an idle session's delivery
+/// takes (omo#14333). SQLite cannot widen a CHECK in place, so the step copies every v14 column and the rowid over.
+const DELIVERIES_V15_TABLE: &str = r#"CREATE TABLE deliveries_v15 (
+      delivery_id TEXT PRIMARY KEY,
+      target_durable_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      sender TEXT NOT NULL,
+      sender_turn TEXT,
+      envelope TEXT NOT NULL,
+      body TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      mode_requested TEXT NOT NULL CHECK (mode_requested IN ('auto', 'steer', 'follow_up')),
+      mode_effective TEXT CHECK (mode_effective IS NULL OR mode_effective IN ('start', 'steer', 'follow_up')),
+      expected_turn_id INTEGER,
+      state TEXT NOT NULL CHECK (state IN ('queued', 'admitting', 'admitted', 'applied', 'refused', 'uncertain')),
+      reason TEXT,
+      admitted_by TEXT,
+      claimed_at INTEGER,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      admission_kind TEXT,
+      turn_epoch INTEGER,
+      root_id TEXT NOT NULL,
+      hop INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      binding_id TEXT,
+      binding_revision INTEGER,
+      actor_user_id TEXT,
+      wait_kind TEXT CHECK (wait_kind IS NULL OR wait_kind = 'approval'),
+      ledger_id TEXT,
+      verbatim_text TEXT,
+      verbatim_display_text TEXT,
+      UNIQUE (target_durable_id, seq)
+    )"#;
+
 /// Every migration step, in order; `user_version` counts them.
 pub static GATEWAY_MIGRATIONS: &[&[&str]] = &[
     &[
@@ -267,6 +303,95 @@ pub static GATEWAY_MIGRATIONS: &[&[&str]] = &[
      SELECT s.type, s.name, NULL FROM sqlite_schema s
      WHERE NOT EXISTS (SELECT 1 FROM extension_objects e WHERE e.type = s.type AND e.name = s.name COLLATE NOCASE)"#,
     ],
+    // v11: what the receiver was parked on when its drain queued a delivery (omo#13014); NULL when it was not, and
+    // on every older row.
+    &[
+        "ALTER TABLE deliveries ADD COLUMN wait_kind TEXT CHECK (wait_kind IS NULL OR wait_kind = 'approval')",
+    ],
+    // v12: a delivery taken in from another device for a session that is not running (omo#13037). `ledger_id` is the
+    // engine's ledger key for it; the two text columns hold the sender's rendered text verbatim. All three are NULL
+    // on every other row, which behaves exactly as before.
+    &[
+        "ALTER TABLE deliveries ADD COLUMN ledger_id TEXT",
+        "ALTER TABLE deliveries ADD COLUMN verbatim_text TEXT",
+        "ALTER TABLE deliveries ADD COLUMN verbatim_display_text TEXT",
+        "CREATE UNIQUE INDEX deliveries_ledger ON deliveries (ledger_id) WHERE ledger_id IS NOT NULL",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('index', 'deliveries_ledger', NULL)",
+    ],
+    // v13: one row per session a wake asked for or opened and that has not ended (omo#13037). Idempotent, so a store
+    // rewound to v12 re-runs it without touching the rows it holds.
+    &[
+        r#"CREATE TABLE IF NOT EXISTS woken_sessions (
+      durable_id TEXT PRIMARY KEY,
+      session_file TEXT NOT NULL,
+      host_instance TEXT,
+      state TEXT NOT NULL CHECK (state IN ('requested', 'opening', 'open', 'closing')),
+      requested_at INTEGER NOT NULL,
+      opened_at INTEGER,
+      first_waiting_at INTEGER,
+      lease_owner TEXT,
+      lease_expires_at INTEGER,
+      generation INTEGER NOT NULL DEFAULT 0,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER
+    )"#,
+        "CREATE INDEX IF NOT EXISTS woken_sessions_state ON woken_sessions (state)",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'woken_sessions', NULL)",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('index', 'woken_sessions_state', NULL)",
+    ],
+    // v14: what the carrier and the consumer keep beside the woken row (omo#13037): the session's wait and hold, the
+    // consecutive wake count, and the intake marks and commands. Idempotent like v13.
+    &[
+        r#"CREATE TABLE IF NOT EXISTS session_wait (
+      durable_id TEXT PRIMARY KEY,
+      wait TEXT NOT NULL CHECK (wait IN ('held', 'waiting')),
+      hold_kinds TEXT NOT NULL,
+      file_size INTEGER NOT NULL,
+      written_at INTEGER NOT NULL
+    )"#,
+        r#"CREATE TABLE IF NOT EXISTS wake_counts (
+      durable_id TEXT PRIMARY KEY,
+      count INTEGER NOT NULL,
+      human_input_revision INTEGER
+    )"#,
+        r#"CREATE TABLE IF NOT EXISTS intake_marks (
+      sender_device TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      last_command_id TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (sender_device, session_id)
+    )"#,
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'session_wait', NULL)",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'wake_counts', NULL)",
+        r#"CREATE TABLE IF NOT EXISTS intake_commands (
+      ledger_id TEXT PRIMARY KEY,
+      command_id TEXT NOT NULL
+    )"#,
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'intake_marks', NULL)",
+        "INSERT OR IGNORE INTO extension_objects (type, name, owner) VALUES ('table', 'intake_commands', NULL)",
+    ],
+    // v15: `start` is a lane (omo#14333). SQLite cannot widen a CHECK in place, so `deliveries` is rebuilt the way v7
+    // rebuilt `bindings`: every column and rowid carried over, the four indexes and the v8 provenance trigger
+    // recreated. It runs with foreign_keys OFF and a foreign_key_check on `deliveries` before the bump.
+    &[
+        DELIVERIES_V15_TABLE,
+        r#"INSERT INTO deliveries_v15 (rowid, delivery_id, target_durable_id, seq, sender, sender_turn, envelope, body, bytes, mode_requested, mode_effective, expected_turn_id, state, reason, admitted_by, claimed_at, attempt, admission_kind, turn_epoch, root_id, hop, created_at, updated_at, expires_at, binding_id, binding_revision, actor_user_id, wait_kind, ledger_id, verbatim_text, verbatim_display_text)
+     SELECT rowid, delivery_id, target_durable_id, seq, sender, sender_turn, envelope, body, bytes, mode_requested, mode_effective, expected_turn_id, state, reason, admitted_by, claimed_at, attempt, admission_kind, turn_epoch, root_id, hop, created_at, updated_at, expires_at, binding_id, binding_revision, actor_user_id, wait_kind, ledger_id, verbatim_text, verbatim_display_text FROM deliveries"#,
+        "DROP TABLE deliveries",
+        "ALTER TABLE deliveries_v15 RENAME TO deliveries",
+        "CREATE INDEX deliveries_target_state_seq ON deliveries (target_durable_id, state, seq)",
+        "CREATE INDEX deliveries_root ON deliveries (root_id)",
+        "CREATE INDEX deliveries_sender_turn ON deliveries (sender, sender_turn)",
+        "CREATE UNIQUE INDEX deliveries_ledger ON deliveries (ledger_id) WHERE ledger_id IS NOT NULL",
+        PROVENANCE_TRIGGER,
+        PROVENANCE_OBJECT,
+    ],
+    // v16: a sender's collapse key, so a repeat replaces its earlier undelivered delivery to the same target
+    // (omo#14428).
+    &[
+        "ALTER TABLE deliveries ADD COLUMN collapse_key TEXT",
+        "CREATE INDEX deliveries_collapse ON deliveries (target_durable_id, sender, collapse_key) WHERE collapse_key IS NOT NULL",
+    ],
 ];
 
 pub const GATEWAY_TABLES: &[&str] = &[
@@ -286,10 +411,49 @@ pub const GATEWAY_TABLES: &[&str] = &[
     "thread_creations",
     "extension_registrations",
     "toolkit_replay_receipts",
+    "woken_sessions",
+    "session_wait",
+    "wake_counts",
+    "intake_marks",
+    "intake_commands",
 ];
 
-/// Migration indexes (0-based) whose steps must run with foreign_keys OFF.
-pub const GATEWAY_NEEDS_FK_OFF: &[usize] = &[6];
+/// Migration indexes (0-based) that rebuild a table to widen a CHECK, by the table they rebuild: the step runs with
+/// foreign_keys OFF and refuses the bump when it left a foreign-key violation referencing that table.
+pub const GATEWAY_TABLE_REBUILDS: &[(usize, &str)] = &[(6, "bindings"), (14, "deliveries")];
+
+/// The table migration step `version` rebuilds, or none when the step only alters.
+pub fn gateway_rebuild_table(version: i64) -> Option<&'static str> {
+    usize::try_from(version)
+        .ok()
+        .and_then(|index| {
+            GATEWAY_TABLE_REBUILDS
+                .iter()
+                .find(|(step, _)| *step == index)
+        })
+        .map(|(_, table)| *table)
+}
+
+/// Key under which a migrated store records the oldest schema whose code may keep using it (omo#14382).
+pub const GATEWAY_READER_FLOOR_KEY: &str = "reader_floor";
+
+/// Per migration (same index as `GATEWAY_MIGRATIONS`): the oldest gateway schema whose code may keep reading and
+/// writing a store this step has reached. A step that only adds what older code never reads, or widens a CHECK to a
+/// value older code passes through as data, keeps the floor; a step that changes what a column older code uses sets it
+/// to its own version. Steps up to v14 predate the floor and claim nothing; v15's `start` lane and v16's nullable
+/// `collapse_key` are both values a v14 reader passes through.
+const GATEWAY_READER_FLOORS: [i64; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 14, 14];
+
+/// The oldest schema a binary must know to use a store at `version`: the highest floor of the steps that reached it.
+pub fn gateway_reader_floor(version: i64) -> i64 {
+    let steps = usize::try_from(version)
+        .unwrap_or(0)
+        .min(GATEWAY_MIGRATIONS.len());
+    GATEWAY_READER_FLOORS
+        .iter()
+        .take(steps)
+        .fold(0, |floor, step| floor.max(*step))
+}
 
 #[cfg(test)]
 mod tests {
@@ -297,20 +461,42 @@ mod tests {
 
     #[test]
     fn every_step_is_non_empty_and_the_count_is_the_supported_version() {
-        assert_eq!(GATEWAY_MIGRATIONS.len(), 10);
+        assert_eq!(GATEWAY_MIGRATIONS.len(), 16);
         for (index, step) in GATEWAY_MIGRATIONS.iter().enumerate() {
             assert!(!step.is_empty(), "step {index} is empty");
         }
-        assert_eq!(GATEWAY_NEEDS_FK_OFF.to_vec(), vec![6usize]);
+        assert_eq!(
+            GATEWAY_TABLE_REBUILDS.to_vec(),
+            vec![(6usize, "bindings"), (14usize, "deliveries")]
+        );
+    }
+
+    #[test]
+    fn every_step_has_a_reader_floor_and_the_v15_and_v16_rebuilds_keep_fourteen() {
+        assert_eq!(GATEWAY_READER_FLOORS.len(), GATEWAY_MIGRATIONS.len());
+        assert_eq!(gateway_reader_floor(0), 0);
+        assert_eq!(gateway_reader_floor(13), 13);
+        assert_eq!(gateway_reader_floor(14), 14);
+        assert_eq!(gateway_reader_floor(15), 14);
+        assert_eq!(gateway_reader_floor(16), 14);
+    }
+
+    #[test]
+    fn the_rebuild_lookup_names_the_altered_steps_only() {
+        assert_eq!(gateway_rebuild_table(6), Some("bindings"));
+        assert_eq!(gateway_rebuild_table(14), Some("deliveries"));
+        assert_eq!(gateway_rebuild_table(13), None);
+        assert_eq!(gateway_rebuild_table(15), None);
+        assert_eq!(gateway_rebuild_table(-1), None);
     }
 
     #[test]
     fn a_newer_store_is_refused_with_its_code() {
-        let error = GatewaySchemaVersionError::new(11, 10, "Gateway");
+        let error = GatewaySchemaVersionError::new(17, 16, "Gateway");
         assert_eq!(error.code(), "gateway_schema_too_new");
         assert_eq!(
             error.to_string(),
-            "Gateway schema 11 is newer than this binary's supported version 10."
+            "Gateway schema 17 is newer than this binary's supported version 16."
         );
     }
 }

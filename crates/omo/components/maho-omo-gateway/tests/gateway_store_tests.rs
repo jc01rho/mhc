@@ -5,7 +5,9 @@
 use std::sync::Arc;
 
 use maho_omo_gateway::thread::constants::{QUEUED_TTL_MS, TARGET_MAX_MESSAGES};
-use maho_omo_gateway::thread::schema::GATEWAY_MIGRATIONS;
+use maho_omo_gateway::thread::schema::{
+    GATEWAY_MIGRATIONS, GATEWAY_READER_FLOOR_KEY, gateway_reader_floor,
+};
 use maho_omo_gateway::thread::store::{
     GatewayStoreOptions, SqliteGatewayStore, create_gateway_store,
 };
@@ -62,12 +64,13 @@ fn a_store_another_binary_migrated_since_it_opened_refuses_every_op_and_writes_n
     let store = open(&dir);
     let other = rusqlite::Connection::open(gateway_database_path(dir.path()))
         .expect("a newer binary's connection");
+    let incompatible = GATEWAY_MIGRATIONS.len() + 1;
     other
         .execute_batch(&format!(
-            "PRAGMA user_version = {}",
-            GATEWAY_MIGRATIONS.len() + 1
+            "PRAGMA user_version = {incompatible};
+             INSERT OR REPLACE INTO gateway_meta (key, value) VALUES ('{GATEWAY_READER_FLOOR_KEY}', '{incompatible}');"
         ))
-        .expect("a newer binary migrates the store");
+        .expect("a newer binary migrates the store past this binary's reader floor");
 
     let read = store
         .list(Some("lead"), None)
@@ -81,6 +84,44 @@ fn a_store_another_binary_migrated_since_it_opened_refuses_every_op_and_writes_n
         .query_row("SELECT COUNT(*) FROM deliveries", [], |row| row.get(0))
         .expect("count deliveries");
     assert_eq!(rows, 0);
+}
+
+#[test]
+fn a_newer_store_whose_reader_floor_this_binary_meets_keeps_reading_and_writing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = open(&dir);
+    let other = rusqlite::Connection::open(gateway_database_path(dir.path()))
+        .expect("a newer binary's connection");
+    let floor: String = other
+        .query_row(
+            "SELECT value FROM gateway_meta WHERE key = ?1",
+            [GATEWAY_READER_FLOOR_KEY],
+            |row| row.get(0),
+        )
+        .expect("reader floor recorded on open");
+    assert_eq!(
+        floor,
+        gateway_reader_floor(GATEWAY_MIGRATIONS.len() as i64).to_string()
+    );
+
+    let future = GATEWAY_MIGRATIONS.len() + 1;
+    other
+        .execute_batch(&format!(
+            "PRAGMA user_version = {future};
+             INSERT OR REPLACE INTO gateway_meta (key, value) VALUES ('{GATEWAY_READER_FLOOR_KEY}', '{}');",
+            GATEWAY_MIGRATIONS.len()
+        ))
+        .expect("a newer reader-compatible binary migrates the store");
+
+    let sent = store
+        .enqueue(&send("d-compatible", 1_000))
+        .expect("compatible floor keeps writes working");
+    assert!(matches!(sent, EnqueueOutcome::Inserted { .. }), "{sent:?}");
+    let listed = store
+        .list(Some("lead"), None)
+        .expect("compatible floor keeps reads working");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].delivery_id, "d-compatible");
 }
 
 #[test]
