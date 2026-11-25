@@ -28,3 +28,19 @@ One row per upstream commit in `packages/lsp-core` over the range (all 8 commits
 | #14642 / #14656 (`e1ebcc449c`) | port | `crates/omo/lsp-core/src/lsp/client_startup.rs` (`ManagedClient`, `await_with_signal`, `await_init`), `manager.rs` (`detach_waiter`, `discard_if_same`, tracked `pending_stops`), `native_typescript.rs` (skipping stale `tsc` shims lacking `node_modules/typescript/package.json`), `directory_group_scan.rs` (`acquire_within_init_timeout`, abort rethrow after group settlement), `directory_diagnostics_tests.rs` (`abort_after_first_file_schedules_no_later_file`), and `tests/directory_diagnostics_group_scan.rs`. |
 | #14642 / #14656 (`9b377baa8c`) | port | `crates/omo/lsp-core/src/lsp/timer_provider.rs` (`TimerProvider`, `RealTimerProvider`, `repeat_every`), `client_startup.rs`, `manager.rs` (atomic waiter uncount + reference acquisition, `release_client` instance check, injected `timers`), `client_wrapper.rs`, `directory_group_scan.rs`, `tests/support/controlled_clock.rs`, `tests/manager_acquisition.rs`, and `tests/manager_reaping.rs`. |
 | #14642 / #14656 (`002393d99c`) | n/a | Drops two TS `export` keywords (`gate`, `GatedClient`) in `packages/lsp-core/src/lsp/manager-test-support.ts` for TS dead-code checks; Rust helper structs in `tests/support/manager_test_support.rs` are module-scoped. |
+
+## Tests
+
+Every upstream test file the slice added is translated case for case (crate parity fragment `crates/omo/lsp-core/parity.d/1083.md`):
+
+| upstream test | cases | mhc test |
+|---|---:|---|
+| `server-resolution-typescript-native.test.ts` | 15 | `crates/omo/lsp-core/tests/server_resolution_typescript_native.rs` |
+| `directory-diagnostics-mixed-typescript.test.ts` | 2 | `crates/omo/lsp-core/tests/directory_diagnostics_mixed_typescript.rs` |
+| `directory-diagnostics-group-scan.test.ts` | 6 | `crates/omo/lsp-core/tests/directory_diagnostics_group_scan.rs` |
+| `manager-acquisition.test.ts` | 4 | `crates/omo/lsp-core/tests/manager_acquisition.rs` |
+| `manager-reaping.test.ts` | 4 | `crates/omo/lsp-core/tests/manager_reaping.rs` |
+| `manager-max-clients.test.ts` (new case) | 1 | `crates/omo/lsp-core/src/lsp/manager_tests.rs` |
+| `directory-diagnostics.test.ts` (renamed case) | 1 | `crates/omo/lsp-core/src/lsp/directory_diagnostics_tests.rs` |
+
+Divergences: upstream sets `process.env.PATH`; the Rust tests pass it through `ResolveServerBinaryOptions::path_env`. Upstream sweeps microtask turns; the Rust tests poll each waiter once so it is counted, then sweep scheduler yields on a current-thread runtime. Symlink and executable-bit tests are Unix-only.
