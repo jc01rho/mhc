@@ -238,8 +238,8 @@ mod tests {
             libc::getrusage(libc::RUSAGE_SELF, &mut usage);
             usage
         };
-        let user = usage.ru_utime.tv_sec as f64 + f64::from(usage.ru_utime.tv_usec) / 1e6;
-        let system = usage.ru_stime.tv_sec as f64 + f64::from(usage.ru_stime.tv_usec) / 1e6;
+        let user = usage.ru_utime.tv_sec as f64 + (usage.ru_utime.tv_usec as f64) / 1e6;
+        let system = usage.ru_stime.tv_sec as f64 + (usage.ru_stime.tv_usec as f64) / 1e6;
         user + system
     }
 
