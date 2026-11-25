@@ -95,6 +95,8 @@ pub enum TargetResolution {
 pub struct ThreadCandidate {
     pub thread: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unnamed: Option<bool>,
     pub cwd: String,
     pub preview: String,
     #[serde(rename = "updatedAt")]
@@ -134,18 +136,26 @@ fn candidates(matches: &[&ThreadAddressEntry]) -> Vec<ThreadCandidate> {
     sorted
         .into_iter()
         .take(AMBIGUOUS_CANDIDATE_LIMIT)
-        .map(|entry| ThreadCandidate {
-            thread: candidate_thread(entry),
-            name: entry.name.clone(),
-            cwd: entry.cwd.clone(),
-            preview: String::new(),
-            updated_at: entry.updated_at.clone(),
-            state: entry.status,
-            device: match &entry.device {
-                Some(device) => Some(device.clone()),
-                None if spans && entry.row.is_none() => Some("here".to_owned()),
-                None => None,
-            },
+        .map(|entry| {
+            let shown = maho_thread_address_core::row_name(&maho_thread_address_core::NamedRow {
+                name: (!entry.name.trim().is_empty()).then(|| entry.name.clone()),
+                first_message: None,
+                folder: entry.cwd.clone(),
+            });
+            ThreadCandidate {
+                thread: candidate_thread(entry),
+                name: shown.name,
+                unnamed: shown.unnamed.then_some(true),
+                cwd: entry.cwd.clone(),
+                preview: String::new(),
+                updated_at: entry.updated_at.clone(),
+                state: entry.status,
+                device: match &entry.device {
+                    Some(device) => Some(device.clone()),
+                    None if spans && entry.row.is_none() => Some("here".to_owned()),
+                    None => None,
+                },
+            }
         })
         .collect()
 }
@@ -750,5 +760,35 @@ mod tests {
             )),
             "invalid_arguments"
         );
+    }
+
+    #[test]
+    fn unnamed_candidates_show_folder_name_and_unnamed_flag() {
+        let mut first = entry("d-1", "", "/work/alpha-app");
+        first.session_ids = vec!["rpc-1".into()];
+        let mut second = entry("d-2", "Named", "/work/beta-app");
+        second.session_ids = vec!["rpc-1".into()];
+        let entries = [first, second];
+        let err = resolve_target(&entries, "rpc-1", &scoped("/work/alpha-app"))
+            .expect_err("ambiguous session id");
+        assert_eq!(err.code.as_str(), "ambiguous_target");
+        let list = err
+            .details
+            .as_ref()
+            .and_then(|d| d.get("candidates"))
+            .and_then(|c| c.as_array())
+            .expect("candidates");
+        let anon = list
+            .iter()
+            .find(|c| c["thread"] == "d-1")
+            .expect("d-1 candidate");
+        assert_eq!(anon["name"], "alpha-app");
+        assert_eq!(anon["unnamed"], true);
+        let named = list
+            .iter()
+            .find(|c| c["thread"] == "d-2")
+            .expect("d-2 candidate");
+        assert_eq!(named["name"], "Named");
+        assert!(named.get("unnamed").is_none());
     }
 }

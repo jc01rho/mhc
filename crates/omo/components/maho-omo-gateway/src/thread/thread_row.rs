@@ -103,14 +103,14 @@ pub fn live_row(
     )
 }
 
-/// A thread listed from disk because no engine holds it: inactive, addressed by its durable id.
+/// A thread listed from disk because no engine holds it: inactive (or archived), addressed by its durable id.
 pub fn degraded_row(entry: &AddressEntry) -> ThreadResultSummary {
     let row = ThreadResultSummary {
         thread: entry.thread_id.clone(),
         name: String::new(),
         unnamed: None,
         status: ThreadStatus::Resumable,
-        state: thread_state(false, false, None),
+        state: thread_state(entry.archived, false, None),
         model: None,
         activity: None,
         error_code: None,
@@ -187,6 +187,7 @@ mod tests {
             surface: None,
             alive: true,
             title: title.map(str::to_owned),
+            archived: false,
         }
     }
 
@@ -248,5 +249,11 @@ mod tests {
         let unnamed = degraded_row(&entry(None, None));
         assert_eq!(unnamed.name, "builder");
         assert_eq!(unnamed.unnamed, Some(true));
+
+        let mut archived_entry = entry(Some("Archived"), Some("Archived"));
+        archived_entry.archived = true;
+        let archived = degraded_row(&archived_entry);
+        assert_eq!(archived.state, ThreadState::Archived);
+        assert_eq!(archived.status, ThreadStatus::Resumable);
     }
 }

@@ -7,10 +7,12 @@ use std::sync::{Arc, Mutex};
 use futures::executor::block_on;
 use serde_json::{Value, json};
 
+use maho_omo_gateway::gateway_database_path;
 use maho_omo_gateway::thread::adapter::{
     AdmitResult, BoxFuture, DrainWakeEvent, EndpointLiveness, ExternalAdmissionKind,
     GatewayEndpointPort, RuntimePhase, SessionAdmissionGate, SessionRuntimePort, WakeReason,
 };
+use maho_omo_gateway::thread::address_book::session_directory_prefix;
 use maho_omo_gateway::thread::attachment_fence::RpcTransport;
 use maho_omo_gateway::thread::component::{
     GatewayThreadComponent, GatewayThreadComponentOptions, create_gateway_thread_component,
@@ -21,11 +23,15 @@ use maho_omo_gateway::thread::engine::{
 };
 use maho_omo_gateway::thread::errors::thread_tool_failure;
 use maho_omo_gateway::thread::host_view::ThreadHost;
-use maho_omo_gateway::thread::live_surface::{LiveThreadSurface, LiveThreadSurfaceOptions};
+use maho_omo_gateway::thread::live_surface::{
+    HostEndpointReport, LiveThreadSurface, LiveThreadSurfaceOptions,
+};
+use maho_omo_gateway::thread::schema::GATEWAY_MIGRATIONS;
 use maho_omo_gateway::thread::store::{GatewayStoreOptions, create_gateway_store};
 use maho_omo_gateway::thread::store_api::GatewayStoreApi;
 use maho_omo_gateway::thread::types::{
-    AdmissionLedger, GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender, Provenance,
+    AdmissionLedger, EnqueueOutcome, EnqueueRequest, EnvelopeOrigin, GatewayDeliveryMode,
+    GatewayDeliveryResult, GatewayEndpointKind, GatewaySender, Provenance, ReceiptRef,
 };
 
 const BUILDER: &str = "0aa00001-0000-4000-8000-000000000001";
@@ -552,4 +558,291 @@ fn graceful_close_and_thinking_suffix_rollback_run_through_live_surface() {
             .as_str()
             .is_some_and(|id| id.starts_with("omo-thread-close:"))
     );
+}
+
+struct MultiEndpointListTransport {
+    cwd: String,
+}
+
+impl RpcTransport for MultiEndpointListTransport {
+    fn request(
+        &self,
+        socket: &str,
+        command: Value,
+        _durable_session_id: Option<String>,
+    ) -> BoxFuture<Result<Value, String>> {
+        let kind = command["type"].as_str().unwrap_or_default().to_owned();
+        let reply = match (socket, kind.as_str()) {
+            ("/run/maho-test/rpc.sock", "get_protocol_info") => Ok(json!({
+                "type": "response",
+                "command": "get_protocol_info",
+                "success": true,
+                "data": { "serverVersion": "5.1.79", "engineVersion": "2026.11.19-3" }
+            })),
+            ("/run/maho-test/rpc.sock", "list_sessions") => Ok(json!({
+                "type": "response",
+                "command": "list_sessions",
+                "success": true,
+                "data": {
+                    "sessions": [{
+                        "sessionId": "rpc-1",
+                        "durableSessionId": BUILDER,
+                        "cwd": self.cwd,
+                        "status": "open",
+                        "activity": "running",
+                        "waiting": {
+                            "kind": "rate_limit",
+                            "until": "2026-11-19T05:00:45.000Z",
+                            "attempt": 2,
+                            "maxAttempts": 5,
+                            "delayMs": 45000
+                        }
+                    }]
+                }
+            })),
+            ("/run/maho-test/i-shard.sock", "get_protocol_info") => Ok(json!({
+                "type": "response",
+                "command": "get_protocol_info",
+                "success": true,
+                "data": { "serverVersion": "5.1.70" }
+            })),
+            ("/run/maho-test/i-shard.sock", "list_sessions") => Ok(json!({
+                "type": "response",
+                "command": "list_sessions",
+                "success": true,
+                "data": {
+                    "sessions": [{
+                        "sessionId": "rpc-2",
+                        "durableSessionId": REVIEWER,
+                        "cwd": self.cwd,
+                        "name": "reviewer",
+                        "status": "open",
+                        "activity": "idle"
+                    }]
+                }
+            })),
+            ("/run/maho-test/t-slow.sock", "list_sessions") => {
+                Err("thread RPC request timed out".to_owned())
+            }
+            ("/run/maho-test/t-dead.sock", "list_sessions") => {
+                Err("host_unavailable:/run/maho-test/t-dead.sock".to_owned())
+            }
+            _ => Ok(json!({
+                "type": "response",
+                "command": kind,
+                "success": false,
+                "error": "unsupported"
+            })),
+        };
+        Box::pin(async move { reply })
+    }
+}
+
+#[test]
+fn thread_list_reports_engine_version_waiting_on_unnamed_archived_incomplete_and_backlog() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = dir.path().join("workspace-app");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let cwd = workspace.to_string_lossy().into_owned();
+    let sessions_dir = dir.path().join("sessions");
+    let project_dir = sessions_dir.join(format!("{}-", session_directory_prefix(&cwd)));
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+
+    let slow_id = "0cc00001-0000-4000-8000-000000000003";
+    let slow_path = project_dir.join(format!("2026-11-19T01-00-00-000Z_{slow_id}.jsonl"));
+    std::fs::write(
+        &slow_path,
+        format!(
+            "{}\n{}\n",
+            json!({ "type": "session", "version": 3, "id": slow_id, "cwd": cwd, "timestamp": "2026-11-19T01:00:00.000Z" }),
+            json!({ "type": "message", "timestamp": "2026-11-19T01:01:00.000Z", "message": { "role": "user", "content": "investigate timeout" } }),
+        ),
+    )
+    .expect("slow file");
+
+    let archived_id = "0dd00001-0000-4000-8000-000000000004";
+    let archived_path = project_dir.join(format!("2026-11-19T02-00-00-000Z_{archived_id}.jsonl"));
+    std::fs::write(
+        &archived_path,
+        format!(
+            "{}\n{}\n",
+            json!({ "type": "session", "version": 3, "id": archived_id, "cwd": cwd, "timestamp": "2026-11-19T02:00:00.000Z" }),
+            json!({ "type": "custom", "customType": "session_archived", "data": { "archived": true }, "timestamp": "2026-11-19T02:01:00.000Z" }),
+        ),
+    )
+    .expect("archived file");
+
+    let slow_path_str = slow_path.to_string_lossy().into_owned();
+    let reports = vec![
+        HostEndpointReport {
+            socket: Some("/run/maho-test/rpc.sock".into()),
+            reachable: true,
+            session_paths: Vec::new(),
+            endpoint_kind: Some(GatewayEndpointKind::RpcHost),
+            alive: Some(true),
+            reason: None,
+        },
+        HostEndpointReport {
+            socket: Some("/run/maho-test/i-shard.sock".into()),
+            reachable: true,
+            session_paths: Vec::new(),
+            endpoint_kind: Some(GatewayEndpointKind::RpcHost),
+            alive: Some(true),
+            reason: None,
+        },
+        HostEndpointReport {
+            socket: Some("/run/maho-test/t-slow.sock".into()),
+            reachable: false,
+            session_paths: vec![slow_path_str.clone()],
+            endpoint_kind: Some(GatewayEndpointKind::Tui),
+            alive: Some(false),
+            reason: Some("live_unresponsive".into()),
+        },
+        HostEndpointReport {
+            socket: Some("/run/maho-test/t-dead.sock".into()),
+            reachable: false,
+            session_paths: Vec::new(),
+            endpoint_kind: Some(GatewayEndpointKind::Tui),
+            alive: Some(false),
+            reason: Some("dead".into()),
+        },
+    ];
+    let surface: Arc<dyn ThreadHost> = Arc::new(LiveThreadSurface::new(LiveThreadSurfaceOptions {
+        socket: "/run/maho-test/rpc.sock".into(),
+        transport: Arc::new(MultiEndpointListTransport { cwd: cwd.clone() }),
+        status_all: Some(Arc::new(move || Some(reports.clone()))),
+        now: None,
+    }));
+
+    let store_dir = tempfile::tempdir().expect("store dir");
+    let mut store_opts = GatewayStoreOptions::new(store_dir.path().to_string_lossy().into_owned());
+    store_opts.now = Some(Arc::new(|| 1_000));
+    let gw_store = create_gateway_store(store_opts).expect("store");
+    let enqueued = gw_store
+        .enqueue(&EnqueueRequest {
+            provenance: Provenance {
+                workspace: "unclassified".into(),
+                project: "test".into(),
+                lane: None,
+                session: None,
+            },
+            now: 1_000,
+            delivery_id: "d-backlog-1".into(),
+            target_durable_id: REVIEWER.into(),
+            sender_principal: format!("session:{BUILDER}"),
+            rate_principal: None,
+            sender_node: BUILDER.into(),
+            sender_turn: None,
+            cause_delivery_id: None,
+            claimed_root_id: None,
+            origin: EnvelopeOrigin::Session {
+                session: BUILDER.into(),
+            },
+            actor: BUILDER.into(),
+            body: "ping".into(),
+            mode: GatewayDeliveryMode::FollowUp,
+            expected_turn_id: None,
+            binding: None,
+            receipt: ReceiptRef {
+                idempotency_key: "d-backlog-1".into(),
+                args_hash: "d-backlog-1".into(),
+            },
+            endpoint_kind: None,
+            collapse_key: None,
+        })
+        .expect("enqueue");
+    assert!(matches!(enqueued, EnqueueOutcome::Inserted { .. }));
+
+    let cwd_for_root = cwd.clone();
+    let comp = create_gateway_thread_component(Arc::new(GatewayThreadComponentOptions {
+        store: gw_store,
+        runtime: runtime(RuntimePhase::Idle, Arc::new(Mutex::new(Vec::new()))),
+        durable_id: BUILDER.into(),
+        session_path: Arc::new(|| None),
+        caller_session_id: Arc::new(|| BUILDER.to_owned()),
+        caller_name: None,
+        caller_provenance: Arc::new(|| Provenance {
+            workspace: "unclassified".into(),
+            project: "test".into(),
+            lane: None,
+            session: None,
+        }),
+        resolve: Arc::new(|_, _| {
+            Box::pin(async {
+                GatewayResolution::Error(thread_tool_failure("not_found", "unused", "none", None))
+            })
+        }),
+        endpoints: GatewayEndpointPort::inert(),
+        locate: Arc::new(|_| Box::pin(async { None })),
+        notify: None,
+        log: None,
+        host: Some(surface),
+        caller_workspace_root: Arc::new(move || cwd_for_root.clone()),
+        sessions_directory: Some(sessions_dir),
+        remote: None,
+    }));
+
+    let listed = run(&comp, "thread_list", json!({}));
+    assert_eq!(listed["kind"], "ok", "{listed}");
+    assert_eq!(listed["listing"], "incomplete");
+    assert_eq!(listed["unanswered_endpoints"], 1);
+    assert!(listed.get("backlog_error").is_none());
+
+    let threads = listed["threads"].as_array().expect("threads");
+    let find_row = |id: &str| {
+        threads
+            .iter()
+            .find(|row| row["thread"] == id)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let builder = find_row(BUILDER);
+    assert_eq!(builder["name"], "workspace-app");
+    assert_eq!(builder["unnamed"], true);
+    assert_eq!(builder["engine_version"], "2026.11.19-3");
+    assert_eq!(builder["waiting_on"]["kind"], "retry");
+    assert_eq!(builder["waiting_on"]["reason"], "rate_limit");
+    assert_eq!(builder["waiting_on"]["attempt"], 2);
+    assert_eq!(builder["waiting_on"]["max_attempts"], 5);
+
+    let reviewer = find_row(REVIEWER);
+    assert_eq!(reviewer["name"], "reviewer");
+    assert!(reviewer.get("unnamed").is_none());
+    assert_eq!(reviewer["engine_version"], "5.1.70");
+    assert_eq!(reviewer["backlog"]["held"], 1);
+    assert_eq!(reviewer["backlog"]["waiting_in_gateway"], 1);
+    assert_eq!(reviewer["backlog"]["oldest_at"], "1970-01-01T00:00:01.000Z");
+
+    let slow = find_row(slow_id);
+    assert_eq!(slow["state"], "inactive");
+    assert_eq!(slow["name"], "investigate timeout");
+    assert_eq!(slow["unnamed"], true);
+    assert_eq!(slow["error_note"], "live_unresponsive");
+    assert!(find_row(archived_id).is_null());
+
+    let archived = run(&comp, "thread_list", json!({ "state": ["archived"] }));
+    let archived_rows = archived["threads"].as_array().expect("archived");
+    assert_eq!(archived_rows.len(), 1);
+    assert_eq!(archived_rows[0]["thread"], archived_id);
+    assert_eq!(archived_rows[0]["state"], "archived");
+    assert_eq!(archived_rows[0]["name"], "workspace-app");
+    assert_eq!(archived_rows[0]["unnamed"], true);
+
+    // A newer gateway store version preserves the listing and names backlog_error.
+    let other =
+        rusqlite::Connection::open(gateway_database_path(store_dir.path())).expect("newer binary");
+    other
+        .execute_batch(&format!(
+            "DELETE FROM gateway_meta WHERE key = 'reader_floor'; PRAGMA user_version = {}",
+            GATEWAY_MIGRATIONS.len() + 1
+        ))
+        .expect("bump schema");
+    let broken = run(&comp, "thread_list", json!({}));
+    assert_eq!(broken["kind"], "ok", "{broken}");
+    assert!(
+        broken["backlog_error"]
+            .as_str()
+            .is_some_and(|message| message.contains("newer"))
+    );
+    assert_eq!(broken["threads"].as_array().expect("threads").len(), 3);
 }

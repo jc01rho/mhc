@@ -711,7 +711,9 @@ async fn list_endpoint(
                     ThreadHostSession::from_listing(row, &endpoint.socket, kind, &controls)
                 })
                 .map(|mut session| {
-                    session.engine_version = engine_version.clone();
+                    if engine_version.is_some() {
+                        session.engine_version = engine_version.clone();
+                    }
                     session
                 })
                 .collect()
