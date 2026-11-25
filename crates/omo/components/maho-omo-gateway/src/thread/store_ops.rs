@@ -558,7 +558,7 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
     }
 }
 
-fn select_rows(
+pub(crate) fn select_rows(
     ctx: &StoreContext,
     where_clause: &str,
     params: &[SqliteValue],
@@ -756,7 +756,11 @@ pub fn migrate(ctx: &StoreContext) -> Result<(), StoreError> {
     }
 }
 
-fn refused(code: &str, message: impl Into<String>, details: Option<Value>) -> EnqueueOutcome {
+pub(crate) fn refused(
+    code: &str,
+    message: impl Into<String>,
+    details: Option<Value>,
+) -> EnqueueOutcome {
     EnqueueOutcome::Refused {
         code: super::errors::ThreadErrorCode::parse(code)
             .unwrap_or_else(|| panic!("unknown thread error code: {code}")),
@@ -1178,6 +1182,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             None,
         ));
     }
+    let dead_claims = expired_dead_claims(ctx, &request.target_durable_id, request.now)?;
     if !begin_immediate(ctx, "enqueue", false)? {
         return Ok(EnqueueOutcome::Busy);
     }
@@ -1212,24 +1217,27 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 return Ok(refusal);
             }
         };
-        let backlog = ctx.one(
-            &format!("SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM deliveries WHERE target_durable_id = ? AND state IN {OPEN_STATES}"),
-            &[v_str(&request.target_durable_id)],
+        // Expired queued rows of this target are refused first, so the cap never counts them (omo#14466).
+        let expired = refuse_expired_queued(
+            ctx,
+            request.now,
+            RETENTION_SWEEP_BATCH,
+            &request.target_durable_id,
         )?;
         let bytes = request.body.len() as i64;
-        let pending_messages = backlog.as_ref().map(|row| row_i64(row, "n")).unwrap_or(0);
-        let pending_bytes = backlog.as_ref().map(|row| row_i64(row, "b")).unwrap_or(0);
-        if pending_messages >= TARGET_MAX_MESSAGES
-            || pending_bytes + bytes > TARGET_MAX_BYTES as i64
-        {
+        if let Some(full) = backlog_refusal(
+            ctx,
+            &BacklogCheck {
+                target: &request.target_durable_id,
+                mode: request.mode,
+                bytes,
+                now: request.now,
+                dead_claims: &dead_claims,
+                target_running: request.endpoint_kind.is_some(),
+            },
+        )? {
             rollback_quietly(ctx);
-            return Ok(refused(
-                "queue_full",
-                "The target's delivery backlog is full.",
-                Some(
-                    serde_json::json!({ "max_messages": TARGET_MAX_MESSAGES, "max_bytes": TARGET_MAX_BYTES }),
-                ),
-            ));
+            return Ok(full);
         }
         let placement = match place_causally(ctx, request)? {
             Ok(placement) => placement,
@@ -1320,6 +1328,11 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
         let position = queue_position(ctx, &row)?;
         ctx.exec(commit_sql)?;
         committed = true;
+        // The markers of rows this enqueue refused go only once those refusals committed: a rolled-back enqueue
+        // leaves every queued row its wake.
+        for gone in &expired {
+            unlink_marker(ctx, &gone.target_durable_id, &gone.delivery_id);
+        }
         Ok(EnqueueOutcome::Inserted {
             row: Box::new(row),
             queue_position: position,
@@ -1346,7 +1359,7 @@ fn delete_expired_receipt(
     )
 }
 
-fn claim_fingerprint(row: &DeliveryRow) -> String {
+pub(crate) fn claim_fingerprint(row: &DeliveryRow) -> String {
     let admitted = row
         .admitted_by
         .as_ref()
@@ -1522,6 +1535,64 @@ fn claimant_is_dead(claimant: &ProcessIdentity) -> bool {
     }
     let alive = Path::new(&format!("/proc/{}", claimant.pid)).exists();
     !alive
+}
+
+/// Rows of `target` past their lifetime that a runtime took and then died holding (omo#14466). No process can still
+/// write them, so they do not count against the target's backlog; the target's own `reconcile` settles each one when
+/// it runs again. Read before the write lock: the claim fingerprint lets the count notice a row reclaimed in between.
+fn expired_dead_claims(
+    ctx: &StoreContext,
+    target: &str,
+    now: i64,
+) -> Result<BTreeMap<String, String>, StoreError> {
+    let mut found = BTreeMap::new();
+    for row in select_rows(
+        ctx,
+        "target_durable_id = ? AND state IN ('admitting', 'admitted') AND admitted_by IS NOT NULL AND expires_at <= ?",
+        &[v_str(target), v_i64(now)],
+        None,
+    )? {
+        if row.admitted_by.as_ref().is_some_and(claimant_is_dead) {
+            found.insert(row.delivery_id.clone(), claim_fingerprint(&row));
+        }
+    }
+    Ok(found)
+}
+
+/// A queued row past its lifetime that an enqueue refused `expired` without the target's drain (omo#14466).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpiredQueued {
+    pub delivery_id: String,
+    pub target_durable_id: String,
+}
+
+/// Settles `target`'s queued rows past their lifetime as `refused`/`expired`, at most `limit` of them, so a target
+/// that stopped taking its queue frees its slots as its rows expire instead of answering `queue_full` until it runs
+/// again. Answers what it refused; the caller unlinks their inbox markers once its transaction commits.
+pub fn refuse_expired_queued(
+    ctx: &StoreContext,
+    now: i64,
+    limit: i64,
+    target: &str,
+) -> Result<Vec<ExpiredQueued>, StoreError> {
+    let expired: Vec<ExpiredQueued> = ctx
+        .all(
+            "SELECT delivery_id, target_durable_id FROM deliveries WHERE state = 'queued' AND expires_at <= ? AND target_durable_id = ? LIMIT ?",
+            &[v_i64(now), v_str(target), v_i64(limit)],
+        )?
+        .iter()
+        .map(|row| ExpiredQueued {
+            delivery_id: row_str(row, "delivery_id"),
+            target_durable_id: row_str(row, "target_durable_id"),
+        })
+        .collect();
+    for row in &expired {
+        ctx.run(
+            "UPDATE deliveries SET state = 'refused', reason = 'expired', updated_at = ? WHERE delivery_id = ? AND state = 'queued'",
+            &[v_i64(now), v_str(&row.delivery_id)],
+        )?;
+    }
+    Ok(expired)
 }
 
 pub fn claim(ctx: &StoreContext, request: &ClaimRequest) -> Result<ClaimOutcome, StoreError> {

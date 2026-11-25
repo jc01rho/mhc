@@ -122,7 +122,9 @@ pub fn engine_next_action(code: &str) -> &'static str {
             "Stop relaying here: a direct reply to the session that messaged you is a cycle. That session reads your answer with thread_read; a bound external thread gets it through thread_report, and its questions come back through thread_answer."
         }
         "overloaded" => "Wait before sending to this session again.",
-        "queue_full" => "Wait for the target to take its queued messages, then send again.",
+        "queue_full" => {
+            "Read details.reason: the target is not taking its queue. A steer has its own reserve, so a steer still reaches a running turn."
+        }
         "idempotency_conflict" => "Retry with a new idempotency_key.",
         "idempotency_in_progress" => "Wait for the earlier call to settle, then retry.",
         "idempotency_uncertain" => {

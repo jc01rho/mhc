@@ -8,6 +8,7 @@ pub mod adapter;
 pub mod address_book;
 pub mod addressing;
 pub mod attachment_fence;
+pub mod backlog;
 pub mod component;
 pub mod constants;
 pub mod contracts_results;

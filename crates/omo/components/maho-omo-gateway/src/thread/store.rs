@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::Value;
 
+use super::backlog::TargetBacklog;
 use super::constants::{GATEWAY_BUSY_TIMEOUT_MS, GATEWAY_LOCK_WAIT_MAX_MS};
 use super::extension_registrations::{list_session_ops, read_descriptor};
 use super::extension_session_ops::{SessionCallPhase, SessionCallRequest, session_call};
@@ -378,15 +379,23 @@ impl GatewayStoreApi for SqliteGatewayStore {
         target_durable_id: Option<&str>,
         root_id: Option<&str>,
     ) -> Result<Vec<DeliveryRow>, StoreError> {
-        super::store_ops::list_deliveries(&*self.context()?, target_durable_id, root_id)
+        self.checked(|ctx| super::store_ops::list_deliveries(ctx, target_durable_id, root_id))
     }
 
     fn is_referenced(&self, durable_id: &str) -> Result<bool, StoreError> {
-        super::store_ops::is_referenced(&*self.context()?, durable_id)
+        self.checked(|ctx| super::store_ops::is_referenced(ctx, durable_id))
+    }
+
+    fn backlogs(
+        &self,
+        durable_ids: &[String],
+    ) -> Result<BTreeMap<String, TargetBacklog>, StoreError> {
+        let now = self.now();
+        self.checked(|ctx| super::backlog::read_target_backlogs(ctx, durable_ids, now))
     }
 
     fn journal_mode(&self) -> Result<String, StoreError> {
-        super::store_ops::journal_mode(&*self.context()?)
+        self.checked(|ctx| super::store_ops::journal_mode(ctx))
     }
 
     fn stats(&self) -> GatewayStoreStats {

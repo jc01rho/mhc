@@ -50,6 +50,9 @@ pub enum WorkerRequest {
     IsReferenced {
         durable_id: String,
     },
+    Backlogs {
+        targets: Vec<String>,
+    },
     JournalMode,
     Stats,
     ExtensionRegister {
@@ -144,6 +147,10 @@ pub fn handle_request(store: &dyn GatewayStoreApi, request: WorkerRequest) -> Wo
         },
         WorkerRequest::IsReferenced { durable_id } => match store.is_referenced(&durable_id) {
             Ok(referenced) => value(&referenced),
+            Err(error) => WorkerReply::error(error.message(), error.code()),
+        },
+        WorkerRequest::Backlogs { targets } => match store.backlogs(&targets) {
+            Ok(backlogs) => value(&backlogs),
             Err(error) => WorkerReply::error(error.message(), error.code()),
         },
         WorkerRequest::JournalMode => match store.journal_mode() {
