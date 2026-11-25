@@ -59,6 +59,7 @@ fn string_schema(rules: StringRules) -> Value {
             "pattern".into(),
             json!(match pattern {
                 Pattern::LowerSlug => "^[a-z0-9-]+$",
+                Pattern::EnvVarName => "^[A-Za-z_][A-Za-z0-9_]*$",
             }),
         );
     }

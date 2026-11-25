@@ -1,5 +1,4 @@
 use model_core::CATEGORY_MODEL_REQUIREMENTS;
-use model_core::FallbackEntry;
 use pretty_assertions::assert_eq;
 
 use crate::support::entry;
@@ -13,166 +12,35 @@ fn writing_only_activates_when_one_of_its_own_chain_models_is_available() {
 }
 
 #[test]
-fn ultrabrain_routes_gpt_6_2_astra_then_gpt_6_astra_max_before_the_existing_sol_max_fallbacks() {
-    assert_eq!(
-        CATEGORY_MODEL_REQUIREMENTS["ultrabrain"].fallback_chain,
-        vec![
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6.2-astra",
-                Some("max")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6-astra",
-                Some("max")
-            ),
-            entry(&["github-copilot"], "gpt-6-astra", Some("max")),
-            entry(
-                &["openai", "chatgpt-subscription", "opencode"],
-                "gpt-6.2-astra",
-                Some("max")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription", "opencode"],
-                "gpt-6-astra",
-                Some("max")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-5.6-sol",
-                Some("max")
-            ),
-            entry(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-            entry(
-                &["openai", "chatgpt-subscription", "opencode"],
-                "gpt-5.6-sol",
-                Some("max")
-            ),
-        ]
-    );
-}
-
-#[test]
-fn ultrabrain_keeps_gpt_5_6_sol_max_on_every_fallback_rung() {
-    let requirement = &CATEGORY_MODEL_REQUIREMENTS["ultrabrain"];
-    let chain: Vec<&FallbackEntry> = requirement
-        .fallback_chain
-        .iter()
-        .filter(|entry| entry.model == "gpt-5.6-sol")
-        .collect();
-
-    assert_eq!(
-        chain,
-        vec![
-            &entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-5.6-sol",
-                Some("max")
-            ),
-            &entry(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-            &entry(
-                &["openai", "chatgpt-subscription", "opencode"],
-                "gpt-5.6-sol",
-                Some("max")
-            ),
-        ]
-    );
-}
-
-#[test]
-fn deep_high_routes_gpt_6_2_astra_then_gpt_6_astra_high_only() {
-    assert_eq!(
-        CATEGORY_MODEL_REQUIREMENTS["deep-high"].fallback_chain,
-        vec![
-            entry(
-                &["openai", "chatgpt-subscription", "opencode"],
-                "gpt-6.2-astra",
-                Some("high")
-            ),
-            entry(
-                &[
-                    "openai",
-                    "chatgpt-subscription",
-                    "github-copilot",
-                    "opencode"
-                ],
-                "gpt-6-astra",
-                Some("high")
-            ),
-        ]
-    );
-}
-
-#[test]
-fn deep_low_leads_with_gpt_6_2_sol_then_gpt_6_1_sol_medium_on_the_openai_lanes() {
-    assert_eq!(
-        CATEGORY_MODEL_REQUIREMENTS["deep-low"].fallback_chain,
-        vec![
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6.2-sol",
-                Some("medium")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6.2-sol-fast",
-                Some("medium")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6.1-sol",
-                Some("medium")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6.1-sol-fast",
-                Some("medium")
-            ),
-            entry(
-                &[
-                    "openai",
-                    "chatgpt-subscription",
-                    "github-copilot",
-                    "opencode"
-                ],
-                "gpt-5.6-sol",
-                Some("medium")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-5.6-sol-fast",
-                Some("medium")
-            ),
-        ]
-    );
-}
-
-#[test]
-fn neither_deep_lane_carries_the_other_lanes_model() {
-    let low_models: Vec<&str> = CATEGORY_MODEL_REQUIREMENTS["deep-low"]
-        .fallback_chain
-        .iter()
-        .map(|entry| entry.model.as_str())
-        .collect();
-    let high_models: Vec<&str> = CATEGORY_MODEL_REQUIREMENTS["deep-high"]
-        .fallback_chain
-        .iter()
-        .map(|entry| entry.model.as_str())
-        .collect();
-
-    assert_eq!(
-        low_models,
-        vec![
+fn deep_gpt_lanes_run_one_exact_rung_each_and_require_it() {
+    for (category, providers, model, variant) in [
+        (
+            "ultrabrain",
+            &["openai", "chatgpt-subscription", "opencode"][..],
+            "gpt-6.2-astra",
+            "max",
+        ),
+        (
+            "deep-high",
+            &["openai", "chatgpt-subscription", "opencode"][..],
+            "gpt-6.2-astra",
+            "high",
+        ),
+        (
+            "deep-low",
+            &["openai", "chatgpt-subscription"][..],
             "gpt-6.2-sol",
-            "gpt-6.2-sol-fast",
-            "gpt-6.1-sol",
-            "gpt-6.1-sol-fast",
-            "gpt-5.6-sol",
-            "gpt-5.6-sol-fast"
-        ]
-    );
-    assert_eq!(high_models, vec!["gpt-6.2-astra", "gpt-6-astra"]);
+            "medium",
+        ),
+    ] {
+        let requirement = &CATEGORY_MODEL_REQUIREMENTS[category];
+        assert_eq!(
+            requirement.fallback_chain,
+            vec![entry(providers, model, Some(variant))],
+            "{category}"
+        );
+        assert_eq!(requirement.requires_any_model, Some(true), "{category}");
+    }
 }
 
 #[test]

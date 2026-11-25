@@ -1576,11 +1576,11 @@ fn model_profile_keeps_catalog_names_and_tuned_entries() {
 fn model_profile_normalizes_a_legacy_variant_on_a_chain_entry() {
     let value = parsed(
         &omo_config_core::omo_model_profile_schema(),
-        json!({ "models": [{ "model": "openai/gpt-6-astra", "variant": "high" }] }),
+        json!({ "models": [{ "model": "openai/gpt-6.2-astra", "variant": "high" }] }),
     );
     assert_eq!(
         value["models"],
-        json!([{ "model": "openai/gpt-6-astra", "reasoning": "high" }])
+        json!([{ "model": "openai/gpt-6.2-astra", "reasoning": "high" }])
     );
 }
 
@@ -1631,7 +1631,7 @@ fn model_profile_layer_accepts_partial_entries_and_rejects_unknown_keys() {
 #[test]
 fn config_schema_accepts_model_profiles_and_a_selected_profile() {
     let block = json!({
-        "model_profiles": { "capable": { "display_name": "Capable", "family": "daily", "tier": "normal", "models": ["anthropic/", { "model": "openai/gpt-6-astra", "reasoning": "high" }] } },
+        "model_profiles": { "capable": { "display_name": "Capable", "family": "daily", "tier": "normal", "models": ["anthropic/", { "model": "openai/gpt-6.2-astra", "reasoning": "high" }] } },
         "model_profile": "capable",
     });
     let value = parsed(&omo_config_core::omo_config_schema(), block.clone());
@@ -1688,14 +1688,14 @@ fn model_profile_inside_a_native_block_selects_the_profile() {
     let home = tempfile::tempdir().expect("tempdir");
     let result = load_user_config(
         home.path(),
-        r#"{"model_profile":"simple-work","[native]":{"model_profile":"deep-work","model_profiles":{"deep-work":{"models":["openai/gpt-6-astra"]}}}}"#,
+        r#"{"model_profile":"simple-work","[native]":{"model_profile":"deep-work","model_profiles":{"deep-work":{"models":["openai/gpt-6.2-astra"]}}}}"#,
         Some("senpi"),
     );
     assert_eq!(result.diagnostics, Vec::new());
     assert_eq!(result.config["model_profile"], json!("deep-work"));
     assert_eq!(
         result.config["model_profiles"]["deep-work"]["models"],
-        json!(["openai/gpt-6-astra"])
+        json!(["openai/gpt-6.2-astra"])
     );
 }
 

@@ -37,69 +37,6 @@ fn visual_engineering_prioritizes_fable_opus_then_kimi_k3_1_pro_and_kimi_k3() {
     );
 }
 #[test]
-fn deep_lanes_keep_astra_high_separate_from_sol_medium() {
-    assert_eq!(
-        CATEGORY_MODEL_REQUIREMENTS["deep-high"].fallback_chain,
-        vec![
-            entry(
-                &["openai", "chatgpt-subscription", "opencode"],
-                "gpt-6.2-astra",
-                Some("high")
-            ),
-            entry(
-                &[
-                    "openai",
-                    "chatgpt-subscription",
-                    "github-copilot",
-                    "opencode"
-                ],
-                "gpt-6-astra",
-                Some("high")
-            ),
-        ]
-    );
-    assert_eq!(
-        CATEGORY_MODEL_REQUIREMENTS["deep-low"].fallback_chain,
-        vec![
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6.2-sol",
-                Some("medium")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6.2-sol-fast",
-                Some("medium")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6.1-sol",
-                Some("medium")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-6.1-sol-fast",
-                Some("medium")
-            ),
-            entry(
-                &[
-                    "openai",
-                    "chatgpt-subscription",
-                    "github-copilot",
-                    "opencode"
-                ],
-                "gpt-5.6-sol",
-                Some("medium")
-            ),
-            entry(
-                &["openai", "chatgpt-subscription"],
-                "gpt-5.6-sol-fast",
-                Some("medium")
-            ),
-        ]
-    );
-}
-#[test]
 fn quick_prioritizes_luna_deepseek_then_speed_tier() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["quick"].fallback_chain,

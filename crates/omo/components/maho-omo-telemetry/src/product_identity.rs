@@ -78,6 +78,7 @@ pub const BUILTIN_SKILL_NAMES: &[&str] = &[
     "give-me-tips",
     "init-deep",
     "lsp-setup",
+    "omo-relay",
     "onboarding",
     "programming",
     "refactor",
@@ -810,6 +811,7 @@ mod identity_tests {
         );
         assert!(!BUILTIN_SKILL_NAMES.contains(&"start-work"));
         assert!(BUILTIN_SKILL_NAMES.contains(&"browser"));
+        assert!(BUILTIN_SKILL_NAMES.contains(&"omo-relay"));
     }
     #[test]
     fn pure_schema_stays_pinned() {
@@ -818,6 +820,7 @@ mod identity_tests {
             .unwrap()
             .clone();
         assert!(pinned.contains(&serde_json::json!("browser")));
+        assert!(pinned.contains(&serde_json::json!("omo-relay")));
         assert!(!pinned.contains(&serde_json::json!("start-work")));
     }
 }
