@@ -307,7 +307,6 @@ fn make_component(
         }),
         list_admitted_deliveries: Arc::new(AdmissionLedger::default),
     };
-    let _ = store.clone();
     create_gateway_thread_component(Arc::new(GatewayThreadComponentOptions {
         store,
         runtime,

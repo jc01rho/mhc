@@ -19,6 +19,7 @@ pub type AttachClock = Arc<dyn Fn() -> i64 + Send + Sync>;
 pub type AttachTask = Box<dyn FnOnce() + Send>;
 pub type CancelAttachTimer = Box<dyn FnOnce() + Send>;
 pub type AttachSchedule = Arc<dyn Fn(AttachTask, u64) -> CancelAttachTimer + Send + Sync>;
+pub type SnapshotCallback = Arc<dyn Fn() + Send + Sync>;
 pub type SnapshotUnsubscribe = Box<dyn FnOnce() + Send>;
 type OpenWaiter = oneshot::Sender<Result<Arc<dyn AttachedClient>, RemoteCommandOutcome>>;
 
@@ -44,10 +45,7 @@ pub trait AttachTransport: Send + Sync {
         session_id: &str,
     ) -> BoxFuture<Result<Arc<dyn AttachedClient>, RemoteCommandOutcome>>;
 
-    fn subscribe_snapshots(
-        &self,
-        _on_snapshot: Arc<dyn Fn() + Send + Sync>,
-    ) -> SnapshotUnsubscribe {
+    fn subscribe_snapshots(&self, _on_snapshot: SnapshotCallback) -> SnapshotUnsubscribe {
         Box::new(|| {})
     }
 }
@@ -351,7 +349,7 @@ impl AttachPool {
                     guard.opened.take()
                 };
                 if let Some(client) = client {
-                    let _ = futures::executor::block_on(client.detach());
+                    futures::executor::block_on(client.detach());
                 }
             }),
             self.attach_idle_ms,
@@ -628,7 +626,7 @@ mod tests {
         commands: Arc<Mutex<Vec<Value>>>,
         attaches: Arc<Mutex<Vec<String>>>,
         detaches: Arc<Mutex<Vec<String>>>,
-        snapshot_cb: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+        snapshot_cb: Arc<Mutex<Option<SnapshotCallback>>>,
     }
 
     impl FakeTransport {
@@ -665,10 +663,7 @@ mod tests {
             Box::pin(async move { Ok(attached) })
         }
 
-        fn subscribe_snapshots(
-            &self,
-            on_snapshot: Arc<dyn Fn() + Send + Sync>,
-        ) -> SnapshotUnsubscribe {
+        fn subscribe_snapshots(&self, on_snapshot: SnapshotCallback) -> SnapshotUnsubscribe {
             *lock_unpoison(&self.snapshot_cb) = Some(on_snapshot);
             let slot = Arc::clone(&self.snapshot_cb);
             Box::new(move || {
