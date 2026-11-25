@@ -26,6 +26,10 @@ pub fn refusal_mapping(reason: Option<&str>) -> (&'static str, &'static str) {
             "not_resumable",
             "The thread was closed before it read this message; reopen it and send again if it still matters.",
         ),
+        Some("superseded") => (
+            "not_resumable",
+            "A newer message from the same sender with the same collapse_key replaced this one before the target read it; nothing to do.",
+        ),
         Some("binding_closed") => (
             "invalid_arguments",
             "The binding this message was queued under was detached or rebound; re-read the binding and send again.",
@@ -71,6 +75,7 @@ pub fn result_from_row(
         effective_mode: effective_mode.clone(),
         endpoint_kind,
         deduplicated,
+        collapsed: false,
     };
     if matches!(row.state, DeliveryState::Admitted | DeliveryState::Applied) {
         return match row.admission_kind.as_deref() {
@@ -127,7 +132,7 @@ pub fn engine_next_action(code: &str) -> &'static str {
         }
         "overloaded" => "Wait before sending to this session again.",
         "queue_full" => {
-            "Read details.reason: the target is not taking its queue. A steer has its own reserve, so a steer still reaches a running turn."
+            "Read details.reason: the target is not taking its queue. A steer has its own reserve; send repeats with one collapse_key so each replaces the last."
         }
         "idempotency_conflict" => "Retry with a new idempotency_key.",
         "idempotency_in_progress" => "Wait for the earlier call to settle, then retry.",
@@ -208,6 +213,7 @@ mod tests {
             claimed_at: None,
             attempt: 0,
             admission_kind: admission_kind.map(str::to_owned),
+            wait_kind: None,
             turn_epoch,
             root_id: "root".into(),
             hop: 1,
@@ -217,6 +223,47 @@ mod tests {
             binding_id: None,
             binding_revision: None,
             actor_user_id: None,
+            ledger_id: None,
+            verbatim_text: None,
+            verbatim_display_text: None,
+            collapse_key: None,
+        }
+    }
+
+    #[test]
+    fn a_turn_begun_on_an_idle_session_reports_the_start_lane() {
+        let mut started = row(DeliveryState::Admitted, Some("started"), Some(2));
+        started.mode_effective = Some(crate::thread::types::EffectiveLane::Start);
+        match result_from_row(&started, 1, None, false, false) {
+            GatewayDeliveryResult::Ok {
+                delivery,
+                effective_mode,
+                collapsed,
+                ..
+            } => {
+                assert_eq!(
+                    delivery,
+                    GatewayDeliveryDelivery::Started {
+                        turn_id: "2".into()
+                    }
+                );
+                assert_eq!(effective_mode, "start");
+                assert!(!collapsed);
+            }
+            other => panic!("expected ok, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_row_a_newer_collapse_key_repeat_replaced_reads_not_resumable() {
+        let mut superseded = row(DeliveryState::Refused, None, None);
+        superseded.reason = Some("superseded".into());
+        match result_from_row(&superseded, 0, None, true, false) {
+            GatewayDeliveryResult::Error { error } => {
+                assert_eq!(error.code.as_str(), "not_resumable");
+                assert!(error.message.contains("was refused: superseded"));
+            }
+            other => panic!("expected error, got {other:?}"),
         }
     }
 

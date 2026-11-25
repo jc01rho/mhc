@@ -48,6 +48,8 @@ pub struct GatewayDeliverRequest {
     pub expected_turn_id: Option<i64>,
     pub all_scope: bool,
     pub idempotency_key: Option<String>,
+    /// Replaces the sender's earlier undelivered delivery to this target under the same key (omo#14428).
+    pub collapse_key: Option<String>,
     pub root_id: Option<String>,
 }
 
@@ -61,6 +63,7 @@ impl GatewayDeliverRequest {
             expected_turn_id: None,
             all_scope: false,
             idempotency_key: None,
+            collapse_key: None,
             root_id: None,
         }
     }
@@ -178,6 +181,7 @@ pub fn delivery_args_hash(
     expected_turn_id: Option<i64>,
     binding: Option<&super::types::BindingRef>,
     author: Option<&ExternalAuthor>,
+    collapse_key: Option<&str>,
 ) -> String {
     let mut fields = serde_json::Map::new();
     fields.insert("target".into(), Value::String(target.to_owned()));
@@ -199,6 +203,12 @@ pub fn delivery_args_hash(
             serde_json::to_value(author).unwrap_or(Value::Null)
         }),
     );
+    if let Some(collapse_key) = collapse_key {
+        fields.insert(
+            "collapse_key".into(),
+            Value::String(collapse_key.to_owned()),
+        );
+    }
     hash_args(&Value::Object(fields))
 }
 
@@ -314,13 +324,25 @@ impl GatewayEngine {
                     request.expected_turn_id,
                     facts.binding.as_ref(),
                     author,
+                    request.collapse_key.as_deref(),
                 ),
             },
             endpoint_kind: endpoint.as_ref().map(|endpoint| endpoint.kind),
+            collapse_key: request.collapse_key.clone(),
         };
         let outcome = match self.options.store.enqueue(&enqueue) {
             Ok(outcome) => outcome,
             Err(error) => return fail("internal_error", error.message(), None),
+        };
+        let settle = |result: GatewayDeliveryResult| {
+            let serialized = serde_json::to_value(&result).unwrap_or(Value::Null);
+            let _ = self.options.store.complete_receipt(
+                self.now(),
+                &facts.principal,
+                &idempotency_key,
+                &serialized,
+            );
+            result
         };
         match outcome {
             EnqueueOutcome::Busy => fail(
@@ -342,6 +364,7 @@ impl GatewayEngine {
                         delivery,
                         effective_mode,
                         endpoint_kind,
+                        collapsed,
                         ..
                     }) => GatewayDeliveryResult::Ok {
                         thread_id,
@@ -351,25 +374,52 @@ impl GatewayEngine {
                         effective_mode,
                         endpoint_kind,
                         deduplicated: true,
+                        collapsed,
                     },
                     Ok(other) => other,
                     Err(error) => fail("internal_error", error.to_string(), None),
                 }
             }
+            EnqueueOutcome::Collapsed {
+                row,
+                queue_position,
+            } => {
+                // The target already holds this sender's earlier message under the collapse key: this text was not
+                // delivered, and the answer names the earlier delivery (omo#14431).
+                let absorbed = result_from_row(
+                    &row,
+                    queue_position,
+                    endpoint.as_ref().map(|endpoint| endpoint.kind),
+                    true,
+                    false,
+                );
+                settle(match absorbed {
+                    GatewayDeliveryResult::Ok {
+                        thread_id,
+                        delivery_id,
+                        message_seq,
+                        delivery,
+                        effective_mode,
+                        endpoint_kind,
+                        deduplicated,
+                        ..
+                    } => GatewayDeliveryResult::Ok {
+                        thread_id,
+                        delivery_id,
+                        message_seq,
+                        delivery,
+                        effective_mode,
+                        endpoint_kind,
+                        deduplicated,
+                        collapsed: true,
+                    },
+                    other => other,
+                })
+            }
             EnqueueOutcome::Inserted {
                 row,
                 queue_position,
             } => {
-                let settle = |result: GatewayDeliveryResult| {
-                    let serialized = serde_json::to_value(&result).unwrap_or(Value::Null);
-                    let _ = self.options.store.complete_receipt(
-                        self.now(),
-                        &facts.principal,
-                        &idempotency_key,
-                        &serialized,
-                    );
-                    result
-                };
                 let Some(endpoint) = endpoint else {
                     return settle(result_from_row(&row, queue_position, None, false, true));
                 };
@@ -478,11 +528,13 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let right = delivery_args_hash(
             "receiver",
             "hello",
             GatewayDeliveryMode::Auto,
+            None,
             None,
             None,
             None,
@@ -494,9 +546,20 @@ mod tests {
             None,
             None,
             None,
+            None,
+        );
+        let keyed = delivery_args_hash(
+            "receiver",
+            "hello",
+            GatewayDeliveryMode::Auto,
+            None,
+            None,
+            None,
+            Some("alert"),
         );
         assert_eq!(left, right);
         assert_ne!(left, other);
+        assert_ne!(left, keyed);
     }
 
     #[test]
@@ -642,5 +705,73 @@ mod tests {
             matches!(retried, GatewayDeliveryResult::Ok { .. }),
             "{retried:?}"
         );
+    }
+
+    fn keyed_send(collapse_key: &str, idempotency_key: &str) -> GatewayDeliverRequest {
+        let mut request = send(
+            "notifier",
+            "lead",
+            "alert",
+            None,
+            Some(idempotency_key.into()),
+        );
+        request.mode = Some(GatewayDeliveryMode::FollowUp);
+        request.collapse_key = Some(collapse_key.into());
+        request
+    }
+
+    /// The delivery id, `deduplicated` and `collapsed` of a delivered answer.
+    fn delivered(result: GatewayDeliveryResult) -> (String, bool, bool) {
+        match result {
+            GatewayDeliveryResult::Ok {
+                delivery_id,
+                deduplicated,
+                collapsed,
+                ..
+            } => (delivery_id, deduplicated, collapsed),
+            other => panic!("expected delivered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_repeat_the_target_already_took_answers_collapsed_with_the_earlier_delivery() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let engine = offline_engine(&dir, Arc::new(AtomicI64::new(1_000_000)));
+        let (first, _, first_collapsed) =
+            delivered(block_on(engine.deliver(keyed_send("alert", "k-1"))));
+        assert!(!first_collapsed);
+        let store = engine.options().store.clone();
+        let claimed = store
+            .claim(&crate::thread::types::ClaimRequest {
+                now: 1_000_000,
+                delivery_id: first.clone(),
+                self_identity: store.identity().expect("identity"),
+                lane: crate::thread::types::EffectiveLane::FollowUp,
+            })
+            .expect("claim");
+        assert!(
+            matches!(claimed, crate::thread::types::ClaimOutcome::Claimed { .. }),
+            "{claimed:?}"
+        );
+
+        let absorbed = delivered(block_on(engine.deliver(keyed_send("alert", "k-2"))));
+        assert_eq!(absorbed, (first.clone(), true, true));
+        let retried = delivered(block_on(engine.deliver(keyed_send("alert", "k-2"))));
+        assert_eq!(retried, (first, true, true));
+        assert_eq!(store.list(Some("lead"), None).expect("list").len(), 1);
+    }
+
+    #[test]
+    fn a_send_a_newer_repeat_superseded_replays_its_refusal_on_retry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let engine = offline_engine(&dir, Arc::new(AtomicI64::new(1_000_000)));
+        delivered(block_on(engine.deliver(keyed_send("alert", "k-1"))));
+        delivered(block_on(engine.deliver(keyed_send("alert", "k-2"))));
+        match block_on(engine.deliver(keyed_send("alert", "k-1"))) {
+            GatewayDeliveryResult::Error { error } => {
+                assert_eq!(error.code.as_str(), "not_resumable")
+            }
+            other => panic!("expected the refusal replayed, got {other:?}"),
+        }
     }
 }

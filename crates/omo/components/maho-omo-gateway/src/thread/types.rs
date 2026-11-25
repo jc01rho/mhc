@@ -76,9 +76,12 @@ impl DeliveryState {
     }
 }
 
+/// The lane a delivery took at its receiver: `start` began a turn on an idle session (through the engine's followUp
+/// lane), `steer` joined the running turn, `follow_up` waits behind a turn or a hold (omo#14333).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectiveLane {
+    Start,
     Steer,
     FollowUp,
 }
@@ -86,8 +89,18 @@ pub enum EffectiveLane {
 impl EffectiveLane {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Start => "start",
             Self::Steer => "steer",
             Self::FollowUp => "follow_up",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "start" => Some(Self::Start),
+            "steer" => Some(Self::Steer),
+            "follow_up" => Some(Self::FollowUp),
+            _ => None,
         }
     }
 }
@@ -101,6 +114,9 @@ pub enum RefusalReason {
     BindingClosed,
     /// The target was closed after the row was taken in, before it read the message (omo#14273, #14313).
     TargetClosed,
+    /// A newer delivery from the same sender under the same collapse key replaced it before the target took it
+    /// (omo#14428).
+    Superseded,
 }
 
 impl RefusalReason {
@@ -111,6 +127,7 @@ impl RefusalReason {
             Self::Expired => "expired",
             Self::BindingClosed => "binding_closed",
             Self::TargetClosed => "target_closed",
+            Self::Superseded => "superseded",
         }
     }
 
@@ -121,6 +138,7 @@ impl RefusalReason {
             "expired" => Some(Self::Expired),
             "binding_closed" => Some(Self::BindingClosed),
             "target_closed" => Some(Self::TargetClosed),
+            "superseded" => Some(Self::Superseded),
             _ => None,
         }
     }
@@ -245,6 +263,10 @@ pub struct DeliveryRow {
     pub claimed_at: Option<i64>,
     pub attempt: i64,
     pub admission_kind: Option<String>,
+    /// What the receiver was parked on when its drain queued the delivery (`approval`); null when it was not (v11,
+    /// omo#13014).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_kind: Option<String>,
     pub turn_epoch: Option<i64>,
     pub root_id: String,
     pub hop: i64,
@@ -254,6 +276,17 @@ pub struct DeliveryRow {
     pub binding_id: Option<String>,
     pub binding_revision: Option<i64>,
     pub actor_user_id: Option<String>,
+    /// The engine's ledger key of a delivery taken in from another device (v12, omo#13037); null on every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_id: Option<String>,
+    /// The sender's rendered text and display text of such a delivery, handed to the engine unrendered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbatim_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbatim_display_text: Option<String>,
+    /// The sender's collapse key (v16, omo#14428); null on a row sent without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapse_key: Option<String>,
 }
 
 /// Who is sending. Every kind maps to one receipt/budget principal and one causal-graph node.
@@ -330,6 +363,9 @@ pub struct EnqueueRequest {
     pub binding: Option<BindingRef>,
     pub receipt: ReceiptRef,
     pub endpoint_kind: Option<GatewayEndpointKind>,
+    /// Replaces the sender's earlier undelivered delivery to this target under the same key (omo#14428).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapse_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -344,6 +380,12 @@ pub struct StoreRefusal {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EnqueueOutcome {
     Inserted {
+        row: Box<DeliveryRow>,
+        queue_position: i64,
+    },
+    /// The sender's earlier delivery under the same collapse key, already in the session's runtime, absorbed this one
+    /// (omo#14428).
+    Collapsed {
         row: Box<DeliveryRow>,
         queue_position: i64,
     },
@@ -456,6 +498,10 @@ pub struct GatewayDeliverySuccess {
     pub effective_mode: String,
     pub endpoint_kind: Option<GatewayEndpointKind>,
     pub deduplicated: bool,
+    /// A collapse-key repeat the target already held an earlier message for: this send's text was not delivered
+    /// (omo#14428, #14431).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -469,6 +515,10 @@ pub enum GatewayDeliveryResult {
         effective_mode: String,
         endpoint_kind: Option<GatewayEndpointKind>,
         deduplicated: bool,
+        /// A collapse-key repeat the target already held an earlier message for: this send's text was not delivered
+        /// (omo#14428, #14431).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        collapsed: bool,
     },
     Error {
         error: ThreadToolFailure,

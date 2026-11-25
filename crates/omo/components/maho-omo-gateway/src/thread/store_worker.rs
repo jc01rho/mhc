@@ -236,6 +236,7 @@ mod tests {
                     args_hash: "h".into(),
                 },
                 endpoint_kind: None,
+                collapse_key: None,
             }),
         };
         let json = serde_json::to_value(&request).expect("serialize");
