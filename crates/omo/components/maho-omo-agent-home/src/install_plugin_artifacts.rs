@@ -819,23 +819,21 @@ mod tests {
 
     #[test]
     fn foreign_files_including_compiled_binary_directory_and_oversized_are_left_alone() {
-        let cases: [(&str, fn() -> Vec<u8>); 3] = [
-            ("compiled binary", compiled_binary_bytes),
-            ("unrelated script", || {
-                b"#!/bin/sh\nexec /opt/other/omo \"$@\"\n".to_vec()
-            }),
-            ("oversized with header", || {
-                let mut bytes = LEGACY_MAHO_HEADER.as_bytes().to_vec();
-                bytes.extend(vec![b'a'; 2 * 1024 * 1024]);
-                bytes
-            }),
+        let mut oversized_bytes = LEGACY_MAHO_HEADER.as_bytes().to_vec();
+        oversized_bytes.extend(vec![b'a'; 2 * 1024 * 1024]);
+        let cases = [
+            ("compiled binary", compiled_binary_bytes()),
+            (
+                "unrelated script",
+                b"#!/bin/sh\nexec /opt/other/omo \"$@\"\n".to_vec(),
+            ),
+            ("oversized with header", oversized_bytes),
         ];
 
-        for (name, make_bytes) in cases {
+        for (name, expected) in cases {
             let temp = tempfile::tempdir().expect("temp dir");
             scratch_bin_dir(temp.path());
             let path = local_launcher_path(temp.path());
-            let expected = make_bytes();
             fs::write(&path, &expected).expect(name);
 
             assert_eq!(
