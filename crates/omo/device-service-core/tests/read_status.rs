@@ -253,6 +253,7 @@ mod unix_tests {
                 device: None,
                 origin_configured: false,
                 enabled: true,
+                policy: None,
             })
         );
         owner.await.expect("owner");

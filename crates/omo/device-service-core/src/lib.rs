@@ -14,6 +14,7 @@
 pub mod cold_wake;
 pub mod engine_endpoint;
 pub mod hand_device_keys;
+pub mod listing_rows;
 pub mod local_api;
 pub mod release;
 pub mod state_dir;
@@ -24,5 +25,8 @@ pub use engine_endpoint::{
 pub use hand_device_keys::{
     CancelController, CancelSignal, DeviceServiceStatus, StatusClient,
     device_service_endpoint_path, read_device_service_status, read_device_service_status_with,
+};
+pub use listing_rows::{
+    NEWEST_LISTING_ROWS_VERSION, NewestRowsListing, SessionListClient, older_rows_version,
 };
 pub use state_dir::{DEVICE_SERVICE_STATE_DIR_ENV, device_service_state_dir};

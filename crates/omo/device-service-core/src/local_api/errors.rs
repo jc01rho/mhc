@@ -5,6 +5,32 @@ use std::fmt;
 
 use serde_json::Value;
 
+/// Why a state entry was refused as `insecure_state_dir`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InsecureStateCause {
+    OwnerAdministrators,
+    OwnerOther,
+    Reparse,
+    DaclNotExact,
+    Unreadable,
+    EntryOwner,
+    TokenOwnerUnset,
+}
+
+impl InsecureStateCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OwnerAdministrators => "owner_administrators",
+            Self::OwnerOther => "owner_other",
+            Self::Reparse => "reparse",
+            Self::DaclNotExact => "dacl_not_exact",
+            Self::Unreadable => "unreadable",
+            Self::EntryOwner => "entry_owner",
+            Self::TokenOwnerUnset => "token_owner_unset",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalApiError {
     pub code: String,
@@ -13,6 +39,7 @@ pub struct LocalApiError {
     pub limit_chars: Option<u64>,
     /// On a `session.command` that timed out: the id it was sent under, whose outcome may still arrive.
     pub command_id: Option<String>,
+    pub insecure_cause: Option<InsecureStateCause>,
 }
 
 impl LocalApiError {
@@ -23,6 +50,7 @@ impl LocalApiError {
             action: None,
             limit_chars: None,
             command_id: None,
+            insecure_cause: None,
         }
     }
 
@@ -32,6 +60,11 @@ impl LocalApiError {
 
     pub fn with_action(mut self, action: Option<String>) -> Self {
         self.action = action;
+        self
+    }
+
+    pub fn with_insecure_cause(mut self, cause: Option<InsecureStateCause>) -> Self {
+        self.insecure_cause = cause;
         self
     }
 
