@@ -79,7 +79,7 @@ pub trait RemoteThreadPort: Send + Sync {
 pub fn remote_failure(
     code: &str,
     message: impl Into<String>,
-    next_action: &str,
+    next_action: impl Into<String>,
     details: Option<Value>,
 ) -> Value {
     json!({

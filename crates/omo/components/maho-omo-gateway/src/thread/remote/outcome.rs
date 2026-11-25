@@ -271,7 +271,7 @@ pub fn outcome_failure(
                 remote_failure(
                     "pair_loop_guard",
                     message,
-                    next_action,
+                    &next_action,
                     Some(Value::Object(details)),
                 )
             }
