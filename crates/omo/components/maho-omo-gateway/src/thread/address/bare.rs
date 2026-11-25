@@ -257,15 +257,17 @@ pub async fn resolve_bare(
     {
         let silent = silent_devices(read, text);
         if !silent.is_empty() {
-            let names = device_name_of(Some(&**read));
-            let devices: Vec<SilentDevice> = silent
-                .iter()
-                .map(|id| SilentDevice {
-                    id: id.clone(),
-                    name: names(id).unwrap_or_else(|| id.clone()),
-                    reason: None,
-                })
-                .collect();
+            let devices: Vec<SilentDevice> = {
+                let names = device_name_of(Some(&**read));
+                silent
+                    .iter()
+                    .map(|id| SilentDevice {
+                        id: id.clone(),
+                        name: names(id).unwrap_or_else(|| id.clone()),
+                        reason: None,
+                    })
+                    .collect()
+            };
             return BareResolved {
                 result: Err(tool_refusal(
                     &devices_silent(SilentReason::ListingIncomplete, &devices),

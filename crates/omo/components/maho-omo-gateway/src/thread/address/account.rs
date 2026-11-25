@@ -181,7 +181,7 @@ fn not_ready(refusal: ThreadRefusal) -> AccountRead {
 }
 
 async fn roster_read(remote: &RemoteThreadSurface) -> Option<Vec<AccountDevice>> {
-    roster_of(&remote.client).await.ok()
+    roster_of(remote.client.as_ref()).await.ok()
 }
 
 /// The status round of one resolution, read once whichever step asks first.

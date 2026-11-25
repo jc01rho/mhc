@@ -45,12 +45,12 @@ pub async fn probe_across(
     if !remote.sessions.can_lookup().await {
         return None;
     }
-    if !probe_may_build_ended_row(&remote.sessions).await {
+    if !probe_may_build_ended_row(remote.sessions.as_ref()).await {
         return None;
     }
     let devices: Vec<AccountDevice> = match roster {
         Some(roster) => roster.to_vec(),
-        None => account_devices(&remote.client).await.ok()?.devices,
+        None => account_devices(remote.client.as_ref()).await.ok()?.devices,
     };
     let lookups: Vec<_> = devices
         .iter()
@@ -163,7 +163,7 @@ async fn pinned_device(
 ) -> (String, String) {
     let name = match known {
         Some(known) => name_of(known.roster.as_deref(), pin.device),
-        None => match account_devices(&remote.client).await {
+        None => match account_devices(remote.client.as_ref()).await {
             Ok(read) => name_of(Some(read.devices.as_slice()), pin.device),
             Err(_) => pin.device.to_owned(),
         },
@@ -261,7 +261,7 @@ pub async fn pinned(
     if let Some(first) = first {
         return first;
     }
-    let may_probe = probe_may_build_ended_row(&remote.sessions).await;
+    let may_probe = probe_may_build_ended_row(remote.sessions.as_ref()).await;
     let lookup = if may_probe {
         Some(
             remote

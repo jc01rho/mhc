@@ -54,7 +54,7 @@ async fn roster_for(
     if let Some(roster) = account.and_then(|read| read.roster.clone()) {
         return Ok(roster);
     }
-    match account_devices(&remote.client).await {
+    match account_devices(remote.client.as_ref()).await {
         Ok(read) => Ok(read.devices),
         Err(message) => Err(refusal(
             "host_unavailable",

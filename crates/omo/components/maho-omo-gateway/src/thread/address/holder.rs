@@ -55,7 +55,7 @@ pub async fn holder_target(
             .iter()
             .find(|candidate| candidate.device == holder.device)
             .cloned(),
-        None => match account_devices(&remote.client).await {
+        None => match account_devices(remote.client.as_ref()).await {
             Ok(read) => read
                 .devices
                 .into_iter()
@@ -102,7 +102,7 @@ pub async fn holder_target(
                 row: Arc::new(row.clone()),
             });
         }
-        if probe_may_build_ended_row(&remote.sessions).await {
+        if probe_may_build_ended_row(remote.sessions.as_ref()).await {
             return Ok(RemoteTarget::Remote {
                 row: Arc::new(ended_row(&holder.device, session_id, &holder.session_id)),
             });
