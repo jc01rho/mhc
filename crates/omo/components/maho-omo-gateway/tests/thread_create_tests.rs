@@ -750,6 +750,9 @@ fn a_folder_that_does_not_exist_refuses_and_a_relative_one_resolves_against_the_
     assert_eq!(missing["error"]["details"]["reason"], "folder_missing");
     assert!(opens(&fixture).is_empty());
 
+    // A workspace is a git work tree (upstream `sameWorkspace`): a folder under a root that holds no `.git` is outside
+    // it, so the caller's folder is marked as one for the folder below to belong to it.
+    std::fs::create_dir(fixture.workspace.path().join(".git")).expect("git marker");
     std::fs::create_dir(fixture.workspace.path().join("sub")).expect("sub");
     let relative = run(&fixture, json!({ "name": "f", "cwd": "sub" }));
     assert_eq!(relative["kind"], "ok", "{relative}");
