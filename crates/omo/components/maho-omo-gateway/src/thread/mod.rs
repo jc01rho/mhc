@@ -27,6 +27,7 @@ pub mod extension_transaction;
 pub mod gateway_replies;
 pub mod graceful_close_returns;
 pub mod host_view;
+pub mod intake_admission;
 pub mod lazy_live_surface;
 pub mod live_surface;
 pub mod model_match;
@@ -45,6 +46,7 @@ pub mod run_alerts;
 pub mod schema;
 pub mod sdk;
 pub mod session_args_schema;
+pub mod session_wait_types;
 pub mod store;
 pub mod store_api;
 pub mod store_extension_facade;
@@ -54,12 +56,15 @@ pub mod store_extension_session_ops;
 pub mod store_extensions;
 pub mod store_ops;
 pub mod store_relay_ops;
+pub mod store_woken_facade;
+pub mod store_woken_ops;
 pub mod store_worker;
 pub mod thread_row;
 pub mod thread_state;
 pub mod tools;
 pub mod types;
 pub mod wake;
+pub mod woken_types;
 
 pub use adapter::{
     Admission, DeliverySender, DrainWakeEvent, EndpointLiveness, GatewayAdmissionKind,

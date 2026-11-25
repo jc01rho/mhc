@@ -22,6 +22,10 @@ pub fn refusal_mapping(reason: Option<&str>) -> (&'static str, &'static str) {
             "not_resumable",
             "The target did not take the message within its lifetime; send it again if it still matters.",
         ),
+        Some("sender_not_admitted") => (
+            "not_resumable",
+            "The sending device is no longer admitted to this account; sign it in again, then send again.",
+        ),
         Some("target_closed") => (
             "not_resumable",
             "The thread was closed before it read this message; reopen it and send again if it still matters.",

@@ -1798,7 +1798,7 @@ pub fn reconcile(
 }
 
 /// Whether another process's claim can be let go: its pid is gone, or its start time moved.
-fn claimant_is_dead(claimant: &ProcessIdentity) -> bool {
+pub(crate) fn claimant_is_dead(claimant: &ProcessIdentity) -> bool {
     if claimant.pid <= 0 {
         return false;
     }
