@@ -23,12 +23,32 @@ use crate::runners::{RunnerFailure, RunnerFailureKind};
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 10_000;
 
+// #13165: the engine's cold start (spawn until it answers `get_protocol_info`) is bounded by its CPU
+// progress, not by the chain deadline: a slow runner stretches the boot's wall time, not the CPU it
+// needs. A boot that makes no CPU progress for the stall window, or burns past the CPU cap, is
+// stuck; the outer bound holds even when the CPU cannot be read (another runtime, a refused handle).
+const DEFAULT_STARTUP_STALL_MS: u64 = 10_000;
+const DEFAULT_STARTUP_CPU_CAP_S: f64 = 120.0;
+const DEFAULT_STARTUP_OUTER_BOUND_MS: u64 = 10 * 60_000;
+const STARTUP_SAMPLE_MS: u64 = 250;
+const STARTUP_PROGRESS_EPSILON_S: f64 = 0.02;
+
 pub type SpawnChild = Arc<dyn Fn(&RpcSpawnDescriptor) -> Arc<RpcChildProcess> + Send + Sync>;
 pub type BuildSpawn = Arc<dyn Fn(&RpcRunnerSpec) -> RpcSpawnDescriptor + Send + Sync>;
+/// Reads a process's own user+system CPU seconds, or answers `None` when the fact cannot be read.
+pub type ReadCpuSeconds = Arc<dyn Fn(u32) -> Option<f64> + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct RpcProcessRunnerOptions {
     pub fallback_chain_deadline_ms: Option<u64>,
+    /// How long the engine may make no CPU progress while its first answer is pending (#13165).
+    pub startup_stall_ms: Option<u64>,
+    /// The CPU the engine may use starting up before it answers, in seconds (#13165).
+    pub startup_cpu_cap_s: Option<f64>,
+    /// The bound that holds even when the child's CPU cannot be read (#13165).
+    pub startup_outer_bound_ms: Option<u64>,
+    /// The injection seam for the CPU reader; defaults to `platform::native_process`.
+    pub read_cpu_seconds: Option<ReadCpuSeconds>,
     pub exclude_models: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pub spawn_child: Option<SpawnChild>,
     pub build_spawn: Option<BuildSpawn>,
@@ -50,6 +70,7 @@ type StartRefusal = (
 
 pub struct RpcProcessRunner {
     fallback_chain_deadline_ms: u64,
+    startup_bounds: StartupBounds,
     unsupported_noticed: std::sync::atomic::AtomicBool,
     exclude_models: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pending_teardowns: Mutex<Vec<JoinHandle<()>>>,
@@ -67,6 +88,22 @@ impl RpcProcessRunner {
     pub fn new(options: RpcProcessRunnerOptions) -> Self {
         Self {
             fallback_chain_deadline_ms: options.fallback_chain_deadline_ms.unwrap_or(10_000),
+            startup_bounds: StartupBounds {
+                stall: std::time::Duration::from_millis(
+                    options.startup_stall_ms.unwrap_or(DEFAULT_STARTUP_STALL_MS),
+                ),
+                cpu_cap_s: options
+                    .startup_cpu_cap_s
+                    .unwrap_or(DEFAULT_STARTUP_CPU_CAP_S),
+                outer_bound: std::time::Duration::from_millis(
+                    options
+                        .startup_outer_bound_ms
+                        .unwrap_or(DEFAULT_STARTUP_OUTER_BOUND_MS),
+                ),
+                read_cpu_seconds: options.read_cpu_seconds.unwrap_or_else(|| {
+                    Arc::new(crate::platform::native_process::read_process_cpu_seconds)
+                }),
+            },
             unsupported_noticed: std::sync::atomic::AtomicBool::new(false),
             exclude_models: options.exclude_models,
             pending_teardowns: Mutex::new(Vec::new()),
@@ -155,30 +192,51 @@ impl RpcProcessRunner {
             if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models)
                 && !chain.is_empty()
             {
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
-                let configured = protocol.request(json!({"type":"get_protocol_info"}))
-                        .and_then(|pending| pending.wait_until(deadline))
-                        .and_then(|response| {
-                            let supported = response["success"] == true && response["command"] == "get_protocol_info" && response["data"]["capabilities"].as_array().is_some_and(|items| items.iter().any(|item| item == "retry_fallback_command"));
-                            if !supported {
-                                if !self.unsupported_noticed.swap(true, std::sync::atomic::Ordering::AcqRel) {
-                                    utils::logger::log("senpi-task engine lacks retry_fallback_command; retaining manager fallback", None);
-                                }
-                                return Ok(());
+                // #13165: only the engine's first answer is bounded by its CPU progress. Once it
+                // answered, the chain deadline covers only the `set_retry_fallback` exchange.
+                match with_startup_progress(
+                    protocol.request(json!({"type":"get_protocol_info"})),
+                    protocol.pid(),
+                    &self.startup_bounds,
+                ) {
+                    Ok(Ok(response)) => {
+                        let deadline = std::time::Instant::now()
+                            + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
+                        let supported = response["success"] == true
+                            && response["command"] == "get_protocol_info"
+                            && response["data"]["capabilities"]
+                                .as_array()
+                                .is_some_and(|items| {
+                                    items.iter().any(|item| item == "retry_fallback_command")
+                                });
+                        if !supported {
+                            if !self
+                                .unsupported_noticed
+                                .swap(true, std::sync::atomic::Ordering::AcqRel)
+                            {
+                                utils::logger::log(
+                                    "senpi-task engine lacks retry_fallback_command; retaining manager fallback",
+                                    None,
+                                );
                             }
-                            if std::time::Instant::now() >= deadline {
-                                return Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: "fallback configuration deadline passed".into() });
-                            }
-                            protocol.request(json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}}))?.wait_until(deadline).and_then(|response| {
-                                if response["success"] == true { Ok(()) } else { Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: format!("fallback configuration refused: {}", response["error"]) }) }
-                            })
-                        });
-                if let Err(error) = configured {
-                    utils::logger::log(
+                        } else if let Err(error) = protocol
+                            .request(json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}}))
+                            .and_then(|pending| pending.wait_until(deadline))
+                        {
+                            utils::logger::log(
+                                "senpi-task child fallback configuration unavailable; retaining manager fallback",
+                                Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
+                            );
+                        }
+                    }
+                    Ok(Err(error)) => utils::logger::log(
                         "senpi-task child fallback configuration unavailable; retaining manager fallback",
                         Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
-                    );
+                    ),
+                    Err(startup) => utils::logger::log(
+                        "senpi-task child fallback configuration unavailable; retaining manager fallback",
+                        Some(&json!({"taskId":spec.task_id,"error":startup})),
+                    ),
                 }
             }
             None
@@ -274,6 +332,10 @@ impl RpcProcessRunner {
     /// `applyFallbackChain` under the designated-chain-only policy: the child's own chain (with
     /// tombstones) goes out as `set_retry_fallback` before its first prompt or session switch, and a
     /// chain the engine does not hold fails the start, so no model outside the chain ever runs.
+    ///
+    /// The wait for the engine's FIRST answer is bounded by its CPU progress, not by the chain
+    /// deadline (#13165): `fallback_chain_deadline_ms` covers only `set_retry_fallback` once the
+    /// engine has answered.
     fn hold_designated_chain(
         &self,
         protocol: &RpcProtocolClient,
@@ -281,79 +343,189 @@ impl RpcProcessRunner {
         spec: &RpcRunnerSpec,
         model: &str,
     ) -> Option<StartRefusal> {
-        use crate::runners::designated_chain_error::{
-            DesignatedChainNotHeldReason as Reason, chain_not_held_cause,
-        };
+        use crate::runners::designated_chain_error::DesignatedChainNotHeldReason as Reason;
         let fallbacks = spec.fallback_models.clone().unwrap_or_default();
         let profile = crate::runners::designated_fallback_profile::designated_fallback_profile(
             model, &fallbacks,
         );
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
-        let unanswered = |error: String| {
-            if std::time::Instant::now() >= deadline {
-                (
+        let probe = match with_startup_progress(
+            protocol.request(json!({"type":"get_protocol_info"})),
+            protocol.pid(),
+            &self.startup_bounds,
+        ) {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                return Some(unanswered_refusal(
+                    Reason::Refused,
+                    format!("refused: {error}"),
+                    handle,
+                    spec,
+                    model,
+                    &fallbacks,
+                ));
+            }
+            Err(startup) => {
+                return Some(unanswered_refusal(
                     Reason::Timeout,
-                    format!("no answer within {} ms", self.fallback_chain_deadline_ms),
-                )
-            } else {
-                (Reason::Refused, format!("refused: {error}"))
+                    startup,
+                    handle,
+                    spec,
+                    model,
+                    &fallbacks,
+                ));
             }
         };
-        let outcome: Result<(), (Reason, String)> = match protocol
-            .request(json!({"type":"get_protocol_info"}))
-            .and_then(|pending| pending.wait_until(deadline))
-        {
-            Err(error) => Err(unanswered(error.to_string())),
-            Ok(response)
-                if !(response["success"] == true
-                    && response["command"] == "get_protocol_info"
-                    && response["data"]["capabilities"]
-                        .as_array()
-                        .is_some_and(|items| items.iter().any(|item| item == "retry_fallback_command"))) =>
-            {
-                Err((
-                    Reason::Unsupported,
-                    "this senpi engine cannot take a task child's model chain (no retry_fallback_command); upgrade it".to_string(),
-                ))
-            }
-            Ok(_) if std::time::Instant::now() >= deadline => {
-                Err((Reason::Refused, "deadline passed".to_string()))
-            }
-            Ok(_) => match protocol
-                .request(json!({"type":"set_retry_fallback","retryFallback":profile}))
-                .and_then(|pending| pending.wait_until(deadline))
-            {
-                Ok(response) if response["success"] == true => Ok(()),
-                Ok(response) => Err((Reason::Refused, format!("refused: {}", response["error"]))),
-                Err(error) => Err(unanswered(error.to_string())),
-            },
-        };
-        let (reason, detail) = outcome.err()?;
-        let chain =
-            crate::runners::designated_fallback_profile::designated_chain_text(model, &fallbacks);
-        if handle.exit_outcome().is_some() {
-            return Some((
-                RunnerFailureKind::ChildPromptFailed,
-                format!(
-                    "task {}: its designated model chain ({chain}) was not applied because the child exited while it was being sent",
-                    spec.task_id
-                ),
-                None,
+        let supported = probe["success"] == true
+            && probe["command"] == "get_protocol_info"
+            && probe["data"]["capabilities"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item == "retry_fallback_command"));
+        if !supported {
+            return Some(unanswered_refusal(
+                Reason::Unsupported,
+                "this senpi engine cannot take a task child's model chain (no retry_fallback_command); upgrade it".to_string(),
+                handle,
+                spec,
+                model,
+                &fallbacks,
             ));
         }
-        let models: Vec<String> = std::iter::once(model.to_string())
-            .chain(fallbacks)
-            .collect();
-        Some((
-            RunnerFailureKind::ChildPromptFailed,
-            format!(
-                "task {}: its designated model chain ({chain}) was not applied ({detail}), and a child never runs outside its designated models, so it was not started",
-                spec.task_id
-            ),
-            Some(chain_not_held_cause(reason, &models)),
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
+        if std::time::Instant::now() >= deadline {
+            return Some(unanswered_refusal(
+                Reason::Refused,
+                "deadline passed".to_string(),
+                handle,
+                spec,
+                model,
+                &fallbacks,
+            ));
+        }
+        let outcome = protocol
+            .request(json!({"type":"set_retry_fallback","retryFallback":profile}))
+            .and_then(|pending| pending.wait_until(deadline));
+        let (reason, detail) = match outcome {
+            Ok(response) if response["success"] == true => return None,
+            Ok(response) => (Reason::Refused, format!("refused: {}", response["error"])),
+            Err(error) => {
+                if std::time::Instant::now() >= deadline {
+                    (
+                        Reason::Timeout,
+                        format!("no answer within {} ms", self.fallback_chain_deadline_ms),
+                    )
+                } else {
+                    (Reason::Refused, format!("refused: {error}"))
+                }
+            }
+        };
+        Some(unanswered_refusal(
+            reason, detail, handle, spec, model, &fallbacks,
         ))
     }
+}
+
+#[derive(Clone)]
+struct StartupBounds {
+    stall: std::time::Duration,
+    cpu_cap_s: f64,
+    outer_bound: std::time::Duration,
+    read_cpu_seconds: ReadCpuSeconds,
+}
+
+fn with_startup_progress(
+    request: Result<
+        crate::runners::rpc::protocol_client::PendingResponse,
+        crate::runners::rpc::protocol_client::RpcClientError,
+    >,
+    pid: Option<u32>,
+    bounds: &StartupBounds,
+) -> Result<Result<serde_json::Value, crate::runners::rpc::protocol_client::RpcClientError>, String>
+{
+    let pending = match request {
+        Ok(pending) => pending,
+        Err(error) => return Ok(Err(error)),
+    };
+    let started = std::time::Instant::now();
+    let sample = std::time::Duration::from_millis(STARTUP_SAMPLE_MS);
+    let mut last_cpu = -1.0_f64;
+    let mut last_advance = started;
+    loop {
+        let elapsed = started.elapsed();
+        if elapsed >= bounds.outer_bound {
+            return Err(format!(
+                "no answer within the {} ms startup outer bound",
+                bounds.outer_bound.as_millis()
+            ));
+        }
+        let remaining_outer = bounds.outer_bound.saturating_duration_since(elapsed);
+        let step = if pid.is_some() {
+            sample.min(remaining_outer)
+        } else {
+            remaining_outer
+        };
+        if let Some(answer) = pending.try_wait_timeout(step) {
+            return Ok(answer);
+        }
+        if started.elapsed() >= bounds.outer_bound {
+            return Err(format!(
+                "no answer within the {} ms startup outer bound",
+                bounds.outer_bound.as_millis()
+            ));
+        }
+        if let Some(pid) = pid
+            && let Some(cpu) = (bounds.read_cpu_seconds)(pid)
+        {
+            if cpu > bounds.cpu_cap_s {
+                return Err(format!(
+                    "the engine used {cpu:.1} s of CPU starting up without answering, over the {} s cap",
+                    bounds.cpu_cap_s
+                ));
+            }
+            if cpu >= last_cpu + STARTUP_PROGRESS_EPSILON_S {
+                last_cpu = cpu;
+                last_advance = std::time::Instant::now();
+            } else if last_advance.elapsed() >= bounds.stall {
+                return Err(format!(
+                    "the engine made no CPU progress for {} s before answering",
+                    last_advance.elapsed().as_secs_f64().round() as u64
+                ));
+            }
+        }
+    }
+}
+
+fn unanswered_refusal(
+    reason: crate::runners::designated_chain_error::DesignatedChainNotHeldReason,
+    detail: String,
+    handle: &RpcChildHandle,
+    spec: &RpcRunnerSpec,
+    model: &str,
+    fallbacks: &[String],
+) -> StartRefusal {
+    let chain =
+        crate::runners::designated_fallback_profile::designated_chain_text(model, fallbacks);
+    if handle.exit_outcome().is_some() {
+        return (
+            RunnerFailureKind::ChildPromptFailed,
+            format!(
+                "task {}: its designated model chain ({chain}) was not applied because the child exited while it was being sent",
+                spec.task_id
+            ),
+            None,
+        );
+    }
+    let models: Vec<String> = std::iter::once(model.to_string())
+        .chain(fallbacks.iter().cloned())
+        .collect();
+    (
+        RunnerFailureKind::ChildPromptFailed,
+        format!(
+            "task {}: its designated model chain ({chain}) was not applied ({detail}), and a child never runs outside its designated models, so it was not started",
+            spec.task_id
+        ),
+        Some(crate::runners::designated_chain_error::chain_not_held_cause(reason, &models)),
+    )
 }
 
 static ANSI_ESCAPE: LazyLock<Regex> =

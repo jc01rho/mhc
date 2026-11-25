@@ -327,3 +327,153 @@ fn given_a_spec_that_already_carries_extensions_when_started_then_inherited_exte
     let seen = seen.lock().expect("seen").clone().expect("spec");
     assert_eq!(seen.extensions, Some(vec!["/tmp/explicit.ts".to_string()]));
 }
+
+fn startup_bound_spec(task_id: &str) -> RpcRunnerSpec {
+    RpcRunnerSpec {
+        task_id: task_id.to_string(),
+        model: Some("p/m".to_string()),
+        fallback_models: Some(vec!["q/n".to_string()]),
+        prompt: "answer".to_string(),
+        ..RpcRunnerSpec::default()
+    }
+}
+
+#[test]
+fn an_idle_engine_that_never_answers_is_stopped_by_the_stall_window() {
+    let child = Arc::new(
+        crate::runners::rpc::process::RpcChildProcess::spawn_command(
+            super::fake_child::fake_command(
+                "rpc",
+                &std::collections::BTreeMap::from([("FAKE_FALLBACK".into(), "silent".into())]),
+                true,
+            ),
+        ),
+    );
+    let _guard = ChildGuard(Arc::clone(&child));
+    let spawned = Arc::clone(&child);
+    let runner = RpcProcessRunner::new(RpcProcessRunnerOptions {
+        startup_stall_ms: Some(400),
+        read_cpu_seconds: Some(Arc::new(|_| Some(0.5))),
+        spawn_child: Some(Arc::new(move |_| Arc::clone(&spawned))),
+        build_spawn: Some(Arc::new(|_| RpcSpawnDescriptor::default())),
+        model_admission: Some(Arc::new(|_| Ok(()))),
+        designated_chain_only: true,
+        ..RpcProcessRunnerOptions::default()
+    });
+    let failure = runner
+        .start(&startup_bound_spec("st_stall"))
+        .err()
+        .expect("stall must fail start");
+    runner.settle_teardowns();
+    assert!(
+        failure.message.contains("made no CPU progress"),
+        "{}",
+        failure.message
+    );
+}
+
+#[test]
+fn a_runaway_engine_is_stopped_by_the_startup_cpu_cap() {
+    let child = Arc::new(
+        crate::runners::rpc::process::RpcChildProcess::spawn_command(
+            super::fake_child::fake_command(
+                "rpc",
+                &std::collections::BTreeMap::from([("FAKE_FALLBACK".into(), "silent".into())]),
+                true,
+            ),
+        ),
+    );
+    let _guard = ChildGuard(Arc::clone(&child));
+    let spawned = Arc::clone(&child);
+    let burned = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let sample_burned = Arc::clone(&burned);
+    let runner = RpcProcessRunner::new(RpcProcessRunnerOptions {
+        startup_cpu_cap_s: Some(0.3),
+        read_cpu_seconds: Some(Arc::new(move |_| {
+            let step = sample_burned.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            Some(step as f64 * 0.1)
+        })),
+        spawn_child: Some(Arc::new(move |_| Arc::clone(&spawned))),
+        build_spawn: Some(Arc::new(|_| RpcSpawnDescriptor::default())),
+        model_admission: Some(Arc::new(|_| Ok(()))),
+        designated_chain_only: true,
+        ..RpcProcessRunnerOptions::default()
+    });
+    let failure = runner
+        .start(&startup_bound_spec("st_cpu_cap"))
+        .err()
+        .expect("runaway cpu must fail start");
+    runner.settle_teardowns();
+    assert!(
+        failure.message.contains("over the 0.3 s cap"),
+        "{}",
+        failure.message
+    );
+}
+
+#[test]
+fn an_unreadable_cpu_reading_still_hits_the_startup_outer_bound() {
+    let child = Arc::new(
+        crate::runners::rpc::process::RpcChildProcess::spawn_command(
+            super::fake_child::fake_command(
+                "rpc",
+                &std::collections::BTreeMap::from([("FAKE_FALLBACK".into(), "silent".into())]),
+                true,
+            ),
+        ),
+    );
+    let _guard = ChildGuard(Arc::clone(&child));
+    let spawned = Arc::clone(&child);
+    let runner = RpcProcessRunner::new(RpcProcessRunnerOptions {
+        startup_outer_bound_ms: Some(400),
+        read_cpu_seconds: Some(Arc::new(|_| None)),
+        spawn_child: Some(Arc::new(move |_| Arc::clone(&spawned))),
+        build_spawn: Some(Arc::new(|_| RpcSpawnDescriptor::default())),
+        model_admission: Some(Arc::new(|_| Ok(()))),
+        designated_chain_only: true,
+        ..RpcProcessRunnerOptions::default()
+    });
+    let failure = runner
+        .start(&startup_bound_spec("st_outer"))
+        .err()
+        .expect("outer bound must fail start");
+    runner.settle_teardowns();
+    assert!(
+        failure.message.contains("startup outer bound"),
+        "{}",
+        failure.message
+    );
+}
+
+#[test]
+fn a_cold_start_that_outlasts_the_chain_deadline_still_takes_its_chain() {
+    let child = Arc::new(
+        crate::runners::rpc::process::RpcChildProcess::spawn_command(
+            super::fake_child::fake_command(
+                "rpc",
+                &std::collections::BTreeMap::from([
+                    ("FAKE_FALLBACK".into(), "supported".into()),
+                    ("FAKE_BOOT_BUSY_MS".into(), "900".into()),
+                ]),
+                true,
+            ),
+        ),
+    );
+    let _guard = ChildGuard(Arc::clone(&child));
+    let spawned = Arc::clone(&child);
+    let runner = RpcProcessRunner::new(RpcProcessRunnerOptions {
+        fallback_chain_deadline_ms: Some(300),
+        spawn_child: Some(Arc::new(move |_| Arc::clone(&spawned))),
+        build_spawn: Some(Arc::new(|_| RpcSpawnDescriptor::default())),
+        model_admission: Some(Arc::new(|_| Ok(()))),
+        designated_chain_only: true,
+        ..RpcProcessRunnerOptions::default()
+    });
+    let handle = runner
+        .start(&startup_bound_spec("st_slow_boot"))
+        .expect("cold start that makes CPU progress starts");
+    assert_eq!(
+        handle.wait_for_outcome(),
+        RunnerOutcome::completed("answer")
+    );
+}
