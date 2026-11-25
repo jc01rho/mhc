@@ -4,6 +4,9 @@
 //! the local API.
 
 pub mod address_book;
+pub mod attach_pool;
+pub mod closed_rows;
+pub mod cross_device;
 pub mod device_service;
 pub mod outcome;
 pub mod ports;

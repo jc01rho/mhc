@@ -1,11 +1,20 @@
 //! The status round every cross-device resolution starts with (omo `thread/remote/remote-ops.ts` `remoteReady`, and
 //! `outcome.ts` `notSignedInFailure`).
 
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
 use crate::thread::address::refusals::{ThreadRefusal, refusal};
 
 use super::ports::RemoteThreadSurface;
+
+/// The engine payload of a `session.command` response (`response.data`, else `{}`).
+pub fn reply_data(response: &Value) -> Map<String, Value> {
+    response
+        .get("data")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
 
 /// What a connected relay's status round names: this device's account id.
 #[derive(Debug, Clone, PartialEq, Eq)]

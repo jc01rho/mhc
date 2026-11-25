@@ -124,7 +124,7 @@ pub fn row(durable: &str, key: &str, title: &str, state: &str, device: &str) -> 
         path: "/work/b".to_owned(),
         state: state.to_owned(),
         updated_ms: 1_700_000_000_000,
-        source: None,
+        ..RemoteSessionRow::default()
     }
 }
 
@@ -288,11 +288,13 @@ impl RemoteSessionsPort for Fake {
                 RemoteListing {
                     rows: rows.into_iter().filter(|row| row.device != B_ID).collect(),
                     incomplete,
+                    devices: None,
                 }
             } else {
                 RemoteListing {
                     rows,
                     incomplete: Vec::new(),
+                    devices: None,
                 }
             }
         };

@@ -17,5 +17,7 @@ pub mod operations;
 pub mod plan_create;
 pub mod port;
 pub mod prompt_start;
+pub mod relay_control;
+pub mod relay_session_host;
 pub mod rename;
 pub mod session_host;

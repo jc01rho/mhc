@@ -76,6 +76,7 @@ pub fn close_not_live(thread_id: &str, device: Option<&str>) -> Value {
         reason: ThreadCloseReason::NotLive,
         dropped_deliveries: Vec::new(),
         device: device.map(str::to_owned),
+        graceful: None,
     })
 }
 
@@ -125,7 +126,7 @@ pub async fn close_thread_with_options(
         )));
     }
     let closed = answer.outcome == CloseOutcome::Closed;
-    let mut result = ok_json(&ThreadCloseOk {
+    Ok(ok_json(&ThreadCloseOk {
         thread,
         closed,
         reason: if closed {
@@ -135,13 +136,8 @@ pub async fn close_thread_with_options(
         },
         dropped_deliveries: answer.dropped_deliveries,
         device,
-    });
-    if let Some(graceful) = answer.graceful
-        && let Some(object) = result.as_object_mut()
-    {
-        object.insert("graceful".into(), json!(graceful));
-    }
-    Ok(result)
+        graceful: answer.graceful,
+    }))
 }
 
 pub async fn close_thread(control: &dyn SessionControl, force: bool) -> ControlResult<Value> {

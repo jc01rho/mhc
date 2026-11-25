@@ -4,12 +4,12 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::refusals::DeviceRow;
 
 /// How a listing round saw a device: answered in full, did not answer in full, or offline in the roster.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceListing {
     Listed,

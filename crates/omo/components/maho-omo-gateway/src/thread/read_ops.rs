@@ -235,6 +235,9 @@ pub fn list_threads(
         listing: (unanswered > 0).then(|| "incomplete".to_owned()),
         unanswered_endpoints: (unanswered > 0).then_some(unanswered),
         backlog_error: None,
+        devices: None,
+        remote_unavailable: None,
+        aliases_unavailable: None,
     }
 }
 
@@ -629,6 +632,9 @@ mod tests {
                 listing: None,
                 unanswered_endpoints: None,
                 backlog_error: None,
+                devices: None,
+                remote_unavailable: None,
+                aliases_unavailable: None,
             },
         );
         assert_eq!(empty.backlog_error, None);

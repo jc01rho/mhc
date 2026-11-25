@@ -46,6 +46,10 @@ pub trait RemoteControlLocator: Send + Sync {
         all_scope: bool,
         caller_id: String,
     ) -> BoxFuture<Option<LocatedControl>>;
+
+    fn remote_surface(&self) -> Option<&crate::thread::remote::ports::RemoteThreadSurface> {
+        None
+    }
 }
 
 /// One control call's reading of this device: the host view and the address book assembled from it, the caller, and

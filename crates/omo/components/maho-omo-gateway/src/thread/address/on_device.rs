@@ -134,6 +134,7 @@ pub async fn resolve_on_device(
             listing: RemoteListing {
                 rows,
                 incomplete: account.incomplete.clone(),
+                devices: account.round.states.clone(),
             },
             roster: account.roster.clone(),
         };
