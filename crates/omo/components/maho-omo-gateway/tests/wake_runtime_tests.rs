@@ -35,6 +35,8 @@ use crate::wake_support::{
 };
 
 const ENGINE: &str = "2026.12.1";
+const DEV_ENGINE: &str = "2026.11.19-2-1-omob.6d05a3b.1975499+1795063675.1975499";
+const PARKED: &str = "0198b2c3-d4e5-7f60-8a1b-2c3d4e5f6a7b";
 const TARGET: &str = "dur-target";
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -874,6 +876,46 @@ fn given_a_parked_session_the_startup_sweep_wakes_when_its_drain_asks_the_admiss
         vec!["open".to_owned()]
     );
     r.running.stop();
+}
+
+#[test]
+fn given_the_dev_engine_stamp_and_a_parked_session_no_endpoint_lists_when_a_delivery_wakes_it_then_it_is_opened_woken_handed_back_and_woken_again()
+ {
+    let h = WakeHarness::new();
+    let parked = h.path(PARKED);
+    let fake = engine_host();
+    let schedule = ManualSchedule::new();
+    let latch: Arc<ThreadWakeLatch> = Arc::default();
+    let mut start = wake_start(
+        &h,
+        &fake,
+        &schedule,
+        BTreeMap::new(),
+        h.dir.path().to_path_buf(),
+        DEV_ENGINE,
+        &latch,
+    );
+    start.options.minimum_engine = None;
+    let running =
+        start_thread_wake_at_session("tui", start).expect("a dev engine stamp starts the wake");
+    schedule.run_immediate();
+    running.wait_ready();
+
+    running.wake(PARKED).expect("wake");
+    let opens = fake.frames("open_session");
+    assert_eq!(opens.len(), 1);
+    assert_eq!(opens[0]["sessionPath"], json!(parked.to_string_lossy()));
+    assert_eq!(opens[0]["retain_on_disconnect"], json!(true));
+    assert_eq!(fake.frames("wake").len(), 1);
+
+    assert_eq!(schedule.run_queued(), 1);
+    assert!(h.store.woken().list().expect("list").is_empty());
+    assert_eq!(fake.frames("release_session").len(), 1);
+
+    running.wake(PARKED).expect("wake again");
+    assert_eq!(fake.frames("open_session").len(), 2);
+    assert_eq!(fake.frames("wake").len(), 2);
+    running.stop();
 }
 
 #[test]
