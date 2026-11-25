@@ -22,6 +22,10 @@ pub fn refusal_mapping(reason: Option<&str>) -> (&'static str, &'static str) {
             "not_resumable",
             "The target did not take the message within its lifetime; send it again if it still matters.",
         ),
+        Some("target_closed") => (
+            "not_resumable",
+            "The thread was closed before it read this message; reopen it and send again if it still matters.",
+        ),
         Some("binding_closed") => (
             "invalid_arguments",
             "The binding this message was queued under was detached or rebound; re-read the binding and send again.",
@@ -272,6 +276,41 @@ mod tests {
             }
             other => panic!("expected error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_row_its_closed_session_handed_back_reads_not_delivered() {
+        let mut returned = row(DeliveryState::Refused, Some("queued"), Some(1));
+        returned.reason = Some("target_closed".into());
+        match result_from_row(&returned, 0, None, false, false) {
+            GatewayDeliveryResult::Error { error } => {
+                assert_eq!(error.code.as_str(), "not_resumable");
+                assert!(error.message.contains("was refused: target_closed"));
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refusal_that_names_its_recovery_gets_the_next_action_reading_it() {
+        let guard = engine_failure(
+            "pair_loop_guard",
+            "loop",
+            Some(serde_json::json!({ "retry_after_ms": 5_000 })),
+        );
+        assert_eq!(guard.next_action, pair_loop_guard_next_action(5_000));
+        let stopped = engine_failure(
+            "queue_full",
+            "full",
+            Some(serde_json::json!({ "target_running": false })),
+        );
+        assert_eq!(stopped.next_action, QUEUE_FULL_NOT_RUNNING);
+        let running = engine_failure(
+            "queue_full",
+            "full",
+            Some(serde_json::json!({ "target_running": true })),
+        );
+        assert_eq!(running.next_action, engine_next_action("queue_full"));
     }
 
     #[test]

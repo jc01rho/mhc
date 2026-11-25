@@ -43,6 +43,13 @@ pub trait GatewayStoreApi: Send + Sync {
         delivery_id: &str,
         reason: RefusalReason,
     ) -> Result<bool, StoreError>;
+    /// A delivery its session took in and handed back unread at a graceful close (omo#14313); never an applied row.
+    fn refuse_returned(
+        &self,
+        now: i64,
+        delivery_id: &str,
+        reason: RefusalReason,
+    ) -> Result<bool, StoreError>;
     fn complete_receipt(
         &self,
         now: i64,

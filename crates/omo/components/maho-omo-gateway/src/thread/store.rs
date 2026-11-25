@@ -322,7 +322,16 @@ impl GatewayStoreApi for SqliteGatewayStore {
         delivery_id: &str,
         reason: RefusalReason,
     ) -> Result<bool, StoreError> {
-        super::store_ops::refuse_queued(&*self.context()?, now, delivery_id, reason)
+        self.checked(|ctx| super::store_ops::refuse_queued(ctx, now, delivery_id, reason))
+    }
+
+    fn refuse_returned(
+        &self,
+        now: i64,
+        delivery_id: &str,
+        reason: RefusalReason,
+    ) -> Result<bool, StoreError> {
+        self.checked(|ctx| super::store_ops::refuse_returned(ctx, now, delivery_id, reason))
     }
 
     fn complete_receipt(

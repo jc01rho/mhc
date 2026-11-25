@@ -40,6 +40,11 @@ pub enum WorkerRequest {
         delivery_id: String,
         reason: RefusalReason,
     },
+    RefuseReturned {
+        now: i64,
+        delivery_id: String,
+        reason: RefusalReason,
+    },
     DeliveryView {
         delivery_id: String,
     },
@@ -131,6 +136,14 @@ pub fn handle_request(store: &dyn GatewayStoreApi, request: WorkerRequest) -> Wo
             delivery_id,
             reason,
         } => match store.refuse_queued(now, &delivery_id, reason) {
+            Ok(changed) => value(&changed),
+            Err(error) => WorkerReply::error(error.message(), error.code()),
+        },
+        WorkerRequest::RefuseReturned {
+            now,
+            delivery_id,
+            reason,
+        } => match store.refuse_returned(now, &delivery_id, reason) {
             Ok(changed) => value(&changed),
             Err(error) => WorkerReply::error(error.message(), error.code()),
         },

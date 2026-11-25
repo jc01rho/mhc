@@ -1710,6 +1710,31 @@ pub fn refuse_queued(
     })
 }
 
+/// omo#14313: a delivery the engine took in (`admitting`/`admitted`) and handed back unread when its session was
+/// closed gracefully. The row is refused with `reason`, so its sender reads it as not delivered instead of admitted.
+/// An `applied` row (the session read it) is never touched. Answers whether this call refused it.
+pub fn refuse_returned(
+    ctx: &StoreContext,
+    now: i64,
+    delivery_id: &str,
+    reason: RefusalReason,
+) -> Result<bool, StoreError> {
+    transaction(ctx, "refuse_returned", || {
+        let Some(row) = select_row(ctx, delivery_id)? else {
+            return Ok(false);
+        };
+        if !matches!(
+            row.state,
+            DeliveryState::Admitting | DeliveryState::Admitted
+        ) {
+            return Ok(false);
+        }
+        transition(ctx, &row, DeliveryState::Refused, now, Some(reason))?;
+        unlink_marker(ctx, &row.target_durable_id, &row.delivery_id);
+        Ok(true)
+    })
+}
+
 pub fn complete_receipt(
     ctx: &StoreContext,
     now: i64,

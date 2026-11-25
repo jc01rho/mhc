@@ -24,6 +24,7 @@ pub mod extension_registrations;
 pub mod extension_session_await;
 pub mod extension_transaction;
 pub mod gateway_replies;
+pub mod graceful_close_returns;
 pub mod host_view;
 pub mod lazy_live_surface;
 pub mod live_surface;
