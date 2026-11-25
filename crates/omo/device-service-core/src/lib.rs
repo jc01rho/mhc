@@ -12,7 +12,12 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cold_wake;
+pub mod engine_endpoint;
 pub mod local_api;
+pub mod release;
 pub mod state_dir;
 
+pub use engine_endpoint::{
+    ENDPOINT_PRIMARY_MIN_SERVICE_VERSION, EngineEndpoints, engine_endpoints_of,
+};
 pub use state_dir::{DEVICE_SERVICE_STATE_DIR_ENV, device_service_state_dir};
