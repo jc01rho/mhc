@@ -13,6 +13,8 @@ mod remote_thread_tests;
 mod rules_block_tests;
 #[path = "run_alerts_tests.rs"]
 mod run_alerts_tests;
+#[path = "same_device_wake_tests.rs"]
+mod same_device_wake_tests;
 #[path = "store_extension_tests.rs"]
 mod store_extension_tests;
 #[path = "thread_control_tests.rs"]

@@ -12,10 +12,10 @@ Counts computed programmatically from the per-PR rows below, not by hand.
 
 | verdict | rows |
 |---|---:|
-| port | 15 |
+| port | 16 |
 | ported | 0 |
 | n/a | 1 |
-| gap | 1 |
+| gap | 0 |
 | total | 17 |
 
 One row per upstream PR, or per commit group where a change carries no PR number; a PR or commit group whose slice is
@@ -50,8 +50,9 @@ Not ported, each for a named reason:
   (`consumer/device-service-port.ts`): the consumer commits a handed record through the store's intake write
   (`store-worker.ts` `intake`, `store-ops.ts` `IntakeFields`, `inbound_hop`), which this crate does not have, and the
   device service here serves no `deliveries.*` protocol;
-- `gateway/same-device-wake.ts` and the drain's `wakeGated` / `admitIntake` (thread-gateway), so the native thread
-  component does not start the wake yet.
+- `NativeThreadComponent` in `native.rs` does not start the wake runtime yet (no carrier socket connector); the
+  standalone `same_device_wake.rs`, `local_transport.rs`, `wake/runtime.rs::process_same_device_wake`,
+  `wake/wake_runtime.rs::create_same_device_wake`, and `drain.rs` `wake_gated` / `admit_intake` seams are ported.
 
 ## Per PR
 
@@ -70,7 +71,7 @@ Not ported, each for a named reason:
 | `01fa0b0220`, `a7ad9d1639` carrier & session-waker (no PR) | port | No woken-session count cap: `wake/carrier.rs` defers a start only on measured headroom (`host_memory_pressure`, the row stays requested and the sweep retries it) and `store_woken_ops.rs` `start_wake` takes a row out of `requested` with no count; `wake/session_waker.rs` opens past any number of woken rows. Tests: `given_nine_sessions_a_host_restart_parked_...`, `given_host_memory_headroom_below_the_floor_...`, `given_four_held_sessions_woken_in_turn_...`, `tests/wake_session_waker_tests.rs` `given_four_woken_sessions_past_requested_...`. |
 | `8dfb297ba1`, `9d4469b155` CalVer prefix engine gate (no PR) | port | `crates/omo/components/maho-omo-gateway/src/thread/wake/engine_minimum.rs` `MIN_WAKE_ENGINE_VERSION` (`2026.11.15-2`) and `engine_drops_retained_record` reading dev-engine CalVer prefix (`YYYY.MM.DD-N[-omob...]`) with 3 unit tests (22 version cases). |
 | `d54aa61b60` parked resume, wake side (no PR) | port | Under the dev engine stamp `2026.11.19-2-1-omob...` the runtime starts at the shipped minimum, the carrier opens the parked session with `retain_on_disconnect` and sends the engine's `wake`, hands it back, and wakes it again: `tests/wake_runtime_tests.rs` `given_the_dev_engine_stamp_and_a_parked_session_no_endpoint_lists_...`. |
-| `d54aa61b60` parked resume, send and drain side (no PR) | gap | The send's `queued` answer waiting on the wake and the drain admitting the delivery as started need `gateway/same-device-wake.ts` (the local transport's `afterSend`) and the drain's `wakeGated` / `admitIntake` options (`gateway/drain.ts`), none of which is ported (thread-gateway). |
+| `d54aa61b60` parked resume, send and drain side (no PR) | port | `same_device_wake.rs` (`SameDeviceWake`), `local_transport.rs` (`LocalTransport`), `types.rs` (`GatewayDeliveryDelivery::QueuedOffline.reason`), `intake_admission.rs` (`IntakeAdmissionPass`, `IntakeVerdict`), `drain.rs` (`InboxDrainOptions::admit_intake`, `wake_gated`, `session_control_result`), `wake/runtime.rs` `process_same_device_wake`, and `wake/wake_runtime.rs` `create_same_device_wake`. Tests: `tests/same_device_wake_tests.rs` (switch cases, `drain_intake_admission_*`, `given_a_parked_session_when_local_send_wakes_it_then_it_answers_queued_waiting_on_wake_drains_as_started_and_resumes_again`, `given_a_session_handed_back_held_unattended_when_a_later_send_arrives_then_it_wakes_and_starts_again`). |
 | #14313, #14324 session-target close instant (`336f5fa4b9`, `ae55079bdb`) | port | `crates/omo/components/maho-omo-gateway/src/thread/wake/session_target.rs` `close_instant_of`, `closed_at_of`, and `resolve_wake_target` reading `SESSION_CLOSED_ENTRY` (`session-closed`) and `rpc_effect` (`unload`/`done`) timestamps from the session transcript tail, with unit tests. |
 | #14273 closed-intake & session-target (`a397780f93`) | port | `crates/omo/components/maho-omo-gateway/src/thread/wake/closed_intake.rs` `settle_closed_intake` (refusing rows queued at or before `closed_at` as `target_closed`) and `crates/omo/components/maho-omo-gateway/src/thread/wake/session_target.rs` `resolve_wake_target` (`closed_at` from `rpc_effect` unload `done`) with unit tests. |
 | #14273 carrier, consumer-start & pending-sweep (`a397780f93`) | port | `wake/carrier.rs` `open_allowance` settles rows queued before a close on request first and opens nothing for them (`nothing_queued`); `wake/pending_sweep.rs` settles them before it wakes; `wake/consumer_start.rs` passes each session's `closed_at` to the sweep and reports drained marks after it; `testing/fake-wake-host.ts` is `tests/wake_support.rs`. Tests: `tests/wake_pending_sweep_tests.rs` (3 close cases), `tests/wake_carrier_tests.rs`, `tests/wake_runtime_tests.rs`. |
@@ -91,6 +92,9 @@ New cases, all under `crates/omo/components/maho-omo-gateway`:
   declarations, a connection ending during the sweep, serving at the wake, a failing sweep, per-project same_device; the
   start gates and one wake per agent dir, no timer on an empty table, one warning per change of failure, a stop against an
   in-flight retry, #14383, #14335, the dev engine stamp, and the drained report at a carry's end.
+- `tests/same_device_wake_tests.rs` (8, `same-device-wake.test.ts`, `drain-intake-admission.test.ts`,
+  `parked-resume.test.ts`): same-device switch, local transport validation, `waiting_on` order, per-device intake
+  admission, `wake_gated` lease expiry, and end-to-end parked resume + unattended-hold resume with manual schedule.
 - unit tests: `wake/engine_state.rs` (4), `wake/legacy_open.rs` (3), `consumer/port.rs` (2).
 
 Not ported from the upstream tests: the store-wrapper race and store-read-failure cases of `carrier.test.ts` (no wrapper

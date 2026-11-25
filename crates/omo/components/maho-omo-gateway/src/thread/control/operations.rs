@@ -13,15 +13,13 @@ use crate::thread::contracts_results::{
 use crate::thread::contracts_state::ThreadModel;
 use crate::thread::errors::{ThreadToolFailure, thread_tool_failure};
 use crate::thread::model_match::{
-    ModelChoice, ModelMatch, exact_model, match_model, model_pattern_failure,
+    MatchedModel, ModelChoice, exact_model, match_model_with_thinking, model_pattern_failure,
 };
 
 use super::port::{
     CloseOptions, CloseOutcome, ControlError, ControlResult, SessionControl, SessionModelState,
     control_identity, refuse,
 };
-
-const THINKING_SUFFIXES: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// A result's ok branch: the value with `kind: "ok"`.
 pub fn ok_json<T: Serialize>(value: &T) -> Value {
@@ -157,37 +155,16 @@ pub async fn close_thread(control: &dyn SessionControl, force: bool) -> ControlR
     .await
 }
 
-fn split_thinking_suffix(reference: &str) -> Option<(&str, &str)> {
-    let (base, suffix) = reference.trim().rsplit_once(':')?;
-    (!base.is_empty() && THINKING_SUFFIXES.contains(&suffix)).then_some((base, suffix))
-}
-
-/// Resolves a literal catalog entry first and only interprets a `:thinking` suffix after a literal miss (#14482).
-fn match_model_with_thinking(
+fn match_model_for_set(
     catalog: &[ModelChoice],
     model: &str,
     provider: Option<&str>,
 ) -> Result<(ModelChoice, Option<String>), Box<ThreadToolFailure>> {
-    match match_model(catalog, model, provider) {
-        ModelMatch::Match(chosen) => Ok((chosen, None)),
-        ModelMatch::Failure(literal_failure) => {
-            if literal_failure.code.as_str() != "model_not_found" {
-                return Err(Box::new(literal_failure));
-            }
-            let Some((base, level)) = split_thinking_suffix(model) else {
-                return Err(Box::new(literal_failure));
-            };
-            match match_model(catalog, base, provider) {
-                ModelMatch::Match(chosen) => Ok((chosen, Some(level.to_owned()))),
-                ModelMatch::Failure(base_failure)
-                    if base_failure.code.as_str() == "model_ambiguous" =>
-                {
-                    Err(Box::new(base_failure))
-                }
-                ModelMatch::Failure(_) => Err(Box::new(literal_failure)),
-            }
-        }
-    }
+    let MatchedModel {
+        model,
+        thinking_level,
+    } = match_model_with_thinking(catalog, model, provider)?;
+    Ok((model, thinking_level))
 }
 
 /// One matching rule on the thread's own catalog. A catalog the control holds decides only an exact provider/id, at
@@ -206,9 +183,9 @@ pub async fn set_model_on(
         (true, Some(held)) => Ok((held, None)),
         (true, None) => {
             let fresh = control.get_available_models(true).await?;
-            match_model_with_thinking(&fresh.models, model, provider)
+            match_model_for_set(&fresh.models, model, provider)
         }
-        (false, _) => match_model_with_thinking(&first.models, model, provider),
+        (false, _) => match_model_for_set(&first.models, model, provider),
     };
     let (chosen, mut thinking_level) = match matched {
         Ok(found) => found,
@@ -231,7 +208,7 @@ pub async fn set_model_on(
                 return Err(error);
             };
             let (rematched, rematched_thinking) =
-                match match_model_with_thinking(&fresh.models, model, provider) {
+                match match_model_for_set(&fresh.models, model, provider) {
                     Ok(found) => found,
                     Err(failure) => return Ok(error_json(*failure)),
                 };

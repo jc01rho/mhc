@@ -774,4 +774,115 @@ mod tests {
             other => panic!("expected the refusal replayed, got {other:?}"),
         }
     }
+
+    #[test]
+    fn a_send_to_a_target_its_engine_holds_answers_queued_waiting_on_the_hold() {
+        use super::super::adapter::{
+            AdmitResult, ExternalAdmissionKind, GatewayEndpointPort, GatewayEndpointRef,
+            GatewayWakeReply, RuntimePhase, SessionAdmissionGate, SessionRuntimePort,
+        };
+        use super::super::drain::{InboxDrain, InboxDrainOptions};
+        use super::super::store::{GatewayStoreOptions, create_gateway_store};
+        use super::super::types::{AdmissionLedger, GatewayEndpointKind};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = create_gateway_store(GatewayStoreOptions::new(
+            dir.path().to_string_lossy().into_owned(),
+        ))
+        .expect("store");
+        let drain = Arc::new(InboxDrain::new(InboxDrainOptions {
+            store: store.clone(),
+            runtime: SessionRuntimePort {
+                phase: Arc::new(|| RuntimePhase::Idle),
+                admission_gate: Arc::new(|| SessionAdmissionGate {
+                    can_admit: true,
+                    hold_reason: None,
+                    editor_revision: 1,
+                    turn_epoch: 0,
+                }),
+                admit_external_message: Arc::new(|_| {
+                    Ok(AdmitResult {
+                        kind: ExternalAdmissionKind::Held,
+                        turn_epoch: 0,
+                    })
+                }),
+                list_admitted_deliveries: Arc::new(AdmissionLedger::default),
+            },
+            durable_id: "held-target".into(),
+            session_path: Arc::new(|| None),
+            now: None,
+            log: None,
+            notify: None,
+            on_admitted: None,
+            admit_intake: None,
+            wake_gated: None,
+        }));
+        let drain_wake = drain.clone();
+        let engine = GatewayEngine::new(GatewayEngineOptions {
+            sender_provenance: Some(Arc::new(|| Provenance {
+                workspace: "w".into(),
+                project: "p".into(),
+                lane: None,
+                session: None,
+            })),
+            store,
+            endpoints: GatewayEndpointPort {
+                wake: Arc::new(move |_, ids| {
+                    let drain_wake = drain_wake.clone();
+                    Box::pin(async move {
+                        let res = drain_wake
+                            .drain(&super::super::adapter::DrainWakeEvent {
+                                reason: super::super::adapter::WakeReason::Inbox,
+                                delivery_ids: Some(ids),
+                            })
+                            .expect("drain");
+                        GatewayWakeReply {
+                            admitted: res.admitted,
+                            unroutable: None,
+                        }
+                    })
+                }),
+                release_session: None,
+                classify_liveness: None,
+                respond_ui: None,
+            },
+            resolve: Arc::new(|_, _| {
+                Box::pin(async {
+                    GatewayResolution::Ok(GatewayTarget {
+                        durable_id: "held-target".into(),
+                        endpoint: Some(GatewayEndpointRef {
+                            kind: GatewayEndpointKind::RpcHost,
+                            socket: "/run/test.sock".into(),
+                            routing_id: Some("r-1".into()),
+                            durable_session_id: "held-target".into(),
+                        }),
+                        liveness: EndpointLiveness::Routable,
+                    })
+                })
+            }),
+            now: None,
+        });
+
+        let answer = block_on(engine.deliver(GatewayDeliverRequest::new(
+            GatewaySender::Session {
+                durable_id: "sender".into(),
+                name: None,
+                turn_id: None,
+                cause_delivery_id: None,
+            },
+            "held-target",
+            "are you there?",
+        )));
+        match answer {
+            GatewayDeliveryResult::Ok {
+                delivery:
+                    GatewayDeliveryDelivery::Queued {
+                        queue_position: 1,
+                        waiting_on: Some(wait),
+                    },
+                ..
+            } => assert_eq!(wait.kind, "hold"),
+            other => panic!("expected queued hold, got {other:?}"),
+        }
+    }
 }

@@ -82,6 +82,24 @@ pub fn result_from_row(
     deduplicated: bool,
     offline: bool,
 ) -> GatewayDeliveryResult {
+    result_from_row_with_wait(
+        row,
+        queue_position,
+        endpoint_kind,
+        deduplicated,
+        offline,
+        None,
+    )
+}
+
+pub fn result_from_row_with_wait(
+    row: &DeliveryRow,
+    queue_position: i64,
+    endpoint_kind: Option<GatewayEndpointKind>,
+    deduplicated: bool,
+    offline: bool,
+    session_wait: Option<DeliveryWait>,
+) -> GatewayDeliveryResult {
     let effective_mode = row
         .mode_effective
         .map(|lane| lane.as_str().to_owned())
@@ -97,6 +115,12 @@ pub fn result_from_row(
         collapsed: false,
     };
     if matches!(row.state, DeliveryState::Admitted | DeliveryState::Applied) {
+        if let Some(wait) = session_wait.or_else(|| admitted_wait(row)) {
+            return ok(GatewayDeliveryDelivery::Queued {
+                queue_position: queue_position.max(1),
+                waiting_on: Some(wait),
+            });
+        }
         return match row.admission_kind.as_deref() {
             Some("started") => ok(GatewayDeliveryDelivery::Started {
                 turn_id: (row.turn_epoch.unwrap_or(0)).to_string(),
@@ -106,7 +130,7 @@ pub fn result_from_row(
             }),
             _ => ok(GatewayDeliveryDelivery::Queued {
                 queue_position: queue_position.max(1),
-                waiting_on: admitted_wait(row),
+                waiting_on: None,
             }),
         };
     }
@@ -137,11 +161,12 @@ pub fn result_from_row(
     if offline {
         return ok(GatewayDeliveryDelivery::QueuedOffline {
             queue_position: queue_position.max(1),
+            reason: None,
         });
     }
     ok(GatewayDeliveryDelivery::Queued {
         queue_position: queue_position.max(1),
-        waiting_on: None,
+        waiting_on: session_wait,
     })
 }
 
@@ -327,10 +352,54 @@ mod tests {
         ) {
             GatewayDeliveryResult::Ok { delivery, .. } => assert_eq!(
                 delivery,
-                GatewayDeliveryDelivery::QueuedOffline { queue_position: 1 }
+                GatewayDeliveryDelivery::QueuedOffline {
+                    queue_position: 1,
+                    reason: None,
+                }
             ),
             other => panic!("expected ok, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn held_admission_and_session_wait_report_hold_before_started() {
+        let held = row(DeliveryState::Admitted, Some("held"), Some(0));
+        match result_from_row(&held, 1, None, false, false) {
+            GatewayDeliveryResult::Ok { delivery, .. } => assert_eq!(
+                delivery,
+                GatewayDeliveryDelivery::Queued {
+                    queue_position: 1,
+                    waiting_on: Some(DeliveryWait {
+                        kind: "hold".to_owned(),
+                        device: None,
+                    }),
+                }
+            ),
+            other => panic!("expected queued hold, got {other:?}"),
+        }
+
+        let started = row(DeliveryState::Admitted, Some("started"), Some(1));
+        let wait = DeliveryWait {
+            kind: "hold".to_owned(),
+            device: Some("dev-here".to_owned()),
+        };
+        match result_from_row_with_wait(&started, 1, None, false, false, Some(wait.clone())) {
+            GatewayDeliveryResult::Ok { delivery, .. } => assert_eq!(
+                delivery,
+                GatewayDeliveryDelivery::Queued {
+                    queue_position: 1,
+                    waiting_on: Some(wait),
+                }
+            ),
+            other => panic!("expected queued hold ahead of started, got {other:?}"),
+        }
+        assert!(matches!(
+            result_from_row(&started, 1, None, false, false),
+            GatewayDeliveryResult::Ok {
+                delivery: GatewayDeliveryDelivery::Started { .. },
+                ..
+            }
+        ));
     }
 
     #[test]

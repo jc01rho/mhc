@@ -464,10 +464,14 @@ pub enum ClaimOutcome {
 pub enum OutcomeRecord {
     Admitted {
         admission_kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_kind: Option<String>,
         turn_epoch: i64,
     },
     Applied {
         admission_kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_kind: Option<String>,
         turn_epoch: i64,
     },
     Requeue,
@@ -510,6 +514,8 @@ pub enum GatewayDeliveryDelivery {
     },
     QueuedOffline {
         queue_position: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 }
 

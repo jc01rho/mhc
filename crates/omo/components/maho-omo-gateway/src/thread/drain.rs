@@ -10,11 +10,13 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use super::adapter::{
-    Admission, DrainWakeEvent, GatewayAdmissionKind, SessionRuntimePort, WakeReason,
+    Admission, DrainWakeEvent, GatewayAdmissionKind, SessionControlDrainResult, SessionRuntimePort,
+    WakeReason, to_session_control_drain_result,
 };
 use super::decision::{
     DeliveryDecision, RefusalKind, TargetState, decide_delivery, effective_lane_of,
 };
+use super::intake_admission::{AdmitIntake, IntakeAdmissionPass, IntakeVerdict};
 use super::provenance::{delivery_provenance_line, delivery_sender, render_delivery_text};
 use super::store_api::GatewayStoreApi;
 use super::store_ops::engine_key;
@@ -26,6 +28,13 @@ use super::types::{
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InboxDrainResult {
     pub admitted: Vec<Admission>,
+    pub outcomes: Vec<(String, GatewayAdmissionKind)>,
+}
+
+impl InboxDrainResult {
+    pub fn session_control_result(&self) -> SessionControlDrainResult {
+        to_session_control_drain_result(&self.outcomes)
+    }
 }
 
 /// The notice a session shows when a delivery waits behind its running turn or the user's draft.
@@ -82,6 +91,10 @@ pub struct InboxDrainOptions {
     pub notify: LogCallback,
     /// A delivery this drain started, steered or queued into the session.
     pub on_admitted: OnAdmittedCallback,
+    /// Asked once per sender device for intake rows from another device (omo#13037 5.6).
+    pub admit_intake: Option<AdmitIntake>,
+    /// True while a wake lease still guards this session's drain from racing an opening carrier.
+    pub wake_gated: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 /// A held row (the user is composing) costs no store write and stops the pass, so nothing behind it
@@ -176,6 +189,7 @@ impl InboxDrain {
             ));
         }
         let mut admitted: Vec<Admission> = Vec::new();
+        let mut outcomes: Vec<(String, GatewayAdmissionKind)> = Vec::new();
         {
             let queued_ids: Vec<String> = reconciled
                 .queued
@@ -186,6 +200,22 @@ impl InboxDrain {
                 held.retain(|id, _| queued_ids.contains(id));
             }
         }
+        if self
+            .options
+            .wake_gated
+            .as_ref()
+            .is_some_and(|gated| gated())
+        {
+            for row in &reconciled.queued {
+                admitted.push(Admission {
+                    delivery_id: row.delivery_id.clone(),
+                    kind: super::adapter::ExternalAdmissionKind::HeldDraft,
+                });
+                outcomes.push((row.delivery_id.clone(), GatewayAdmissionKind::HeldDraft));
+            }
+            return Ok(InboxDrainResult { admitted, outcomes });
+        }
+        let mut intake_admission = IntakeAdmissionPass::new(self.options.admit_intake.clone());
         for row in &reconciled.queued {
             let gate = (self.options.runtime.admission_gate)();
             let held_revision = self
@@ -208,13 +238,31 @@ impl InboxDrain {
                     delivery_id: row.delivery_id.clone(),
                     kind: super::adapter::ExternalAdmissionKind::HeldDraft,
                 });
+                outcomes.push((row.delivery_id.clone(), GatewayAdmissionKind::HeldDraft));
                 break;
             }
             if let Ok(mut held) = self.held.lock() {
                 held.remove(&row.delivery_id);
             }
+            match intake_admission.check(row) {
+                IntakeVerdict::Admit => {}
+                IntakeVerdict::Skip => continue,
+                IntakeVerdict::Refuse => {
+                    let _ = self.options.store.refuse_queued(
+                        self.now(),
+                        &row.delivery_id,
+                        RefusalReason::SenderNotAdmitted,
+                    );
+                    outcomes.push((
+                        row.delivery_id.clone(),
+                        GatewayAdmissionKind::SenderNotAdmitted,
+                    ));
+                    continue;
+                }
+            }
+            let phase = (self.options.runtime.phase)();
             let decision = decide_delivery(
-                TargetState::Phase((self.options.runtime.phase)()),
+                TargetState::Phase(phase),
                 row.mode_requested,
                 row.expected_turn_id,
                 Some(gate.turn_epoch),
@@ -230,10 +278,16 @@ impl InboxDrain {
                     effective_lane_of(deliver_as, expect),
                 ),
                 DeliveryDecision::Refuse { reason } => {
-                    let refusal = if reason == RefusalKind::NotSteerable {
-                        RefusalReason::NotSteerable
+                    let (refusal, gateway_kind) = if reason == RefusalKind::NotSteerable {
+                        (
+                            RefusalReason::NotSteerable,
+                            GatewayAdmissionKind::NotSteerable,
+                        )
                     } else {
-                        RefusalReason::TurnConflict
+                        (
+                            RefusalReason::TurnConflict,
+                            GatewayAdmissionKind::TurnConflict,
+                        )
                     };
                     let _ = self
                         .options
@@ -243,6 +297,7 @@ impl InboxDrain {
                         delivery_id: row.delivery_id.clone(),
                         kind: super::adapter::ExternalAdmissionKind::TurnConflict,
                     });
+                    outcomes.push((row.delivery_id.clone(), gateway_kind));
                     continue;
                 }
                 DeliveryDecision::QueuedOffline => (
@@ -305,6 +360,7 @@ impl InboxDrain {
                     delivery_id: row.delivery_id.clone(),
                     kind: result.kind,
                 });
+                outcomes.push((row.delivery_id.clone(), GatewayAdmissionKind::HeldDraft));
                 break;
             }
             if result.kind == super::adapter::ExternalAdmissionKind::Queued {
@@ -325,14 +381,19 @@ impl InboxDrain {
                     .contains(&engine_id);
                 let written = result.kind == super::adapter::ExternalAdmissionKind::AlreadyAdmitted
                     && emitted;
+                let wait_kind = (result.kind == super::adapter::ExternalAdmissionKind::Queued
+                    && phase == super::adapter::RuntimePhase::WaitingQuestion)
+                    .then(|| "approval".to_owned());
                 let outcome = if written {
                     OutcomeRecord::Applied {
                         admission_kind: kind_label(result.kind).to_owned(),
+                        wait_kind,
                         turn_epoch: result.turn_epoch,
                     }
                 } else {
                     OutcomeRecord::Admitted {
                         admission_kind: kind_label(result.kind).to_owned(),
+                        wait_kind,
                         turn_epoch: result.turn_epoch,
                     }
                 };
@@ -357,8 +418,9 @@ impl InboxDrain {
                 delivery_id: row.delivery_id.clone(),
                 kind: result.kind,
             });
+            outcomes.push((row.delivery_id.clone(), gateway_kind(result.kind)));
         }
-        Ok(InboxDrainResult { admitted })
+        Ok(InboxDrainResult { admitted, outcomes })
     }
 }
 
@@ -367,6 +429,7 @@ fn kind_label(kind: super::adapter::ExternalAdmissionKind) -> &'static str {
         super::adapter::ExternalAdmissionKind::Started => "started",
         super::adapter::ExternalAdmissionKind::Queued => "queued",
         super::adapter::ExternalAdmissionKind::Steered => "steered",
+        super::adapter::ExternalAdmissionKind::Held => "held",
         super::adapter::ExternalAdmissionKind::TurnConflict => "turn_conflict",
         super::adapter::ExternalAdmissionKind::HeldDraft => "held_draft",
         super::adapter::ExternalAdmissionKind::AlreadyAdmitted => "already_admitted",
@@ -462,5 +525,137 @@ mod tests {
         assert!(releasing_reason(WakeReason::DraftCleared));
         assert!(!releasing_reason(WakeReason::Inbox));
         assert!(!releasing_reason(WakeReason::Emitted));
+    }
+
+    #[test]
+    fn held_admission_and_waiting_question_write_their_outcomes_without_noticing_a_held_row() {
+        use super::super::adapter::{
+            AdmitResult, ExternalAdmissionKind, RuntimePhase, SessionAdmissionGate,
+        };
+        use super::super::store::{GatewayStoreOptions, create_gateway_store};
+        use super::super::types::{EnqueueOutcome, EnqueueRequest, Provenance, ReceiptRef};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = create_gateway_store(GatewayStoreOptions::new(
+            dir.path().to_string_lossy().into_owned(),
+        ))
+        .expect("store");
+        let enqueue = |id: &str, now: i64| {
+            let outcome = store
+                .enqueue(&EnqueueRequest {
+                    provenance: Provenance {
+                        workspace: "w".into(),
+                        project: "p".into(),
+                        lane: None,
+                        session: None,
+                    },
+                    now,
+                    delivery_id: id.into(),
+                    target_durable_id: "receiver".into(),
+                    sender_principal: "session:sender".into(),
+                    rate_principal: None,
+                    sender_node: "sender".into(),
+                    sender_turn: None,
+                    cause_delivery_id: None,
+                    claimed_root_id: None,
+                    origin: EnvelopeOrigin::Session {
+                        session: "sender".into(),
+                    },
+                    actor: "planner".into(),
+                    body: id.into(),
+                    mode: GatewayDeliveryMode::Auto,
+                    expected_turn_id: None,
+                    binding: None,
+                    receipt: ReceiptRef {
+                        idempotency_key: id.into(),
+                        args_hash: id.into(),
+                    },
+                    endpoint_kind: None,
+                    collapse_key: None,
+                })
+                .expect("enqueue");
+            assert!(matches!(outcome, EnqueueOutcome::Inserted { .. }));
+        };
+        enqueue("d-held", 1_000);
+
+        let phase = Arc::new(Mutex::new(RuntimePhase::Idle));
+        let phase_read = phase.clone();
+        let notices = Arc::new(Mutex::new(Vec::<String>::new()));
+        let noticed = notices.clone();
+        let admitted_log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let admitted_cb = admitted_log.clone();
+        let drain = InboxDrain::new(InboxDrainOptions {
+            store: store.clone(),
+            runtime: SessionRuntimePort {
+                phase: Arc::new(move || *phase_read.lock().expect("phase")),
+                admission_gate: Arc::new(|| SessionAdmissionGate {
+                    can_admit: true,
+                    hold_reason: None,
+                    editor_revision: 1,
+                    turn_epoch: 0,
+                }),
+                admit_external_message: Arc::new(|input| {
+                    let kind = if input.delivery_id == "d-held" {
+                        ExternalAdmissionKind::Held
+                    } else {
+                        ExternalAdmissionKind::Queued
+                    };
+                    Ok(AdmitResult {
+                        kind,
+                        turn_epoch: 0,
+                    })
+                }),
+                list_admitted_deliveries: Arc::new(AdmissionLedger::default),
+            },
+            durable_id: "receiver".into(),
+            session_path: Arc::new(|| None),
+            now: Some(Arc::new(|| 1_001)),
+            log: None,
+            notify: Some(Arc::new(move |line| {
+                noticed.lock().expect("notices").push(line.to_owned())
+            })),
+            on_admitted: Some(Arc::new(move |id, kind| {
+                admitted_cb
+                    .lock()
+                    .expect("admitted")
+                    .push(format!("{id}:{kind}"))
+            })),
+            admit_intake: None,
+            wake_gated: None,
+        });
+
+        let result = drain
+            .drain(&DrainWakeEvent {
+                reason: WakeReason::Start,
+                delivery_ids: None,
+            })
+            .expect("first drain");
+        assert_eq!(result.admitted.len(), 1);
+        assert!(
+            notices.lock().expect("notices").is_empty(),
+            "held row must not trigger queued notice"
+        );
+        assert!(admitted_log.lock().expect("admitted").is_empty());
+
+        enqueue("d-question", 1_002);
+        *phase.lock().expect("phase") = RuntimePhase::WaitingQuestion;
+        drain
+            .drain(&DrainWakeEvent {
+                reason: WakeReason::Inbox,
+                delivery_ids: None,
+            })
+            .expect("question drain");
+        let held_view = store
+            .delivery_view("d-held")
+            .expect("view")
+            .expect("d-held");
+        assert_eq!(held_view.row.admission_kind.as_deref(), Some("held"));
+        assert_eq!(held_view.row.wait_kind, None);
+        let q_view = store
+            .delivery_view("d-question")
+            .expect("view")
+            .expect("d-question");
+        assert_eq!(q_view.row.admission_kind.as_deref(), Some("queued"));
+        assert_eq!(q_view.row.wait_kind.as_deref(), Some("approval"));
     }
 }

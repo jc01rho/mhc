@@ -1935,15 +1935,23 @@ pub fn record_outcome(
             )?,
             OutcomeRecord::Admitted {
                 admission_kind,
+                wait_kind,
                 turn_epoch,
             }
             | OutcomeRecord::Applied {
                 admission_kind,
+                wait_kind,
                 turn_epoch,
             } => {
                 ctx.run(
-                    "UPDATE deliveries SET admission_kind = ?, turn_epoch = ?, updated_at = ? WHERE delivery_id = ?",
-                    &[v_str(admission_kind.clone()), v_i64(*turn_epoch), v_i64(request.now), v_str(&row.delivery_id)],
+                    "UPDATE deliveries SET admission_kind = ?, wait_kind = ?, turn_epoch = ?, updated_at = ? WHERE delivery_id = ?",
+                    &[
+                        v_str(admission_kind.clone()),
+                        v_opt_str(wait_kind.as_deref()),
+                        v_i64(*turn_epoch),
+                        v_i64(request.now),
+                        v_str(&row.delivery_id),
+                    ],
                 )?;
                 let to = if matches!(&request.outcome, OutcomeRecord::Applied { .. }) {
                     DeliveryState::Applied

@@ -18057,3 +18057,225 @@ async fn the_extension_context_actions_register_background_jobs_through_the_sess
     );
     release();
 }
+
+/// senpi#7014 (`6490-peer-delivery-held-session.test.ts`): an unattended hold yields to a peer
+/// delivery (carrying held wakes ahead of the delivery), whereas a person's Stop or an interrupted
+/// run answers `held` with its hold kinds and keeps the delivery as a held notice until Resume.
+#[tokio::test]
+async fn peer_delivery_continues_unattended_session_and_answers_held_under_stop_or_interrupted() {
+    use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider, faux_streams};
+    let make_unattended = |responses: Vec<maho_ai::types::AssistantMessage>, interrupted: bool| {
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0),
+            ..Default::default()
+        })
+        .expect("valid faux provider");
+        provider.set_responses(responses.into_iter().map(Into::into).collect());
+        let streams = faux_streams(provider.core.clone());
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        if interrupted {
+            let sid = manager.session_id().to_owned();
+            manager.append_custom(
+                "session-lifecycle",
+                Some(json!({
+                    "sessionId": sid, "state": "running", "seq": 2, "epoch": 1, "epochOrigin": "human",
+                    "humanInputRevision": 1, "selfSettleEligible": true, "runPaused": false,
+                    "since": "2026-11-19T00:00:00.000Z", "role": "root", "rootSessionId": sid,
+                    "persisted": true, "runActive": true, "epochSealed": false, "runId": "run-1",
+                })),
+            );
+        }
+        let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+            providers: Some(Vec::new()),
+            ..Default::default()
+        })
+        .expect("valid model runtime");
+        let session = AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: manager,
+            settings_manager: SettingsManager::from_storage(
+                Box::new(crate::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".to_owned(),
+            agent_dir: Some("/tmp/maho-agent".to_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: BTreeMap::new(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: Some(maho_ext_api::SessionStartEvent {
+                sizes_only: false,
+                reason: maho_ext_api::SessionReason::Resume,
+                initial_model_provenance: None,
+                previous_session_file: None,
+                attended: Some(false),
+            }),
+            auto_title_sessions: None,
+        })
+        .expect("session");
+        let mut model_rt = session.model_runtime().clone();
+        model_rt.register_native_provider(provider.provider.clone());
+        session
+            .agent
+            .set_model(provider.get_model(Some("faux-1")).expect("model"));
+        session
+            .agent
+            .set_stream_function(Arc::new(move |model, context, options| {
+                streams.stream_simple(model, context, options.map(|options| options.simple))
+            }));
+        session
+    };
+
+    // 1. Unattended-only hold: a held monitor wake + peer delivery both run when the delivery admits.
+    let unattended = make_unattended(
+        vec![maho_ai::providers::faux::faux_assistant_message(
+            "done",
+            Default::default(),
+        )],
+        false,
+    );
+    unattended
+        .bind_extensions(ExtensionBindings {
+            mode: Some(ExtensionMode::Rpc),
+            ..Default::default()
+        })
+        .await;
+    assert!(unattended.paused());
+    let (idle_tx, mut idle_rx) = tokio::sync::mpsc::unbounded_channel();
+    let _sub = unattended.subscribe(Arc::new(move |event| {
+        if matches!(event, AgentSessionEvent::AgentIdle) {
+            let _ = idle_tx.send(());
+        }
+    }));
+    unattended
+        .send_custom_message(
+            maho_ext_api::CustomMessage {
+                custom_type: "senpi-monitor:bg".into(),
+                content: vec![maho_ext_api::ToolContent::text("monitor fired")],
+                display: true,
+                details: None,
+            },
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: Some(maho_ext_api::DeliverAs::FollowUp),
+            },
+        )
+        .await
+        .expect("held monitor");
+    assert_eq!(unattended.paused_notice_count(), 1);
+    let started = unattended
+        .admit_external_message(
+            &json!({"delivery_id": "ny1", "text": "peer continue", "deliverAs": "followUp"}),
+            &json!({}),
+        )
+        .expect("admit unattended");
+    assert_eq!(started["kind"], "started");
+    tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx.recv())
+        .await
+        .expect("unattended peer turn settled")
+        .expect("idle channel open");
+    assert!(!unattended.paused());
+    assert_eq!(
+        unattended.external_admission().list()["emitted"],
+        json!(["ny1"])
+    );
+    let types: Vec<String> = unattended
+        .messages()
+        .iter()
+        .filter_map(|m| match m {
+            AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(c)) => {
+                Some(c.custom_type.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let monitor_pos = types
+        .iter()
+        .position(|t| t == "senpi-monitor:bg")
+        .expect("monitor");
+    let delivery_pos = types
+        .iter()
+        .position(|t| t == crate::extensions::session_control_types::SESSION_CONTROL_DELIVERY_TYPE)
+        .expect("delivery");
+    assert!(monitor_pos < delivery_pos, "{types:?}");
+    unattended.dispose().await;
+
+    // 2. Stop hold: answered `held`, kept as a notice until Resume delivers it.
+    let stopped = make_unattended(
+        vec![maho_ai::providers::faux::faux_assistant_message(
+            "resumed",
+            Default::default(),
+        )],
+        false,
+    );
+    stopped
+        .bind_extensions(ExtensionBindings {
+            mode: Some(ExtensionMode::Rpc),
+            ..Default::default()
+        })
+        .await;
+    lock(&stopped.engine_turn_hold).add_hold(
+        crate::engine_turn_hold::HoldKind::SessionHold,
+        Some("session_hold:1"),
+        None,
+    );
+    let held = stopped
+        .admit_external_message(
+            &json!({"delivery_id": "ny2", "text": "are you there?", "deliverAs": "followUp"}),
+            &json!({}),
+        )
+        .expect("admit stop held");
+    assert_eq!(held["kind"], "held");
+    let holds = held["holds"].as_array().expect("holds array");
+    assert!(holds.iter().any(|h| h == "session_hold"), "{held}");
+    assert_eq!(
+        stopped.external_admission().list()["pending"],
+        json!(["ny2"])
+    );
+    assert_eq!(stopped.external_admission().list()["emitted"], json!([]));
+    stopped.resume_session().await.expect("resume");
+    assert!(!stopped.paused());
+    assert_eq!(
+        stopped.external_admission().list()["emitted"],
+        json!(["ny2"])
+    );
+    stopped.dispose().await;
+
+    // 3. Interrupted run: answered `held`, never continues on peer delivery.
+    let interrupted = make_unattended(vec![], true);
+    interrupted
+        .bind_extensions(ExtensionBindings {
+            mode: Some(ExtensionMode::Rpc),
+            ..Default::default()
+        })
+        .await;
+    let held_int = interrupted
+        .admit_external_message(
+            &json!({"delivery_id": "ny3", "text": "peer after crash", "deliverAs": "followUp"}),
+            &json!({}),
+        )
+        .expect("admit interrupted held");
+    assert_eq!(held_int["kind"], "held");
+    let holds_int = held_int["holds"].as_array().expect("holds array");
+    assert!(holds_int.iter().any(|h| h == "session_hold"), "{held_int}");
+    assert_eq!(
+        interrupted.external_admission().list()["pending"],
+        json!(["ny3"])
+    );
+    assert_eq!(
+        interrupted.external_admission().list()["emitted"],
+        json!([])
+    );
+    interrupted.dispose().await;
+}

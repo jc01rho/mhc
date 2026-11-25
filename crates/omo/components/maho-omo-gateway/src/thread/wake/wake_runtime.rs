@@ -1,17 +1,20 @@
-//! The wake's entry: what a thread component calls at a session start and at a drain's admission check.
+//! The wake's entry: what a thread component calls at a session start, local send, and drain admission check.
 //!
-//! Upstream counterpart: `thread/wake/wake-runtime.ts` (the `extensions/omo-wake.js` sidecar). Its `createSameDeviceWake`
-//! wraps `gateway/same-device-wake.ts`, which is not ported; the start and the admission check are.
+//! Upstream counterpart: `thread/wake/wake-runtime.ts`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::carrier::AdmitIntake;
 use super::consumer_start::Log;
 use super::runtime::{
-    RunningThreadWake, ThreadWakeLatch, ThreadWakeOptions, ThreadWakeStart,
-    process_intake_admission, start_thread_wake_at_session, wake_settings_reader,
+    ProcessSameDeviceWakeInput, RunningThreadWake, ThreadWakeLatch, ThreadWakeOptions,
+    ThreadWakeStart, process_intake_admission, process_same_device_wake,
+    start_thread_wake_at_session, wake_settings_reader,
 };
+use crate::thread::same_device_wake::SameDeviceWake;
+use crate::thread::store::SqliteGatewayStore;
 
 pub struct WakeAtSessionInput {
     pub options: ThreadWakeOptions,
@@ -21,6 +24,15 @@ pub struct WakeAtSessionInput {
     pub cwd: PathBuf,
     pub engine_version: Option<String>,
     pub warn: Log,
+}
+
+pub struct CreateSameDeviceWakeInput {
+    pub latch: Option<Arc<ThreadWakeLatch>>,
+    pub env: BTreeMap<String, String>,
+    pub store: Arc<SqliteGatewayStore>,
+    pub agent_dir: PathBuf,
+    pub sessions_directory: PathBuf,
+    pub cwd: PathBuf,
 }
 
 pub fn start_wake_at_session(
@@ -39,6 +51,17 @@ pub fn start_wake_at_session(
             warn: input.warn,
         },
     )
+}
+
+pub fn create_same_device_wake(input: CreateSameDeviceWakeInput) -> SameDeviceWake {
+    let settings = wake_settings_reader(input.env, input.cwd);
+    process_same_device_wake(ProcessSameDeviceWakeInput {
+        latch: input.latch,
+        store: input.store,
+        agent_dir: input.agent_dir,
+        sessions_directory: input.sessions_directory,
+        settings,
+    })
 }
 
 pub fn intake_admission(latch: Option<Arc<ThreadWakeLatch>>, agent_dir: PathBuf) -> AdmitIntake {

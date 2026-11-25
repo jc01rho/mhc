@@ -47,7 +47,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub struct TerminalInputReceipt {
     /// What was sent: a retry with the same id and different content is a conflict, as on a host.
     pub fingerprint: String,
-    /// `started` or `queued`.
+    /// `started`, `queued`, or `held`.
     pub disposition: &'static str,
     /// `{clientMessageId, durableSessionId, disposition}`.
     pub admission: Value,

@@ -215,6 +215,17 @@ impl ExternalAdmission {
         busy: bool,
         deliver: impl FnOnce(Value, &str) -> Result<(), String>,
     ) -> Result<Value, String> {
+        self.admit_with_holds(input, editor, busy, &[], deliver)
+    }
+
+    pub fn admit_with_holds(
+        &self,
+        input: &Value,
+        editor: &Value,
+        busy: bool,
+        held_by: &[String],
+        deliver: impl FnOnce(Value, &str) -> Result<(), String>,
+    ) -> Result<Value, String> {
         let gate = self.gate(editor);
         self.release_restored();
         let mut l = self
@@ -239,29 +250,35 @@ impl ExternalAdmission {
             return Ok(result("turn_conflict", l.epoch));
         }
         let busy = busy || l.pending.values().any(|p| p == "start");
-        let (kind, lane) = if !busy && input["whenIdle"] != "queue" {
-            ("started", "start")
+        let (kind, lane, pending_lane, held) = if !busy && input["whenIdle"] != "queue" {
+            if held_by.is_empty() {
+                ("started", "start", "start", false)
+            } else {
+                ("held", "start", "followUp", true)
+            }
         } else if busy && input["deliverAs"] == "steer" {
             if input.get("expected_turn_id").is_none() {
                 return Ok(result("turn_conflict", l.epoch));
             }
-            ("steered", "steer")
+            ("steered", "steer", "steer", false)
         } else {
-            (
-                "queued",
-                if busy {
-                    "followUp"
-                } else {
-                    input["deliverAs"].as_str().unwrap_or("followUp")
-                },
-            )
+            let queued_lane = if busy {
+                "followUp"
+            } else {
+                input["deliverAs"].as_str().unwrap_or("followUp")
+            };
+            ("queued", queued_lane, queued_lane, false)
         };
         let message = delivery_message(input);
-        l.pending.insert(id.into(), lane.into());
+        l.pending.insert(id.into(), pending_lane.into());
         let epoch = l.epoch;
         drop(l);
         deliver(message, lane)?;
-        Ok(result(kind, epoch))
+        if held {
+            Ok(json!({"kind": "held", "holds": held_by, "turn_epoch": epoch}))
+        } else {
+            Ok(result(kind, epoch))
+        }
     }
     pub fn list(&self) -> Value {
         self.release_restored();
@@ -497,5 +514,37 @@ mod restored_tests {
         admission.begin_turn();
         admission.drop_queued();
         assert_eq!(admission.list()["pending"], json!([]));
+    }
+
+    #[test]
+    fn held_sessions_answer_held_with_holds_without_marking_the_session_busy() {
+        let admission = ExternalAdmission::default();
+        let holds = vec!["session_hold".to_owned()];
+        let first = json!({"delivery_id":"d1","text":"hi","deliverAs":"followUp"});
+        let second = json!({"delivery_id":"d2","text":"hi 2","deliverAs":"followUp"});
+        assert_eq!(
+            admission
+                .admit_with_holds(&first, &json!({}), false, &holds, |_, lane| {
+                    assert_eq!(lane, "start");
+                    Ok(())
+                })
+                .expect("first held"),
+            json!({"kind": "held", "holds": ["session_hold"], "turn_epoch": 0})
+        );
+        assert_eq!(
+            admission
+                .admit_with_holds(&first, &json!({}), false, &holds, |_, _| panic!("dup"))
+                .expect("dup")["kind"],
+            "already_admitted"
+        );
+        assert_eq!(
+            admission
+                .admit_with_holds(&second, &json!({}), false, &holds, |_, lane| {
+                    assert_eq!(lane, "start");
+                    Ok(())
+                })
+                .expect("second held"),
+            json!({"kind": "held", "holds": ["session_hold"], "turn_epoch": 0})
+        );
     }
 }

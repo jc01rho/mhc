@@ -10,8 +10,8 @@ Counts computed programmatically from the per-PR rows below (`direct` included),
 
 | verdict | rows |
 |---|---:|
-| port | 22 |
-| gap | 2 |
+| port | 23 |
+| gap | 1 |
 | n/a | 2 |
 | port and gap (own half ported, other half in a sibling track) | 2 |
 | total | 28 |
@@ -32,7 +32,7 @@ None of these rows changes the gateway store schema: mhc's gateway store stops a
 | no-PR `1c280530f6` | port | Opt-in diagnostics for failed read RPCs: `live_surface.rs` reports the failure path in the read result instead of swallowing it. |
 | no-PR `649186c0df` | port | Preserve silent lookup reasons: `tools/internals.rs` keeps the probe's silent reason through the address resolution failure. |
 | no-PR `80d5731668` | port | Restore model state when the thinking suffix is refused and document both outcomes: `live_surface.rs`, `ports.rs` `ThreadHostSession` / `ThreadControl` restoration path. |
-| no-PR `3d4af11b30` | gap | Apply model thinking suffixes and identify absent providers (its second half): the thinking suffix (`:level`) is owned by `thread-control` #68 (`control/operations.rs` `split_thinking_suffix`, `match_model_with_thinking`), so only the absent-provider half is ported here (`model_match.rs` answers `model_not_found` with `reason: provider_not_configured`, `provider`, `available_providers`, `available`). Duplicating the splitter in this track would give one behaviour two owners. |
+| no-PR `3d4af11b30` | port | Apply model thinking suffixes and identify absent providers: `model_match.rs` (`THINKING_SUFFIXES`, `split_thinking_suffix`, `MatchedModel`, `match_model_with_thinking`, empty-provider trim guard, `model_not_found` with `reason: provider_not_configured`, `provider`, `available_providers`, `available`), `control/operations.rs` (`set_model_on` delegates to `model_match::match_model_with_thinking` with no duplicate splitter), and `control_tools.rs` (`thread_set_model` `model` parameter description naming `:max` suffix and `provider_not_configured`). Tests: `model_match.rs` (`a_missing_provider_names_the_provider_and_the_targets_available_providers`, `thinking_suffixes_strip_only_after_a_literal_miss_and_preserve_colon_ids`), `control/operations.rs`, `tests/thread_control_tests.rs`. |
 | #14474 `3b41b5d6f6` | port | Rows from another device take `created_at` from the UUIDv7 thread id, not the listing's updated_ms: `thread_row.rs` `live_row` uses `entry.created_at`. |
 | #14431 `2c9ce28ff7`, `f22daf7d4c`, `c3dcfcb915` | port | Listing names an unreadable store in `backlog_error`; an empty lane fits any accepted delivery; absorbed repeats say `collapsed`: `read_ops.rs` `withBacklog` (optional detail, never fails the listing) and `backlog.rs` (already ported by thread-gateway). The collapse key's receipts themselves need schema v16 and stay a gap in sibling tracks. |
 | #14430 `4c123c6ec1`, `0098c7729e`, `293610e2a2` | port | Drop an ended session's streak state; `operator_alerts` is read once from the user layer: `component.rs` alert wiring reads `user` settings only and `tools.rs` `sendAs` surfaces caller name in `thread_send`. |

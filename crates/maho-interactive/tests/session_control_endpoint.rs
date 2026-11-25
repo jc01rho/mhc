@@ -2225,5 +2225,29 @@ async fn live_prompt_and_steer_admission_under_turn_and_idle() {
     assert_eq!(held["success"], false);
     assert_eq!(held["errorCode"], "held_draft");
 
+    *lock(&fixture.surface.draft) = None;
+    fixture.session.cut_by_host_shutdown();
+    let held_peer = client
+        .request(json!({
+            "type": "prompt",
+            "message": "peer prompt while interrupted",
+            "clientMessageId": "cid-held-1",
+        }))
+        .await;
+    assert_eq!(held_peer["success"], true, "{held_peer}");
+    assert_eq!(held_peer["data"]["disposition"], "held");
+    assert_eq!(held_peer["data"]["holds"], json!(["session_hold"]));
+    assert_eq!(held_peer["data"]["admission"]["disposition"], "held");
+    let replayed = client
+        .request(json!({
+            "type": "prompt",
+            "message": "peer prompt while interrupted",
+            "clientMessageId": "cid-held-1",
+        }))
+        .await;
+    assert_eq!(replayed["success"], true, "{replayed}");
+    assert_eq!(replayed["data"]["replayed"], true);
+    assert_eq!(replayed["data"]["disposition"], "held");
+
     fixture.endpoint.dispose().await;
 }

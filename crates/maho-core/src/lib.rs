@@ -385,6 +385,7 @@ pub mod lifecycle_record;
 pub mod lifecycle_runtime_facts;
 pub mod lifecycle_stop;
 pub mod lifecycle_wait_items;
+pub mod peer_delivery_hold;
 pub mod transcript_write_failures;
 pub mod work_custody_record;
 pub mod work_obligations;

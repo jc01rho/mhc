@@ -33,6 +33,30 @@ tokio::task_local! {
     static NESTED_TOOL_QUEUE_HELD: bool;
     static HELD_COMMAND_SESSION: String;
 }
+struct PeerReleaseFlightGuard(Option<AgentSession>);
+
+impl PeerReleaseFlightGuard {
+    fn start(session: AgentSession) -> Self {
+        session.prompts_in_flight.fetch_add(1, Ordering::SeqCst);
+        Self(Some(session))
+    }
+
+    async fn finish(mut self) {
+        if let Some(session) = self.0.take() {
+            session.prompts_in_flight.fetch_sub(1, Ordering::SeqCst);
+            session.settle_input_release().await;
+        }
+    }
+}
+
+impl Drop for PeerReleaseFlightGuard {
+    fn drop(&mut self) {
+        if let Some(session) = self.0.take() {
+            session.prompts_in_flight.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
 struct HeldInputReservation {
     session: AgentSession,
     ids: Vec<String>,
@@ -5888,8 +5912,16 @@ impl AgentSession {
     }
 
     pub fn admit_external_message(&self, input: &Value, editor: &Value) -> Result<Value, String> {
-        self.external_admission
-            .admit(input, editor, self.is_streaming(), |message, lane| {
+        let held_by = crate::peer_delivery_hold::holds_keeping_peer_delivery(
+            &self.holds(),
+            self.requires_human_continuation(),
+        );
+        self.external_admission.admit_with_holds(
+            input,
+            editor,
+            self.is_streaming(),
+            &held_by,
+            |message, lane| {
                 let custom = serde_json::from_value(message)
                     .map_err(|e| format!("invalid external message: {e}"))?;
                 self.send_custom_message_content_inner(
@@ -5904,7 +5936,8 @@ impl AgentSession {
                     },
                 )
                 .map_err(|e| e.message)
-            })
+            },
+        )
     }
 
     pub fn external_admission(&self) -> &crate::external_admission::ExternalAdmission {
@@ -19982,6 +20015,16 @@ impl AgentSession {
         options: maho_ext_api::SendMessageOptions,
         receipt: Option<maho_ext_api::MessageDeliveryReceipt>,
     ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        self.send_custom_message_content_with_receipt_and_flight(message, options, receipt, None)
+    }
+
+    fn send_custom_message_content_with_receipt_and_flight(
+        &self,
+        message: maho_agent::harness::messages::CustomMessage,
+        options: maho_ext_api::SendMessageOptions,
+        receipt: Option<maho_ext_api::MessageDeliveryReceipt>,
+        mut flight_guard: Option<PeerReleaseFlightGuard>,
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
         // senpi `sendCustomMessage`: an engine wake that would start a turn while its source is held is
         // kept in notice custody, not delivered (`triggerTurn` is a bool here, so "undefined" reads as false).
         if options.trigger_turn
@@ -19989,10 +20032,39 @@ impl AgentSession {
             && crate::input_origin::custom_turn_origin(&message.custom_type) == InputOrigin::Engine
         {
             let source = crate::engine_turn_hold::engine_wake_source(&message.custom_type);
+            let peer_delivery = message.custom_type
+                == crate::host_restart_continuation::SESSION_CONTROL_DELIVERY_TYPE;
             let mut hold = lock(&self.engine_turn_hold);
+            let peer_holds = if peer_delivery
+                && !self.is_streaming()
+                && !self.is_compacting()
+                && !self.state().sizes_only_startup
+            {
+                crate::peer_delivery_hold::holds_keeping_peer_delivery(
+                    &hold.holds(),
+                    self.requires_human_continuation(),
+                )
+            } else {
+                Vec::new()
+            };
+            if peer_delivery
+                && !self.is_streaming()
+                && !self.is_compacting()
+                && !self.state().sizes_only_startup
+                && hold.holds_source(&source)
+                && peer_holds.is_empty()
+                && !crate::run_holds::RunHolds::new(&mut hold)
+                    .holds_wake(message.details.as_ref().unwrap_or(&Value::Null))
+            {
+                if flight_guard.is_none() {
+                    flight_guard = Some(PeerReleaseFlightGuard::start(self.clone()));
+                }
+                lock(&self.engine_turn_input).begin(&mut hold);
+            }
             if hold.holds_source(&source)
                 || crate::run_holds::RunHolds::new(&mut hold)
                     .holds_wake(message.details.as_ref().unwrap_or(&Value::Null))
+                || (peer_delivery && !self.is_streaming() && !peer_holds.is_empty())
             {
                 let noted = serde_json::to_value(&message)
                     .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
@@ -20020,6 +20092,7 @@ impl AgentSession {
                 let deferred_receipt = receipt.clone();
                 if options.trigger_turn {
                     let spawner = self.clone();
+                    let deferred_flight = flight_guard.take();
                     settled_delivery.defer_trigger_turn(move |claim| {
                         let guard = deferred_session.work_barrier.begin();
                         let mut delivery_guard = deferred_guard;
@@ -20043,6 +20116,9 @@ impl AgentSession {
                                 if let Some(guard) = &mut delivery_guard {
                                     guard.disarm();
                                 }
+                                if let Some(flight) = deferred_flight {
+                                    flight.finish().await;
+                                }
                                 return;
                             }
                             claim.resolve(
@@ -20052,10 +20128,11 @@ impl AgentSession {
                                 guard.disarm();
                             }
                             if let Err(error) = deferred_session
-                                .send_custom_message_content_with_receipt(
+                                .send_custom_message_content_with_receipt_and_flight(
                                     deferred_message,
                                     deferred_options,
                                     deferred_receipt.clone(),
+                                    deferred_flight,
                                 )
                             {
                                 if let Some(receipt) = &deferred_receipt {
@@ -20093,10 +20170,11 @@ impl AgentSession {
                             guard.disarm();
                         }
                         if let Err(error) = deferred_session
-                            .send_custom_message_content_with_receipt(
+                            .send_custom_message_content_with_receipt_and_flight(
                                 deferred_message,
                                 deferred_options,
                                 deferred_receipt.clone(),
+                                None,
                             )
                         {
                             if let Some(receipt) = &deferred_receipt {
@@ -20156,6 +20234,7 @@ impl AgentSession {
             let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
             let session = self.clone();
             let deliver_as = options.deliver_as;
+            let turn_flight = flight_guard.take();
             self.spawn_session_task(async move {
                 if session.state().disposed
                     || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation
@@ -20167,6 +20246,9 @@ impl AgentSession {
                     if let Some(guard) = &mut delivery_guard {
                         guard.disarm();
                     }
+                    if let Some(flight) = turn_flight {
+                        flight.finish().await;
+                    }
                     drop(guard);
                     return;
                 }
@@ -20175,6 +20257,9 @@ impl AgentSession {
                     .await;
                 if let Some(guard) = &mut delivery_guard {
                     guard.disarm();
+                }
+                if let Some(flight) = turn_flight {
+                    flight.finish().await;
                 }
                 match result {
                     Ok(()) => {
@@ -20354,6 +20439,9 @@ impl AgentSession {
         }
         self.state().user_aborted = false;
         let mut messages = held_messages;
+        if released_by_peer {
+            messages.extend(self.engine_turn_input_messages());
+        }
         let prompt_index = messages.len();
         messages.push(app_message.clone());
         self.state().trigger_turn_admission_abort_generation = Some(user_abort_generation);
@@ -20446,6 +20534,9 @@ impl AgentSession {
             && !claim()
         {
             return Ok(false);
+        }
+        if released_by_peer {
+            self.admit_engine_turn_input(false);
         }
         lock(&self.delivered_held_inputs)
             .extend(held_ids.into_iter().map(|id| (id, user_abort_generation)));

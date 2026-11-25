@@ -438,7 +438,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
             object(
                 json!({
                     "thread": { "type": "string", "description": ADDRESS },
-                    "model": { "type": "string", "minLength": 1, "description": "Model to switch the thread to, as provider/id, an exact model id, or a case-insensitive fragment of the id or display name resolved against the session's model catalog; no match returns model_not_found with the available list, several matches return model_ambiguous with candidates." },
+                    "model": { "type": "string", "minLength": 1, "description": "Model to switch the thread to, as provider/id, an exact model id, or a case-insensitive fragment of the id or display name, resolved against the target's catalog. Append a thinking level such as :max to apply it after switching. No match returns model_not_found with the available list; an absent provider adds details.reason = provider_not_configured and lists the target's available providers. Several matches return model_ambiguous with candidates." },
                     "provider": { "type": "string", "description": "Restricts resolution to one provider when the fragment alone would match models from several providers." },
                     "all_scope": { "type": "boolean", "description": ALL_SCOPE },
                 }),
