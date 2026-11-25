@@ -696,7 +696,7 @@ mod tests {
             transport.clone(),
             manual.clock(),
             manual.schedule(),
-            ATTACH_IDLE_MS,
+            ATTACH_IDLE_MS * 2,
         );
 
         let first = block_on(pool.session_command(

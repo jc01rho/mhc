@@ -368,14 +368,19 @@ fn thread_list_merges_remote_rows_tracks_incomplete_and_dropped_and_remote_grace
     let cwd_str = cwd.to_string_lossy().into_owned();
 
     let sessions_dir = dir.path().join("sessions");
-    let proj_dir = sessions_dir.join(session_directory_prefix(&cwd_str));
+    let proj_dir = sessions_dir.join(format!("{}-", session_directory_prefix(&cwd_str)));
     std::fs::create_dir_all(&proj_dir).expect("mkdir proj");
     for i in 0..202usize {
-        let path = proj_dir.join(format!(
-            "2026-11-26T00-00-00Z_0195f0c2-1a2b-7c3d-8e4f-{i:012x}.jsonl"
-        ));
-        std::fs::write(&path, "{\"type\":\"session\",\"id\":\"x\",\"timestamp\":\"2026-11-26T00:00:00Z\",\"cwd\":\"/tmp\"}\n")
-            .expect("write session");
+        let id = format!("0195f0c2-1a2b-7c3d-8e4f-{i:012x}");
+        let path = proj_dir.join(format!("2026-11-26T00-00-00Z_{id}.jsonl"));
+        let header = json!({
+            "type": "session",
+            "version": 3,
+            "id": id,
+            "timestamp": "2026-11-26T00:00:00Z",
+            "cwd": cwd_str,
+        });
+        std::fs::write(&path, format!("{header}\n")).expect("write session");
     }
 
     let remote = ScriptedRemote::new(
@@ -555,14 +560,28 @@ fn thread_list_merges_remote_rows_tracks_incomplete_and_dropped_and_remote_grace
     assert_eq!(sent[1].3.wait_ms, Some(REMOTE_GRACEFUL_MAX_WAIT_MS));
     drop(sent);
 
-    let after_close = run(&component, "thread_list", json!({ "all_scope": true }));
-    let live_ids: Vec<&str> = after_close["threads"]
+    let after_close_live = run(
+        &component,
+        "thread_list",
+        json!({ "all_scope": true, "state": ["running", "idle"] }),
+    );
+    let live_ids: Vec<&str> = after_close_live["threads"]
         .as_array()
         .expect("threads")
         .iter()
         .filter_map(|t| t["thread"].as_str())
         .collect();
     assert!(!live_ids.contains(&B_ID));
+
+    let after_close_all = run(&component, "thread_list", json!({ "all_scope": true }));
+    let closed_row = after_close_all["threads"]
+        .as_array()
+        .expect("threads")
+        .iter()
+        .find(|t| t["thread"] == B_ID)
+        .expect("ended row stamped by closed_rows");
+    assert_eq!(closed_row["status"], "resumable");
+    assert_eq!(closed_row["state"], "inactive");
 
     let escaped_err = run(
         &component,

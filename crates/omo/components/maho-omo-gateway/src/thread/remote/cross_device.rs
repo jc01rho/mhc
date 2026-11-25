@@ -513,6 +513,10 @@ mod tests {
                         source: Some(RowSource::Cache),
                         ..remote_row("c", "rk-cached", Some("dur-cached"), "running")
                     },
+                    RemoteSessionRow {
+                        archived: true,
+                        ..remote_row("c", "rk-arch", Some("dur-archived"), "idle")
+                    },
                 ],
                 incomplete: Vec::new(),
                 devices: Some(device_states),
@@ -521,14 +525,15 @@ mod tests {
         });
 
         let local = base_local(vec![local_summary("dur-local", "Local")], true, Some(3));
-        let listed = block_on(list_across(Some(&surface), local, true, None));
+        let listed = block_on(list_across(Some(&surface), local.clone(), true, None));
 
         let ids: Vec<&str> = listed.threads.iter().map(|t| t.thread.as_str()).collect();
-        assert_eq!(ids, vec!["dur-local", "dur-b", "b/rk-anon"]);
+        assert_eq!(ids, vec!["dur-local", "dur-b", "b/rk-anon", "dur-cached"]);
         assert_eq!(listed.threads[0].machine.as_deref(), Some("this-box"));
         assert_eq!(listed.threads[0].alias.as_deref(), Some("main-lane"));
         assert_eq!(listed.threads[1].alias.as_deref(), Some("remote-lane"));
         assert_eq!(listed.threads[1].machine.as_deref(), Some("Laptop"));
+        assert_eq!(listed.threads[3].state, ThreadState::Inactive);
 
         let devices = listed.devices.expect("devices");
         assert_eq!(devices.len(), 4);
@@ -545,9 +550,23 @@ mod tests {
 
         assert_eq!(devices[2].device, "c");
         assert_eq!(devices[2].listing, DeviceListing::Incomplete);
+        assert_eq!(devices[2].threads, 1);
 
         assert_eq!(devices[3].device, "d");
         assert_eq!(devices[3].listing, DeviceListing::Offline);
+
+        let live_only = block_on(list_across(
+            Some(&surface),
+            local,
+            true,
+            Some(&[ThreadState::Running, ThreadState::Idle]),
+        ));
+        let live_ids: Vec<&str> = live_only
+            .threads
+            .iter()
+            .map(|t| t.thread.as_str())
+            .collect();
+        assert_eq!(live_ids, vec!["dur-local", "dur-b", "b/rk-anon"]);
     }
 
     #[test]
