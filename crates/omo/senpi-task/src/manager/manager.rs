@@ -1389,6 +1389,49 @@ impl TaskManager {
         }
     }
 
+    pub fn withdraw_task_admissions(&self, task_ids: &[&str]) {
+        if task_ids.is_empty() {
+            return;
+        }
+        let targets: HashSet<&str> = task_ids.iter().copied().collect();
+        let mut contexts = Vec::new();
+        {
+            let mut state = lock(&self.inner.state);
+            for task_id in &targets {
+                state.held_admissions.remove(*task_id);
+                if let Some(context) = state.held_launches.remove(*task_id) {
+                    contexts.push(context);
+                }
+                if let Some(context) = state.queued_launches.remove(*task_id) {
+                    contexts.push(context);
+                }
+            }
+        }
+        let mut withdrawn = HashSet::new();
+        for context in contexts {
+            withdrawn.insert(context.record.task_id.clone());
+            lock(&self.inner.concurrency).withdraw(
+                &context.model,
+                &context.record.task_id,
+                context.record.notification.run_epoch,
+            );
+            if let Some(admission) = &context.managed_spec.admission {
+                admission.leave();
+            }
+        }
+        for task_id in targets {
+            if !withdrawn.contains(task_id)
+                && let Some(record) = self.inner.try_load(task_id)
+            {
+                lock(&self.inner.concurrency).withdraw(
+                    &record.model,
+                    &record.task_id,
+                    record.notification.run_epoch,
+                );
+            }
+        }
+    }
+
     pub fn resume_held_task(
         &self,
         task_id: &str,

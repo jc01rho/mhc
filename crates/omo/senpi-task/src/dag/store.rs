@@ -310,6 +310,11 @@ impl DagStorePaths {
         self.locks
             .join(format!("task-owner-{}.lock", sha256(task_owner)))
     }
+
+    pub fn session_runs_lock(&self, parent_session_id: &str) -> PathBuf {
+        self.locks
+            .join(format!("session-runs-{}.lock", sha256(parent_session_id)))
+    }
 }
 
 pub fn dag_key_hash(parent_session_id: &str, run_key: &str) -> String {
@@ -759,10 +764,7 @@ impl DagFileStore {
             Some(parent) if !path.exists() => parent,
             _ => return self.write_json_atomic(&path, &encoded),
         };
-        let capacity_lock = self
-            .paths
-            .locks
-            .join(format!("session-runs-{}.lock", sha256(&parent_session_id)));
+        let capacity_lock = self.paths.session_runs_lock(&parent_session_id);
         self.with_lock(&capacity_lock, None, || -> Result<(), DagStoreError> {
             if path.exists() {
                 return self.write_json_atomic(&path, &encoded);

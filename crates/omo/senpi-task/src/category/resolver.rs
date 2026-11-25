@@ -6,7 +6,8 @@ use serde_json::{Map, Value};
 
 use super::available_names::{available_category_names, gated_available_categories};
 use super::builtins::{
-    builtin_category, is_category_chain_rung_resolvable, is_category_gate_satisfied,
+    builtin_category, exact_served_rungs, is_category_chain_rung_resolvable,
+    is_category_gate_satisfied,
 };
 use super::chain_diagnostics::{missing_chain_providers, unlisted_provider_model};
 use super::fallback_chains::category_fallback_chain;
@@ -365,13 +366,23 @@ pub fn resolve_category(
         None => flatten_fallback_models(config.get("fallback_models")),
     };
     let has_user_model = user_model.is_some();
+    let exact_rungs =
+        fallback_chain.and_then(|chain| exact_served_rungs(category_name, chain, &available_set));
+    let builtin_default_model = match (&exact_rungs, &builtin_model) {
+        (Some(_), Some(model)) if !available_set.contains(model) => None,
+        _ => builtin_model.clone(),
+    };
+    let narrowed_chain: Option<Vec<DelegateFallbackEntry>> = exact_rungs
+        .as_ref()
+        .map(|rungs| rungs.iter().map(|(narrowed, _)| narrowed.clone()).collect());
     let resolution = resolve_model_for_delegate_task(
         &DelegateModelResolutionInput {
             user_model,
             user_fallback_models,
-            category_default_model: builtin_model.clone(),
+            category_default_model: builtin_default_model,
             is_user_configured_category_model: false,
-            fallback_chain: fallback_chain.map(<[DelegateFallbackEntry]>::to_vec),
+            fallback_chain: narrowed_chain
+                .or_else(|| fallback_chain.map(<[DelegateFallbackEntry]>::to_vec)),
             allow_unlisted_providers: false,
             available_models: available_models.iter().cloned().collect(),
             system_default_model: None,
@@ -396,11 +407,22 @@ pub fn resolve_category(
         } else {
             ModelSelectionSource::Builtin
         };
+    let fallback_entry = resolution.fallback_entry.map(|entry| {
+        exact_rungs
+            .as_ref()
+            .and_then(|rungs| {
+                rungs
+                    .iter()
+                    .find(|(narrowed, _)| narrowed == &entry)
+                    .map(|(_, original)| original.clone())
+            })
+            .unwrap_or(entry)
+    });
     let selection = CategoryModelSelection {
         selected_model: resolution.model,
         variant: resolution.variant,
         matched_fallback: resolution.matched_fallback,
-        fallback_entry: resolution.fallback_entry,
+        fallback_entry,
         source,
     };
     let parsed_model = parse_model(&selection.selected_model);

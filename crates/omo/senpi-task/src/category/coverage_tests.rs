@@ -41,18 +41,10 @@ const ANTHROPIC_MODELS: [&str; 17] = [
     "claude-sonnet-5",
     "claude-sonnet-5-5",
 ];
-const GPT_PROVIDERS: [&str; 4] = [
-    "chatgpt-subscription",
-    "openai",
-    "github-copilot",
-    "opencode",
-];
-const DEEP_HIGH_PROVIDERS: [&str; 4] = [
-    "chatgpt-subscription",
-    "openai",
-    "opencode",
-    "github-copilot",
-];
+// The GPT-6.2 Astra lanes list the providers serving that exact model; Copilot does not serve GPT-6.2.
+const ASTRA_PROVIDERS: [&str; 3] = ["chatgpt-subscription", "openai", "opencode"];
+// GPT-6.2 Sol is served only on the two OpenAI lanes.
+const SOL_PROVIDERS: [&str; 2] = ["chatgpt-subscription", "openai"];
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
@@ -109,7 +101,7 @@ fn a_zai_only_registry_serves_three_categories_and_names_each_gaps_providers() {
             "opencode"
         ])
     );
-    assert_eq!(providers_of("deep-high"), strings(&DEEP_HIGH_PROVIDERS));
+    assert_eq!(providers_of("deep-high"), strings(&ASTRA_PROVIDERS));
     assert!(
         !providers_of("writing")
             .iter()
@@ -135,9 +127,9 @@ fn an_anthropic_only_registry_serves_the_claude_categories_and_names_the_gpt_pro
     assert_eq!(
         coverage.unusable,
         vec![
-            gap("deep-high", &DEEP_HIGH_PROVIDERS),
-            gap("deep-low", &GPT_PROVIDERS),
-            gap("ultrabrain", &GPT_PROVIDERS),
+            gap("deep-high", &ASTRA_PROVIDERS),
+            gap("deep-low", &SOL_PROVIDERS),
+            gap("ultrabrain", &ASTRA_PROVIDERS),
         ]
     );
 }
@@ -165,11 +157,7 @@ fn deep_high_gaps_leave_out_the_connected_openai_lane() {
             .iter()
             .find(|gap| gap.name == "deep-high")
             .map(|gap| gap.providers.clone()),
-        Some(strings(&[
-            "chatgpt-subscription",
-            "opencode",
-            "github-copilot"
-        ]))
+        Some(strings(&["chatgpt-subscription", "opencode"]))
     );
 }
 

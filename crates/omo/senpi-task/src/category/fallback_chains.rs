@@ -61,41 +61,19 @@ pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFal
                     rung(CLAUDE, "claude-fable-5-1", Some("xhigh")),
                 ],
             ),
+            // The three GPT deep lanes run one exact model each (#14155): no older GPT, no Fast tier
+            // and no other family behind it.
             (
                 "ultrabrain",
-                vec![
-                    // Each GPT-6.2 rung keeps GPT-6 Astra right behind it, so a registry without 6.2 resolves what it
-                    // did before; Copilot does not serve 6.2 and keeps its GPT-6 Astra rung.
-                    rung(GPT_SUBSCRIPTION, "gpt-6.2-astra", Some("max")),
-                    rung(GPT_SUBSCRIPTION, "gpt-6-astra", Some("max")),
-                    rung(&["github-copilot"], "gpt-6-astra", Some("max")),
-                    rung(GPT_SUBSCRIPTION_ZEN, "gpt-6.2-astra", Some("max")),
-                    rung(GPT_SUBSCRIPTION_ZEN, "gpt-6-astra", Some("max")),
-                    rung(GPT_SUBSCRIPTION, "gpt-5.6-sol", Some("max")),
-                    rung(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-                    rung(GPT_SUBSCRIPTION_ZEN, "gpt-5.6-sol", Some("max")),
-                ],
+                vec![rung(GPT_SUBSCRIPTION_ZEN, "gpt-6.2-astra", Some("max"))],
             ),
             (
                 "deep-low",
-                vec![
-                    // GPT-6.2 Sol leads at medium effort (plain, then the Fast tier), then GPT-6.1 Sol for a registry
-                    // without 6.2; GPT-5.6 Sol stays behind them so Copilot, OpenCode Zen and a registry without
-                    // either still resolve the lane.
-                    rung(GPT_SUBSCRIPTION, "gpt-6.2-sol", Some("medium")),
-                    rung(GPT_SUBSCRIPTION, "gpt-6.2-sol-fast", Some("medium")),
-                    rung(GPT_SUBSCRIPTION, "gpt-6.1-sol", Some("medium")),
-                    rung(GPT_SUBSCRIPTION, "gpt-6.1-sol-fast", Some("medium")),
-                    rung(GPT_EVERY_LANE, "gpt-5.6-sol", Some("medium")),
-                    rung(GPT_SUBSCRIPTION, "gpt-5.6-sol-fast", Some("medium")),
-                ],
+                vec![rung(GPT_SUBSCRIPTION, "gpt-6.2-sol", Some("medium"))],
             ),
             (
                 "deep-high",
-                vec![
-                    rung(GPT_SUBSCRIPTION_ZEN, "gpt-6.2-astra", Some("high")),
-                    rung(GPT_EVERY_LANE, "gpt-6-astra", Some("high")),
-                ],
+                vec![rung(GPT_SUBSCRIPTION_ZEN, "gpt-6.2-astra", Some("high"))],
             ),
             (
                 "artistry",

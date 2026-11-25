@@ -1524,3 +1524,28 @@ fn given_expired_terminal_and_equally_old_live_skill_sidecars_when_retention_run
     assert!(!terminal_skills.exists());
     assert!(live_skills.exists());
 }
+
+#[test]
+fn given_parent_session_id_when_building_session_runs_lock_then_places_hashed_lock_under_locks_dir()
+{
+    let project = temp_project();
+    let store = create_dag_file_store(
+        &DagStoreConfig::new(project.path()),
+        DagStoreOptions::default(),
+    )
+    .expect("store");
+    let first = store.paths.session_runs_lock("session-alpha");
+    let second = store.paths.session_runs_lock("session-alpha");
+    let other = store.paths.session_runs_lock("session-beta");
+
+    assert_eq!(first, second);
+    assert_ne!(first, other);
+    assert_eq!(first.parent(), Some(store.paths.locks.as_path()));
+    let file_name = first
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("utf8 lock name");
+    assert!(file_name.starts_with("session-runs-"));
+    assert!(file_name.ends_with(".lock"));
+    assert!(!file_name.contains("session-alpha"));
+}
