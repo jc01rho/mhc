@@ -298,10 +298,11 @@ mod tests {
             "hello",
         ]);
         // then the branded path alone counts as the distribution's own, and a user path beside it does not
+        let user = "/tmp/user-ext.ts".to_owned();
         assert!(extensions_except(&branded, std::slice::from_ref(&branded_path)).is_empty());
         assert_eq!(
             extensions_except(&with_user_flag, std::slice::from_ref(&branded_path)),
-            vec![&"/tmp/user-ext.ts".to_owned()]
+            vec![&user]
         );
         // a trailing separator and a symlinked parent name the same plugin
         assert!(
@@ -312,7 +313,8 @@ mod tests {
         {
             let link = home.path().join("link");
             std::os::unix::fs::symlink(&plugin, &link).expect("symlink");
-            let through_link = parse(&["--extension", &link.join(".").to_string_lossy(), "hello"]);
+            let linked = link.join(".").to_string_lossy().into_owned();
+            let through_link = parse(&["--extension", &linked, "hello"]);
             assert!(
                 extensions_except(&through_link, std::slice::from_ref(&branded_path)).is_empty(),
                 "a resolved path names the same plugin"

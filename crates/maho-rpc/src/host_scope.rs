@@ -16,6 +16,7 @@ use std::time::Duration;
 
 /// The supervisor waits at most this long for its scope; the engine's bootstrap phase budget is 30 s.
 pub const SCOPE_BUDGET: Duration = Duration::from_secs(2);
+#[cfg(unix)]
 const SCOPE_POLL: Duration = Duration::from_millis(10);
 /// The scope's memory cap, as a share of `MemTotal`, so one runaway child cannot OOM its siblings.
 const MEMORY_MAX_SHARE_NUMERATOR: u64 = 9;
@@ -129,20 +130,13 @@ pub fn plan_host_scope(inputs: &HostScopeInputs, pid: u32, nonce: &str) -> Optio
     })
 }
 
-fn split_path_entries(value: Option<&String>) -> Vec<PathBuf> {
-    value
-        .into_iter()
-        .flat_map(|value| std::env::split_paths(value))
-        .filter(|entry| !entry.as_os_str().is_empty())
-        .collect()
-}
-
-/// The first executable `busctl` on `PATH`.
+/// The first executable `busctl` on `PATH`: what a shell would run.
 fn busctl_on_path(env: &HashMap<String, String>) -> Option<PathBuf> {
-    split_path_entries(env.get("PATH"))
-        .into_iter()
+    let path = env.get("PATH")?;
+    std::env::split_paths(path)
+        .filter(|entry| !entry.as_os_str().is_empty())
         .map(|directory| directory.join("busctl"))
-        .find(|candidate| is_executable_file(candidate))
+        .find(|candidate| is_executable_file(candidate.as_path()))
 }
 
 #[cfg(unix)]
