@@ -40,6 +40,7 @@ pub mod reader;
 pub mod relay;
 pub mod remote;
 pub mod result;
+pub mod run_alerts;
 pub mod schema;
 pub mod sdk;
 pub mod session_args_schema;
@@ -57,6 +58,7 @@ pub mod thread_row;
 pub mod thread_state;
 pub mod tools;
 pub mod types;
+pub mod wake;
 
 pub use adapter::{
     Admission, DeliverySender, DrainWakeEvent, EndpointLiveness, GatewayAdmissionKind,
