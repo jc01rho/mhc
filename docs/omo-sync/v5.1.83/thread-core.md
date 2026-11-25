@@ -10,11 +10,11 @@ Counts computed programmatically from the per-PR rows below (`direct` included),
 
 | verdict | rows |
 |---|---:|
-| port | 16 |
-| ported | 4 |
-| n/a | 3 |
-| gap | 7 |
-| total | 30 |
+| port | 21 |
+| gap | 4 |
+| n/a | 2 |
+| port and gap (own half ported, other half in a sibling track) | 1 |
+| total | 28 |
 
 One row per upstream PR, or per commit group where a change carries no PR number; every non-merge commit in the range that touches these paths is named in exactly one row.
 
@@ -32,7 +32,7 @@ None of these rows changes the gateway store schema: mhc's gateway store stops a
 | no-PR `1c280530f6` | port | Opt-in diagnostics for failed read RPCs: `live_surface.rs` reports the failure path in the read result instead of swallowing it. |
 | no-PR `649186c0df` | port | Preserve silent lookup reasons: `tools/internals.rs` keeps the probe's silent reason through the address resolution failure. |
 | no-PR `80d5731668` | port | Restore model state when the thinking suffix is refused and document both outcomes: `live_surface.rs`, `ports.rs` `ThreadHostSession` / `ThreadControl` restoration path. |
-| no-PR `3d4af11b30` | port | Apply model thinking suffixes and identify absent providers: `model_match.rs` `split_model_decorators` (`:level` suffix) plus `provider_not_configured` detail. |
+| no-PR `3d4af11b30` | gap | Apply model thinking suffixes and identify absent providers (its second half): the thinking suffix (`:level`) is owned by `thread-control` #68 (`control/operations.rs` `split_thinking_suffix`, `match_model_with_thinking`), so only the absent-provider half is ported here (`model_match.rs` answers `model_not_found` with `reason: provider_not_configured`, `provider`, `available_providers`, `available`). Duplicating the splitter in this track would give one behaviour two owners. |
 | #14474 `3b41b5d6f6` | port | Rows from another device take `created_at` from the UUIDv7 thread id, not the listing's updated_ms: `thread_row.rs` `live_row` uses `entry.created_at`. |
 | #14431 `2c9ce28ff7`, `f22daf7d4c`, `c3dcfcb915` | port | Listing names an unreadable store in `backlog_error`; an empty lane fits any accepted delivery; absorbed repeats say `collapsed`: `read_ops.rs` `withBacklog` (optional detail, never fails the listing) and `backlog.rs` (already ported by thread-gateway). The collapse key's receipts themselves need schema v16 and stay a gap in sibling tracks. |
 | #14430 `4c123c6ec1`, `0098c7729e`, `293610e2a2` | port | Drop an ended session's streak state; `operator_alerts` is read once from the user layer: `component.rs` alert wiring reads `user` settings only and `tools.rs` `sendAs` surfaces caller name in `thread_send`. |
@@ -57,13 +57,15 @@ None of these rows changes the gateway store schema: mhc's gateway store stops a
 
 ## Tests
 
-New or extended cases, all under `crates/omo/components/maho-omo-gateway`:
+New or extended cases, all under `crates/omo/components/maho-omo-gateway`, named as the unit tests they are:
 
-- `src/thread/read_item.rs` (+ `tests/`): `#given an assistant message a provider error ended #then its error text is in the item, not an empty []` (#14283), capped long error, ordinary message unchanged.
-- `src/thread/thread_state.rs`: `retryWait` returns `waiting_on { kind, reason, until, attempt, max_attempts }` for `rate_limit`/`retry` on a running thread, nothing for idle/closed/unknown-kind rows (#14278).
-- `src/thread/model_match.rs`: `:thinking` suffix is interpreted only after a literal catalog miss; absent provider answers `model_not_found` with `reason: provider_not_configured` and the target's available providers (#14445).
-- `src/thread/read_ops.rs`: `rowNamed` marks unnamed threads (`unnamed`) and `withBacklog` attaches backlog facts per thread (#14305 U7, #14428); `inactive_dropped` counts unread files (#14295); `listing: incomplete` counts only live-unresponsive endpoints, never dead ones (#14308).
-- `tests/thread_control_tests.rs` graceful-close and thinking-suffix rollback cases live under `thread-control` #68 and are not duplicated here.
+- `src/thread/read_item.rs` (`mod tests`): an assistant message a provider error ended shows its capped error text as an `error` part instead of an empty `[]` (#14283); a long provider error is capped at `ERROR_TEXT_MAX_CHARS`; an ordinary message keeps its content; an errored message keeps its content and ignores a non-text error. The read paths (`items_of` in `read_ops.rs`, both live and from-disk) go through `read_item`.
+- `src/thread/thread_state.rs`: `retry_wait` yields `{ kind, reason, until, attempt, max_attempts }` for a running thread whose engine lists `rate_limit`/`retry`, and none for a non-running thread, an unknown kind or a bad timestamp (#14278).
+- `src/thread/model_match.rs`: an empty match answers `model_not_found` with `reason: provider_not_configured`, the provider and the target's available providers (#14445).
+- `src/thread/thread_row.rs`: a named thread is not `unnamed` and its link carries the name; a thread with no name is named by its folder and marked `unnamed`; a running thread asleep between retries reports `waiting_on` and an idle one does not; a row listed from disk has no wait and no engine version (#14305 U7, #14278).
+- `src/thread/host_view.rs`: `from_listing` reads `waiting` and `engineVersion` (falling back to `serverVersion`) off a listing row.
+- `src/thread/read_ops.rs`: `with_backlog` attaches each thread's backlog and a backlog with no oldest time shows none (#14428); `inactive_dropped`/`inactive_truncated` count the unread session files only when the filter shows inactive or archived (#14295); `listing: incomplete` and `unanswered_endpoints` count an endpoint that did not answer, never one known dead (#14308).
+- Graceful-close and thinking-suffix rollback cases live under `thread-control` #68 (`tests/thread_control_tests.rs`) and are not duplicated here.
 
 ## Seen, not changed here
 

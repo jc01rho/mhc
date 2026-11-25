@@ -404,7 +404,7 @@ mod tests {
             )],
             disk: Vec::new(),
         };
-        let ok = list_threads(&call(view), &none(), false, None);
+        let ok = list_threads(&view, NOW, ROOT, &none(), false, None);
         assert_eq!(ok.listing.as_deref(), Some("incomplete"));
         assert_eq!(ok.unanswered_endpoints, Some(1));
 
@@ -413,7 +413,7 @@ mod tests {
             hosts: vec![host(None, Some(false), "dead")],
             disk: Vec::new(),
         };
-        let ok = list_threads(&call(dead), &none(), false, None);
+        let ok = list_threads(&dead, NOW, ROOT, &none(), false, None);
         assert_eq!(ok.listing, None);
         assert_eq!(ok.unanswered_endpoints, None);
     }
@@ -437,7 +437,7 @@ mod tests {
         );
         assert_eq!(dropped.inactive_dropped, Some(2));
         assert_eq!(dropped.inactive_truncated, Some(true));
-        let listable = list_threads(&call(view), &scanned, false, Some(&[ThreadState::Idle]));
+        let listable = list_threads(&view, NOW, ROOT, &scanned, false, Some(&[ThreadState::Idle]));
         assert_eq!(listable.inactive_dropped, None);
         assert_eq!(listable.inactive_truncated, None);
     }
