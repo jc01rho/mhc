@@ -528,6 +528,10 @@ impl RemoteControlLocator for RelayControlLocator {
             }
         })
     }
+
+    fn remote_surface(&self) -> Option<&RemoteThreadSurface> {
+        Some(self.remote.as_ref())
+    }
 }
 
 #[cfg(test)]

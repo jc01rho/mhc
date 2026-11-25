@@ -213,6 +213,7 @@ impl AttachPool {
             if let Some(cancel) = guard.idle_cancel.take() {
                 cancel();
             }
+            drop(guard);
             entry
         };
 

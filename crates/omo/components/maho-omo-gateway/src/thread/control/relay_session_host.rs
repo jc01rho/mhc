@@ -2,7 +2,7 @@
 
 use crate::thread::contracts_results::{ThreadResultSummary, thread_link};
 
-use super::ports::{
+use crate::thread::remote::ports::{
     RemoteSessionRow, RowSource, escape_for_display, iso_from_ms, keyed, row_created_at,
     row_folder, row_name_of, row_state, row_status,
 };

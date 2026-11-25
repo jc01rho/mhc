@@ -90,7 +90,7 @@ pub struct Account {
     pub roster: Option<Vec<AccountDevice>>,
     pub rows: Vec<RemoteSessionRow>,
     pub incomplete: Vec<String>,
-    round: ListingRound,
+    pub round: ListingRound,
     online: Vec<DeviceRow>,
     earlier: Option<EarlierListing>,
 }
