@@ -1,30 +1,30 @@
 # omo v5.1.80..v5.1.83 sync ledger — `ultrawork-skills` track
 
 Source range: `822bd923038` (`v5.1.79`) .. `69a1863a457` (`v5.1.83`; `v5.1.80` was never released)
-Upstream paths: `packages/omo-senpi/src/components/ultrawork`, `packages/omo-senpi/skills/ultrawork`, `packages/shared-skills`, `packages/omo-senpi/src/components/skill-pointers`, `packages/skills-loader-core`, `packages/omo-senpi/skills/AGENTS.md` (16 non-merge commits)
-mhc counterparts: `crates/maho-ultrawork`, `crates/omo/components/maho-omo-skill-pointers`, `crates/omo/components/maho-omo-bundled-skills`, `crates/omo/skills-loader-core`, `assets/omo-latest/skills`
+Upstream paths: `packages/omo-senpi/src/components/ultrawork`, `packages/omo-senpi/skills/ultrawork`, `packages/shared-skills`, `packages/omo-senpi/src/components/skill-pointers`, `packages/skills-loader-core`, `packages/omo-senpi/skills/AGENTS.md` (16 non-merge commits across 10 PRs/commit groups)
+mhc counterparts: `crates/maho-ultrawork`, `crates/omo/maho-omo`, `crates/omo/components/maho-omo-skill-pointers`, `crates/omo/components/maho-omo-bundled-skills`, `assets/omo-latest/skills`
 
 ## Summary
 
 | verdict | count |
 |---|---:|
-| port | 6 |
-| ported | 2 |
+| port | 4 |
+| ported | 3 |
 | gap | 0 |
-| n/a | 2 |
+| n/a | 3 |
 | **total** | **10** |
 
-## Per-PR verdicts (draft — verifying against source)
+## Per-PR verdicts
 
 | omo PR | verdict | mhc location or reason |
 |---|---|---|
-| `2393d144b6`, `62d085624f` (no PR; skill-pointers omo-relay fleet hint) | port | `crates/omo/components/maho-omo-skill-pointers/src/{index,pointer_text}.rs`, `tests/skill_pointers_bunshin.rs` |
-| #14389 (`68f6df4838`, re-lands #14392) | port | `crates/omo/components/maho-omo-skill-pointers/src/strip_quoted_regions.rs`, `crates/maho-ultrawork/src/{classify,mask,mask_phrases,extension,lib}.rs`, `crates/omo/maho-omo/src/compose.rs` |
-| #14388 (`e271f83646`) | port | `assets/omo-latest/skills/ulw-execute/SKILL.md`, `assets/omo-latest/manifest.json` |
-| #14544 (`d5d1255be0`, `b346408286`, `f1ceae8317`, `f68964d8b4`) | port | `assets/omo-latest/skills/frontend/{SKILL.md,references/perfection/state-and-flow.md}`, `assets/omo-latest/skills/visual-qa/{AGENTS.md,SKILL.md,references/behaviour-evidence.md}`, `crates/omo/skills-loader-core` |
-| #14602 (`eaef6a31fd`, `e9aa3b02e7`) | port | `assets/omo-latest/skills/programming/SKILL.md`, `assets/omo-latest/manifest.json` |
-| #11711 (`fd3497e756`) | port | `assets/omo-latest/skills/browser/references/owned-engine/{README.md,frames-and-humans.md}`, `assets/omo-latest/manifest.json` |
-| `ca7e2139e3` (no PR; omo-relay native skill) | ported | `assets/omo-latest/skills/omo-relay/**` and `crates/omo/components/maho-omo-bundled-skills/tests/all_skills_check.rs` (already in `main`; see `docs/omo-sync/v5.1.83/omo-sdk-relay.md`) |
-| `b9c468be2f` (no PR; GPT-6.2 routing) | ported | `packages/omo-senpi/skills/AGENTS.md` doc table only in this track; model routing ported in `misc-core` and `senpi-task-core` |
-| #14441 (`db42f0a6a7`) & #14442 (`f87b57c4b3`) | n/a | SUL `packages/omo-senpi/skills/ultrawork` and `src/components/ultrawork/directive-variants.ts` two-prompt directive split; `mhc` uses the clean-room MIT single-contract `crates/maho-ultrawork` (`PROVENANCE.md`), and `is_deepseek_v41_flash_model` / `is_gpt6_astra_model` were ported in `misc-core` |
-| #14643 (`4ca98913ae`) | n/a | SUL `packages/omo-senpi/skills/ultrawork/SKILL.md` and `generated-directive.ts` wording edit; `mhc` uses clean-room MIT `crates/maho-ultrawork/contract/core.md` and `assets/omo-latest/skills/ultrawork/SKILL.md` |
+| #14389 (`68f6df4838`, re-lands #14392) | port | `crates/maho-ultrawork/src/mask_phrases.rs` (`PROHIBITIONS`, `prohibited_keyword_spans`), `src/mask.rs` (`negates`), `src/classify.rs` (`Suppression::ProhibitivePhrasing` precedence when prohibitive masking clears compound mentions), `src/extension.rs` (`KeywordDisabledFn`, `UltraworkExtension::with_keyword_disabled`), `tests/vectors.rs` (`forbidding_advice_without_an_invocation_verb_does_not_arm_while_requests_after_a_prohibition_still_do`), `tests/registration.rs` (`keyword_disabled_predicate_turns_off_arming_for_matching_cwd`); `crates/omo/maho-omo/src/component_list.rs` (`is_ultrawork_keyword_disabled`, `load_keyword_detector_settings`, `ultrawork_extension_for`, `ultrawork_honors_keyword_detector_from_omo_config`); `crates/omo/components/maho-omo-skill-pointers/src/strip_quoted_regions.rs` (`PROHIBITED_ITEM`, `PROHIBITED_KEYWORD`, `mask_negated_invocations`) and `tests/skill_pointers_suppression.rs` (`forbidding_advice_without_an_invocation_verb_is_masked_in_strip_quoted_regions`). (`omo-config-core` schema half ported in `misc-core`.) |
+| #14544 (`d5d1255be0`, `b346408286`, `f1ceae8317`, `f68964d8b4`) | port | `assets/omo-latest/skills/frontend/SKILL.md` (state/flow routing row, Brief state-table bullet, States build rule, Verify H12-H19 handoff), `assets/omo-latest/skills/frontend/references/perfection/state-and-flow.md` (new reference, naming the `visual-qa` skill for `references/behaviour-evidence.md`), `assets/omo-latest/skills/visual-qa/AGENTS.md`, `assets/omo-latest/skills/visual-qa/SKILL.md` (`Evidence must be real` with injected-fault vs stubbed-success rule, `Capture hygiene`, `State and flow capture`, checklist `H12-H19`, `UNVERIFIED` verdict and `Not verified` report section), `assets/omo-latest/skills/visual-qa/references/behaviour-evidence.md` (new reference), `assets/omo-latest/manifest.json` (848 bound files), `crates/omo/components/maho-omo-bundled-skills/tests/all_skills_check.rs` (manifest file-count/byte-count verification and 3-pass `tools/check-skill-refs.mjs` audit). (`packages/skills-loader-core/src/features/builtin-skills/frontend/SKILL.md` is OpenCode's duplicate builtin copy; `mhc` stages `frontend/SKILL.md` from `assets/omo-latest/skills/frontend/SKILL.md`.) |
+| #14602 (`eaef6a31fd`, `e9aa3b02e7`) | port | `assets/omo-latest/skills/programming/SKILL.md` (rendered web surface routing row to `frontend` and `visual-qa`, preserving an existing styled UI as design direction) and `assets/omo-latest/manifest.json`. |
+| #11711 (`fd3497e756`; refs #9696) | port | `assets/omo-latest/skills/browser/references/owned-engine/README.md` (shared DevTools connection and handle release on `connect(url)`) and `assets/omo-latest/skills/browser/references/owned-engine/frames-and-humans.md` (pass `dialogPolicy` at connect time to avoid `SharedConnectionError`, Playwright-style `Dialog` listener methods), `assets/omo-latest/manifest.json`. |
+| `2393d144b6`, `62d085624f` (no PR; skill-pointers `omo-relay` fleet hint) | ported | `crates/omo/components/maho-omo-skill-pointers/src/index.rs` (`OMO_RELAY_CUSTOM_TYPE`, `BUNSHIN_TS_IMPORT_SAFETY`, `TARGET_OMO_RELAY`, `omo_relay_extra`), `src/pointer_text.rs`, and `tests/skill_pointers_bunshin.rs` (`given_fleet_or_other_device_wording_when_matched_then_omo_relay_pointer_target_fires`, `given_near_miss_fleet_wording_when_matched_then_nothing_fires`, `given_an_interactive_prompt_naming_the_fleet_when_dispatched_then_one_hidden_omo_relay_pointer_is_injected`). |
+| #14388 (`e271f83646`) | ported | `assets/omo-latest/skills/ulw-execute/SKILL.md` (`argument-hint` `--light`, `## Light profile (--light)`, Phase 2 single-worktree rule, PR-mode lane rule, Phase 4 skip rule) and `assets/omo-latest/manifest.json` (`packages/omo-opencode/**` hook files are out of scope per BRIEF rule 6). |
+| `ca7e2139e3` (no PR; `omo-relay` native skill) | ported | `assets/omo-latest/skills/omo-relay/**` (`SKILL.md`, `references/{errors,machines,parallel}.md`, `scripts/sdk/{bind-eval,index,machines,outcome,ports,threads}.ts`, `tsconfig.json`), `assets/omo-latest/manifest.json`, `crates/omo/components/maho-omo-bundled-skills/tests/all_skills_check.rs`, and `crates/omo/components/maho-omo-telemetry/src/product_identity.rs` (`BUILTIN_SKILL_NAMES` `"omo-relay"`, ported in `misc-core`). |
+| #14441 (`db42f0a6a7`) & #14442 (`f87b57c4b3`) | n/a | SUL `packages/omo-senpi/skills/ultrawork/{SKILL.md,references/astra-variant.md,references/gpt.md}` and `packages/omo-senpi/src/components/ultrawork/{directive-variants,generated-directive,index,session-arming}.ts` two-prompt directive split and context-transform variant swap; `mhc` uses the clean-room MIT single-contract engine in `crates/maho-ultrawork` (`PROVENANCE.md`: single contract variant for all models, no context-transform handler, no SUL directive text). The `model-core` family detectors (`is_deepseek_v41_flash_model`, `is_gpt6_astra_model` `-ultrafast`) were ported in `misc-core`. |
+| #14643 (`4ca98913ae`) | n/a | SUL `packages/omo-senpi/skills/ultrawork/SKILL.md` and `generated-directive.ts` wording edit; `mhc` uses the clean-room MIT `crates/maho-ultrawork/contract/core.md` and `assets/omo-latest/skills/ultrawork/SKILL.md` (`crates/maho-ultrawork/PROVENANCE.md`, `tests/shipped_copy.rs`). |
+| `b9c468be2f` (no PR; exact GPT-6.2 defaults for deep categories and Codex) | n/a | Only a 1-line developer-doc table comment in `packages/omo-senpi/skills/AGENTS.md` falls under this track's paths; the `model-core` and `senpi-task` routing changes belong to `misc-core` and `senpi-task-core` (`packages/omo-codex` and `packages/omo-opencode` are out of scope per BRIEF rule 6). |
