@@ -134,29 +134,13 @@ struct Gpt56Case {
 }
 
 fn gpt56_category_cases() -> Vec<Gpt56Case> {
-    vec![
-        Gpt56Case {
-            category: "ultrabrain",
-            model_id: "gpt-5.6-sol",
-            mixed_winner: ("github-copilot", "gpt-5.6-sol", "max"),
-            copilot_variant: "max",
-            copilot_fallback_entry: entry(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-        },
-        Gpt56Case {
-            category: "deep",
-            model_id: "gpt-5.6-sol",
-            mixed_winner: ("github-copilot", "gpt-5.6-sol", "medium"),
-            copilot_variant: "medium",
-            copilot_fallback_entry: entry(GPT_EVERY_LANE, "gpt-5.6-sol", Some("medium")),
-        },
-        Gpt56Case {
-            category: "unspecified-low",
-            model_id: "gpt-5.6-sol",
-            mixed_winner: ("github-copilot", "gpt-5.6-sol", "medium"),
-            copilot_variant: "medium",
-            copilot_fallback_entry: entry(GPT_EVERY_LANE, "gpt-5.6-sol", Some("medium")),
-        },
-    ]
+    vec![Gpt56Case {
+        category: "unspecified-low",
+        model_id: "gpt-5.6-sol",
+        mixed_winner: ("github-copilot", "gpt-5.6-sol", "medium"),
+        copilot_variant: "medium",
+        copilot_fallback_entry: entry(GPT_EVERY_LANE, "gpt-5.6-sol", Some("medium")),
+    }]
 }
 
 #[test]
@@ -532,24 +516,20 @@ fn builtin_defaults_pin_machine_routing_fields() {
     assert_eq!(
         requires,
         vec![
-            (
-                "ultrabrain",
-                vec!["gpt-6.2-astra", "gpt-6-astra", "gpt-5.6-sol"]
-            ),
-            (
-                "deep-low",
-                vec![
-                    "gpt-6.2-sol",
-                    "gpt-6.2-sol-fast",
-                    "gpt-6.1-sol",
-                    "gpt-6.1-sol-fast",
-                    "gpt-5.6-sol-fast",
-                    "gpt-5.6-sol"
-                ]
-            ),
-            ("deep-high", vec!["gpt-6.2-astra", "gpt-6-astra"]),
+            ("ultrabrain", vec!["gpt-6.2-astra"]),
+            ("deep-low", vec!["gpt-6.2-sol"]),
+            ("deep-high", vec!["gpt-6.2-astra"]),
             ("architect", vec!["claude-fable-5-2", "claude-fable-5-1"]),
         ]
+    );
+    let exact_categories: Vec<&str> = BUILTIN_CATEGORY_DEFAULTS
+        .iter()
+        .filter(|definition| definition.exact_models)
+        .map(|definition| definition.name)
+        .collect();
+    assert_eq!(
+        exact_categories,
+        vec!["ultrabrain", "deep-low", "deep-high"]
     );
 }
 

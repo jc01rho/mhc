@@ -42,12 +42,10 @@ fn given_builtin_only_gated_category_when_listed_then_ultrabrain_carries_require
 fn given_builtin_only_gated_category_when_listed_then_each_deep_lane_carries_its_own_annotation() {
     let low = description_of("deep-low", &json!({}));
     let high = description_of("deep-high", &json!({}));
-    assert!(low.contains(
-        "(requires gpt-6.2-sol or gpt-6.2-sol-fast or gpt-6.1-sol or gpt-6.1-sol-fast or gpt-5.6-sol-fast or gpt-5.6-sol)"
-    ));
+    assert!(low.contains("(requires gpt-6.2-sol)"));
     assert!(low.contains(&required_annotation("deep-low")));
     assert!(!low.contains("gpt-6-sol"));
-    assert!(high.contains("(requires gpt-6.2-astra or gpt-6-astra)"));
+    assert!(high.contains("(requires gpt-6.2-astra)"));
     assert!(high.contains(&required_annotation("deep-high")));
 }
 
