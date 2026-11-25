@@ -43,6 +43,8 @@ pub struct DirectoryDiagnosticsResult {
 
 pub type ListFiles = Arc<dyn Fn(&str, &str, usize) -> Vec<String> + Send + Sync>;
 
+type FileOutcome = (String, Result<Vec<Diagnostic>, String>);
+
 /// TS `DirectoryDiagnosticsOptions`.
 #[derive(Clone, Default)]
 pub struct DirectoryDiagnosticsOptions {
@@ -178,8 +180,7 @@ pub async fn aggregate_diagnostics_for_directory(
         .max(1);
     let signal = options.signal.clone();
 
-    let outcomes: Arc<Mutex<Vec<(String, Result<Vec<Diagnostic>, String>)>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let outcomes: Arc<Mutex<Vec<FileOutcome>>> = Arc::new(Mutex::new(Vec::new()));
     let file_errors: Vec<DirectoryDiagnosticsFileFailure> = groups
         .unserved
         .iter()

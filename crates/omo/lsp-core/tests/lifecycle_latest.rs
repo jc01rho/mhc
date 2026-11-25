@@ -301,6 +301,7 @@ fn manager_harness(options: HarnessOptions) -> Harness {
                 .push(Arc::clone(&client));
             Ok(client as SharedClient)
         })),
+        timers: None,
     });
 
     Harness {
