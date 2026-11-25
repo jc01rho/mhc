@@ -1478,7 +1478,7 @@ fn given_a_pending_task_still_queued_in_this_host_when_resumed_then_recovery_kee
     blocker_handle.complete("blocker done");
     runner.wait_handle(&queued_id).complete("queued done");
     let result = recovered(done.join().expect("resume thread"));
-    assert_eq!(result.status, DagNodeState::Completed);
+    assert_eq!(result.status, crate::dag::types::DagRunStatus::Completed);
     assert_eq!(result.nodes[0].state, DagNodeState::Completed);
     assert_eq!(result.nodes[0].exec_attempt, None);
     assert_eq!(result.nodes[0].error, None);
