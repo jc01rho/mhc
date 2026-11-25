@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod controlled_clock;
+pub mod manager_test_support;
 #[cfg(unix)]
 pub mod typescript_projects;
 
