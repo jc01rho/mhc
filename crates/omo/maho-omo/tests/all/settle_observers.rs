@@ -632,3 +632,258 @@ async fn pending_settle_when_session_retires_releases_immediately_and_handles_la
         "retirement is not a stall warning"
     );
 }
+
+#[tokio::test]
+async fn concurrent_settles_of_one_session_supersede_the_older_and_absorb_cancellation() {
+    let warnings = Arc::new(Warnings::default());
+    let observers =
+        SettleObservers::with_budget(warnings.clone(), std::time::Duration::from_secs(60));
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<AbortSignal>();
+    let (joined_tx, joined_rx) = tokio::sync::oneshot::channel::<AbortSignal>();
+    let entered_tx = Mutex::new(Some(entered_tx));
+    let joined_tx = Mutex::new(Some(joined_tx));
+
+    let (shared_tx, _shared_rx) =
+        tokio::sync::watch::channel::<Option<Result<(), ExtensionFailure>>>(None);
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_clone = calls.clone();
+    let shared_tx_clone = shared_tx.clone();
+    let wrapped = observers.wrap(
+        "fixture",
+        None,
+        Arc::new(move |_, _| {
+            let call = calls_clone.fetch_add(1, Ordering::SeqCst);
+            let observer = current_settle_observer().expect("observer");
+            let mut rx = shared_tx_clone.subscribe();
+            if call == 0 {
+                let shared_tx_inner = shared_tx_clone.clone();
+                observer.signal().add_abort_listener(move |reason| {
+                    let _ = shared_tx_inner
+                        .send(Some(Err(SettleObservers::cancellation_failure(reason))));
+                });
+                if let Some(tx) = entered_tx.lock().expect("entered tx").take() {
+                    let _ = tx.send(observer.signal().clone());
+                }
+            } else if let Some(tx) = joined_tx.lock().expect("joined tx").take() {
+                let _ = tx.send(observer.signal().clone());
+            }
+
+            Box::pin(async move {
+                loop {
+                    if let Some(res) = &*rx.borrow_and_update() {
+                        return match res {
+                            Ok(()) => Ok(EventResult::None),
+                            Err(err) => Err(err.clone()),
+                        };
+                    }
+                    if rx.changed().await.is_err() {
+                        return Ok(EventResult::None);
+                    }
+                }
+            })
+        }),
+    );
+
+    let task1 = {
+        let wrapped = wrapped.clone();
+        tokio::spawn(async move {
+            let mut event = ExtensionEvent::AgentSettled;
+            let context = test_context("session");
+            wrapped(&mut event, &context).await
+        })
+    };
+
+    let signal1 = entered_rx.await.expect("first settle entered");
+
+    let task2 = {
+        let wrapped = wrapped.clone();
+        tokio::spawn(async move {
+            let mut event = ExtensionEvent::AgentSettled;
+            let context = test_context("session");
+            wrapped(&mut event, &context).await
+        })
+    };
+
+    let joiner_signal = joined_rx.await.expect("second settle joined");
+
+    let (res1, res2) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(task1, task2)
+    })
+    .await
+    .expect("both settles complete");
+    let _ = shared_tx.send(Some(Ok(())));
+
+    assert!(signal1.aborted(), "older settle was superseded");
+    assert!(!joiner_signal.aborted(), "newer settle stays active");
+    assert!(matches!(res1.expect("task1"), Ok(EventResult::None)));
+    assert!(matches!(res2.expect("task2"), Ok(EventResult::None)));
+    assert_eq!(observers.pending_count(), 0);
+    assert_eq!(observers.in_flight_count(), 0);
+
+    let logs = warnings.0.lock().expect("warnings");
+    assert_eq!(logs.len(), 1);
+    let details = logs[0].1.as_ref().expect("superseded details");
+    assert_eq!(logs[0].0, "extension_handler_superseded");
+    assert_eq!(details["component"], "fixture");
+    assert_eq!(details["hook"], "onSettled");
+    assert_eq!(details["handlerEvent"], "agent_settled");
+    assert_eq!(details["stage"], "superseded");
+    assert_eq!(details["sessionId"], "session");
+}
+
+#[tokio::test]
+async fn repeated_settles_of_one_session_only_newest_completes_and_superseded_are_logged() {
+    let warnings = Arc::new(Warnings::default());
+    let observers =
+        SettleObservers::with_budget(warnings.clone(), std::time::Duration::from_secs(60));
+    let seen_turns = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+
+    let make_turn = |turn: usize, entered_tx: tokio::sync::oneshot::Sender<()>| {
+        let seen_turns = seen_turns.clone();
+        let gate_rx = gate_rx.clone();
+        let entered_tx = Mutex::new(Some(entered_tx));
+        observers.wrap(
+            "supersede",
+            Some("supersede.work"),
+            Arc::new(move |_, _| {
+                let observer = current_settle_observer().expect("observer");
+                if let Some(tx) = entered_tx.lock().expect("entered tx").take() {
+                    let _ = tx.send(());
+                }
+                let seen_turns = seen_turns.clone();
+                let mut gate_rx = gate_rx.clone();
+                Box::pin(async move {
+                    while !*gate_rx.borrow_and_update() {
+                        if gate_rx.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                    for phase in ["phase-1", "phase-2", "phase-3"] {
+                        observer.phase(phase)?;
+                        tokio::task::yield_now().await;
+                    }
+                    seen_turns.lock().expect("seen turns").push(turn);
+                    Ok(EventResult::None)
+                })
+            }),
+        )
+    };
+
+    let (tx1, rx1) = tokio::sync::oneshot::channel();
+    let (tx2, rx2) = tokio::sync::oneshot::channel();
+    let (tx3, rx3) = tokio::sync::oneshot::channel();
+
+    let h1 = make_turn(1, tx1);
+    let h2 = make_turn(2, tx2);
+    let h3 = make_turn(3, tx3);
+
+    let t1 = tokio::spawn(async move {
+        let mut event = ExtensionEvent::AgentSettled;
+        let ctx = test_context("supersede-session");
+        h1(&mut event, &ctx).await
+    });
+    rx1.await.expect("turn 1 entered");
+
+    let t2 = tokio::spawn(async move {
+        let mut event = ExtensionEvent::AgentSettled;
+        let ctx = test_context("supersede-session");
+        h2(&mut event, &ctx).await
+    });
+    rx2.await.expect("turn 2 entered");
+
+    let t3 = tokio::spawn(async move {
+        let mut event = ExtensionEvent::AgentSettled;
+        let ctx = test_context("supersede-session");
+        h3(&mut event, &ctx).await
+    });
+    rx3.await.expect("turn 3 entered");
+
+    gate_tx.send(true).expect("open phase gate");
+
+    let (r1, r2, r3) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(t1, t2, t3)
+    })
+    .await
+    .expect("all turns complete");
+
+    assert!(matches!(r1.expect("t1"), Ok(EventResult::None)));
+    assert!(matches!(r2.expect("t2"), Ok(EventResult::None)));
+    assert!(matches!(r3.expect("t3"), Ok(EventResult::None)));
+    assert_eq!(*seen_turns.lock().expect("seen"), vec![3]);
+    assert_eq!(observers.in_flight_count(), 0);
+
+    let logs = warnings.0.lock().expect("warnings");
+    assert_eq!(logs.len(), 2);
+    for (msg, details) in logs.iter() {
+        assert_eq!(msg.as_str(), "extension_handler_superseded");
+        let details = details.as_ref().expect("details");
+        assert_eq!(details["component"], "supersede");
+        assert_eq!(details["hook"], "supersede.work");
+        assert_eq!(details["stage"], "superseded");
+        assert_eq!(details["sessionId"], "supersede-session");
+    }
+}
+
+#[tokio::test]
+async fn unnamed_wrappers_of_distinct_slots_do_not_supersede_each_other() {
+    let warnings = Arc::new(Warnings::default());
+    let observers =
+        SettleObservers::with_budget(warnings.clone(), std::time::Duration::from_secs(60));
+    let (tx_a, rx_a) = tokio::sync::oneshot::channel::<AbortSignal>();
+    let (tx_b, rx_b) = tokio::sync::oneshot::channel::<AbortSignal>();
+    let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+
+    let wrap_slot = |tx: tokio::sync::oneshot::Sender<AbortSignal>| {
+        let tx = Mutex::new(Some(tx));
+        let release_rx = release_rx.clone();
+        observers.wrap(
+            "memory",
+            None,
+            Arc::new(move |_, _| {
+                let observer = current_settle_observer().expect("observer");
+                if let Some(tx) = tx.lock().expect("tx").take() {
+                    let _ = tx.send(observer.signal().clone());
+                }
+                let mut release_rx = release_rx.clone();
+                Box::pin(async move {
+                    while !*release_rx.borrow_and_update() {
+                        if release_rx.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        )
+    };
+
+    let slot_a = wrap_slot(tx_a);
+    let slot_b = wrap_slot(tx_b);
+
+    let task_a = tokio::spawn(async move {
+        let mut event = ExtensionEvent::AgentSettled;
+        let ctx = test_context("shared-session");
+        slot_a(&mut event, &ctx).await
+    });
+    let sig_a = rx_a.await.expect("slot_a entered");
+
+    let task_b = tokio::spawn(async move {
+        let mut event = ExtensionEvent::AgentSettled;
+        let ctx = test_context("shared-session");
+        slot_b(&mut event, &ctx).await
+    });
+    let sig_b = rx_b.await.expect("slot_b entered");
+
+    assert!(!sig_a.aborted(), "distinct unnamed slot stays active");
+    assert!(!sig_b.aborted());
+    release_tx.send(true).expect("release");
+
+    let (res_a, res_b) = tokio::join!(task_a, task_b);
+    assert!(matches!(res_a.expect("task_a"), Ok(EventResult::None)));
+    assert!(matches!(res_b.expect("task_b"), Ok(EventResult::None)));
+    assert!(warnings.0.lock().expect("warnings").is_empty());
+    assert_eq!(observers.in_flight_count(), 0);
+}
