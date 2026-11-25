@@ -40,6 +40,16 @@ pub fn as_refusal(failure: ThreadToolFailure) -> ThreadRefusal {
     Box::new(failure)
 }
 
+/// A refusal built from its parts (upstream `refusal`).
+pub fn refusal(
+    code: &str,
+    message: impl Into<String>,
+    next_action: impl Into<String>,
+    details: Option<Value>,
+) -> ThreadRefusal {
+    Box::new(thread_tool_failure(code, message, next_action, details))
+}
+
 pub fn as_failure(refused: &ThreadToolFailure) -> ThreadToolFailure {
     refused.clone()
 }

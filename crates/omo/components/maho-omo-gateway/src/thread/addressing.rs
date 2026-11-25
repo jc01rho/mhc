@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::json;
@@ -21,6 +22,7 @@ use serde_json::json;
 use super::address_book::AddressEntry;
 use super::contracts_results::ThreadStatus;
 use super::errors::{ThreadToolFailure, thread_tool_failure};
+use super::remote::ports::{RemoteSessionRow, keyed};
 
 pub const AMBIGUOUS_CANDIDATE_LIMIT: usize = 10;
 
@@ -39,6 +41,13 @@ pub struct ThreadAddressEntry {
     pub updated_at: Option<String>,
     /// Ephemeral session ids that name this same thread: the host routing id, when it differs from `thread_id`.
     pub session_ids: Vec<String>,
+    /// The account device holding the thread when it is not this one (decision 0027: one address book across
+    /// transports).
+    pub device: Option<String>,
+    /// Account aliases this thread holds (the registry answered them for the address being resolved).
+    pub aliases: Vec<String>,
+    /// The listing row a thread on another device is reached through (upstream `transport.row`).
+    pub row: Option<Arc<RemoteSessionRow>>,
 }
 
 impl ThreadAddressEntry {
@@ -57,6 +66,9 @@ impl ThreadAddressEntry {
                 .into_iter()
                 .filter(|routing| *routing != entry.thread_id)
                 .collect(),
+            device: None,
+            aliases: Vec::new(),
+            row: None,
         }
     }
 }
@@ -73,6 +85,7 @@ pub fn to_thread_address_entries(entries: &[AddressEntry]) -> Vec<ThreadAddressE
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetResolution {
     Id,
+    Alias,
     Name,
     IdPrefix,
 }
@@ -87,27 +100,52 @@ pub struct ThreadCandidate {
     #[serde(rename = "updatedAt")]
     pub updated_at: Option<String>,
     pub state: ThreadStatus,
+    /// The account device that holds it, when the candidates span devices (a name matched across the account).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
-/// Most recently updated first, the thread id ascending as the tiebreak, capped at the candidate limit.
+/// What a candidate is passed back as: its thread id, or for a listed row that publishes none, its row key.
+pub fn candidate_thread(entry: &ThreadAddressEntry) -> String {
+    match &entry.row {
+        Some(row) if entry.thread_id.is_empty() => maho_thread_address_core::row_key(&keyed(row)),
+        _ => entry.thread_id.clone(),
+    }
+}
+
+/// This device's threads first, then most recently updated first, the thread id ascending as the tiebreak, capped at
+/// the candidate limit. When the candidates span devices, this device's threads say so too.
 fn candidates(matches: &[&ThreadAddressEntry]) -> Vec<ThreadCandidate> {
+    let spans = matches.iter().any(|entry| entry.device.is_some());
     let mut sorted = matches.to_vec();
-    sorted.sort_by(|left, right| match (&left.updated_at, &right.updated_at) {
-        (Some(left_at), Some(right_at)) if left_at != right_at => right_at.cmp(left_at),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        _ => left.thread_id.cmp(&right.thread_id),
+    sorted.sort_by(|left, right| {
+        match (left.row.is_none(), right.row.is_none()) {
+            (true, false) => return std::cmp::Ordering::Less,
+            (false, true) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+        match (&left.updated_at, &right.updated_at) {
+            (Some(left_at), Some(right_at)) if left_at != right_at => right_at.cmp(left_at),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ => left.thread_id.cmp(&right.thread_id),
+        }
     });
     sorted
         .into_iter()
         .take(AMBIGUOUS_CANDIDATE_LIMIT)
         .map(|entry| ThreadCandidate {
-            thread: entry.thread_id.clone(),
+            thread: candidate_thread(entry),
             name: entry.name.clone(),
             cwd: entry.cwd.clone(),
             preview: String::new(),
             updated_at: entry.updated_at.clone(),
             state: entry.status,
+            device: match &entry.device {
+                Some(device) => Some(device.clone()),
+                None if spans && entry.row.is_none() => Some("here".to_owned()),
+                None => None,
+            },
         })
         .collect()
 }
@@ -216,7 +254,7 @@ fn scoped_id_hit(
     judge: &mut WorkspaceJudge,
     resolution: TargetResolution,
 ) -> Result<(ThreadAddressEntry, TargetResolution), Box<ThreadToolFailure>> {
-    if options.all_scope {
+    if options.all_scope || entry.row.is_some() {
         return Ok((entry.clone(), resolution));
     }
     let caller_root = options.caller_workspace_root.trim();
@@ -344,6 +382,14 @@ pub fn resolve_target(
             Some(&session_hits),
         ));
     }
+    if let Some(hit) = entries.iter().find(|entry| {
+        entry
+            .aliases
+            .iter()
+            .any(|alias| normalize_thread_name(alias) == normalized)
+    }) {
+        return Ok((hit.clone(), TargetResolution::Alias));
+    }
     let caller_root = options.caller_workspace_root.trim();
     let visible: Vec<&ThreadAddressEntry> = if options.all_scope {
         entries.iter().collect()
@@ -358,7 +404,7 @@ pub fn resolve_target(
         }
         entries
             .iter()
-            .filter(|entry| judge.same_workspace(&entry.cwd, caller_root))
+            .filter(|entry| entry.row.is_some() || judge.same_workspace(&entry.cwd, caller_root))
             .collect()
     };
     let named: Vec<&ThreadAddressEntry> = visible
@@ -412,7 +458,8 @@ pub fn resolve_target(
         let out_of_scope: Vec<&ThreadAddressEntry> = entries
             .iter()
             .filter(|entry| {
-                normalize_thread_name(&entry.name) == normalized
+                entry.row.is_none()
+                    && normalize_thread_name(&entry.name) == normalized
                     && !judge.same_workspace(&entry.cwd, caller_root)
             })
             .collect();
@@ -479,6 +526,9 @@ mod tests {
             status: ThreadStatus::Live,
             updated_at: None,
             session_ids: Vec::new(),
+            device: None,
+            aliases: Vec::new(),
+            row: None,
         }
     }
 
