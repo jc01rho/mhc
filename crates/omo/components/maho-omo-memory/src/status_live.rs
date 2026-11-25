@@ -2,6 +2,17 @@ pub const FRAME_INTERVAL_MS: u64 = 320;
 pub const MEMORY_REFLECTING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 pub trait MemoryFooterUi {
     fn set_status(&mut self, key: &str, text: &str);
+    fn begin_refresh(&mut self) -> Option<crate::wiring_context::StatusHandle> {
+        None
+    }
+}
+impl MemoryFooterUi for crate::wiring_context::StatusHandle {
+    fn set_status(&mut self, key: &str, text: &str) {
+        Self::set_status(self, key, Some(text));
+    }
+    fn begin_refresh(&mut self) -> Option<crate::wiring_context::StatusHandle> {
+        Some(crate::wiring_context::sequenced_status(self))
+    }
 }
 pub trait MemoryFooterProbe {
     fn fingerprint(&mut self, identity: &str) -> Result<Option<String>, String>;
@@ -22,6 +33,8 @@ struct ActiveFrame {
 pub struct MemoryFooterLive {
     frames: std::collections::BTreeMap<String, ActiveFrame>,
     fingerprints: std::collections::BTreeMap<String, Option<String>>,
+    /// Per-session recompute generation (#14837): only the newest recompute records its fingerprint.
+    generations: std::collections::BTreeMap<String, u64>,
     disposed: bool,
 }
 impl MemoryFooterLive {
@@ -140,6 +153,38 @@ impl MemoryFooterLive {
         frame.frame_index = (frame.frame_index + 1) % MEMORY_REFLECTING_FRAMES.len();
         self.publish(session, ui);
     }
+    pub fn start_recompute(&mut self, session: &str) -> u64 {
+        let next = self.generations.get(session).copied().unwrap_or(0) + 1;
+        self.generations.insert(session.into(), next);
+        next
+    }
+    pub fn is_current_generation(&self, session: &str, generation: u64) -> bool {
+        self.generations.get(session).copied() == Some(generation)
+    }
+    pub fn finish_recompute(
+        &mut self,
+        session: &str,
+        generation: u64,
+        fingerprint: Option<String>,
+        text: Option<String>,
+        ui: &mut dyn MemoryFooterUi,
+        sequenced: Option<&crate::wiring_context::StatusHandle>,
+    ) {
+        if !self.is_current_generation(session, generation) {
+            return;
+        }
+        let Some(text) = text else {
+            return;
+        };
+        if !self.disposed && !self.frames.contains_key(session) {
+            self.fingerprints.insert(session.into(), fingerprint);
+            if let Some(handle) = sequenced {
+                handle.set_status(crate::status::MEMORY_STATUS_KEY, Some(&text));
+            } else {
+                ui.set_status(crate::status::MEMORY_STATUS_KEY, &text);
+            }
+        }
+    }
     fn recompute(
         &mut self,
         session: &str,
@@ -147,22 +192,21 @@ impl MemoryFooterLive {
         ui: &mut dyn MemoryFooterUi,
         probe: &mut dyn MemoryFooterProbe,
     ) {
+        let sequenced = ui.begin_refresh();
+        let mine = self.start_recompute(session);
         let Ok(fingerprint) = probe.fingerprint(identity) else {
             return;
         };
+        if !self.is_current_generation(session, mine) {
+            return;
+        }
         if fingerprint.is_some() && self.fingerprints.get(session) == Some(&fingerprint) {
             return;
         }
         let Ok(text) = probe.refresh_segments(identity) else {
             return;
         };
-        self.fingerprints.insert(session.into(), fingerprint);
-        if !self.disposed
-            && !self.frames.contains_key(session)
-            && let Some(text) = text
-        {
-            ui.set_status(crate::status::MEMORY_STATUS_KEY, &text);
-        }
+        self.finish_recompute(session, mine, fingerprint, text, ui, sequenced.as_ref());
     }
     pub fn refresh(
         &mut self,
@@ -185,10 +229,14 @@ impl MemoryFooterLive {
     pub fn stop_session(&mut self, session: &str) {
         self.frames.remove(session);
         self.fingerprints.remove(session);
+        let _ = self.start_recompute(session);
     }
     pub fn stop(&mut self) {
         self.frames.clear();
         self.fingerprints.clear();
+        for generation in self.generations.values_mut() {
+            *generation += 1;
+        }
     }
     pub fn dispose(&mut self) {
         self.disposed = true;
@@ -429,5 +477,91 @@ mod tests {
         live.activate("session", "agent", "run", &mut ui);
         live.refresh("session", "agent", &mut ui, &mut probe);
         assert_eq!(ui.0.len(), 2);
+    }
+
+    #[test]
+    fn stale_recompute_never_records_fingerprint_so_restore_replaces_spinner() {
+        let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut ui = crate::wiring_context::StatusHandle::from_fallible({
+            let published = std::sync::Arc::clone(&published);
+            std::sync::Arc::new(move |_key, text| {
+                published
+                    .lock()
+                    .expect("published lock")
+                    .push(text.map(str::to_owned));
+                Ok(())
+            })
+        });
+        let mut live = MemoryFooterLive::default();
+        let mut probe = Probe {
+            fingerprint: Some("head|clean".into()),
+            ..Default::default()
+        };
+
+        let seq1 = ui.begin_refresh();
+        let gen1 = live.start_recompute("session");
+        let seq2 = ui.begin_refresh();
+        let gen2 = live.start_recompute("session");
+        live.finish_recompute(
+            "session",
+            gen2,
+            Some("head|clean".into()),
+            Some("mem:agent just now".into()),
+            &mut ui,
+            seq2.as_ref(),
+        );
+
+        live.set_active("session", "agent", true, &mut ui, &mut probe);
+        assert_eq!(
+            published
+                .lock()
+                .expect("published lock")
+                .last()
+                .expect("spinner frame")
+                .as_deref(),
+            Some("mem:agent ⠋ reflecting")
+        );
+
+        live.frames.remove("session");
+        live.fingerprints.remove("session");
+        let seq3 = ui.begin_refresh();
+        let gen3 = live.start_recompute("session");
+
+        live.finish_recompute(
+            "session",
+            gen1,
+            Some("head|clean".into()),
+            Some("mem:agent just now".into()),
+            &mut ui,
+            seq1.as_ref(),
+        );
+        assert!(!live.fingerprints.contains_key("session"));
+        assert_eq!(
+            published
+                .lock()
+                .expect("published lock")
+                .last()
+                .expect("spinner still shown")
+                .as_deref(),
+            Some("mem:agent ⠋ reflecting")
+        );
+
+        live.finish_recompute(
+            "session",
+            gen3,
+            Some("head|clean".into()),
+            Some("mem:agent just now".into()),
+            &mut ui,
+            seq3.as_ref(),
+        );
+        assert_eq!(
+            published
+                .lock()
+                .expect("published lock")
+                .last()
+                .expect("restored line")
+                .as_deref(),
+            Some("mem:agent just now")
+        );
     }
 }
