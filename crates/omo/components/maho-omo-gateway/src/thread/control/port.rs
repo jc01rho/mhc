@@ -17,8 +17,25 @@ use crate::thread::contracts_results::ThreadResultSummary;
 use crate::thread::contracts_state::ThreadModel;
 use crate::thread::errors::{ThreadToolFailure, thread_tool_failure};
 use crate::thread::model_match::ModelChoice;
+use crate::thread::thread_state::thread_model;
 
 use super::interrupt::InterruptOutcome;
+
+/// Active model and thinking level snapshot before a compound `model:level` switch (`#14482`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionModelState {
+    pub model: ThreadModel,
+    pub thinking_level: String,
+}
+
+pub fn session_model_state(state: &Value) -> Option<SessionModelState> {
+    let thinking_level = state.get("thinkingLevel")?.as_str()?.to_owned();
+    let model = thread_model(state.get("model"))?;
+    Some(SessionModelState {
+        model,
+        thinking_level,
+    })
+}
 
 /// The engine's `set_thinking_level` scope that changes only the addressed session. Any other scope also rewrites the
 /// device's remembered level for the model, which a thread tool never asks for.
@@ -66,11 +83,29 @@ pub enum CloseOutcome {
     HeldElsewhere,
 }
 
+/// Options for `thread_close` (`force`, `graceful`, `wait_ms`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CloseOptions {
+    pub force: bool,
+    pub graceful: bool,
+    pub wait_ms: Option<i64>,
+}
+
+/// Drain summary returned when a graceful close ends a session (omo #14313).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CloseGraceful {
+    pub turn: u64,
+    pub waited_ms: u64,
+    pub stopped_wake_sources: Vec<String>,
+    pub returned_user_messages: Vec<String>,
+}
+
 /// A close's outcome and the deliveries the engine handed back unwritten (empty when none, omo #14234).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseAnswer {
     pub outcome: CloseOutcome,
     pub dropped_deliveries: Vec<String>,
+    pub graceful: Option<CloseGraceful>,
 }
 
 /// The session's model catalog. `held`: answered from a copy the leg keeps (bounded in age), on which only an exact
@@ -93,11 +128,14 @@ pub trait SessionControl: Send + Sync {
     fn visible(&self) -> BoxFuture<ControlResult<Vec<ThreadAddressEntry>>>;
     /// The engine's `interrupt` with the background stop (`interrupt.rs`); an idle session answers `interrupted: false`.
     fn interrupt(&self, turn_id: Option<String>) -> BoxFuture<ControlResult<InterruptOutcome>>;
-    /// The one close ladder (`close_ladder.rs`) on the thread's engine; `force` drops what the session has not read.
-    fn close(&self, force: bool) -> BoxFuture<ControlResult<CloseAnswer>>;
+    /// The one close ladder (`close_ladder.rs`) on the thread's engine; `force` drops what the session has not read,
+    /// `graceful` drains the active turn and hands unread deliveries back to their senders.
+    fn close(&self, options: CloseOptions) -> BoxFuture<ControlResult<CloseAnswer>>;
     fn set_name(&self, name: String) -> BoxFuture<ControlResult<()>>;
     /// `fresh` bypasses a catalog the leg holds.
     fn get_available_models(&self, fresh: bool) -> BoxFuture<ControlResult<ModelCatalog>>;
+    /// Fresh `get_state` snapshot for restoring a refused compound `model:level` switch.
+    fn get_model_state(&self) -> BoxFuture<ControlResult<Option<SessionModelState>>>;
     fn set_model(&self, provider: String, id: String) -> BoxFuture<ControlResult<ThreadModel>>;
     fn get_available_thinking_levels(&self) -> BoxFuture<ControlResult<Vec<String>>>;
     /// Changes only this session's level ([`SESSION_ONLY_THINKING_SCOPE`]); refuses `thinking_level_unsupported` for a
@@ -138,6 +176,12 @@ pub struct SessionOpenRequest {
     pub durable_session_id: Option<String>,
 }
 
+/// Host-only hints for `SessionHost::open`, never forwarded on the engine's `open_session` frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionOpenOptions {
+    pub confirm_reach: bool,
+}
+
 /// The port thread_create opens sessions through (#12884). Past placement the tool body sees only this: the device's
 /// visible threads, which a new name must not collide with, and one `open`. This device's operator endpoint and another
 /// device's engine endpoint (through its relay) each implement it.
@@ -145,5 +189,50 @@ pub trait SessionHost: Send + Sync {
     /// The device that opens; `None` when it is this one.
     fn device(&self) -> Option<&str>;
     fn visible(&self) -> BoxFuture<ControlResult<Vec<ThreadAddressEntry>>>;
-    fn open(&self, request: SessionOpenRequest) -> BoxFuture<ControlResult<ThreadResultSummary>>;
+    fn open(
+        &self,
+        request: SessionOpenRequest,
+        options: SessionOpenOptions,
+    ) -> BoxFuture<ControlResult<ThreadResultSummary>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn session_model_state_requires_a_valid_model_and_thinking_level() {
+        let valid = json!({
+            "model": { "provider": "openai", "id": "gpt-6" },
+            "thinkingLevel": "high",
+        });
+        assert_eq!(
+            session_model_state(&valid),
+            Some(SessionModelState {
+                model: ThreadModel {
+                    provider: "openai".into(),
+                    id: "gpt-6".into(),
+                },
+                thinking_level: "high".into(),
+            })
+        );
+        assert_eq!(
+            session_model_state(&json!({ "model": { "provider": "openai", "id": "gpt-6" } })),
+            None
+        );
+        assert_eq!(
+            session_model_state(
+                &json!({ "model": { "provider": "", "id": "gpt-6" }, "thinkingLevel": "high" })
+            ),
+            None
+        );
+        assert_eq!(
+            session_model_state(
+                &json!({ "model": { "provider": "openai", "id": "gpt-6" }, "thinkingLevel": 3 })
+            ),
+            None
+        );
+    }
 }
