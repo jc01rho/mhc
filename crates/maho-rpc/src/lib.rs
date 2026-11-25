@@ -191,6 +191,7 @@ pub mod print_mode;
 pub mod process_start_identity;
 pub mod protocol_identity;
 pub mod provider_native_rendering;
+pub mod read_rpc_diagnostic;
 pub mod rpc_auth_proof;
 pub mod rpc_client;
 pub mod rpc_command_invocation;
