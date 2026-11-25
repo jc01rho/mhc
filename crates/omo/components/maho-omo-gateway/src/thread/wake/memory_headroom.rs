@@ -110,7 +110,9 @@ mod tests {
     const GIB: u64 = 1024 * 1024 * 1024;
     const MIB: u64 = 1024 * 1024;
 
-    fn files(entries: &[(&str, String)]) -> Box<dyn Fn(&str) -> Option<String>> {
+    type ReadFileFn = Box<dyn Fn(&str) -> Option<String>>;
+
+    fn files(entries: &[(&str, String)]) -> ReadFileFn {
         let map: BTreeMap<String, String> = entries
             .iter()
             .map(|(k, v)| ((*k).to_owned(), v.clone()))
