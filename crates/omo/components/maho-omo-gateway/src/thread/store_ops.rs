@@ -15,6 +15,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use maho_omo_agent_home::{
+    PlatformFacts, StoreLocator, SystemPlatformFacts, account_homes, is_dev_build_runtime,
+    is_shared_agent_dir, is_shared_store_file, process_env,
+};
 use rusqlite::Connection;
 use rusqlite::types::Value as SqliteValue;
 use serde_json::Value;
@@ -33,7 +37,7 @@ use super::types::{
     OutcomeRecord, ProcessIdentity, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest,
     RefusalReason, StoredDeliveryEnvelope,
 };
-use crate::paths::gateway_inbox_directory;
+use crate::paths::{gateway_database_path, gateway_inbox_directory, gateway_root_directory};
 
 pub type SqlRow = BTreeMap<String, Value>;
 pub type SqlParams = Vec<SqliteValue>;
@@ -51,6 +55,8 @@ pub enum StoreError {
     #[error("{0}")]
     Schema(String),
     #[error("{0}")]
+    Migration(String),
+    #[error("{0}")]
     Message(String),
 }
 
@@ -65,6 +71,7 @@ impl StoreError {
         match self {
             Self::LockWait(_) => LOCK_WAIT_EXCEEDED_CODE,
             Self::Schema(_) => "gateway_schema_too_new",
+            Self::Migration(_) => "gateway_migration_failed",
             _ => "internal_error",
         }
     }
@@ -713,8 +720,51 @@ pub fn schema_version(ctx: &StoreContext) -> Result<i64, StoreError> {
     Ok(version)
 }
 
+/// An omob source build never moves the shared agent dir's store forward (omo#14382): every
+/// released session on the device reads that store, and a schema only an unreleased build knows
+/// would lock them out.
+fn source_build_migration_refusal(
+    ctx: &StoreContext,
+    version: i64,
+    env: &BTreeMap<String, String>,
+    facts: &dyn PlatformFacts,
+) -> Option<String> {
+    if !is_dev_build_runtime(env) {
+        return None;
+    }
+    let homes = account_homes(facts);
+    let stores: [StoreLocator; 2] = [gateway_root_directory, gateway_database_path];
+    let configured = Path::new(&ctx.config.agent_dir);
+    let opened = std::fs::canonicalize(gateway_database_path(configured)).ok();
+    let shared = is_shared_agent_dir(configured, homes.as_deref(), &stores)
+        || opened.as_deref().is_some_and(|file| {
+            is_shared_store_file(file, gateway_database_path, homes.as_deref())
+        });
+    if !shared {
+        return None;
+    }
+    Some(format!(
+        "a source build does not migrate a gateway store released sessions may share (the account's agent dir or its gateway store, or one whose account home cannot be read) from v{version} to v{}; run it with MAHO_CODING_AGENT_DIR set to an isolated agent dir",
+        GATEWAY_MIGRATIONS.len()
+    ))
+}
+
 /// Applies pending migrations; a current store takes no write lock.
 pub fn migrate(ctx: &StoreContext) -> Result<(), StoreError> {
+    migrate_guarded(ctx, &process_env(), &SystemPlatformFacts)
+}
+
+pub fn migrate_guarded(
+    ctx: &StoreContext,
+    env: &BTreeMap<String, String>,
+    facts: &dyn PlatformFacts,
+) -> Result<(), StoreError> {
+    let opened = schema_version(ctx)?;
+    if opened < GATEWAY_MIGRATIONS.len() as i64
+        && let Some(refusal) = source_build_migration_refusal(ctx, opened, env, facts)
+    {
+        return Err(StoreError::Migration(refusal));
+    }
     loop {
         let version = schema_version(ctx)?;
         if version >= GATEWAY_MIGRATIONS.len() as i64 {
@@ -2062,5 +2112,149 @@ mod tests {
             ctx.conn.is_autocommit(),
             "a refused op leaves no snapshot open"
         );
+    }
+
+    struct AccountFacts {
+        home: String,
+    }
+
+    impl PlatformFacts for AccountFacts {
+        fn platform(&self) -> maho_omo_agent_home::Platform {
+            maho_omo_agent_home::Platform::Linux
+        }
+        fn uid(&self) -> Option<u32> {
+            Some(1000)
+        }
+        fn env(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn read_file(&self, _path: &str) -> Option<String> {
+            Some(format!("me:x:1000:1000::{}:/bin/sh\n", self.home))
+        }
+        fn is_file(&self, _path: &str) -> bool {
+            false
+        }
+        fn run(&self, _command: &str, _args: &[&str]) -> Option<String> {
+            None
+        }
+    }
+
+    struct Account {
+        _dir: tempfile::TempDir,
+        home: std::path::PathBuf,
+        facts: AccountFacts,
+        source_build: BTreeMap<String, String>,
+    }
+
+    fn account() -> Account {
+        let dir = tempfile::tempdir().expect("account home");
+        let home = std::fs::canonicalize(dir.path()).expect("canonical home");
+        let payload = home.join("payload");
+        std::fs::create_dir_all(&payload).expect("payload dir");
+        std::fs::write(
+            payload.join("package.json"),
+            r#"{"version":"0.0.0","omoBuild":{"command":"omob"}}"#,
+        )
+        .expect("dev build manifest");
+        let source_build = BTreeMap::from([(
+            "OMO_PACKAGE_DIR".to_owned(),
+            payload.to_string_lossy().into_owned(),
+        )]);
+        let facts = AccountFacts {
+            home: home.to_string_lossy().into_owned(),
+        };
+        Account {
+            _dir: dir,
+            home,
+            facts,
+            source_build,
+        }
+    }
+
+    fn unmigrated_context(agent_dir: &Path) -> StoreContext {
+        let mut config = StoreContext::test_config();
+        config.agent_dir = agent_dir.to_string_lossy().into_owned();
+        let path = crate::paths::gateway_database_path(agent_dir);
+        StoreContext::new(
+            open_connection(&path, config.busy_timeout_ms).expect("open the store"),
+            config,
+            StoreContext::test_identity(),
+        )
+    }
+
+    #[test]
+    fn a_source_build_refuses_to_migrate_the_shared_agent_dirs_store() {
+        let account = account();
+        let ctx = unmigrated_context(&account.home.join(".omo").join("agent"));
+        let error = migrate_guarded(&ctx, &account.source_build, &account.facts)
+            .expect_err("a source build must not migrate the shared store");
+        assert_eq!(error.code(), "gateway_migration_failed");
+        assert_eq!(user_version(&ctx).expect("user_version"), 0);
+    }
+
+    #[test]
+    fn a_release_build_migrates_the_shared_agent_dirs_store() {
+        let account = account();
+        let ctx = unmigrated_context(&account.home.join(".omo").join("agent"));
+        migrate_guarded(&ctx, &BTreeMap::new(), &account.facts).expect("release migrates");
+        assert_eq!(
+            user_version(&ctx).expect("user_version"),
+            GATEWAY_MIGRATIONS.len() as i64
+        );
+    }
+
+    #[test]
+    fn a_source_build_migrates_an_isolated_agent_dirs_store() {
+        let account = account();
+        let ctx = unmigrated_context(&account.home.join("isolated-agent"));
+        migrate_guarded(&ctx, &account.source_build, &account.facts)
+            .expect("an isolated store may be migrated");
+        assert_eq!(
+            user_version(&ctx).expect("user_version"),
+            GATEWAY_MIGRATIONS.len() as i64
+        );
+    }
+
+    #[test]
+    fn a_source_build_opens_a_shared_store_that_is_already_current() {
+        let account = account();
+        let ctx = unmigrated_context(&account.home.join(".omo").join("agent"));
+        migrate_guarded(&ctx, &BTreeMap::new(), &account.facts).expect("release migrates");
+        migrate_guarded(&ctx, &account.source_build, &account.facts)
+            .expect("a current store needs no migration");
+    }
+
+    #[test]
+    fn a_source_build_with_unreadable_account_homes_treats_every_store_as_shared() {
+        let account = account();
+        let ctx = unmigrated_context(&account.home.join("isolated-agent"));
+        let blank = AccountFacts {
+            home: String::new(),
+        };
+        let error = migrate_guarded(&ctx, &account.source_build, &blank)
+            .expect_err("a store that cannot be proven isolated is shared");
+        assert_eq!(error.code(), "gateway_migration_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_source_build_refuses_an_isolated_dir_whose_database_links_to_the_shared_one() {
+        let account = account();
+        let shared = account.home.join(".omo").join("agent");
+        let shared_database = crate::paths::gateway_database_path(&shared);
+        drop(open_connection(&shared_database, 50).expect("shared database"));
+        let isolated = account.home.join("isolated-agent");
+        std::fs::create_dir_all(crate::paths::gateway_root_directory(&isolated))
+            .expect("isolated gateway dir");
+        std::os::unix::fs::symlink(
+            &shared_database,
+            crate::paths::gateway_database_path(&isolated),
+        )
+        .expect("link the database");
+        let ctx = unmigrated_context(&isolated);
+        let error = migrate_guarded(&ctx, &account.source_build, &account.facts)
+            .expect_err("the linked database is the shared one");
+        assert_eq!(error.code(), "gateway_migration_failed");
+        assert_eq!(user_version(&ctx).expect("user_version"), 0);
     }
 }
