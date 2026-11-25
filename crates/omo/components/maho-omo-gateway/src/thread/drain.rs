@@ -17,6 +17,7 @@ use super::decision::{
 };
 use super::provenance::{delivery_provenance_line, delivery_sender, render_delivery_text};
 use super::store_api::GatewayStoreApi;
+use super::store_ops::engine_key;
 use super::types::{
     AdmissionLedger, ClaimOutcome, DeliveryRow, GatewayDeliveryMode, OutcomeRecord,
     ProcessIdentity, ReconcileRequest, RecordOutcomeRequest, RefusalReason,
@@ -32,6 +33,30 @@ pub fn queued_notice(row: &DeliveryRow) -> String {
     format!(
         "remote message from {} queued ({})",
         row.envelope.actor, row.delivery_id
+    )
+}
+
+/// The text and display text the engine admits a row with. A row taken in from another device carries the sender's own
+/// rendering verbatim, so the engine's dedupe also covers the same delivery arriving live (omo#13037); every other row
+/// is rendered here.
+fn admission_text(row: &DeliveryRow) -> (String, String) {
+    if row.ledger_id.is_some() {
+        return (
+            row.verbatim_text
+                .clone()
+                .unwrap_or_else(|| row.body.clone()),
+            row.verbatim_display_text
+                .clone()
+                .unwrap_or_else(|| row.body.clone()),
+        );
+    }
+    (
+        render_delivery_text(row),
+        format!(
+            "{}\n{}",
+            delivery_provenance_line(row.envelope.provenance.as_ref()),
+            row.body
+        ),
     )
 }
 
@@ -235,17 +260,16 @@ impl InboxDrain {
             let ClaimOutcome::Claimed { row: claimed_row } = claimed else {
                 continue;
             };
+            // A row taken in from another device is admitted under the engine's ledger key (omo#13037).
+            let engine_id = engine_key(&claimed_row).to_owned();
+            let (text, display_text) = admission_text(&claimed_row);
             let input = super::adapter::AdmitExternalMessageInput {
-                delivery_id: claimed_row.delivery_id.clone(),
-                text: render_delivery_text(&claimed_row),
+                delivery_id: engine_id.clone(),
+                text,
                 deliver_as,
                 expected_turn_id,
                 sender: Some(delivery_sender(&claimed_row)),
-                display_text: Some(format!(
-                    "{}\n{}",
-                    delivery_provenance_line(claimed_row.envelope.provenance.as_ref()),
-                    claimed_row.body
-                )),
+                display_text: Some(display_text),
             };
             let result = match (self.options.runtime.admit_external_message)(input) {
                 Ok(result) => result,
@@ -298,7 +322,7 @@ impl InboxDrain {
             } else {
                 let emitted = (self.options.runtime.list_admitted_deliveries)()
                     .emitted
-                    .contains(&row.delivery_id);
+                    .contains(&engine_id);
                 let written = result.kind == super::adapter::ExternalAdmissionKind::AlreadyAdmitted
                     && emitted;
                 let outcome = if written {
@@ -411,6 +435,25 @@ mod tests {
             queued_notice(&row()),
             "remote message from planner queued (d-1)"
         );
+    }
+
+    #[test]
+    fn a_row_taken_in_from_another_device_is_admitted_under_its_ledger_key_as_written() {
+        let mut intake = row();
+        intake.ledger_id = Some("device:b/d-1".into());
+        intake.verbatim_text = Some("the sender's rendered text".into());
+        intake.verbatim_display_text = Some("shown".into());
+        assert_eq!(engine_key(&intake), "device:b/d-1");
+        assert_eq!(
+            admission_text(&intake),
+            ("the sender's rendered text".to_owned(), "shown".to_owned())
+        );
+
+        let local = row();
+        assert_eq!(engine_key(&local), "d-1");
+        let (text, display_text) = admission_text(&local);
+        assert_eq!(text, render_delivery_text(&local));
+        assert!(display_text.ends_with("\nhi"), "{display_text}");
     }
 
     #[test]

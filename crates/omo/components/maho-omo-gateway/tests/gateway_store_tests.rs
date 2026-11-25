@@ -12,8 +12,8 @@ use maho_omo_gateway::thread::store::{
 };
 use maho_omo_gateway::thread::store_api::GatewayStoreApi;
 use maho_omo_gateway::thread::types::{
-    ClaimOutcome, ClaimRequest, DeliveryState, EffectiveLane, EnqueueOutcome, EnqueueRequest,
-    EnvelopeOrigin, GatewayDeliveryMode, Provenance, ReceiptRef,
+    AdmissionLedger, ClaimOutcome, ClaimRequest, DeliveryState, EffectiveLane, EnqueueOutcome,
+    EnqueueRequest, EnvelopeOrigin, GatewayDeliveryMode, Provenance, ReceiptRef, ReconcileRequest,
 };
 use maho_omo_gateway::{gateway_database_path, gateway_inbox_directory};
 
@@ -405,4 +405,78 @@ fn an_expired_row_taken_in_from_another_device_is_left_to_its_target() {
         .expect("the intake row");
     assert_eq!(intake.state, DeliveryState::Queued);
     assert_eq!(intake.ledger_id.as_deref(), Some("device:b/d-intake"));
+}
+
+#[test]
+fn a_row_taken_in_from_another_device_settles_and_is_continued_by_its_ledger_key() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = open(&dir);
+    for id in ["d-written", "d-claimed"] {
+        let sent = store.enqueue(&send(id, 1_000)).expect("enqueue");
+        assert!(
+            matches!(sent, EnqueueOutcome::Inserted { .. }),
+            "{id}: {sent:?}"
+        );
+    }
+    other_binary(&dir)
+        .execute_batch("UPDATE deliveries SET ledger_id = 'device:b/' || delivery_id")
+        .expect("the rows become ones taken in from another device");
+    let me = store.identity().expect("identity");
+    let claimed = store
+        .claim(&ClaimRequest {
+            now: 1_001,
+            delivery_id: "d-claimed".into(),
+            self_identity: me.clone(),
+            lane: EffectiveLane::FollowUp,
+        })
+        .expect("claim");
+    assert!(
+        matches!(claimed, ClaimOutcome::Claimed { .. }),
+        "{claimed:?}"
+    );
+
+    let reconciled = store
+        .reconcile(&ReconcileRequest {
+            now: 1_002,
+            target_durable_id: "lead".into(),
+            self_identity: me,
+            ledger: AdmissionLedger {
+                pending: vec!["device:b/d-claimed".into()],
+                emitted: vec!["device:b/d-written".into()],
+            },
+            session_path: None,
+        })
+        .expect("reconcile");
+    assert!(reconciled.queued.is_empty(), "{:?}", reconciled.queued);
+    let states: Vec<(String, DeliveryState)> = store
+        .list(Some("lead"), None)
+        .expect("list")
+        .into_iter()
+        .map(|row| (row.delivery_id, row.state))
+        .collect();
+    assert_eq!(
+        states,
+        vec![
+            ("d-written".to_owned(), DeliveryState::Applied),
+            ("d-claimed".to_owned(), DeliveryState::Admitted),
+        ]
+    );
+
+    let continued = store
+        .enqueue(&EnqueueRequest {
+            target_durable_id: "third".into(),
+            sender_principal: "session:lead".into(),
+            sender_node: "lead".into(),
+            origin: EnvelopeOrigin::Session {
+                session: "lead".into(),
+            },
+            actor: "lead".into(),
+            cause_delivery_id: Some("device:b/d-written".into()),
+            ..send("d-continued", 1_003)
+        })
+        .expect("enqueue");
+    assert!(
+        matches!(continued, EnqueueOutcome::Inserted { .. }),
+        "{continued:?}"
+    );
 }

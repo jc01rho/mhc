@@ -521,6 +521,12 @@ const DELIVERY_COLUMNS: &[&str] = &[
 
 pub const OPEN_STATES: &str = "('queued', 'admitting', 'admitted')";
 
+/// The id the engine's ledger knows a row by: its ledger id when it was taken in from another device, else its row id
+/// (omo#13037).
+pub fn engine_key(row: &DeliveryRow) -> &str {
+    row.ledger_id.as_deref().unwrap_or(&row.delivery_id)
+}
+
 fn row_from_record(record: &SqlRow) -> DeliveryRow {
     let envelope: StoredDeliveryEnvelope = serde_json::from_str(&row_str(record, "envelope"))
         .unwrap_or(StoredDeliveryEnvelope {
@@ -1024,7 +1030,16 @@ fn place_causally(
 ) -> Result<Result<CausalPlacement, EnqueueOutcome>, StoreError> {
     let placement = match &request.cause_delivery_id {
         Some(cause_id) => {
-            let cause = select_row(ctx, cause_id)?;
+            // The engine names a consumed delivery by its ledger key, so a row taken in from another device is found
+            // by that too (omo#13037).
+            let cause = select_rows(
+                ctx,
+                "delivery_id = ? OR ledger_id = ?",
+                &[v_str(cause_id), v_str(cause_id)],
+                None,
+            )?
+            .into_iter()
+            .next();
             let valid = cause.as_ref().is_some_and(|cause| {
                 cause.target_durable_id == request.sender_node
                     && matches!(
@@ -1693,7 +1708,20 @@ pub fn reconcile(
         )? {
             let to;
             if row.state == DeliveryState::Queued {
-                if row.expires_at <= request.now {
+                // A row taken in from another device that the session's ledger already wrote under its ledger key
+                // reached the session live: it is settled applied, so the drain never admits it twice (omo#13037).
+                let written = row
+                    .ledger_id
+                    .as_ref()
+                    .is_some_and(|ledger_id| emitted.contains(&ledger_id));
+                if written {
+                    transition(ctx, &row, DeliveryState::Applied, request.now, None)?;
+                    transitions.push(DeliveryTransition {
+                        delivery_id: row.delivery_id.clone(),
+                        from: row.state,
+                        to: DeliveryState::Applied,
+                    });
+                } else if row.expires_at <= request.now {
                     transition(
                         ctx,
                         &row,
@@ -1711,9 +1739,10 @@ pub fn reconcile(
             }
             match &row.admitted_by {
                 Some(claimant) if same_process(claimant, &request.self_identity) => {
-                    to = if emitted.contains(&&row.delivery_id) {
+                    let key = engine_key(&row);
+                    to = if emitted.iter().any(|id| id.as_str() == key) {
                         DeliveryState::Applied
-                    } else if pending.contains(&&row.delivery_id) {
+                    } else if pending.iter().any(|id| id.as_str() == key) {
                         DeliveryState::Admitted
                     } else {
                         DeliveryState::Queued
