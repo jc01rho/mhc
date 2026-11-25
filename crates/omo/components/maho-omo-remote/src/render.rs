@@ -173,7 +173,7 @@ pub fn session_lines(
                 let state = text(row, "state");
                 vec![
                     format!("{name}/{}", text(row, "session_id")),
-                    text(row, "title").to_owned(),
+                    crate::device::row_display_name(row).name,
                     if text(row, "source") == "cache" {
                         format!("{state} (cached)")
                     } else {

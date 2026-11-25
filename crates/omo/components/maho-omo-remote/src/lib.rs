@@ -13,6 +13,7 @@ pub mod args;
 pub mod command;
 pub mod context;
 pub mod daemon;
+pub mod device;
 pub mod exit;
 pub mod render;
 pub mod rpc_host;

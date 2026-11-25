@@ -413,3 +413,182 @@ async fn the_verbs_answer_through_two_devices() {
 
     pair.stop().await;
 }
+
+#[tokio::test]
+async fn typed_device_and_bare_session_resolution_through_relayd() {
+    let pair = Pair::start().await;
+    let (ctx, captured) = context(&pair.alpha_state);
+
+    assert_eq!(run_remote(&ctx, &argv(&["devices", "--json"])).await, 0);
+    let devices = captured.json();
+    let beta_id = devices[1]["device"].as_str().expect("beta id").to_owned();
+    let beta_prefix = &beta_id[..8];
+
+    assert_eq!(
+        run_remote(&ctx, &argv(&["sessions", "--device", "here", "--json"])).await,
+        0
+    );
+    let here_rows = captured.json();
+    assert_eq!(here_rows["rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(here_rows["rows"][0]["session_id"], "a1");
+
+    for target in [
+        "here/a1".to_owned(),
+        "ＢＥＴＡ/b1".to_owned(),
+        format!("{beta_prefix}/b1"),
+        "title b1".to_owned(),
+        format!("{beta_id}/b1"),
+    ] {
+        assert_eq!(
+            run_remote(&ctx, &argv(&["send", &target, "hi", "--json"])).await,
+            0,
+            "{target}"
+        );
+        assert_eq!(captured.json()["kind"], "ok", "{target}");
+    }
+
+    let alpha_state = pair.alpha_state.clone();
+    let alpha_id = pair.alpha.id();
+    pair.beta_relayd.shutdown().await;
+
+    let (ctx, captured) = context(&alpha_state);
+    assert_eq!(
+        run_remote(&ctx, &argv(&["send", "beta/b1", "late", "--json"])).await,
+        3
+    );
+    let (out, err) = captured.take();
+    let refusal: Value =
+        serde_json::from_str(out.last().map_or("null", String::as_str)).expect("json");
+    assert_eq!(refusal["code"], "device_offline");
+    assert_eq!(refusal["details"]["device"], beta_id);
+    assert!(
+        !err.iter().any(|line| line.starts_with("  dev_")),
+        "device_offline prints no candidate list: {err:?}"
+    );
+    let _ = alpha_id;
+    pair.alpha_relayd.shutdown().await;
+}
+
+#[tokio::test]
+async fn ambiguous_devices_and_unnamed_rows_through_relayd() {
+    let alpha_dir = tempfile::tempdir().expect("tempdir");
+    let twin1_dir = tempfile::tempdir().expect("tempdir");
+    let twin2_dir = tempfile::tempdir().expect("tempdir");
+    let alpha_state = alpha_dir.path().join("ds");
+    let alpha = DeviceIdentity::generate("alpha").expect("alpha");
+    alpha.save(&alpha_state).expect("save alpha");
+    let twin1 = DeviceIdentity::generate("twin").expect("twin1");
+    let twin2 = DeviceIdentity::generate("twin").expect("twin2");
+
+    let twin1_host = FakeHost::with(&["t1"]);
+    twin1_host
+        .sessions
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)[0]
+        .title = None;
+    twin1_host
+        .sessions
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)[0]
+        .project = Some("/work/myproj".into());
+    let twin2_host = FakeHost::with(&["t2"]);
+
+    let twin1_relayd = Relayd::start(RelaydOptions {
+        state_dir: twin1_dir.path().join("ds"),
+        config: RelaydConfig {
+            account: "home".into(),
+            name: None,
+            listen: Some("127.0.0.1:0".into()),
+            peers: vec![PeerConfig {
+                name: "alpha".into(),
+                address: "127.0.0.1:9".into(),
+                public_key: alpha.public_key(),
+            }],
+        },
+        identity: twin1.clone(),
+        host: Arc::clone(&twin1_host) as Arc<dyn SessionHost>,
+        service_version: "0.0.0-test".into(),
+    })
+    .await
+    .expect("twin1");
+    let twin2_relayd = Relayd::start(RelaydOptions {
+        state_dir: twin2_dir.path().join("ds"),
+        config: RelaydConfig {
+            account: "home".into(),
+            name: None,
+            listen: Some("127.0.0.1:0".into()),
+            peers: vec![PeerConfig {
+                name: "alpha".into(),
+                address: "127.0.0.1:9".into(),
+                public_key: alpha.public_key(),
+            }],
+        },
+        identity: twin2.clone(),
+        host: Arc::clone(&twin2_host) as Arc<dyn SessionHost>,
+        service_version: "0.0.0-test".into(),
+    })
+    .await
+    .expect("twin2");
+    let alpha_relayd = Relayd::start(RelaydOptions {
+        state_dir: alpha_state.clone(),
+        config: RelaydConfig {
+            account: "home".into(),
+            name: None,
+            listen: None,
+            peers: vec![
+                PeerConfig {
+                    name: "twin".into(),
+                    address: twin1_relayd.peer_address().expect("twin1").to_string(),
+                    public_key: twin1.public_key(),
+                },
+                PeerConfig {
+                    name: "twin".into(),
+                    address: twin2_relayd.peer_address().expect("twin2").to_string(),
+                    public_key: twin2.public_key(),
+                },
+            ],
+        },
+        identity: alpha.clone(),
+        host: FakeHost::with(&["a1"]) as Arc<dyn SessionHost>,
+        service_version: "0.0.0-test".into(),
+    })
+    .await
+    .expect("alpha");
+
+    let (ctx, captured) = context(&alpha_state);
+    assert_eq!(run_remote(&ctx, &argv(&["sessions", "--json"])).await, 0);
+    let listing = captured.json();
+    let rows = listing["rows"].as_array().expect("rows");
+    let anon = rows
+        .iter()
+        .find(|row| row["session_id"] == "t1")
+        .expect("t1");
+    assert_eq!(anon["name"], "myproj");
+    assert_eq!(anon["unnamed"], true);
+
+    assert_eq!(
+        run_remote(&ctx, &argv(&["send", "myproj", "hi", "--json"])).await,
+        1
+    );
+    assert_eq!(captured.json()["code"], "not_found");
+    captured.take();
+
+    assert_eq!(
+        run_remote(&ctx, &argv(&["sessions", "--device", "twin", "--json"])).await,
+        1
+    );
+    let (out, err) = captured.take();
+    let amb: Value = serde_json::from_str(out.last().map_or("null", String::as_str)).expect("json");
+    assert_eq!(amb["code"], "ambiguous_target");
+    assert!(err.iter().any(|line| line.contains(&twin1.id())), "{err:?}");
+    assert!(err.iter().any(|line| line.contains(&twin2.id())), "{err:?}");
+
+    assert_eq!(run_remote(&ctx, &argv(&["send", "twin/t1", "hi"])).await, 1);
+    let (_, err) = captured.take();
+    assert!(err.iter().any(|line| line.contains(&twin1.id())), "{err:?}");
+    assert!(err.iter().any(|line| line.contains(&twin2.id())), "{err:?}");
+
+    alpha_relayd.shutdown().await;
+    twin1_relayd.shutdown().await;
+    twin2_relayd.shutdown().await;
+}

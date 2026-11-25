@@ -5971,6 +5971,7 @@ dependencies = [
  "maho-ext-api",
  "maho-rpc",
  "maho-service-endpoints",
+ "maho-thread-address-core",
  "mhc-relayd",
  "serde_json",
  "tempfile",

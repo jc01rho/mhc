@@ -1,15 +1,14 @@
-//! Cross-device thread addressing (omo `thread/control/relay-control.ts`, `relay-session-host.ts`;
-//! omo#12709, #13038, #14248): a `<device>/<session>` address names a session on another of the
-//! account's devices, reached through this device's device service over the local API. Same-device
-//! addresses stay with the local engine; this module only wraps a tool's execute behind its own port.
-//!
-//! omo v5.1.79: a session that parked or ended on its device after it was listed answers
-//! `route_unlisted`, which a send reports as `not_resumable` (nothing was sent to it).
+//! Cross-device thread addressing (omo `thread/remote/`, `remote/`; omo#12709, #13038, #14237,
+//! #14305, #14318, #14320, #14333, #14428, senpi#7014): a `<device>/<session>` address names a
+//! session on another of the account's devices, reached through this device's device service over
+//! the local API.
 
 pub mod device_service;
+pub mod outcome;
 
 use std::sync::Arc;
 
+use maho_thread_address_core::{HERE, ParsedAddress, parse_address};
 use serde_json::{Value, json};
 
 use super::adapter::BoxFuture;
@@ -19,11 +18,17 @@ use super::types::GatewayDeliveryMode;
 
 pub use device_service::{DeviceServicePort, device_service_available};
 
-/// `<device>/<session>`: both parts non-empty, the device part a name or id rather than a path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteAddress {
     pub device: String,
     pub session: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemoteSendOptions {
+    pub mode: Option<GatewayDeliveryMode>,
+    pub expected_turn_id: Option<i64>,
+    pub collapse_key: Option<String>,
 }
 
 pub fn parse_remote_address(address: &str) -> Option<RemoteAddress> {
@@ -40,21 +45,41 @@ pub fn parse_remote_address(address: &str) -> Option<RemoteAddress> {
     })
 }
 
-/// The device service, as the thread tools see it.
 pub trait RemoteThreadPort: Send + Sync {
-    /// Delivers `message` to the addressed session; the tool's result value (`kind` ok or error).
     fn send(
         &self,
         address: RemoteAddress,
         message: String,
         mode: Option<GatewayDeliveryMode>,
     ) -> BoxFuture<Value>;
+
+    fn send_with_options(
+        &self,
+        address: RemoteAddress,
+        message: String,
+        options: RemoteSendOptions,
+    ) -> BoxFuture<Value> {
+        if options.collapse_key.is_some() {
+            let device = address.device;
+            return Box::pin(async move {
+                remote_failure(
+                    "unsupported",
+                    format!(
+                        "collapse_key reaches sessions on this device only; the delivery to device {device} was not sent."
+                    ),
+                    "Send without collapse_key, or send from the device that holds the thread.",
+                    Some(json!({ "device": device, "field": "collapse_key" })),
+                )
+            });
+        }
+        self.send(address, message, options.mode)
+    }
 }
 
 pub fn remote_failure(
     code: &str,
     message: impl Into<String>,
-    next_action: &str,
+    next_action: impl Into<String>,
     details: Option<Value>,
 ) -> Value {
     json!({
@@ -63,8 +88,17 @@ pub fn remote_failure(
     })
 }
 
-/// `thread_send` (and `thread_handoff`) route a `<device>/<session>` address to `port`; every other
-/// address, and every other tool, is left as it was.
+fn route_address(address: &str) -> Option<RemoteAddress> {
+    match parse_address(address) {
+        ParsedAddress::Device { device, thread, .. } if device != HERE => Some(RemoteAddress {
+            device,
+            session: thread,
+        }),
+        _ => None,
+    }
+}
+
+/// Routes `<device>/<session>` (excluding `here/...`) on `thread_send` and `thread_handoff` to `port`.
 pub fn with_remote_thread_tools(
     tools: Vec<ThreadTool>,
     port: Arc<dyn RemoteThreadPort>,
@@ -82,7 +116,7 @@ pub fn with_remote_thread_tools(
                     let address = args
                         .get("thread")
                         .and_then(Value::as_str)
-                        .and_then(parse_remote_address);
+                        .and_then(route_address);
                     let Some(address) = address else {
                         return local(call_id, args);
                     };
@@ -95,7 +129,20 @@ pub fn with_remote_thread_tools(
                         .get("delivery")
                         .and_then(Value::as_str)
                         .and_then(GatewayDeliveryMode::parse);
-                    port.send(address, message, mode)
+                    let expected_turn_id = args.get("expected_turn_id").and_then(Value::as_i64);
+                    let collapse_key = args
+                        .get("collapse_key")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    port.send_with_options(
+                        address,
+                        message,
+                        RemoteSendOptions {
+                            mode,
+                            expected_turn_id,
+                            collapse_key,
+                        },
+                    )
                 }),
                 ..tool
             }

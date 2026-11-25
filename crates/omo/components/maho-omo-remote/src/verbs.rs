@@ -8,10 +8,19 @@
 use device_service_core::local_api::client::WakeSetting;
 use device_service_core::local_api::transport::is_service_not_running;
 use device_service_core::local_api::{CommandOutcome, LocalApiClient, LocalApiError};
+use maho_thread_address_core::{
+    AddressRefusal, KeyedRow, RefusalCode, ResolveDeviceOptions, SilentDevice, SilentReason,
+    devices_silent, is_id_prefix, normalize_name, resolve_device, row_address,
+};
 use serde_json::{Value, json};
 
 use crate::args::{Delivery, Parsed, SessionArgs, Target, WakeValue, parse};
 use crate::context::RemoteContext;
+use crate::device::{
+    candidate_lines, device_filter_target, enrich_listing_row, exit_code_of, non_empty,
+    refusal_details_json, refusal_message, roster, round_names, row_display_name, row_identity_key,
+    text as value_text, typed_device, unanswered_devices, unknown_device,
+};
 use crate::exit::{RemoteExit, UsageError};
 use crate::render::{
     control_lines, device_lines, device_name, session_lines, status_lines, wake_lines,
@@ -254,48 +263,44 @@ fn local_unit_rows(ctx: &RemoteContext) -> Vec<(String, String)> {
     ]
 }
 
-fn device_id(row: &Value) -> String {
-    row.get("device")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
-}
-
-/// A device by id, by name (case-insensitive; an online one wins a tie), or by a unique id prefix.
-pub fn resolve_device<'a>(devices: &'a [Value], query: &str) -> Result<&'a Value, Vec<String>> {
-    if let Some(row) = devices.iter().find(|row| device_id(row) == query) {
-        return Ok(row);
+fn report_address_refusal(
+    ctx: &RemoteContext,
+    verb: &str,
+    refusal: &AddressRefusal,
+    typed_miss: Option<&str>,
+    json: bool,
+) -> i32 {
+    let message = match (&refusal.details, refusal.code) {
+        (
+            maho_thread_address_core::RefusalDetails::Silent {
+                reason: SilentReason::ListingIncomplete,
+                devices,
+                ..
+            },
+            _,
+        ) => format!(
+            "no session matched on answered devices; {} did not answer this round",
+            devices.join(", ")
+        ),
+        _ => refusal_message(refusal),
+    };
+    let details = refusal_details_json(refusal, typed_miss);
+    if json {
+        ctx.out(
+            &json!({
+                "kind": "error",
+                "code": refusal.code.as_str(),
+                "message": message,
+                "details": details,
+            })
+            .to_string(),
+        );
     }
-    let named: Vec<&Value> = devices
-        .iter()
-        .filter(|row| {
-            row.get("label")
-                .and_then(Value::as_str)
-                .is_some_and(|label| label.eq_ignore_ascii_case(query))
-        })
-        .collect();
-    if let [row] = named.as_slice() {
-        return Ok(*row);
+    ctx.err(&format!("mhc remote {verb}: {message}"));
+    for line in candidate_lines(refusal.code, &refusal.details) {
+        ctx.err(&line);
     }
-    if named.len() > 1 {
-        let online: Vec<&Value> = named
-            .iter()
-            .copied()
-            .filter(|row| row.get("online").and_then(Value::as_bool) == Some(true))
-            .collect();
-        if let [row] = online.as_slice() {
-            return Ok(*row);
-        }
-        return Err(named.iter().map(|row| device_id(row)).collect());
-    }
-    let prefixed: Vec<&Value> = devices
-        .iter()
-        .filter(|row| device_id(row).starts_with(query))
-        .collect();
-    match prefixed.as_slice() {
-        [row] if !query.is_empty() => Ok(*row),
-        _ => Err(Vec::new()),
-    }
+    exit_code_of(refusal.code)
 }
 
 async fn sessions(ctx: &RemoteContext, client: &LocalApiClient, parsed: &Parsed) -> i32 {
@@ -305,19 +310,17 @@ async fn sessions(ctx: &RemoteContext, client: &LocalApiClient, parsed: &Parsed)
         Err(error) => return report_failure(ctx, &error, json),
     };
     let mut filter = serde_json::Map::new();
-    if let Some(query) = &parsed.filter.device {
-        match resolve_device(&devices, query) {
-            Ok(row) => {
-                filter.insert("device".into(), row["device"].clone());
+    let filter_device = if let Some(query) = &parsed.filter.device {
+        match device_filter_target(&devices, query) {
+            Ok(id) => {
+                filter.insert("device".into(), Value::String(id.clone()));
+                Some(id)
             }
-            Err(_) => {
-                ctx.err(&format!(
-                    "mhc remote sessions: no device {query} on this account (see mhc remote devices)"
-                ));
-                return RemoteExit::Usage.code();
-            }
+            Err(refusal) => return report_address_refusal(ctx, "sessions", &refusal, None, json),
         }
-    }
+    } else {
+        None
+    };
     if let Some(project) = &parsed.filter.project {
         filter.insert("project".into(), Value::String(project.clone()));
     }
@@ -329,19 +332,42 @@ async fn sessions(ctx: &RemoteContext, client: &LocalApiClient, parsed: &Parsed)
         Ok(listing) => listing,
         Err(error) => return report_failure(ctx, &error, json),
     };
-    let unanswered: Vec<String> = listing
-        .incomplete
-        .iter()
-        .filter_map(|device| device.as_str().map(str::to_owned))
-        .collect();
+    if let (Some(query), Some(device_id)) = (&parsed.filter.device, &filter_device)
+        && let Some(refusal) = unknown_device(
+            device_id,
+            &devices,
+            &listing.rows,
+            &listing.incomplete,
+            &listing.devices,
+        )
+    {
+        if json {
+            let details = refusal_details_json(&refusal, Some(query));
+            ctx.out(
+                &json!({
+                    "kind": "error",
+                    "code": "not_found",
+                    "message": format!("No device {query} on this account."),
+                    "details": details,
+                })
+                .to_string(),
+            );
+        }
+        ctx.err(&format!(
+            "mhc remote sessions: no device {query} on this account (see mhc remote devices)"
+        ));
+        return RemoteExit::Usage.code();
+    }
+    let unanswered = unanswered_devices(&devices, &listing.incomplete, &listing.devices);
+    let rows: Vec<Value> = listing.rows.iter().map(enrich_listing_row).collect();
     let value = json!({
-        "rows": listing.rows,
+        "rows": rows,
         "devices": listing.devices,
         "incomplete": listing.incomplete,
         "complete": listing.complete,
     });
     show(ctx, json, &value, || {
-        session_lines(&listing.rows, &devices, &unanswered, ctx.now())
+        session_lines(&rows, &devices, &unanswered, ctx.now())
     })
 }
 
@@ -351,74 +377,211 @@ struct Resolved {
     session: String,
 }
 
+enum TargetFailure {
+    Address {
+        refusal: Box<AddressRefusal>,
+        typed_miss: Option<String>,
+    },
+    AmbiguousSession {
+        message: String,
+        candidates: Vec<Value>,
+    },
+    Plain {
+        code: i32,
+        error_code: &'static str,
+        message: String,
+    },
+}
+
+fn match_session_rows<'a>(rows: &'a [Value], query: &str) -> Vec<&'a Value> {
+    let exact: Vec<&Value> = rows
+        .iter()
+        .filter(|row| {
+            value_text(row, "session_id") == query
+                || value_text(row, "durable_id") == query
+                || row_identity_key(row) == query
+        })
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    let wanted = normalize_name(query);
+    if !wanted.is_empty() {
+        let named: Vec<&Value> = rows
+            .iter()
+            .filter(|row| {
+                non_empty(row, "title").is_some_and(|title| normalize_name(title) == wanted)
+            })
+            .collect();
+        if !named.is_empty() {
+            return named;
+        }
+    }
+    if is_id_prefix(query) {
+        let lower = query.to_ascii_lowercase();
+        return rows
+            .iter()
+            .filter(|row| {
+                non_empty(row, "durable_id")
+                    .is_some_and(|id| id.to_ascii_lowercase().starts_with(&lower))
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
 async fn resolve_target(
     client: &LocalApiClient,
     target: &Target,
-) -> Result<Resolved, (i32, String)> {
+) -> Result<Resolved, TargetFailure> {
     let devices = client
         .devices()
         .await
-        .map_err(|error| (RemoteExit::Failed.code(), error.reason))?;
+        .map_err(|error| TargetFailure::Plain {
+            code: RemoteExit::Failed.code(),
+            error_code: "host_unavailable",
+            message: error.reason,
+        })?;
     if let Some(query) = &target.device {
-        return match resolve_device(&devices, query) {
-            Ok(row) => {
-                let device = row["device"].as_str().unwrap_or_default().to_owned();
-                Ok(Resolved {
-                    label: format!("{}/{}", device_name(&devices, &device), target.session),
-                    device,
-                    session: target.session.clone(),
+        return match typed_device(&devices, query) {
+            Ok(device) => Ok(Resolved {
+                label: format!("{}/{}", device_name(&devices, &device.id), target.session),
+                device: device.id,
+                session: target.session.clone(),
+            }),
+            Err(refusal) if refusal.reason == "no_device" => {
+                let listed = client
+                    .sessions_list(Some(json!({ "device": query })), Some(3))
+                    .await
+                    .ok();
+                if let Some(listing) = listed
+                    && round_names(query, &listing.rows, &listing.incomplete, &listing.devices)
+                {
+                    let session = listing
+                        .rows
+                        .iter()
+                        .find(|row| {
+                            value_text(row, "device") == query
+                                && (value_text(row, "session_id") == target.session
+                                    || value_text(row, "durable_id") == target.session)
+                        })
+                        .and_then(|row| row["session_id"].as_str())
+                        .unwrap_or(&target.session)
+                        .to_owned();
+                    return Ok(Resolved {
+                        label: format!("{query}/{session}"),
+                        device: query.clone(),
+                        session,
+                    });
+                }
+                Err(TargetFailure::Address {
+                    refusal,
+                    typed_miss: Some(query.clone()),
                 })
             }
-            Err(candidates) if !candidates.is_empty() => Err((
-                RemoteExit::Failed.code(),
-                format!(
-                    "ambiguous_target: {query} names more than one device: {}",
-                    candidates.join(", ")
-                ),
-            )),
-            Err(_) => Err((
-                RemoteExit::Usage.code(),
-                format!("no device {query} on this account (see mhc remote devices)"),
-            )),
+            Err(refusal) => Err(TargetFailure::Address {
+                refusal,
+                typed_miss: None,
+            }),
         };
     }
-    let listing = client
-        .sessions_list(None, Some(3))
-        .await
-        .map_err(|error| (RemoteExit::Failed.code(), error.reason))?;
-    let matches: Vec<&Value> = listing
-        .rows
-        .iter()
-        .filter(|row| {
-            row["session_id"] == target.session.as_str()
-                || row["durable_id"] == target.session.as_str()
-        })
-        .collect();
+    let listing =
+        client
+            .sessions_list(None, Some(3))
+            .await
+            .map_err(|error| TargetFailure::Plain {
+                code: RemoteExit::Failed.code(),
+                error_code: "host_unavailable",
+                message: error.reason,
+            })?;
+    let matches = match_session_rows(&listing.rows, &target.session);
     match matches.as_slice() {
         [row] => {
-            let device = row["device"].as_str().unwrap_or_default().to_owned();
-            let session = row["session_id"].as_str().unwrap_or_default().to_owned();
+            let device = value_text(row, "device").to_owned();
+            let session = value_text(row, "session_id").to_owned();
+            if let maho_thread_address_core::DeviceResolution::Refusal(refusal) = resolve_device(
+                &roster(&devices),
+                &device,
+                ResolveDeviceOptions {
+                    online: true,
+                    exact_id: true,
+                },
+            ) && refusal.code == RefusalCode::DeviceOffline
+            {
+                return Err(TargetFailure::Address {
+                    refusal: Box::new(refusal),
+                    typed_miss: None,
+                });
+            }
             Ok(Resolved {
                 label: format!("{}/{session}", device_name(&devices, &device)),
                 device,
                 session,
             })
         }
-        [] => Err((
-            RemoteExit::Failed.code(),
-            format!(
-                "no session {} on this account (see mhc remote sessions)",
-                target.session
-            ),
-        )),
-        many => Err((
-            RemoteExit::Failed.code(),
-            format!(
-                "ambiguous_target: {} names more than one session; name it as <device>/<session> ({} found)",
-                target.session,
-                many.len()
-            ),
-        )),
+        [] => {
+            let unanswered = unanswered_devices(&devices, &listing.incomplete, &listing.devices);
+            if !unanswered.is_empty() {
+                let silent: Vec<SilentDevice> = unanswered
+                    .into_iter()
+                    .map(|id| {
+                        let name = device_name(&devices, &id).to_owned();
+                        SilentDevice {
+                            id,
+                            name,
+                            reason: None,
+                        }
+                    })
+                    .collect();
+                return Err(TargetFailure::Address {
+                    refusal: Box::new(devices_silent(SilentReason::ListingIncomplete, &silent)),
+                    typed_miss: None,
+                });
+            }
+            Err(TargetFailure::Plain {
+                code: RemoteExit::Failed.code(),
+                error_code: "not_found",
+                message: format!(
+                    "no session {} on this account (see mhc remote sessions)",
+                    target.session
+                ),
+            })
+        }
+        many => {
+            let candidates: Vec<Value> = many
+                .iter()
+                .map(|row| {
+                    let dev_id = value_text(row, "device").to_owned();
+                    let session_id = value_text(row, "session_id").to_owned();
+                    let durable_id = non_empty(row, "durable_id").map(str::to_owned);
+                    let display = row_display_name(row);
+                    let thread = row_address(&KeyedRow {
+                        device: dev_id.clone(),
+                        durable_id,
+                        session_id,
+                    });
+                    let mut entry = json!({
+                        "thread": thread,
+                        "name": display.name,
+                        "device": device_name(&devices, &dev_id),
+                    });
+                    if display.unnamed
+                        && let Some(map) = entry.as_object_mut()
+                    {
+                        map.insert("unnamed".into(), Value::Bool(true));
+                    }
+                    entry
+                })
+                .collect();
+            Err(TargetFailure::AmbiguousSession {
+                message: format!(
+                    "ambiguous_target: {} names more than one session; name it as <device>/<session> ({} found)",
+                    target.session,
+                    many.len()
+                ),
+                candidates,
+            })
+        }
     }
 }
 
@@ -463,11 +626,48 @@ async fn session_verb(
     };
     let resolved = match resolve_target(client, target).await {
         Ok(resolved) => resolved,
-        Err((code, message)) => {
+        Err(TargetFailure::Address {
+            refusal,
+            typed_miss,
+        }) => {
+            return report_address_refusal(ctx, verb, &refusal, typed_miss.as_deref(), json);
+        }
+        Err(TargetFailure::AmbiguousSession {
+            message,
+            candidates,
+        }) => {
             if json {
                 ctx.out(
-                    &json!({ "kind": "error", "code": "not_found", "message": message })
-                        .to_string(),
+                    &json!({
+                        "kind": "error",
+                        "code": "ambiguous_target",
+                        "message": message,
+                        "details": { "candidates": candidates },
+                    })
+                    .to_string(),
+                );
+            }
+            ctx.err(&format!("mhc remote {verb}: {message}"));
+            for candidate in &candidates {
+                if let Some(thread) = candidate.get("thread").and_then(Value::as_str) {
+                    let name = candidate.get("name").and_then(Value::as_str).unwrap_or("");
+                    if name.is_empty() {
+                        ctx.err(&format!("  {thread}"));
+                    } else {
+                        ctx.err(&format!("  {thread}  {name}"));
+                    }
+                }
+            }
+            return RemoteExit::Failed.code();
+        }
+        Err(TargetFailure::Plain {
+            code,
+            error_code,
+            message,
+        }) => {
+            if json {
+                ctx.out(
+                    &json!({ "kind": "error", "code": error_code, "message": message }).to_string(),
                 );
             }
             ctx.err(&format!("mhc remote {verb}: {message}"));
@@ -526,6 +726,7 @@ fn applied_line(verb: &str, session: &SessionArgs, label: &str, receipt: &Value)
         ("send", _) => match receipt["disposition"].as_str() {
             Some("started") => format!("Sent to {label}: turn started."),
             Some("queued") => format!("Queued on {label}."),
+            Some("held") => format!("Queued on {label} (held)."),
             _ => format!("Sent to {label}."),
         },
         ("model", SessionArgs::Model { model, .. }) => format!("{label} now uses {model}."),
@@ -577,6 +778,9 @@ fn report_outcome(
                 ),
                 "peer_unauthorized" => format!(
                     "mhc remote {verb}: remote control is off on that device (mhc remote control on, there)."
+                ),
+                "turn_conflict" | "not_steerable" => format!(
+                    "mhc remote {verb}: {label} refused the steer ({reason})."
                 ),
                 other => format!("mhc remote {verb}: {label} refused it ({other})."),
             });
