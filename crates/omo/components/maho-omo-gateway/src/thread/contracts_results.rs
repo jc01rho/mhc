@@ -4,9 +4,11 @@
 //! exception. One field names a session (#14044 step 4a): every result that names one carries `thread`, the exact
 //! string the verbs take back; routing ids, sockets, session paths and endpoint internals stay in the address book.
 
+use maho_thread_address_core::DeviceListing;
 use serde::{Deserialize, Serialize};
 
 use super::contracts_state::{ThreadActivity, ThreadModel, ThreadRetryWait, ThreadState};
+use super::control::port::CloseGraceful;
 use super::errors::ThreadToolFailure;
 use super::store_relay_ops::{BindingRecord, OutboxRow};
 use super::types::DeliveryWait;
@@ -197,6 +199,24 @@ pub struct ThreadBacklog {
     pub oldest_at: String,
 }
 
+/// One device of this account as `thread_list` reports it across devices (omo #14305, #14304, #14308, #14295).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadDevice {
+    pub device: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    pub online: bool,
+    pub last_seen: Option<String>,
+    pub this_device: bool,
+    pub listing: DeviceListing,
+    pub threads: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThreadListOk {
     pub threads: Vec<ThreadResultSummary>,
@@ -215,6 +235,15 @@ pub struct ThreadListOk {
     /// Why the backlog is missing, when this device's store could not be read: never a failed listing (#14431).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backlog_error: Option<String>,
+    /// The account's devices with their listing state and thread counts (#14305, #14304, #14308, #14295).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devices: Option<Vec<ThreadDevice>>,
+    /// Set when the account relay or device roster could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_unavailable: Option<String>,
+    /// Set when the account alias registry could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aliases_unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -306,6 +335,8 @@ pub struct ThreadCloseOk {
     pub dropped_deliveries: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graceful: Option<CloseGraceful>,
 }
 
 /// `thread_handoff` answers the thread it reached flat, like `thread_create`.
@@ -482,6 +513,7 @@ mod tests {
             reason: ThreadCloseReason::NotLive,
             dropped_deliveries: Vec::new(),
             device: None,
+            graceful: None,
         };
         assert_eq!(
             serde_json::to_value(&closed).unwrap_or_default(),

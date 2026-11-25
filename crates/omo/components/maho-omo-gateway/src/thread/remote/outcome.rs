@@ -4,10 +4,14 @@
 use device_service_core::local_api::CommandOutcome;
 use serde_json::{Map, Value, json};
 
+use super::ports::{RemoteCommandOutcome, escape_for_display};
+use super::remote_ops::not_signed_in_failure;
 use super::{RemoteAddress, remote_failure};
 use crate::thread::adapter::RuntimePhase;
 use crate::thread::decision::{DeliveryDecision, Expect, TargetState, decide_delivery};
-use crate::thread::errors::{pair_loop_guard_message, pair_loop_guard_next_action};
+use crate::thread::errors::{
+    ThreadToolFailure, pair_loop_guard_message, pair_loop_guard_next_action, thread_tool_failure,
+};
 use crate::thread::types::GatewayDeliveryMode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +177,151 @@ pub fn steer_conflict(outcome: &CommandOutcome) -> Option<(&'static str, Option<
         };
     }
     None
+}
+
+const UNANSWERED_REMOTE_REASONS: &[&str] = &[
+    "closed",
+    "protocol_violation",
+    "internal",
+    "read_failed",
+    "request_timeout",
+    "handshake_timeout",
+    "attach_failed",
+    "reply_lost",
+    "delivered_unconfirmed",
+    "host_not_answering",
+    "peer_not_found",
+    "engine_stale",
+    "request_gone",
+    "no_receipt",
+    "engine_restarted",
+    "recipient_revoked",
+    "transport_expired",
+    "unconfirmed",
+    "lease_expired",
+    "cancelled",
+    "hand_restarted",
+    "result_expired",
+    "result_undecodable",
+];
+
+fn chain_count_limit_failure(device: &str) -> Box<ThreadToolFailure> {
+    Box::new(thread_tool_failure(
+        "chain_count_limit",
+        format!(
+            "Device {device} refused this thread call: the chain has made more hops than its user's thread chain limit (threads.chainCountLimit on device {device})."
+        ),
+        format!(
+            "Do not retry or extend this chain; finish with what you have. Only the user of device {device} can allow more hops, by raising or unsetting threads.chainCountLimit there."
+        ),
+        Some(json!({
+            "device": device,
+            "reason": "chain_count_limit",
+            "setting": "threads.chainCountLimit",
+        })),
+    ))
+}
+
+/// Maps a [`RemoteCommandOutcome`] failure (`Refused` / `Uncertain`) into a [`ThreadToolFailure`], escaping any
+/// free-form reason text from the other device (#13304, `thread/remote/outcome.ts` `outcomeFailure`).
+pub fn relay_outcome_failure(
+    outcome: &RemoteCommandOutcome,
+    device: &str,
+) -> Box<ThreadToolFailure> {
+    let raw_reason = match outcome {
+        RemoteCommandOutcome::Refused { reason, .. }
+        | RemoteCommandOutcome::Uncertain { reason } => reason.as_str(),
+        RemoteCommandOutcome::Ok { .. } => "internal",
+    };
+    let reason = escape_for_display(raw_reason);
+    if matches!(outcome, RemoteCommandOutcome::Uncertain { .. }) {
+        if raw_reason == "delivered_unconfirmed" {
+            return Box::new(thread_tool_failure(
+                "delivered_unconfirmed",
+                format!(
+                    "The command left this device and the relay accepted it for device {device}, but no answer came back in time (delivered_unconfirmed)."
+                ),
+                "Do not resend it: it may have run, or may still run. Read the thread to see whether it did.",
+                Some(json!({ "device": device, "reason": reason })),
+            ));
+        }
+        return Box::new(thread_tool_failure(
+            "idempotency_uncertain",
+            format!("The command to device {device} may or may not have run ({reason})."),
+            "Read the thread before deciding whether to retry.",
+            Some(json!({ "device": device, "reason": reason })),
+        ));
+    }
+    if let Some(not_signed_in) = not_signed_in_failure(raw_reason, device) {
+        return not_signed_in;
+    }
+    match raw_reason {
+        "capability_missing" => Box::new(thread_tool_failure(
+            "scope_denied",
+            format!("Device {device} does not grant this command."),
+            "Allow commands from this device on the other device, then retry.",
+            Some(json!({ "device": device, "reason": reason })),
+        )),
+        "host_detached" => Box::new(thread_tool_failure(
+            "host_unavailable",
+            format!("Device {device} is not attached to the relay."),
+            "Retry when that device is signed in and online.",
+            Some(json!({ "device": device, "reason": reason })),
+        )),
+        "no_primary_endpoint" => Box::new(thread_tool_failure(
+            "host_unavailable",
+            format!(
+                "Device {device} does not list its own engine, so nothing was opened (no_primary_endpoint)."
+            ),
+            "Start or restart omo on that device; if that does not help, update the device service on both devices. Then retry.",
+            Some(json!({
+                "device": device,
+                "reason": "no_primary_endpoint",
+                "remedy": "restart_omo_or_update_device_service",
+            })),
+        )),
+        r if UNANSWERED_REMOTE_REASONS.contains(&r) => Box::new(thread_tool_failure(
+            "host_unavailable",
+            format!("Device {device} did not answer ({reason}); this call changed nothing there."),
+            "Retry; nothing needs to be checked first.",
+            Some(json!({ "device": device, "reason": reason })),
+        )),
+        "unknown_session" | "session_not_found" | "route_unlisted" => {
+            Box::new(thread_tool_failure(
+                "not_resumable",
+                format!("The thread is not running on device {device} ({raw_reason})."),
+                "Call thread_list (tool.thread_list() in an eval cell) to see the thread's current state, then retry when it runs again.",
+                Some(json!({ "device": device, "reason": raw_reason })),
+            ))
+        }
+        "chain_count_limit" => chain_count_limit_failure(device),
+        "turn_conflict" => Box::new(thread_tool_failure(
+            "turn_conflict",
+            format!("Device {device} refused the steer: turn_conflict."),
+            "Read the target again and steer with its current turn_id, or send with delivery follow_up.",
+            Some(json!({ "device": device, "reason": "turn_conflict" })),
+        )),
+        "not_steerable" => Box::new(thread_tool_failure(
+            "not_steerable",
+            format!("Device {device} refused the steer: not_steerable."),
+            "Send with delivery auto or follow_up; a steer needs a running turn.",
+            Some(json!({ "device": device, "reason": "not_steerable" })),
+        )),
+        "record_too_large" => Box::new(thread_tool_failure(
+            "unsupported",
+            format!(
+                "The thread on device {device} is too large to send back in one relay record (record_too_large)."
+            ),
+            "Read it on that device, or ask that thread for a summary with thread_send (tool.thread_send() in an eval cell).",
+            Some(json!({ "device": device, "reason": reason })),
+        )),
+        _ => Box::new(thread_tool_failure(
+            "unsupported",
+            format!("Device {device} refused the command ({reason})."),
+            "Update omo on that device, or address a thread on this device.",
+            Some(json!({ "device": device, "reason": reason })),
+        )),
+    }
 }
 
 pub fn outcome_failure(
@@ -611,5 +760,38 @@ mod tests {
             None,
         );
         assert_eq!(unauthorized["error"]["code"], "scope_denied");
+    }
+
+    #[test]
+    fn relay_outcome_failure_escapes_free_reason_text_and_maps_unanswered_and_gone() {
+        let free = RemoteCommandOutcome::Refused {
+            reason: "bad\u{202e}line\n\x1b[31m".to_owned(),
+            detail: None,
+        };
+        let mapped = relay_outcome_failure(&free, "b");
+        assert_eq!(mapped.code.as_str(), "unsupported");
+        assert!(mapped.message.contains("\\u202e"));
+        assert!(!mapped.message.contains('\n'));
+        assert_eq!(
+            mapped.details.as_ref().and_then(|d| d["reason"].as_str()),
+            Some("bad\\u202eline\\u000a\\u001b[31m")
+        );
+
+        let lost = RemoteCommandOutcome::Uncertain {
+            reason: "delivered_unconfirmed".to_owned(),
+        };
+        assert_eq!(
+            relay_outcome_failure(&lost, "b").code.as_str(),
+            "delivered_unconfirmed"
+        );
+
+        let gone = RemoteCommandOutcome::Refused {
+            reason: "route_unlisted".to_owned(),
+            detail: None,
+        };
+        assert_eq!(
+            relay_outcome_failure(&gone, "b").code.as_str(),
+            "not_resumable"
+        );
     }
 }

@@ -10,10 +10,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use maho_thread_address_core::{KeyedRow, NamedRow, RowName, row_name};
+use serde_json::Value;
 
 use crate::thread::adapter::BoxFuture;
 use crate::thread::contracts_results::ThreadStatus;
-use crate::thread::contracts_state::ThreadState;
+use crate::thread::contracts_state::{ThreadModel, ThreadState};
 use crate::thread::thread_state::thread_state;
 
 /// `live`: the device answered this listing round. `cache`: it did not and the relay served its last snapshot (#14043).
@@ -39,6 +40,14 @@ pub struct RemoteSessionRow {
     pub updated_ms: i64,
     /// Absent (an older service, a row built here): treated as `live`.
     pub source: Option<RowSource>,
+    /// Session transcript file path reported on close/unload (#14170).
+    pub session_file: Option<String>,
+    /// When the cached row snapshot was taken (#14043).
+    pub as_of: Option<i64>,
+    /// Active model reported by the device's listing row.
+    pub model: Option<ThreadModel>,
+    /// Archived flag carried by the listing row (#14304).
+    pub archived: bool,
 }
 
 /// One account listing: its rows, and the devices whose rows this listing could not include.
@@ -46,6 +55,45 @@ pub struct RemoteSessionRow {
 pub struct RemoteListing {
     pub rows: Vec<RemoteSessionRow>,
     pub incomplete: Vec<String>,
+    /// Per-device round states when the service reports them (#14295); every state other than `answered` is incomplete.
+    pub devices: Option<BTreeMap<String, String>>,
+}
+
+/// One device on the account as `RemoteSessionsPort::devices` reports it (#14305).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemoteDevice {
+    pub device: String,
+    pub label: String,
+    pub online: bool,
+    pub platform: Option<String>,
+    pub kind: Option<String>,
+    pub last_seen_ms: Option<i64>,
+}
+
+/// Options on a remote `session_command` call (`fresh` bypasses catalog cache, `direct` skips attach pool, `wait_ms`
+/// bounds the call wait for a graceful close).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionCommandOptions {
+    pub fresh: bool,
+    pub direct: bool,
+    pub wait_ms: Option<i64>,
+}
+
+/// Outcome of one engine record sent to another device through `RemoteSessionsPort::session_command`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RemoteCommandOutcome {
+    Ok {
+        response: Value,
+        local: bool,
+        located: Option<String>,
+    },
+    Refused {
+        reason: String,
+        detail: Option<String>,
+    },
+    Uncertain {
+        reason: String,
+    },
 }
 
 /// One single-probe look for a durable id on one device (omo#13037 A4.3.3).
@@ -79,6 +127,12 @@ pub struct AliasError {
     pub message: String,
 }
 
+impl AliasError {
+    pub fn signed_out(&self) -> bool {
+        matches!(self.code.as_str(), "sign_in_required" | "signed_out")
+    }
+}
+
 /// The device service's state (`connected`, `plan_required`, ...) and this device's account id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceStatus {
@@ -109,8 +163,23 @@ pub trait RemoteClient: Send + Sync {
     fn service_status(&self) -> BoxFuture<Result<ServiceStatus, RemoteFailure>>;
 }
 
-/// The account's session surface, as far as address resolution reads it.
+/// The account's session surface, as far as address resolution, listing and relay controls read it.
 pub trait RemoteSessionsPort: Send + Sync {
+    /// This device's account id when known.
+    fn this_device(&self) -> BoxFuture<Option<String>> {
+        Box::pin(async { None })
+    }
+
+    /// This device's display name on the account when known (#14305).
+    fn this_device_name(&self) -> BoxFuture<Option<String>> {
+        Box::pin(async { None })
+    }
+
+    /// Every device on this account with its platform, kind and liveness (#14305).
+    fn devices(&self) -> BoxFuture<Result<Vec<RemoteDevice>, String>> {
+        Box::pin(async { Err("unsupported".to_owned()) })
+    }
+
     /// The account's session list; with `device`, that one device's rows only (no account-wide round).
     fn sessions(&self, device: Option<String>) -> BoxFuture<Result<Vec<RemoteSessionRow>, String>>;
 
@@ -122,6 +191,7 @@ pub trait RemoteSessionsPort: Send + Sync {
             rows.await.map(|rows| RemoteListing {
                 rows,
                 incomplete: Vec::new(),
+                devices: None,
             })
         })
     }
@@ -143,11 +213,41 @@ pub trait RemoteSessionsPort: Send + Sync {
     fn can_wake(&self) -> BoxFuture<bool> {
         Box::pin(async { false })
     }
+
+    /// Sends one session-scoped RPC record to `session_id` on `device`.
+    fn session_command(
+        &self,
+        _device: String,
+        _session_id: String,
+        _rpc: Value,
+        _options: SessionCommandOptions,
+    ) -> BoxFuture<RemoteCommandOutcome> {
+        Box::pin(async {
+            RemoteCommandOutcome::Refused {
+                reason: "unsupported".to_owned(),
+                detail: None,
+            }
+        })
+    }
+
+    /// Stamps a row as closed in this surface's cache until a newer snapshot arrives (`closed-rows.ts`).
+    fn closed(&self, _row: &RemoteSessionRow, _file: Option<&str>, _at: Option<i64>) {}
+
+    /// Stamps a reopened session's new listing key until a newer snapshot arrives (`closed-rows.ts`).
+    fn reopened(&self, _row: &RemoteSessionRow, _key: &str) {}
 }
 
-/// The account service's alias registry, resolve side (`alias-port.v1`).
+/// The account service's alias registry (`alias-port.v1`).
 pub trait AliasRegistry: Send + Sync {
     fn resolve(&self, alias: String) -> BoxFuture<Result<AliasHolder, AliasError>>;
+
+    /// Bulk lookup of aliases held by `thread_ids`, for `thread_list` across devices (#14305).
+    fn aliases_of(
+        &self,
+        _thread_ids: Vec<String>,
+    ) -> BoxFuture<Result<BTreeMap<String, String>, AliasError>> {
+        Box::pin(async { Ok(BTreeMap::new()) })
+    }
 }
 
 const LAST_LISTED_MAX: usize = 4096;
@@ -331,12 +431,12 @@ pub fn row_created_at(row: &RemoteSessionRow) -> String {
     )
 }
 
-/// Another device's row state (upstream `thread/tools/thread-state.ts` `rowState`): an ended row, or one its device's
-/// cached listing still names (the device did not answer, #14043), is `inactive`; else the row's own running or idle. No
-/// listing row mhc reads carries an archived flag, so the archived branch of that rule has no input here yet.
+/// Another device's row state (upstream `thread/tools/thread-state.ts` `rowState`): an archived row is `archived`,
+/// an ended row or one its device's cached listing still names (the device did not answer, #14043) is `inactive`, else
+/// the row's own running or idle.
 pub fn row_state(row: &RemoteSessionRow) -> ThreadState {
     thread_state(
-        false,
+        row.archived,
         row.state != "ended" && row.source != Some(RowSource::Cache),
         Some(row.state.as_str()),
     )
@@ -559,6 +659,9 @@ mod tests {
         listed.source = None;
         listed.state = "ended".to_owned();
         assert_eq!(row_state(&listed), ThreadState::Inactive);
+        listed.state = "idle".to_owned();
+        listed.archived = true;
+        assert_eq!(row_state(&listed), ThreadState::Archived);
     }
 
     #[test]

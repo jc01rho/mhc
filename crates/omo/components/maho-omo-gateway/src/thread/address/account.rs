@@ -281,7 +281,7 @@ pub async fn read_account(
         incomplete: listing.incomplete.clone(),
         round: ListingRound {
             incomplete: listing.incomplete,
-            states: None,
+            states: listing.devices,
         },
         online,
         earlier: Some(earlier),

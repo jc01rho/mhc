@@ -17,7 +17,7 @@ use crate::thread::remote::ports::{RemoteSessionRow, RemoteThreadSurface};
 /// of this device's book on its own, so a send address book that only surfaces a session file for the text it is asked
 /// about still answers (#14305 review M2).
 /// Per-part local address book lookup callback (#14305 review M2).
-pub type LocalBookFor<'a> = &'a dyn Fn(&str) -> Vec<ThreadAddressEntry>;
+pub type LocalBookFor<'a> = &'a (dyn Fn(&str) -> Vec<ThreadAddressEntry> + Send + Sync);
 
 #[derive(Clone, Copy)]
 pub struct ResolveContext<'a> {

@@ -14,8 +14,8 @@ use super::adapter::BoxFuture;
 use super::contracts_state::ThreadState;
 use super::control::locate::{LocatedControl, ThreadCall, book_of, locate_control};
 use super::control::operations::{
-    archive_not_live, archive_on, close_not_live, close_thread, error_json, interrupt_thread,
-    not_live, ok_json, set_model_on, set_thinking_level_on,
+    archive_not_live, archive_on, close_not_live, close_options, close_thread_with_options,
+    error_json, interrupt_thread, not_live, ok_json, set_model_on, set_thinking_level_on,
 };
 use super::control::port::{ControlError, ControlResult};
 use super::control::rename::rename_thread;
@@ -24,6 +24,7 @@ use super::read_ops::{
     ScannedSessions, list_threads, read_thread, scan_listed_sessions, with_backlog,
 };
 use super::reader::THREAD_READ_MAX_BYTES;
+use super::remote::cross_device::list_across;
 use super::store_ops::rfc3339;
 use super::tools::{ThreadTool, ThreadToolsOptions};
 
@@ -173,7 +174,12 @@ fn list_body(options: Arc<ThreadToolsOptions>, args: Value) -> BoxFuture<Value> 
             all_scope,
             states.as_deref(),
         );
-        ok_json(&with_backlog(options.store.as_ref(), listed))
+        let with_bl = with_backlog(options.store.as_ref(), listed);
+        let surface = call
+            .remote
+            .as_deref()
+            .and_then(|remote| remote.remote_surface());
+        ok_json(&list_across(surface, with_bl, all_scope, states.as_deref()).await)
     })
 }
 
@@ -232,6 +238,24 @@ fn interrupt_body(options: Arc<ThreadToolsOptions>, args: Value) -> BoxFuture<Va
 fn close_body(options: Arc<ThreadToolsOptions>, args: Value) -> BoxFuture<Value> {
     Box::pin(async move {
         let thread = text(&args, "thread").unwrap_or("self");
+        let wait_ms = match args.get("wait_ms") {
+            None | Some(Value::Null) => None,
+            Some(value) => match value.as_i64() {
+                Some(ms) if (1..=600_000).contains(&ms) => Some(ms),
+                _ => return invalid("wait_ms must be an integer from 1 to 600000."),
+            },
+        };
+        let opts = close_options(flag(&args, "force"), flag(&args, "graceful"), wait_ms);
+        if opts.graceful && opts.force {
+            return invalid(
+                "graceful and force exclude each other: a graceful close lets the turn end, a forced one stops it.",
+            );
+        }
+        if opts.wait_ms.is_some() && !opts.graceful {
+            return invalid(
+                "wait_ms only bounds a graceful close: a close without graceful does not wait for the turn.",
+            );
+        }
         let call = match thread_call(&options).await {
             Ok(call) => call,
             Err(result) => return result,
@@ -242,7 +266,7 @@ fn close_body(options: Arc<ThreadToolsOptions>, args: Value) -> BoxFuture<Value>
                 thread_id, device, ..
             } => close_not_live(&thread_id, device.as_deref()),
             LocatedControl::Control(control) => {
-                finish(close_thread(control.as_ref(), flag(&args, "force").unwrap_or(false)).await)
+                finish(close_thread_with_options(control.as_ref(), opts).await)
             }
         }
     })
@@ -411,6 +435,8 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                     "thread": { "type": "string", "minLength": 1, "description": SELF_OR_THREAD },
                     "all_scope": { "type": "boolean", "description": ALL_SCOPE },
                     "force": { "type": "boolean", "description": "Close even when the thread has messages it has not read yet; they are dropped and listed in dropped_deliveries." },
+                    "graceful": { "type": "boolean", "description": "Let the running turn end instead of stopping it; new messages are refused and unread ones go back to their senders. Monitors, loops and the goal stop cleanly. Also closes a terminal's thread, which then exits." },
+                    "wait_ms": { "type": "integer", "minimum": 1, "maximum": 600_000, "description": "How long a graceful close waits for the turn (default 30000, cut to what the call has left)." },
                 }),
                 &[],
             ),

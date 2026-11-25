@@ -7,6 +7,8 @@ mod gateway_schema_tests;
 mod gateway_store_tests;
 #[path = "prompt_tests.rs"]
 mod prompt_tests;
+#[path = "remote_list_and_close_tests.rs"]
+mod remote_list_and_close_tests;
 #[path = "remote_thread_tests.rs"]
 mod remote_thread_tests;
 #[path = "rules_block_tests.rs"]

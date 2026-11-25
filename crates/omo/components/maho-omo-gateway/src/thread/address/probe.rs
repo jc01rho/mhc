@@ -217,6 +217,11 @@ async fn listed_once(
         .incomplete
         .iter()
         .any(|id| id.as_str() == pin.device)
+        || listing
+            .devices
+            .as_ref()
+            .and_then(|states| states.get(pin.device))
+            .is_some_and(|state| state != "answered")
     {
         let (id, name) = pinned_device(remote, known, pin).await;
         let silent = [SilentDevice {
