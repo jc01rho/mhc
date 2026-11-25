@@ -3,14 +3,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 use maho_omo_gateway::thread::GatewayDeliveryMode;
 use maho_omo_gateway::thread::adapter::BoxFuture;
 use maho_omo_gateway::thread::remote::{
-    RemoteAddress, RemoteThreadPort, parse_remote_address, remote_failure, with_remote_thread_tools,
+    RemoteAddress, RemoteSendOptions, RemoteThreadPort, parse_remote_address, remote_failure,
+    with_remote_thread_tools,
 };
 use maho_omo_gateway::thread::tools::ThreadTool;
 use serde_json::{Value, json};
 
 #[derive(Default)]
 struct RecordingPort {
-    sent: Mutex<Vec<(RemoteAddress, String, Option<GatewayDeliveryMode>)>>,
+    sent: Mutex<Vec<(RemoteAddress, String, RemoteSendOptions)>>,
 }
 
 impl RemoteThreadPort for RecordingPort {
@@ -20,10 +21,14 @@ impl RemoteThreadPort for RecordingPort {
         message: String,
         mode: Option<GatewayDeliveryMode>,
     ) -> BoxFuture<Value> {
+        let options = RemoteSendOptions {
+            mode,
+            ..RemoteSendOptions::default()
+        };
         self.sent
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push((address.clone(), message, mode));
+            .push((address.clone(), message, options));
         Box::pin(async move {
             json!({ "kind": "ok", "thread": address.session, "device": address.device })
         })
@@ -83,8 +88,29 @@ async fn thread_send_routes_device_addresses_to_the_port_and_keeps_local_ones() 
         remote,
         json!({ "kind": "ok", "thread": "s1", "device": "laptop" })
     );
+    let named_with_space = (send.execute)(
+        "c1b",
+        json!({ "thread": "Studio Laptop/s1", "message": "hi" }),
+    )
+    .await;
+    assert_eq!(
+        named_with_space,
+        json!({ "kind": "ok", "thread": "s1", "device": "Studio Laptop" })
+    );
+    let here = (send.execute)("c1c", json!({ "thread": "here/s1", "message": "hi" })).await;
+    assert_eq!(here["local"], "here/s1");
+
     let local = (send.execute)("c2", json!({ "thread": "s2", "message": "hi" })).await;
     assert_eq!(local["local"], "s2");
+    let collapse = (send.execute)(
+        "c2b",
+        json!({ "thread": "laptop/s1", "message": "hi", "collapse_key": "k-1" }),
+    )
+    .await;
+    assert_eq!(collapse["kind"], "error");
+    assert_eq!(collapse["error"]["code"], "unsupported");
+    assert_eq!(collapse["error"]["details"]["field"], "collapse_key");
+
     let report = tools
         .iter()
         .find(|tool| tool.name == "thread_report")
@@ -99,9 +125,9 @@ async fn thread_send_routes_device_addresses_to_the_port_and_keeps_local_ones() 
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
-    assert_eq!(sent.len(), 1);
+    assert_eq!(sent.len(), 2);
     assert_eq!(sent[0].1, "hi");
-    assert_eq!(sent[0].2, Some(GatewayDeliveryMode::Steer));
+    assert_eq!(sent[0].2.mode, Some(GatewayDeliveryMode::Steer));
 }
 
 #[test]

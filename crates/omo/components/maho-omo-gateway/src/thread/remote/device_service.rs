@@ -1,16 +1,20 @@
-//! The [`RemoteThreadPort`] over this device's device service (local API v1): resolve the device,
-//! attach to the session, send one engine record, read its terminal state.
+//! The [`RemoteThreadPort`] over this device's device service (local API v1): resolve the device
+//! via `maho_thread_address_core`, attach to the session, probe state when deciding a lane, send one
+//! engine record with steer-race fallback, and read its terminal state.
 
 use std::path::PathBuf;
 
 use device_service_core::local_api::transport::is_service_not_running;
 use device_service_core::local_api::{
-    ClientInfo, CommandOutcome, ConnectOptions, LocalApiClient, connect_local_api,
+    ClientInfo, ConnectOptions, LocalApiClient, connect_local_api,
 };
+use maho_thread_address_core::ResolveDeviceOptions;
 use serde_json::{Value, json};
 
-use super::{RemoteAddress, RemoteThreadPort, remote_failure};
+use super::outcome::{engine_state_of, outcome_failure, plan_delivery, result_of, steer_conflict};
+use super::{RemoteAddress, RemoteSendOptions, RemoteThreadPort, remote_failure};
 use crate::thread::adapter::BoxFuture;
+use crate::thread::address::device::{AccountDevice, AccountDevices, resolve_account_device};
 use crate::thread::types::GatewayDeliveryMode;
 
 pub struct DeviceServicePort {
@@ -25,8 +29,6 @@ impl DeviceServicePort {
     }
 }
 
-/// Whether a device service has an endpoint in the default state dir: the thread tools reach other
-/// devices only then.
 pub fn device_service_available() -> bool {
     let state_dir = device_service_core::device_service_state_dir();
     state_dir
@@ -46,112 +48,67 @@ fn unavailable(message: impl Into<String>) -> Value {
     )
 }
 
-fn id_of(row: &Value) -> String {
-    row.get("device")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
+fn text_field<'a>(row: &'a Value, key: &str) -> &'a str {
+    row.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
-fn this_of(row: &Value) -> bool {
-    row.get("this_device").and_then(Value::as_bool) == Some(true)
-}
-
-/// The device by id, by name (case-insensitive) or by unique id prefix.
-fn resolve_device(devices: &[Value], query: &str) -> Result<(String, bool), Value> {
-    let by_name: Vec<&Value> = devices
+pub fn account_devices(rows: &[Value]) -> AccountDevices {
+    let here = rows
         .iter()
-        .filter(|row| {
-            id_of(row) == query
-                || row
-                    .get("label")
-                    .and_then(Value::as_str)
-                    .is_some_and(|label| label.eq_ignore_ascii_case(query))
+        .find(|row| row.get("this_device").and_then(Value::as_bool) == Some(true))
+        .map(|row| text_field(row, "device").to_owned())
+        .filter(|id| !id.is_empty());
+    let devices = rows
+        .iter()
+        .map(|row| AccountDevice {
+            device: text_field(row, "device").to_owned(),
+            label: text_field(row, "label").to_owned(),
+            online: row.get("online").and_then(Value::as_bool) == Some(true),
+            last_seen_ms: row.get("last_seen_ms").and_then(Value::as_i64),
         })
         .collect();
-    let candidates: Vec<&Value> = if by_name.is_empty() {
-        devices
-            .iter()
-            .filter(|row| !query.is_empty() && id_of(row).starts_with(query))
-            .collect()
-    } else {
-        by_name
-    };
-    match candidates.as_slice() {
-        [row] => Ok((id_of(row), this_of(row))),
-        [] => Err(remote_failure(
-            "not_found",
-            format!("no device {query} on this account"),
-            "Call thread_list for the account's devices and their sessions.",
-            None,
-        )),
-        many => Err(remote_failure(
-            "ambiguous_target",
-            format!("{query} names more than one device"),
-            "Name the device by its id.",
-            Some(json!({ "candidates": many.iter().map(|row| id_of(row)).collect::<Vec<_>>() })),
-        )),
+    AccountDevices {
+        here,
+        devices,
+        listing_of: None,
     }
 }
 
-fn result_of(address: &RemoteAddress, device: &str, outcome: &CommandOutcome) -> Value {
-    let reason = outcome.reason.clone().unwrap_or_default();
-    match outcome.state.as_str() {
-        "engine_applied" => {
-            let disposition = outcome
-                .receipt
-                .as_ref()
-                .and_then(|receipt| receipt.get("disposition"))
-                .and_then(Value::as_str)
-                .unwrap_or("handled")
-                .to_owned();
-            json!({
-                "kind": "ok",
-                "thread": address.session,
-                "device": device,
-                "delivery": { "kind": disposition },
-                "command_id": outcome.command_id,
-            })
-        }
-        "engine_refused" if reason == "route_unlisted" => remote_failure(
-            "not_resumable",
-            format!(
-                "{}/{} is no longer listed on its device",
-                address.device, address.session
-            ),
-            "Call thread_list for the sessions that device runs now.",
-            Some(json!({ "reason": reason })),
-        ),
-        "engine_refused" => remote_failure(
-            "scope_denied",
-            format!(
-                "{}/{} refused the message ({reason})",
-                address.device, address.session
-            ),
-            "Ask the person on that device to turn remote control on (mhc remote control on).",
-            Some(json!({ "reason": reason })),
-        ),
-        "not delivered: never_sent" | "not confirmed" => unavailable(format!(
-            "{} did not answer; nothing was sent",
-            address.device
-        )),
-        _ => remote_failure(
-            "idempotency_uncertain",
-            format!(
-                "the message to {}/{} may or may not have arrived ({reason})",
-                address.device, address.session
-            ),
-            "Read the session before sending again.",
-            Some(json!({ "command_id": outcome.command_id })),
-        ),
+pub fn resolve_device(devices: &[Value], query: &str) -> Result<(String, bool), Value> {
+    let account = account_devices(devices);
+    match resolve_account_device(
+        &account,
+        query,
+        ResolveDeviceOptions {
+            online: true,
+            exact_id: false,
+        },
+    ) {
+        Ok(device) => Ok((device.id, device.here)),
+        Err(refusal) => Err(json!({ "kind": "error", "error": *refusal })),
     }
+}
+
+fn listing_names_device(
+    device: &str,
+    rows: &[Value],
+    incomplete: &[Value],
+    devices: &Value,
+) -> bool {
+    rows.iter().any(|row| text_field(row, "device") == device)
+        || incomplete
+            .iter()
+            .any(|named| named.as_str() == Some(device))
+        || devices
+            .as_object()
+            .is_some_and(|states| states.contains_key(device))
 }
 
 async fn send(
     state_dir: PathBuf,
     address: RemoteAddress,
     message: String,
-    mode: Option<GatewayDeliveryMode>,
+    options: RemoteSendOptions,
 ) -> Value {
     if message.is_empty() {
         return remote_failure(
@@ -159,6 +116,17 @@ async fn send(
             "message must be a non-empty string",
             "Fix the arguments and call again.",
             None,
+        );
+    }
+    if options.collapse_key.is_some() {
+        return remote_failure(
+            "unsupported",
+            format!(
+                "collapse_key reaches sessions on this device only; the delivery to device {} was not sent.",
+                address.device
+            ),
+            "Send without collapse_key, or send from the device that holds the thread.",
+            Some(json!({ "device": address.device, "field": "collapse_key" })),
         );
     }
     let client: LocalApiClient =
@@ -174,7 +142,28 @@ async fn send(
             .devices()
             .await
             .map_err(|error| unavailable(error.reason))?;
-        let (device, this_device) = resolve_device(&devices, &address.device)?;
+        let (device, this_device) = match resolve_device(&devices, &address.device) {
+            Ok(resolved) => resolved,
+            Err(failure) if failure["error"]["code"] == "not_found" => {
+                let listed = client
+                    .sessions_list(Some(json!({ "device": &address.device })), Some(3))
+                    .await
+                    .ok();
+                if let Some(listing) = listed
+                    && listing_names_device(
+                        &address.device,
+                        &listing.rows,
+                        &listing.incomplete,
+                        &listing.devices,
+                    )
+                {
+                    (address.device.clone(), false)
+                } else {
+                    return Err(failure);
+                }
+            }
+            Err(failure) => return Err(failure),
+        };
         if this_device {
             return Err(remote_failure(
                 "invalid_arguments",
@@ -195,17 +184,96 @@ async fn send(
                 ),
                 _ => unavailable(error.reason),
             })?;
-        let method = match mode {
-            Some(GatewayDeliveryMode::Steer) => "steer",
-            Some(GatewayDeliveryMode::FollowUp) => "follow_up",
-            _ => "prompt",
+
+        let requested_mode = options.mode.unwrap_or(GatewayDeliveryMode::Auto);
+        let (mut method, mut planned_lane, expected_turn) = if requested_mode
+            != GatewayDeliveryMode::FollowUp
+        {
+            let probe = client
+                .command(&attach, json!({ "type": "get_state" }), None)
+                .await;
+            match probe {
+                Ok(outcome) if outcome.applied() => {
+                    let state = engine_state_of(outcome.receipt.as_ref().unwrap_or(&Value::Null));
+                    match plan_delivery(
+                        &state,
+                        requested_mode,
+                        options.expected_turn_id,
+                        &device,
+                        &address.session,
+                    ) {
+                        Ok(plan) => (plan.method, plan.planned_lane, plan.expected_turn_id),
+                        Err(failure) => {
+                            let _ = client.detach(&attach).await;
+                            return Err(failure);
+                        }
+                    }
+                }
+                Ok(outcome) => {
+                    let _ = client.detach(&attach).await;
+                    return Err(outcome_failure(
+                        &address,
+                        &device,
+                        &outcome,
+                        options.expected_turn_id,
+                    ));
+                }
+                Err(error) => {
+                    let _ = client.detach(&attach).await;
+                    return Err(unavailable(error.reason));
+                }
+            }
+        } else {
+            ("follow_up", "follow_up", None)
         };
-        let outcome = client
-            .command(&attach, json!({ "type": method, "message": message }), None)
+
+        let build_record = |kind: &str, turn_id: Option<i64>| -> Value {
+            let mut record = json!({ "type": kind, "message": message });
+            if kind == "steer"
+                && let Some(turn_id) = turn_id
+                && let Some(map) = record.as_object_mut()
+            {
+                map.insert("expectedTurnId".into(), Value::String(turn_id.to_string()));
+            }
+            record
+        };
+
+        let mut outcome = match client
+            .command(&attach, build_record(method, expected_turn), None)
             .await
-            .map_err(|error| unavailable(error.reason))?;
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let _ = client.detach(&attach).await;
+                return Err(unavailable(error.reason));
+            }
+        };
+        if requested_mode == GatewayDeliveryMode::Auto
+            && method == "steer"
+            && steer_conflict(&outcome).is_some()
+        {
+            method = "follow_up";
+            planned_lane = "follow_up";
+            outcome = match client
+                .command(&attach, build_record(method, None), None)
+                .await
+            {
+                Ok(retried) => retried,
+                Err(error) => {
+                    let _ = client.detach(&attach).await;
+                    return Err(unavailable(error.reason));
+                }
+            };
+        }
         let _ = client.detach(&attach).await;
-        Ok::<Value, Value>(result_of(&address, &device, &outcome))
+        Ok::<Value, Value>(result_of(
+            &address,
+            &device,
+            &outcome,
+            method,
+            planned_lane,
+            options.expected_turn_id,
+        ))
     }
     .await;
     client.close().await;
@@ -219,6 +287,54 @@ impl RemoteThreadPort for DeviceServicePort {
         message: String,
         mode: Option<GatewayDeliveryMode>,
     ) -> BoxFuture<Value> {
-        Box::pin(send(self.state_dir.clone(), address, message, mode))
+        self.send_with_options(
+            address,
+            message,
+            RemoteSendOptions {
+                mode,
+                ..RemoteSendOptions::default()
+            },
+        )
+    }
+
+    fn send_with_options(
+        &self,
+        address: RemoteAddress,
+        message: String,
+        options: RemoteSendOptions,
+    ) -> BoxFuture<Value> {
+        Box::pin(send(self.state_dir.clone(), address, message, options))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account() -> Vec<Value> {
+        vec![
+            json!({ "device": "a11ce0de5e1f0123", "label": "this mac", "online": true, "this_device": true }),
+            json!({ "device": "b7c41e09d2a64f1e", "label": "Studio Laptop", "online": true, "this_device": false }),
+            json!({ "device": "c0ffee5a1d2b3c4d", "label": "attic", "online": false, "this_device": false }),
+        ]
+    }
+
+    #[test]
+    fn resolves_by_id_nfkc_name_prefix_and_refuses_offline_devices() {
+        let rows = account();
+        assert_eq!(
+            resolve_device(&rows, "Ｓｔｕｄｉｏ  Ｌａｐｔｏｐ").unwrap(),
+            ("b7c41e09d2a64f1e".to_owned(), false)
+        );
+        assert_eq!(
+            resolve_device(&rows, "b7c41e").unwrap(),
+            ("b7c41e09d2a64f1e".to_owned(), false)
+        );
+        assert_eq!(
+            resolve_device(&rows, "here").unwrap(),
+            ("a11ce0de5e1f0123".to_owned(), true)
+        );
+        let offline = resolve_device(&rows, "attic").unwrap_err();
+        assert_eq!(offline["error"]["code"], "device_offline");
     }
 }
