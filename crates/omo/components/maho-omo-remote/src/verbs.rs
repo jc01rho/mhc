@@ -379,7 +379,7 @@ struct Resolved {
 
 enum TargetFailure {
     Address {
-        refusal: AddressRefusal,
+        refusal: Box<AddressRefusal>,
         typed_miss: Option<String>,
     },
     AmbiguousSession {
@@ -509,7 +509,7 @@ async fn resolve_target(
             ) && refusal.code == RefusalCode::DeviceOffline
             {
                 return Err(TargetFailure::Address {
-                    refusal,
+                    refusal: Box::new(refusal),
                     typed_miss: None,
                 });
             }
@@ -534,7 +534,7 @@ async fn resolve_target(
                     })
                     .collect();
                 return Err(TargetFailure::Address {
-                    refusal: devices_silent(SilentReason::ListingIncomplete, &silent),
+                    refusal: Box::new(devices_silent(SilentReason::ListingIncomplete, &silent)),
                     typed_miss: None,
                 });
             }

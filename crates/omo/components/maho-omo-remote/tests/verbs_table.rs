@@ -456,10 +456,11 @@ async fn typed_device_and_bare_session_resolution_through_relayd() {
         run_remote(&ctx, &argv(&["send", "beta/b1", "late", "--json"])).await,
         3
     );
-    let refusal = captured.json();
+    let (out, err) = captured.take();
+    let refusal: Value =
+        serde_json::from_str(out.last().map_or("null", String::as_str)).expect("json");
     assert_eq!(refusal["code"], "device_offline");
     assert_eq!(refusal["details"]["device"], beta_id);
-    let (_, err) = captured.take();
     assert!(
         !err.iter().any(|line| line.starts_with("  dev_")),
         "device_offline prints no candidate list: {err:?}"
@@ -576,9 +577,9 @@ async fn ambiguous_devices_and_unnamed_rows_through_relayd() {
         run_remote(&ctx, &argv(&["sessions", "--device", "twin", "--json"])).await,
         1
     );
-    let amb = captured.json();
+    let (out, err) = captured.take();
+    let amb: Value = serde_json::from_str(out.last().map_or("null", String::as_str)).expect("json");
     assert_eq!(amb["code"], "ambiguous_target");
-    let (_, err) = captured.take();
     assert!(err.iter().any(|line| line.contains(&twin1.id())), "{err:?}");
     assert!(err.iter().any(|line| line.contains(&twin2.id())), "{err:?}");
 

@@ -41,7 +41,7 @@ pub fn roster(rows: &[Value]) -> DeviceRoster {
     }
 }
 
-pub fn typed_device(rows: &[Value], typed: &str) -> Result<DeviceRef, AddressRefusal> {
+pub fn typed_device(rows: &[Value], typed: &str) -> Result<DeviceRef, Box<AddressRefusal>> {
     match resolve_device(
         &roster(rows),
         typed,
@@ -51,13 +51,13 @@ pub fn typed_device(rows: &[Value], typed: &str) -> Result<DeviceRef, AddressRef
         },
     ) {
         DeviceResolution::Ok(device) => Ok(device),
-        DeviceResolution::Refusal(refusal) => Err(refusal),
+        DeviceResolution::Refusal(refusal) => Err(Box::new(refusal)),
     }
 }
 
 /// Resolves a `--device` filter via `resolve_device` (`online: false`); an unknown name/id passes through so the
 /// listing itself decides whether a listing-named device exists (#14305 U6, #13402).
-pub fn device_filter_target(rows: &[Value], typed: &str) -> Result<String, AddressRefusal> {
+pub fn device_filter_target(rows: &[Value], typed: &str) -> Result<String, Box<AddressRefusal>> {
     match resolve_device(
         &roster(rows),
         typed,
@@ -68,7 +68,7 @@ pub fn device_filter_target(rows: &[Value], typed: &str) -> Result<String, Addre
     ) {
         DeviceResolution::Ok(device) => Ok(device.id),
         DeviceResolution::Refusal(refusal) if refusal.reason == "no_device" => Ok(typed.to_owned()),
-        DeviceResolution::Refusal(refusal) => Err(refusal),
+        DeviceResolution::Refusal(refusal) => Err(Box::new(refusal)),
     }
 }
 
@@ -244,6 +244,7 @@ mod tests {
     fn account() -> Vec<Value> {
         vec![
             row("a11ce0de5e1f0123", "this mac", true, true),
+            row("d15c0de012345678", "Studio Mac", true, false),
             row("b7c41e09d2a64f1e", "Studio Laptop", true, false),
             row("b7c4ffff00000000", "Studio Laptop", true, false),
             row("c0ffee5a1d2b3c4d", "attic", false, false),
@@ -253,11 +254,15 @@ mod tests {
     #[test]
     fn every_typed_form_resolves_the_device_and_here_names_this_one() {
         let rows = account();
-        for typed in ["b7c41e09d2a64f1e", "Ｓｔｕｄｉｏ  ｌａｐｔｏｐ", "b7c41e"] {
+        for typed in ["d15c0de012345678", "Ｓｔｕｄｉｏ  ｍａｃ", "d15c0d"] {
             let device = typed_device(&rows, typed).expect(typed);
-            assert_eq!(device.id, "b7c41e09d2a64f1e", "{typed}");
+            assert_eq!(device.id, "d15c0de012345678", "{typed}");
             assert!(!device.here, "{typed}");
         }
+        assert_eq!(
+            typed_device(&rows, "b7c41e").expect("unique 6+ prefix").id,
+            "b7c41e09d2a64f1e"
+        );
         let here = typed_device(&rows, "here").expect("here");
         assert!(here.here);
         assert_eq!(here.id, "a11ce0de5e1f0123");
