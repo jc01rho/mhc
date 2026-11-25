@@ -696,16 +696,18 @@ mod tests {
         assert_eq!(ui.lines, ["mem:agent just now", "mem:agent just now"]);
     }
 
+    type StatusHook = Box<
+        dyn Fn(
+                &[String],
+                &memory_core::git::exec::GitExecOptions,
+            ) -> std::io::Result<memory_core::git::exec::GitExecResult>
+            + Send
+            + Sync,
+    >;
+
     struct HookedGitExec {
         inner: std::sync::Arc<dyn memory_core::git::exec::GitExec>,
-        on_status: Box<
-            dyn Fn(
-                    &[String],
-                    &memory_core::git::exec::GitExecOptions,
-                ) -> std::io::Result<memory_core::git::exec::GitExecResult>
-                + Send
-                + Sync,
-        >,
+        on_status: StatusHook,
     }
 
     impl memory_core::git::exec::GitExec for HookedGitExec {
