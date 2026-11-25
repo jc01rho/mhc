@@ -240,14 +240,14 @@
       },
       {
         "path": "references/owned-engine/README.md",
-        "bytes": 3326,
-        "sha256": "a0daddc4084558ddf066819eb3c4cb4e99eec46c0a88c01423af26237a836cfe",
+        "bytes": 3489,
+        "sha256": "746ff831edb36659c98167cbc6c7f012f89684c40265b6d3b87d89cb1dd221dd",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/owned-engine/README.md"
       },
       {
         "path": "references/owned-engine/frames-and-humans.md",
-        "bytes": 2642,
-        "sha256": "f88034a9f55a4555644f709fd7a5ad6ba3f5d44b839221cf2f3fb66513831b2e",
+        "bytes": 3670,
+        "sha256": "4071e64e85b10b8233f39b314f0d4b00c181d1a0fac23dfb48817a96c2cfaa2f",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/owned-engine/frames-and-humans.md"
       },
       {
@@ -744,8 +744,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 32746,
-        "sha256": "0cb30c280cf4fbd8550a2424f095c804cc22243cd976ce28240fb510948a0b4a",
+        "bytes": 33739,
+        "sha256": "b7777ffeca2302f7c45d98c5ef92262b4f971a308b792d40b7d9c9e71db8131a",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/SKILL.md"
       },
       {
@@ -1629,6 +1629,12 @@
         "bytes": 7898,
         "sha256": "0ddf4845f9a772ea018eb6d44d46407efa3e96371e41eaecb774595412f50bf6",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/perfection/react-perf-tooling.md"
+      },
+      {
+        "path": "references/perfection/state-and-flow.md",
+        "bytes": 8141,
+        "sha256": "6ae6185ead4d3540c977ba343daae34a2a602645eaad689b45a0fc152f5c6266",
+        "source": "packages/shared-skills/skills/frontend/references/perfection/state-and-flow.md"
       },
       {
         "path": "references/ui-ux-db/README.md",
@@ -3484,8 +3490,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 34101,
-        "sha256": "fc5812f27cd5ec0ecce61651bf7196f7ff8b673db17316a9689341bf1746c95f",
+        "bytes": 34580,
+        "sha256": "a1bd1b61759d5b545ec06dd1d92a59bae945d7ff651d7e3f2467c3e438cef276",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/SKILL.md"
       },
       {
@@ -5064,8 +5070,8 @@
     "visual-qa": [
       {
         "path": "AGENTS.md",
-        "bytes": 3231,
-        "sha256": "9c86f577c70bab98213c45f17de1c30ad0a018c3cd2fd973a8b38772fb614bb7",
+        "bytes": 3373,
+        "sha256": "250c07594939577f4ba2fbb39c95878b9c1d4df29ba03814620453b0cb734a32",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/AGENTS.md"
       },
       {
@@ -5076,9 +5082,15 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 50847,
-        "sha256": "bb5b0fb3d6f6f94820e74f15e83c23647031e97776eb2a201fef6e1e8b83a54d",
+        "bytes": 55625,
+        "sha256": "58af629a31bcd531417a83ddc358ff68fb30772344ff9138d9bc0075a0b77d67",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/SKILL.md"
+      },
+      {
+        "path": "references/behaviour-evidence.md",
+        "bytes": 9614,
+        "sha256": "1948a11aac3dd793bf34a63fca1597c94afb6b206808e665d18db1fbd55a3e54",
+        "source": "packages/shared-skills/skills/visual-qa/references/behaviour-evidence.md"
       },
       {
         "path": "references/browser-setup.md",
@@ -8257,8 +8269,8 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding, init-deep-advisor and skill-pointers components and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 846,
-    "declaredSha256": 846,
+    "files": 848,
+    "declaredSha256": 848,
     "unbound": 0,
     "mechanism": "The skills map declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every declared sha256 is checked against the overlay bytes before staging."
   }
