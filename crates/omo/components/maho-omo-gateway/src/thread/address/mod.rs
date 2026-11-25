@@ -28,4 +28,6 @@ pub use refusals::{
     AddressCandidate, ThreadRefusal, as_failure, as_refusal, tool_refusal, with_addresses,
 };
 pub use resolve::resolve_address;
-pub use types::{Found, Pin, Resolution, ResolveContext, ResolveOptions, Resolved, ResolvedWhere};
+pub use types::{
+    Found, LocalBookFor, Pin, Resolution, ResolveContext, ResolveOptions, Resolved, ResolvedWhere,
+};

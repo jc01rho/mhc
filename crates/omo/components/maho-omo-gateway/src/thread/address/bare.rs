@@ -16,12 +16,12 @@ pub fn resolve_bare(
     opts: &ResolveOptions<'_>,
 ) -> Result<Found, ThreadRefusal> {
     if opts.fuzzy && !opts.all_scope && ctx.caller_workspace_root.trim().is_empty() {
-        return Err(thread_tool_failure(
+        return Err(Box::new(thread_tool_failure(
             "caller_context_missing",
             "Scoping a fuzzy handoff needs the caller's workspace root, which this call did not provide.",
             "Set all_scope to search every workspace, or hand off from a session that knows its workspace.",
             None,
-        ));
+        )));
     }
     match ladder(ctx, ctx.local, text, opts) {
         Ok((entry, resolution)) => Ok(Found {
@@ -29,6 +29,6 @@ pub fn resolve_bare(
             resolution,
             all_scope: Some(opts.all_scope),
         }),
-        Err(error) => Err(with_addresses(error, None, |_| None)),
+        Err(error) => Err(with_addresses(*error, None, |_| None)),
     }
 }

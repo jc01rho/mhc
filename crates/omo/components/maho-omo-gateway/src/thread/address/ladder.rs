@@ -43,16 +43,16 @@ pub fn ladder(
 ) -> LadderResult {
     let target: String = if text == "self" {
         if ctx.caller_id == UNKNOWN_CALLER {
-            return Err(thread_tool_failure(
+            return Err(Box::new(thread_tool_failure(
                 "caller_context_missing",
                 "The caller's durable session id is not in the thread address book.",
                 "Call thread_list (tool.thread_list() in an eval cell) and pass an explicit thread, or retry from a session with caller context.",
                 None,
-            ));
+            )));
         }
         match resolve_self(entries, ctx.caller_id) {
             Ok(caller) => caller.thread_id.clone(),
-            Err(failure) => return Err(*failure),
+            Err(failure) => return Err(failure),
         }
     } else {
         text.to_owned()
@@ -65,6 +65,6 @@ pub fn ladder(
     };
     match resolve_target(entries, &target, &target_opts) {
         Ok((entry, resolution)) => Ok(named(text, entry, resolution)),
-        Err(failure) => Err(*failure),
+        Err(failure) => Err(failure),
     }
 }

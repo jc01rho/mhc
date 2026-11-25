@@ -12,7 +12,7 @@ use crate::thread::contracts_results::ThreadStatus;
 use crate::thread::errors::{ThreadToolFailure, thread_tool_failure};
 
 /// A refusal as the thread tools answer it: a taxonomy code, the message, the recovery step and the details.
-pub type ThreadRefusal = ThreadToolFailure;
+pub type ThreadRefusal = Box<ThreadToolFailure>;
 
 /// The core's candidate shape on top of the ladder's: `address` (`<device id>/<thread>`) resolves as written and
 /// `device_name` names the device. With no device id known the candidate carries no `address`: its `thread` is the
@@ -37,11 +37,11 @@ pub struct AddressCandidate {
 }
 
 pub fn as_refusal(failure: ThreadToolFailure) -> ThreadRefusal {
-    failure
+    Box::new(failure)
 }
 
 pub fn as_failure(refused: ThreadRefusal) -> ThreadToolFailure {
-    refused
+    *refused
 }
 
 const LIST_ALL: &str =
@@ -67,7 +67,7 @@ pub fn tool_refusal(
 ) -> ThreadRefusal {
     let details_value = serde_json::to_value(&core.details).ok();
     let typed = core.typed.as_deref().unwrap_or_default();
-    match (&core.details, core.reason) {
+    let failure = match (&core.details, core.reason) {
         (RefusalDetails::Device { .. }, "no_device") => thread_tool_failure(
             "not_found",
             format!("No device named {typed} is signed in to this account."),
@@ -256,7 +256,8 @@ pub fn tool_refusal(
             format!("Pass a thread that device holds, or {LIST_ALL}."),
             details_value,
         ),
-    }
+    };
+    Box::new(failure)
 }
 
 /// The ladder's refusal with the core's candidate shape and `details.kind` (design section 5). A candidate's device is
@@ -274,14 +275,14 @@ where
         if error.code.as_str() == "not_found" || error.code.as_str() == "ambiguous_target" {
             error.details = Some(json!({ "kind": "thread" }));
         }
-        return error;
+        return Box::new(error);
     };
     let Some(Value::Array(raw_candidates)) = map.remove("candidates") else {
         if error.code.as_str() == "not_found" || error.code.as_str() == "ambiguous_target" {
             map.insert("kind".to_owned(), Value::String("thread".to_owned()));
         }
         error.details = Some(Value::Object(map));
-        return error;
+        return Box::new(error);
     };
     let candidates: Vec<Value> = raw_candidates
         .into_iter()
@@ -320,5 +321,5 @@ where
     map.insert("kind".to_owned(), Value::String("thread".to_owned()));
     map.insert("candidates".to_owned(), Value::Array(candidates));
     error.details = Some(Value::Object(map));
-    error
+    Box::new(error)
 }

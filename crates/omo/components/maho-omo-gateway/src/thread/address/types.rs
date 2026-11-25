@@ -13,11 +13,14 @@ use crate::thread::addressing::ThreadAddressEntry;
 /// `local_for` is upstream's `ResolveContext.localFor`: once a device part names this device, the thread part is asked
 /// of this device's book on its own, so a send address book that only surfaces a session file for the text it is asked
 /// about still answers (#14305 review M2).
+/// Per-part local address book lookup callback (#14305 review M2).
+pub type LocalBookFor<'a> = &'a dyn Fn(&str) -> Vec<ThreadAddressEntry>;
+
 #[derive(Clone, Copy)]
 pub struct ResolveContext<'a> {
     pub caller_workspace_root: &'a str,
     pub local: &'a [ThreadAddressEntry],
-    pub local_for: Option<&'a dyn Fn(&str) -> Vec<ThreadAddressEntry>>,
+    pub local_for: Option<LocalBookFor<'a>>,
     pub caller_id: &'a str,
 }
 
