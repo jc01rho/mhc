@@ -979,7 +979,7 @@ fn the_schema_refusal_names_both_versions_and_the_name_check_names_the_thread_it
         aliases: Vec::new(),
         row: None,
     };
-    assert!(check_name_conflict(&[entry.clone()], "another").is_ok());
+    assert!(check_name_conflict(std::slice::from_ref(&entry), "another").is_ok());
     let conflict = check_name_conflict(&[entry], "fix the build").expect_err("conflict");
     assert_eq!(conflict.code.as_str(), "name_conflict");
     assert!(conflict.message.contains("(dur-a)"), "{}", conflict.message);
