@@ -301,6 +301,7 @@ fn manager_harness(options: HarnessOptions) -> Harness {
                 .push(Arc::clone(&client));
             Ok(client as SharedClient)
         })),
+        timers: None,
     });
 
     Harness {
@@ -328,7 +329,7 @@ async fn given_a_slow_stopping_client_evicted_at_the_resident_cap_when_the_evict
 
     let manager = &harness.manager;
     manager.get_client("/root-a", &server, None).await.unwrap();
-    manager.release_client("/root-a", &server.id);
+    manager.release_client("/root-a", &server, None);
     harness.release_stop("/root-b");
 
     // when: admitting root-b synchronously evicts idle root-a (spawn stop), and root-a is
@@ -348,8 +349,8 @@ async fn given_a_slow_stopping_client_evicted_at_the_resident_cap_when_the_evict
     root_b.await.unwrap().unwrap();
     root_a.await.unwrap().unwrap();
 
-    manager.release_client("/root-b", &server.id);
-    manager.release_client("/root-a", &server.id);
+    manager.release_client("/root-b", &server, None);
+    manager.release_client("/root-a", &server, None);
 
     // then
     let root_a_events: Vec<String> = harness
@@ -382,7 +383,7 @@ async fn given_an_invalidated_client_whose_stop_is_still_pending_when_the_same_r
 
     let manager = &harness.manager;
     manager.get_client("/root-a", &server, None).await.unwrap();
-    manager.release_client("/root-a", &server.id);
+    manager.release_client("/root-a", &server, None);
 
     // when
     let release_task = tokio::spawn({
@@ -393,7 +394,7 @@ async fn given_an_invalidated_client_whose_stop_is_still_pending_when_the_same_r
         }
     });
 
-    manager.invalidate_client("/root-a", &server.id, None);
+    manager.invalidate_client("/root-a", &server, None);
     manager.get_client("/root-a", &server, None).await.unwrap();
     release_task.await.unwrap();
 
@@ -439,7 +440,7 @@ async fn given_a_client_whose_initialization_failed_while_its_stop_is_pending_wh
     let racing_res = racing.await;
     assert!(racing_res.is_ok());
 
-    manager.release_client("/root-fail", &server.id);
+    manager.release_client("/root-fail", &server, None);
 
     // then
     assert_eq!(
@@ -477,7 +478,7 @@ async fn given_a_crash_looping_client_that_is_dead_on_every_acquisition_when_get
             .await
             .is_ok()
         {
-            manager.release_client("/root-crash", &server.id);
+            manager.release_client("/root-crash", &server, None);
         }
     }
 
@@ -536,7 +537,7 @@ async fn given_the_budget_was_exhausted_but_the_cooldown_elapsed_and_the_server_
     let recovered = manager.get_client("/root-crash", &server, None).await;
     assert!(recovered.is_ok());
     let recovered_client = recovered.unwrap();
-    manager.release_client("/root-crash", &server.id);
+    manager.release_client("/root-crash", &server, None);
 
     // then
     assert_eq!(
@@ -551,7 +552,7 @@ async fn given_the_budget_was_exhausted_but_the_cooldown_elapsed_and_the_server_
     assert!(next.is_ok());
     let next_client = next.unwrap();
     assert!(Arc::ptr_eq(&recovered_client, &next_client));
-    manager.release_client("/root-crash", &server.id);
+    manager.release_client("/root-crash", &server, None);
 
     harness.stop_all().await;
 }

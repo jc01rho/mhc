@@ -121,22 +121,22 @@ async fn given_a_cap_of_two_idle_clients_when_a_third_client_is_admitted_then_th
     let manager = &fakes.manager;
 
     manager.get_client("/root-a", &server, None).await.unwrap();
-    manager.release_client("/root-a", &server.id);
+    manager.release_client("/root-a", &server, None);
     *fakes.clock.lock().unwrap() += 10.0;
 
     manager.get_client("/root-b", &server, None).await.unwrap();
-    manager.release_client("/root-b", &server.id);
+    manager.release_client("/root-b", &server, None);
     *fakes.clock.lock().unwrap() += 10.0;
 
     // when
     manager.get_client("/root-c", &server, None).await.unwrap();
-    manager.release_client("/root-c", &server.id);
+    manager.release_client("/root-c", &server, None);
 
     // then
     assert_eq!(manager.client_count(), 2);
-    assert_eq!(manager.has_client("/root-a", &server.id), false);
-    assert_eq!(manager.has_client("/root-b", &server.id), true);
-    assert_eq!(manager.has_client("/root-c", &server.id), true);
+    assert_eq!(manager.has_client("/root-a", &server), false);
+    assert_eq!(manager.has_client("/root-b", &server), true);
+    assert_eq!(manager.has_client("/root-c", &server), true);
 
     let stop_count_a = fakes
         .stop_counts
@@ -167,7 +167,7 @@ async fn given_the_least_recently_used_client_is_mid_request_when_a_new_client_i
         .get_client("/root-idle", &server, None)
         .await
         .unwrap();
-    manager.release_client("/root-idle", &server.id);
+    manager.release_client("/root-idle", &server, None);
     *fakes.clock.lock().unwrap() += 10.0;
 
     // when
@@ -175,11 +175,11 @@ async fn given_the_least_recently_used_client_is_mid_request_when_a_new_client_i
         .get_client("/root-new", &server, None)
         .await
         .unwrap();
-    manager.release_client("/root-new", &server.id);
+    manager.release_client("/root-new", &server, None);
 
     // then
-    assert_eq!(manager.has_client("/root-busy", &server.id), true);
-    assert_eq!(manager.has_client("/root-idle", &server.id), false);
+    assert_eq!(manager.has_client("/root-busy", &server), true);
+    assert_eq!(manager.has_client("/root-idle", &server), false);
 
     let stop_count_busy = fakes
         .stop_counts
@@ -199,7 +199,7 @@ async fn given_the_least_recently_used_client_is_mid_request_when_a_new_client_i
     assert_eq!(stop_count_busy, 0);
     assert_eq!(stop_count_idle, 1);
 
-    manager.release_client("/root-busy", &server.id);
+    manager.release_client("/root-busy", &server, None);
     manager.stop_all().await;
 }
 
@@ -232,8 +232,8 @@ async fn given_every_resident_client_is_busy_when_a_new_client_is_admitted_then_
         .unwrap_or(0);
     assert_eq!(stop_count_busy, 0);
 
-    manager.release_client("/root-busy", &server.id);
-    manager.release_client("/root-second", &server.id);
+    manager.release_client("/root-busy", &server, None);
+    manager.release_client("/root-second", &server, None);
     manager.stop_all().await;
 }
 
@@ -248,7 +248,7 @@ async fn given_warmup_requests_beyond_the_cap_when_a_warm_client_is_admitted_the
         .get_client("/root-first", &server, None)
         .await
         .unwrap();
-    manager.release_client("/root-first", &server.id);
+    manager.release_client("/root-first", &server, None);
     *fakes.clock.lock().unwrap() += 10.0;
 
     // when
@@ -257,7 +257,7 @@ async fn given_warmup_requests_beyond_the_cap_when_a_warm_client_is_admitted_the
     tokio::task::yield_now().await;
 
     // then
-    assert_eq!(manager.has_client("/root-first", &server.id), false);
+    assert_eq!(manager.has_client("/root-first", &server), false);
     let stop_count_first = fakes
         .stop_counts
         .lock()
@@ -266,7 +266,39 @@ async fn given_warmup_requests_beyond_the_cap_when_a_warm_client_is_admitted_the
         .map(|c| c.load(Ordering::SeqCst))
         .unwrap_or(0);
     assert_eq!(stop_count_first, 1);
-    assert_eq!(manager.has_client("/root-warm", &server.id), true);
+    assert_eq!(manager.has_client("/root-warm", &server), true);
 
+    manager.stop_all().await;
+}
+
+#[tokio::test]
+async fn given_one_root_when_files_resolve_to_different_typescript_commands_then_each_command_gets_its_own_client_and_the_same_command_shares_one()
+ {
+    let server = test_server();
+    let native_tsc = ResolvedServer {
+        command: vec![
+            "/repo/packages/x/node_modules/.bin/tsc".to_string(),
+            "--lsp".to_string(),
+            "--stdio".to_string(),
+        ],
+        ..test_server()
+    };
+    let fakes = manager_with_fakes(10);
+    let manager = &fakes.manager;
+
+    let for_x = manager
+        .get_client("/repo", &native_tsc, None)
+        .await
+        .unwrap();
+    let for_y = manager.get_client("/repo", &server, None).await.unwrap();
+    let for_z = manager.get_client("/repo", &server, None).await.unwrap();
+
+    assert_eq!(manager.client_count(), 2);
+    assert!(!Arc::ptr_eq(&for_x, &for_y));
+    assert!(Arc::ptr_eq(&for_z, &for_y));
+
+    manager.release_client("/repo", &native_tsc, Some(&for_x));
+    manager.release_client("/repo", &server, Some(&for_y));
+    manager.release_client("/repo", &server, Some(&for_z));
     manager.stop_all().await;
 }

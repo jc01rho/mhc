@@ -8,7 +8,7 @@ use crate::lsp::outside_context_workspace::find_workspace_root_outside_context;
 use crate::lsp::server_definitions::LSP_LOCAL_INSTALL_HINTS;
 use crate::lsp::server_install_state::InstallDecision;
 use crate::lsp::server_install_state::load_install_decision;
-use crate::lsp::server_resolution::find_server_for_extension;
+use crate::lsp::server_resolution::find_server_for_extension_for_target;
 use crate::lsp::types::FailedServerLookupResult;
 use crate::lsp::types::ServerLookupResult;
 use crate::lsp::workspace_markers::{GIT_WORKSPACE_MARKER, PROJECT_WORKSPACE_MARKERS};
@@ -356,7 +356,10 @@ where
                 .to_string(),
         ));
     }
-    let server = require_found_server(find_server_for_extension(&effective_extension(&abs_path))?)?;
+    let server = require_found_server(find_server_for_extension_for_target(
+        &effective_extension(&abs_path),
+        Some(&abs_path),
+    )?)?;
     let root = find_workspace_root(&abs_path)?;
     let manager = options.manager.clone().unwrap_or_else(get_lsp_manager);
     let signal = options.signal.as_ref();
@@ -365,15 +368,15 @@ where
     loop {
         let client = manager.get_client(&root, &server, signal).await?;
         let result = f(client.clone(), root.clone(), abs_path.clone()).await;
-        manager.release_client(&root, &server.id);
+        manager.release_client(&root, &server, Some(&client));
         match result {
             Ok(value) => return Ok(value),
             Err(error) if allow_retry && read_only && is_lsp_dead_connection_error(&error) => {
-                manager.invalidate_client(&root, &server.id, Some(&client));
+                manager.invalidate_client(&root, &server, Some(&client));
                 allow_retry = false;
             }
             Err(error @ LspError::RequestTimeout { .. })
-                if manager.is_server_initializing(&root, &server.id) =>
+                if manager.is_server_initializing(&root, &server) =>
             {
                 return Err(error.into_server_initializing());
             }

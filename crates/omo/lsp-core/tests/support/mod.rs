@@ -1,5 +1,10 @@
 #![allow(dead_code)]
 
+pub mod controlled_clock;
+pub mod manager_test_support;
+#[cfg(unix)]
+pub mod typescript_projects;
+
 use lsp_core::Diagnostic;
 use lsp_core::LspClient;
 use lsp_core::LspClientOptions;

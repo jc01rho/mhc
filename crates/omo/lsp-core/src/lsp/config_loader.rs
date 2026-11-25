@@ -54,6 +54,8 @@ impl From<ConfigSource> for ServerSource {
 pub struct ServerWithSource {
     pub server: ResolvedServer,
     pub source: ServerSource,
+    pub inherits_builtin_command: bool,
+    pub configured_initialization: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +173,8 @@ fn merge_servers(configs: &[(ConfigSource, ConfigJson)]) -> Vec<ServerWithSource
                 initialization: builtin.initialization_map(),
             },
             source: ServerSource::Builtin,
+            inherits_builtin_command: true,
+            configured_initialization: None,
         });
     }
 
@@ -196,6 +200,7 @@ fn create_server_from_entry(
     let make = |command: Vec<String>,
                 extensions: Vec<String>,
                 with_env: bool,
+                inherits_builtin_command: bool,
                 initialization: Option<Map<String, Value>>| ServerWithSource {
         server: ResolvedServer {
             id: id.to_string(),
@@ -206,6 +211,8 @@ fn create_server_from_entry(
             initialization,
         },
         source: source.into(),
+        inherits_builtin_command,
+        configured_initialization: entry.initialization.clone(),
     };
     if source == ConfigSource::Project {
         // Project configs may not override the command: only builtin ids are accepted.
@@ -217,6 +224,7 @@ fn create_server_from_entry(
                 .clone()
                 .unwrap_or_else(|| builtin.extensions_vec()),
             false,
+            true,
             merge_initialization(builtin.initialization_map(), entry.initialization.clone()),
         ));
     }
@@ -225,12 +233,14 @@ fn create_server_from_entry(
             command.clone(),
             extensions.clone(),
             true,
+            false,
             entry.initialization.clone(),
         ));
     }
     let builtin = builtin?;
     // An entry with its own command gets no builtin initialization.
-    let builtin_initialization = if entry.command.is_none() {
+    let inherits_builtin_command = entry.command.is_none();
+    let builtin_initialization = if inherits_builtin_command {
         builtin.initialization_map()
     } else {
         None
@@ -245,6 +255,7 @@ fn create_server_from_entry(
             .clone()
             .unwrap_or_else(|| builtin.extensions_vec()),
         true,
+        inherits_builtin_command,
         merge_initialization(builtin_initialization, entry.initialization.clone()),
     ))
 }
