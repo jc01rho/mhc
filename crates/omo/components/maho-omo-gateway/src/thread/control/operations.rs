@@ -167,24 +167,24 @@ fn match_model_with_thinking(
     catalog: &[ModelChoice],
     model: &str,
     provider: Option<&str>,
-) -> Result<(ModelChoice, Option<String>), ThreadToolFailure> {
+) -> Result<(ModelChoice, Option<String>), Box<ThreadToolFailure>> {
     match match_model(catalog, model, provider) {
         ModelMatch::Match(chosen) => Ok((chosen, None)),
         ModelMatch::Failure(literal_failure) => {
             if literal_failure.code.as_str() != "model_not_found" {
-                return Err(literal_failure);
+                return Err(Box::new(literal_failure));
             }
             let Some((base, level)) = split_thinking_suffix(model) else {
-                return Err(literal_failure);
+                return Err(Box::new(literal_failure));
             };
             match match_model(catalog, base, provider) {
                 ModelMatch::Match(chosen) => Ok((chosen, Some(level.to_owned()))),
                 ModelMatch::Failure(base_failure)
                     if base_failure.code.as_str() == "model_ambiguous" =>
                 {
-                    Err(base_failure)
+                    Err(Box::new(base_failure))
                 }
-                ModelMatch::Failure(_) => Err(literal_failure),
+                ModelMatch::Failure(_) => Err(Box::new(literal_failure)),
             }
         }
     }
@@ -212,7 +212,7 @@ pub async fn set_model_on(
     };
     let (chosen, mut thinking_level) = match matched {
         Ok(found) => found,
-        Err(failure) => return Ok(error_json(failure)),
+        Err(failure) => return Ok(error_json(*failure)),
     };
     let mut previous = model_before_switch(control, thinking_level.as_deref()).await?;
     let selected = match control
@@ -233,7 +233,7 @@ pub async fn set_model_on(
             let (rematched, rematched_thinking) =
                 match match_model_with_thinking(&fresh.models, model, provider) {
                     Ok(found) => found,
-                    Err(failure) => return Ok(error_json(failure)),
+                    Err(failure) => return Ok(error_json(*failure)),
                 };
             if rematched.provider == chosen.provider && rematched.id == chosen.id {
                 return Err(error);
