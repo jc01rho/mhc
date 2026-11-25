@@ -139,6 +139,62 @@ fn component(
     OmoSenpiComponent::new(name, Box::new(extension))
 }
 
+type KeywordDetectorCache = BTreeMap<PathBuf, Option<omo_config_core::OmoKeywordDetectorSettings>>;
+
+/// Upstream `isUltraworkKeywordDisabled` (`components/ultrawork/keyword-detector-settings.ts`,
+/// `#14389`): `disabled_keywords` is a denylist and `enabled_expansions` an allowlist, so either
+/// turns the `ultrawork` keyword off for a project or a user without the per-launch flag.
+pub fn is_ultrawork_keyword_disabled(
+    settings: Option<&omo_config_core::OmoKeywordDetectorSettings>,
+) -> bool {
+    let Some(settings) = settings else {
+        return false;
+    };
+    if settings
+        .disabled_keywords
+        .as_ref()
+        .is_some_and(|keywords| keywords.contains(&omo_config_core::KeywordType::Ultrawork))
+    {
+        return true;
+    }
+    settings
+        .enabled_expansions
+        .as_ref()
+        .is_some_and(|expansions| !expansions.contains(&omo_config_core::KeywordType::Ultrawork))
+}
+
+/// Upstream `loadKeywordDetectorSettings`: `loadSenpiOmoConfig({ cwd }).config.keyword_detector`.
+pub fn load_keyword_detector_settings(
+    cwd: &std::path::Path,
+    env: Option<&BTreeMap<String, String>>,
+) -> Option<omo_config_core::OmoKeywordDetectorSettings> {
+    let loaded = omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions {
+        cwd: Some(cwd.to_string_lossy().into_owned()),
+        env: env.cloned(),
+        harness: Some("senpi".to_owned()),
+        ..Default::default()
+    });
+    let value = loaded.config.get("keyword_detector")?;
+    serde_json::from_value(value.clone()).ok()
+}
+
+/// Builds an [`maho_ultrawork::UltraworkExtension`] that caches one `keyword_detector` lookup per
+/// `cwd` across the component's registration lifetime.
+pub fn ultrawork_extension_for(
+    env: BTreeMap<String, String>,
+) -> maho_ultrawork::UltraworkExtension {
+    let cache: std::sync::Arc<std::sync::Mutex<KeywordDetectorCache>> = std::sync::Arc::default();
+    maho_ultrawork::UltraworkExtension::default().with_keyword_disabled(move |cwd| {
+        let mut guard = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let settings = guard
+            .entry(cwd.to_path_buf())
+            .or_insert_with(|| load_keyword_detector_settings(cwd, Some(&env)));
+        is_ultrawork_keyword_disabled(settings.as_ref())
+    })
+}
+
 /// Upstream `createOmoSenpiComponents(taskComponent)` with the selected latest additions.
 pub fn omo_components(
     task: OmoSenpiComponent,
@@ -255,7 +311,7 @@ pub fn omo_components(
     ));
     components.push(component(
         "ultrawork",
-        maho_ultrawork::UltraworkExtension::default(),
+        ultrawork_extension_for(options.env.clone()),
     ));
     components.push(component(
         "skill-pointers",
@@ -519,6 +575,76 @@ mod tests {
             skills_root_from(Some(String::new())),
             fallback,
             "an empty override is treated as unset"
+        );
+    }
+
+    #[test]
+    fn ultrawork_honors_keyword_detector_from_omo_config() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        let env: BTreeMap<String, String> =
+            [("HOME".to_owned(), home.to_string_lossy().into_owned())]
+                .into_iter()
+                .collect();
+
+        let write_project = |name: &str, config: Option<&str>| -> PathBuf {
+            let dir = root.path().join(name);
+            let omo_dir = dir.join(".omo");
+            std::fs::create_dir_all(&omo_dir).expect("create .omo");
+            if let Some(raw) = config {
+                std::fs::write(omo_dir.join("omo.jsonc"), raw).expect("write omo.jsonc");
+            }
+            dir
+        };
+
+        let denied = write_project(
+            "denied",
+            Some(r#"{ "keyword_detector": { "disabled_keywords": ["ultrawork"] } }"#),
+        );
+        assert!(is_ultrawork_keyword_disabled(
+            load_keyword_detector_settings(&denied, Some(&env)).as_ref()
+        ));
+
+        let allowlist = write_project(
+            "allowlist",
+            Some(r#"{ "[native]": { "keyword_detector": { "enabled_expansions": ["team"] } } }"#),
+        );
+        assert!(is_ultrawork_keyword_disabled(
+            load_keyword_detector_settings(&allowlist, Some(&env)).as_ref()
+        ));
+
+        for (name, config) in [
+            ("kept-none", None),
+            (
+                "kept-other-denied",
+                Some(r#"{ "keyword_detector": { "disabled_keywords": ["team"] } }"#),
+            ),
+            (
+                "kept-ulw-allowed",
+                Some(r#"{ "keyword_detector": { "enabled_expansions": ["ultrawork"] } }"#),
+            ),
+        ] {
+            let dir = write_project(name, config);
+            assert!(
+                !is_ultrawork_keyword_disabled(
+                    load_keyword_detector_settings(&dir, Some(&env)).as_ref()
+                ),
+                "case {name} should keep ultrawork enabled"
+            );
+        }
+
+        let loaded = omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions {
+            cwd: Some(denied.to_string_lossy().into_owned()),
+            env: Some(env),
+            harness: Some("senpi".to_owned()),
+            ..Default::default()
+        });
+        assert!(
+            loaded
+                .diagnostics
+                .iter()
+                .all(|d| d.kind != omo_config_core::DIAGNOSTIC_UNKNOWN_KEYS)
         );
     }
 }

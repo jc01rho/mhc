@@ -73,6 +73,9 @@ pub(crate) const NEGATIONS: [&str; 12] = [
     "never", "not", "dont", "don't", "doesnt", "doesn't", "wont", "won't", "cant", "can't",
     "cannot", "avoid",
 ];
+pub(crate) const PROHIBITIONS: [&str; 9] = [
+    "avoid", "avoiding", "skip", "skipping", "without", "no", "never", "dont", "don't",
+];
 const INVOCATIONS: [&str; 19] = [
     "load",
     "loading",
@@ -151,6 +154,151 @@ pub(crate) fn prohibitive_spans(text: &str) -> Vec<Span> {
         {
             spans.push((*start, clause_end(text, *verb_end, &tokens)));
         }
+    }
+    spans.extend(prohibited_keyword_spans(text, &tokens));
+    spans
+}
+
+fn only_spaces(slice: &str) -> bool {
+    !slice.is_empty() && slice.chars().all(char::is_whitespace)
+}
+
+fn comma_between(slice: &str) -> bool {
+    slice.trim() == ","
+}
+
+fn optional_comma_spaces(slice: &str) -> bool {
+    let trimmed = slice.trim();
+    (trimmed.is_empty() && !slice.is_empty()) || trimmed == ","
+}
+
+fn slash_between(slice: &str) -> bool {
+    let trimmed = slice.trim();
+    trimmed == "/"
+        || trimmed
+            .strip_prefix(',')
+            .is_some_and(|rest| rest.trim() == "/")
+}
+
+fn prohibited_item_at(
+    text: &str,
+    tokens: &[(usize, usize, String)],
+    idx: usize,
+) -> Option<(usize, usize)> {
+    let (_, mut end, ref first) = *tokens.get(idx)?;
+    let mut cur = idx + 1;
+    if first == "mass" {
+        let &(next_start, next_end, ref second) = tokens.get(cur)?;
+        let gap = &text[end..next_start];
+        if !matches!(second.as_str(), "ulw" | "ultrawork")
+            || gap.is_empty()
+            || !gap
+                .chars()
+                .all(|c| c == '-' || c == '_' || c.is_whitespace())
+        {
+            return None;
+        }
+        end = next_end;
+        cur += 1;
+    } else if !matches!(first.as_str(), "ulw" | "ultrawork" | "mulw" | "meth") {
+        return None;
+    }
+    if let Some((_, next_end, _)) = tokens.get(cur).filter(|&&(next_start, _, ref suffix)| {
+        matches!(text.get(end..next_start), Some("-" | "_"))
+            && matches!(
+                suffix.as_str(),
+                "loop" | "plan" | "research" | "execute" | "mass"
+            )
+    }) {
+        end = *next_end;
+        cur += 1;
+    }
+    Some((cur, end))
+}
+
+fn prohibited_conjunction_tail(
+    text: &str,
+    tokens: &[(usize, usize, String)],
+    prev_end: usize,
+    cur: usize,
+) -> Option<usize> {
+    let &(next_start, next_end, ref word) = tokens.get(cur)?;
+    let gap = &text[prev_end..next_start];
+    if matches!(word.as_str(), "or" | "and" | "nor") && optional_comma_spaces(gap) {
+        let &(item_start, _, _) = tokens.get(cur + 1)?;
+        if !only_spaces(&text[next_end..item_start]) {
+            return None;
+        }
+        return prohibited_item_at(text, tokens, cur + 1).map(|(_, end)| end);
+    }
+    if slash_between(gap) {
+        return prohibited_item_at(text, tokens, cur).map(|(_, end)| end);
+    }
+    None
+}
+
+fn prohibited_keyword_spans(text: &str, tokens: &[(usize, usize, String)]) -> Vec<Span> {
+    let mut spans = Vec::new();
+    for (i, &(start, end, ref word)) in tokens.iter().enumerate() {
+        let (after_prohib, mut next_idx) = if word == "do" {
+            let Some(&(_, not_end, _)) = tokens.get(i + 1).filter(|&&(not_start, _, ref next)| {
+                next == "not" && only_spaces(&text[end..not_start])
+            }) else {
+                continue;
+            };
+            (not_end, i + 2)
+        } else if PROHIBITIONS.contains(&word.as_str()) {
+            (end, i + 1)
+        } else {
+            continue;
+        };
+
+        let Some(&(first_token_start, first_token_end, ref first_word)) = tokens.get(next_idx)
+        else {
+            continue;
+        };
+        if !only_spaces(&text[after_prohib..first_token_start]) {
+            continue;
+        }
+
+        if matches!(first_word.as_str(), "using" | "the")
+            && tokens
+                .get(next_idx + 1)
+                .is_some_and(|&(after_start, _, _)| {
+                    only_spaces(&text[first_token_end..after_start])
+                })
+        {
+            next_idx += 1;
+        } else if first_word == "use"
+            && tokens
+                .get(next_idx + 1)
+                .filter(|&&(of_start, _, ref w)| {
+                    w == "of" && only_spaces(&text[first_token_end..of_start])
+                })
+                .is_some_and(|&(_, of_end, _)| {
+                    tokens
+                        .get(next_idx + 2)
+                        .is_some_and(|&(after_start, _, _)| only_spaces(&text[of_end..after_start]))
+                })
+        {
+            next_idx += 2;
+        }
+
+        let Some((mut cur, first_end)) = prohibited_item_at(text, tokens, next_idx) else {
+            continue;
+        };
+        let mut prev_end = first_end;
+        while let Some((after_item, item_end)) = tokens
+            .get(cur)
+            .filter(|&&(item_start, _, _)| comma_between(&text[prev_end..item_start]))
+            .and_then(|_| prohibited_item_at(text, tokens, cur))
+        {
+            prev_end = item_end;
+            cur = after_item;
+        }
+        let span_end =
+            prohibited_conjunction_tail(text, tokens, prev_end, cur).unwrap_or(first_end);
+        spans.push((start, span_end));
     }
     spans
 }

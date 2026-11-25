@@ -21,7 +21,8 @@ pub use task_coordinator::TaskCoordinator;
 pub use capture::ToolCaptureRegistry;
 pub use component_list::{
     MissingComponents, OmoComponentOptions, SKILLS_ROOT_ENV, builtin_skills_root,
-    memory_component_from, omo_component_names, omo_components, try_omo_components,
+    is_ultrawork_keyword_disabled, load_keyword_detector_settings, memory_component_from,
+    omo_component_names, omo_components, try_omo_components, ultrawork_extension_for,
 };
 pub use compose::{
     OMO_COMPONENT_FLAG_PREFIX, OMO_DISABLED_FLAG, OMO_EXTENSION_IDENTITY, OMO_SENPI_DISABLED_ENV,

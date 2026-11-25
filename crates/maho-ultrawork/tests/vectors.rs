@@ -117,6 +117,47 @@ fn negation_separated_by_punctuation_does_not_mask_a_real_request() {
 }
 
 #[test]
+fn forbidding_advice_without_an_invocation_verb_does_not_arm_while_requests_after_a_prohibition_still_do()
+ {
+    for text in [
+        "avoid ulw for small fixes",
+        "No ultrawork here, a quick answer is enough.",
+        "skip ulw this time",
+        "answer without ultrawork",
+        "don't ulw this one",
+        "never ultrawork a one-line change",
+        "avoid using ulw or mass-ulw on this repo",
+        "skip ulw, ulw-loop and ultrawork here",
+        "Rules from the guide:\n- avoid ulw on tiny tasks\n- no ultrawork for docs\n- skip ulw-loop when unsure",
+    ] {
+        let got = run(text, InputSource::Interactive);
+        assert!(!got.effective, "{text}");
+        assert_eq!(got.visible_mentions, 0, "{text}");
+        assert_eq!(
+            got.suppression,
+            Some(Suppression::ProhibitivePhrasing),
+            "{text}"
+        );
+        assert!(!has_visible_keyword(text), "{text}");
+    }
+
+    for text in [
+        "avoid regressions, ulw the fix",
+        "no worries, ulw this",
+        "skip the docs. ulw the fix",
+        "No ulw-loop, just ulw this",
+        "skip ulw-plan, ulw the fix",
+        "without ultrawork the answer was bad, so ulw this",
+    ] {
+        let got = run(text, InputSource::Interactive);
+        assert!(got.effective, "{text}");
+        assert_eq!(got.visible_mentions, 1, "{text}");
+        assert_eq!(got.suppression, None, "{text}");
+        assert!(has_visible_keyword(text), "{text}");
+    }
+}
+
+#[test]
 fn upstream_ascii_word_boundaries_load_negation_and_relay_headers() {
     for text in ["ulw\u{d574}\u{c918}", "\u{e9}ulw", "**ulw** go"] {
         assert!(run(text, InputSource::Interactive).effective, "{text}");

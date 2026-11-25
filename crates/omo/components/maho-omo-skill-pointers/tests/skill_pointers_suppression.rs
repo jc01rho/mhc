@@ -324,6 +324,32 @@ fn strip_quoted_spans_preserves_byte_length_for_multibyte_text() {
 }
 
 #[test]
+fn forbidding_advice_without_an_invocation_verb_is_masked_in_strip_quoted_regions() {
+    for text in [
+        "skip ulw-loop when unsure",
+        "avoid ulw-plan on tiny tasks",
+        "no ulw-research for docs",
+        "skip ulw, ulw-loop and ultrawork here",
+        "Rules from the guide:\n- avoid ulw on tiny tasks\n- no ultrawork for docs\n- skip ulw-loop when unsure",
+    ] {
+        assert_eq!(
+            matched_skill_pointer_names(text),
+            Vec::<&str>::new(),
+            "{text}"
+        );
+    }
+
+    assert_eq!(
+        matched_skill_pointer_names("No ulw-loop, just ulw-plan this"),
+        vec!["ulw-plan"]
+    );
+    assert_eq!(
+        matched_skill_pointer_names("skip ulw-plan, ulw-loop the fix"),
+        vec!["ulw-loop"]
+    );
+}
+
+#[test]
 fn large_prompts_are_stripped_without_panicking_on_the_backtrack_budget() {
     for text in [
         "가".repeat(240_000),

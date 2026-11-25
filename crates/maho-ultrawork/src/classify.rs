@@ -160,11 +160,12 @@ pub fn classify_with_session_role(
         return out;
     }
     if found.mentions == 0 {
+        let before_prohibitive = scan(&masked.before_prohibitive);
         let reason = if skill_route == Route::SkillArguments {
             Suppression::SkillWithoutKeyword
-        } else if found.compound_rejected || scan(&masked.before_prohibitive).compound_rejected {
+        } else if found.compound_rejected {
             Suppression::CompoundIdentifier
-        } else if scan(&masked.before_prohibitive).mentions > 0 {
+        } else if before_prohibitive.mentions > 0 || before_prohibitive.compound_rejected {
             Suppression::ProhibitivePhrasing
         } else {
             Suppression::NoVisibleKeyword

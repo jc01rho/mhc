@@ -102,3 +102,37 @@ fn three_hundred_turns_deliver_one_directive_through_the_registered_handlers() {
     assert_eq!(directives, 1);
     assert!(maho_ultrawork::snapshot("registration-300").armed);
 }
+
+#[test]
+fn keyword_disabled_predicate_turns_off_arming_for_matching_cwd() {
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("ultrawork", "/project/denied".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    UltraworkExtension::default()
+        .with_keyword_disabled(|cwd| cwd.ends_with("denied"))
+        .register(&mut api);
+
+    let denied_ctx: ExtensionContext = stub::context("registration-denied");
+    let handlers = &api.registered.handlers;
+    let mut input = ExtensionEvent::Input(InputEvent {
+        input_id: "i-denied".into(),
+        text: "ulw fix the flaky test".into(),
+        images: None,
+        source: InputSource::Interactive,
+        streaming_behavior: None,
+    });
+    for handler in &handlers[&EventKind::Input] {
+        run(handler(&mut input, &denied_ctx)).expect("input handler");
+    }
+    assert!(!maho_ultrawork::snapshot("registration-denied").armed);
+
+    let mut allowed_ctx: ExtensionContext = stub::context("registration-allowed");
+    allowed_ctx.cwd = "/project/allowed".into();
+    for handler in &handlers[&EventKind::Input] {
+        run(handler(&mut input, &allowed_ctx)).expect("input handler");
+    }
+    assert!(maho_ultrawork::snapshot("registration-allowed").armed);
+}
