@@ -65,7 +65,11 @@ pub fn extensions_except<'a>(parsed: &'a Args, branded: &[String]) -> Vec<&'a St
     parsed
         .extensions
         .iter()
-        .filter(|path| !branded.iter().any(|own| same_extension_path(own, path)))
+        .filter(|path| {
+            !branded
+                .iter()
+                .any(|own| same_extension_path(own.as_str(), path.as_str()))
+        })
         .collect()
 }
 
