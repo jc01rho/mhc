@@ -251,15 +251,13 @@ pub async fn aggregate_diagnostics_for_directory(
 
     let mut diagnostics: Vec<(String, Diagnostic)> = Vec::new();
     let mut errors = file_errors;
-    errors.extend(
-        unavailable_errors
-            .into_inner()
+    errors.extend(std::mem::take(
+        &mut *unavailable_errors
+            .lock()
             .unwrap_or_else(PoisonError::into_inner),
-    );
-    for (file, outcome) in outcomes
-        .into_inner()
-        .unwrap_or_else(PoisonError::into_inner)
-    {
+    ));
+    let checked = std::mem::take(&mut *outcomes.lock().unwrap_or_else(PoisonError::into_inner));
+    for (file, outcome) in checked {
         match outcome {
             Ok(items) => {
                 let filtered = filter_diagnostics_by_severity(items, severity);

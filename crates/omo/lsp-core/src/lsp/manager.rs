@@ -222,7 +222,7 @@ impl LspManager {
                 }
             }
         });
-        manager.lock().signal_cleanup = Some(signal_cleanup);
+        manager.lock().signal_cleanup = signal_cleanup;
         manager
     }
 
@@ -470,7 +470,7 @@ impl LspManager {
     ) -> Result<(), LspError> {
         let client = (self.client_factory)(root, server)?;
         let started_at = (self.now)();
-        let (sender, receiver) = watch::channel(None::<InitOutcome>);
+        let (sender, receiver) = watch::channel::<InitOutcome>(None);
         let id = {
             let mut state = self.lock();
             let id = state.next_id;
