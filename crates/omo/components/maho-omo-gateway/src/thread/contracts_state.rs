@@ -76,3 +76,32 @@ pub struct ThreadModel {
     pub provider: String,
     pub id: String,
 }
+
+/// The kind of provider retry wait a running thread reports (`rate_limit` or `retry`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadRetryWaitReason {
+    RateLimit,
+    Retry,
+}
+
+impl ThreadRetryWaitReason {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "rate_limit" => Some(Self::RateLimit),
+            "retry" => Some(Self::Retry),
+            _ => None,
+        }
+    }
+}
+
+/// A running thread asleep between provider retries (senpi#7025): `kind` is `"retry"`,
+/// `reason` is `"rate_limit"` or `"retry"`, `until` is when the next attempt starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadRetryWait {
+    pub kind: String,
+    pub reason: ThreadRetryWaitReason,
+    pub until: String,
+    pub attempt: i64,
+    pub max_attempts: i64,
+}

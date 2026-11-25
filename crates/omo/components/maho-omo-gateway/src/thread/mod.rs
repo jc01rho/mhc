@@ -35,6 +35,7 @@ pub mod provenance;
 pub mod provenance_config;
 pub mod provenance_record;
 pub mod provenance_resolver;
+pub mod read_item;
 pub mod read_ops;
 pub mod reader;
 pub mod relay;

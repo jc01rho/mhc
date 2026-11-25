@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::contracts_state::{ThreadActivity, ThreadModel, ThreadState};
+use super::contracts_state::{ThreadActivity, ThreadModel, ThreadRetryWait, ThreadState};
 use super::errors::ThreadToolFailure;
 use super::store_relay_ops::{BindingRecord, OutboxRow};
 
@@ -79,6 +79,9 @@ pub struct ThreadSummary {
 pub struct ThreadResultSummary {
     pub thread: String,
     pub name: String,
+    /// Set when the name is only a fallback (first message or folder), never a real name (thread-address-core `rowName`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unnamed: Option<bool>,
     pub status: ThreadStatus,
     pub state: ThreadState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,6 +92,15 @@ pub struct ThreadResultSummary {
     pub error_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// A running thread asleep between provider retries (senpi#7025, #14278).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_on: Option<ThreadRetryWait>,
+    /// The version of the engine that endpoint runs, as its `get_protocol_info` names it (#14278).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_version: Option<String>,
+    /// This device's undelivered messages for the thread (#14428): how many, where, since when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backlog: Option<ThreadBacklog>,
     /// Set when the row comes from another device's cached listing: when that listing was taken.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_of: Option<String>,
@@ -164,6 +176,15 @@ pub struct ThreadCreateOk {
     pub deduplicated: bool,
 }
 
+/// One thread's undelivered backlog as a listing row shows it (#14428): the oldest wait is ISO 8601.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadBacklog {
+    pub held: i64,
+    pub held_by_session: i64,
+    pub waiting_in_gateway: i64,
+    pub oldest_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThreadListOk {
     pub threads: Vec<ThreadResultSummary>,
@@ -171,6 +192,17 @@ pub struct ThreadListOk {
     /// More session files were in scope than one list reads: older inactive threads are left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inactive_truncated: Option<bool>,
+    /// How many unread session files' threads the filter dropped (#14304): only when it shows inactive or archived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inactive_dropped: Option<i64>,
+    /// `incomplete` when an endpoint that did not answer may hold threads this listing reads from their files (#14304).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unanswered_endpoints: Option<i64>,
+    /// Why the backlog is missing, when this device's store could not be read: never a failed listing (#14431).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backlog_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

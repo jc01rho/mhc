@@ -96,14 +96,46 @@ pub fn match_model(catalog: &[ModelChoice], model: &str, provider: Option<&str>)
             .collect();
     }
     match matches.as_slice() {
-        [] => ModelMatch::Failure(thread_tool_failure(
-            "model_not_found",
-            format!("No available model matches \"{model}\"."),
-            "Choose a provider/id from the available list and retry.",
-            Some(json!({
-                "available": catalog.iter().take(20).map(ModelChoice::qualified).collect::<Vec<_>>(),
-            })),
-        )),
+        [] => {
+            let requested_provider = model
+                .trim()
+                .find('/')
+                .map(|slash| model.trim()[..slash].trim().to_owned())
+                .or_else(|| provider.map(|provider| provider.trim().to_owned()));
+            if let Some(requested_provider) = requested_provider
+                && !catalog.iter().any(|choice| {
+                    choice.provider.to_lowercase() == requested_provider.to_lowercase()
+                })
+            {
+                let available_providers: Vec<String> = catalog
+                    .iter()
+                    .map(|choice| choice.provider.clone())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                return ModelMatch::Failure(thread_tool_failure(
+                    "model_not_found",
+                    format!(
+                        "Provider \"{requested_provider}\" has no available models in the target's catalog."
+                    ),
+                    "Choose a provider from the target's available list or enable the requested provider on the target.",
+                    Some(json!({
+                        "reason": "provider_not_configured",
+                        "provider": requested_provider,
+                        "available_providers": available_providers,
+                        "available": catalog.iter().take(20).map(ModelChoice::qualified).collect::<Vec<_>>(),
+                    })),
+                ));
+            }
+            ModelMatch::Failure(thread_tool_failure(
+                "model_not_found",
+                format!("No available model matches \"{model}\"."),
+                "Choose a provider/id from the available list and retry.",
+                Some(json!({
+                    "available": catalog.iter().take(20).map(ModelChoice::qualified).collect::<Vec<_>>(),
+                })),
+            ))
+        }
         [only] => ModelMatch::Match((*only).clone()),
         several => ModelMatch::Failure(thread_tool_failure(
             "model_ambiguous",
@@ -185,6 +217,26 @@ mod tests {
                 .as_ref()
                 .map(|details| details["candidates"].clone()),
             Some(json!(["openai/gpt-6", "azure/gpt-6"]))
+        );
+    }
+
+    #[test]
+    fn a_missing_provider_names_the_provider_and_the_targets_available_providers() {
+        let ModelMatch::Failure(failure) = match_model(&catalog(), "apitopia/glm-5.1:max", None)
+        else {
+            panic!("expected model_not_found for an absent provider");
+        };
+        assert_eq!(failure.code.as_str(), "model_not_found");
+        let details = failure.details.expect("provider_not_configured details");
+        assert_eq!(details["reason"], "provider_not_configured");
+        assert_eq!(details["provider"], "apitopia");
+        assert_eq!(
+            details["available_providers"],
+            json!(["anthropic", "azure", "openai"])
+        );
+        assert_eq!(
+            failure.next_action,
+            "Choose a provider from the target's available list or enable the requested provider on the target."
         );
     }
 
