@@ -1016,32 +1016,6 @@ pub fn closes_cycle(edges: &[(String, String)], from: &str, to: &str) -> bool {
     false
 }
 
-fn check_fanout(
-    ctx: &StoreContext,
-    request: &EnqueueRequest,
-) -> Result<Option<EnqueueOutcome>, StoreError> {
-    let Some(sender_turn) = &request.sender_turn else {
-        return Ok(None);
-    };
-    let targets: Vec<String> = ctx
-        .all(
-            "SELECT DISTINCT target_durable_id AS t FROM deliveries WHERE sender = ? AND sender_turn = ? AND state != 'refused'",
-            &[v_str(&request.sender_principal), v_str(sender_turn)],
-        )?
-        .iter()
-        .map(|row| row_str(row, "t"))
-        .collect();
-    if targets.contains(&request.target_durable_id) || (targets.len() as i64) < MAX_FANOUT_PER_TURN
-    {
-        return Ok(None);
-    }
-    Ok(Some(refused(
-        "overloaded",
-        format!("One turn may reach at most {MAX_FANOUT_PER_TURN} sessions."),
-        Some(serde_json::json!({ "budget": "fanout" })),
-    )))
-}
-
 fn take_pair_token(
     ctx: &StoreContext,
     request: &EnqueueRequest,
@@ -1063,13 +1037,20 @@ fn take_pair_token(
                 .min(stored + ((request.now - updated).max(0) as f64) / PAIR_BUCKET_REFILL_MS)
         }
     };
+    // An empty bucket means the sender spent at least the whole burst on this target within the time the bucket
+    // takes to refill from empty: that is the burst the refusal reports, measured from the bucket it read.
     if tokens < 1.0 {
+        let burst = PAIR_BUCKET_BURST as i64;
+        let window_ms = (PAIR_BUCKET_BURST * PAIR_BUCKET_REFILL_MS) as i64;
         return Ok(Some(refused(
-            "overloaded",
-            "Too many deliveries to this session; wait before sending again.",
-            Some(
-                serde_json::json!({ "budget": "pair_rate", "retry_after_ms": ((1.0 - tokens) * PAIR_BUCKET_REFILL_MS).ceil() as i64 }),
-            ),
+            "pair_loop_guard",
+            pair_loop_guard_message(&sender, &request.target_durable_id, burst, window_ms),
+            Some(serde_json::json!({
+                "guard": "pair_loop",
+                "burst": burst,
+                "window_ms": window_ms,
+                "retry_after_ms": ((1.0 - tokens) * PAIR_BUCKET_REFILL_MS).ceil() as i64,
+            })),
         )));
     }
     ctx.run(
@@ -1257,7 +1238,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 return Ok(refusal);
             }
         };
-        if let Some(budget) = check_fanout(ctx, request)?.or(take_pair_token(ctx, request)?) {
+        if let Some(budget) = take_pair_token(ctx, request)? {
             rollback_quietly(ctx);
             return Ok(budget);
         }

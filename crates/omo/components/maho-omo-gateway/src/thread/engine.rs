@@ -464,7 +464,10 @@ pub fn refusal_reason(decision: &DeliveryDecision) -> Option<RefusalKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::thread::types::GatewayDeliveryDelivery;
     use futures::executor::block_on;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicI64, Ordering};
 
     #[test]
     fn a_delivery_receipt_hash_changes_with_its_arguments() {
@@ -536,5 +539,108 @@ mod tests {
             }
             other => panic!("expected error, got {other:?}"),
         }
+    }
+
+    /// An engine whose every target is a known session with no live endpoint: each send is queued offline.
+    fn offline_engine(dir: &tempfile::TempDir, clock: Arc<AtomicI64>) -> GatewayEngine {
+        let store: Arc<dyn crate::thread::store_api::GatewayStoreApi> =
+            crate::thread::store::create_gateway_store(
+                crate::thread::store::GatewayStoreOptions::new(
+                    dir.path().to_string_lossy().into_owned(),
+                ),
+            )
+            .expect("store");
+        GatewayEngine::new(GatewayEngineOptions {
+            sender_provenance: Some(Arc::new(|| Provenance {
+                workspace: "w".into(),
+                project: "p".into(),
+                lane: None,
+                session: None,
+            })),
+            store,
+            endpoints: GatewayEndpointPort::inert(),
+            resolve: Arc::new(|target: &str, _all_scope: bool| {
+                let durable_id = target.to_owned();
+                Box::pin(async move {
+                    GatewayResolution::Ok(GatewayTarget {
+                        durable_id,
+                        endpoint: None,
+                        liveness: EndpointLiveness::Dead,
+                    })
+                })
+            }),
+            now: Some(Arc::new(move || clock.load(Ordering::Relaxed))),
+        })
+    }
+
+    fn send(
+        from: &str,
+        to: &str,
+        text: &str,
+        turn: Option<&str>,
+        key: Option<String>,
+    ) -> GatewayDeliverRequest {
+        let mut request = GatewayDeliverRequest::new(
+            GatewaySender::Session {
+                durable_id: from.into(),
+                name: None,
+                turn_id: turn.map(str::to_owned),
+                cause_delivery_id: None,
+            },
+            to,
+            text,
+        );
+        request.idempotency_key = key;
+        request
+    }
+
+    #[test]
+    fn one_sender_turn_reaches_forty_sessions() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let engine = offline_engine(&dir, Arc::new(AtomicI64::new(1_000_000)));
+        for index in 1..=40 {
+            let target = format!("G{index}");
+            match block_on(engine.deliver(send("F", &target, "fan", Some("turn-1"), None))) {
+                GatewayDeliveryResult::Ok { delivery, .. } => assert!(
+                    matches!(delivery, GatewayDeliveryDelivery::QueuedOffline { .. }),
+                    "{target}: {delivery:?}"
+                ),
+                other => panic!("{target}: expected delivered, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_ninth_burst_send_to_one_session_is_refused_pair_loop_guard_with_the_measured_burst() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clock = Arc::new(AtomicI64::new(1_000_000));
+        let engine = offline_engine(&dir, clock.clone());
+        for index in 1..=8 {
+            let burst = send("A", "B", "burst", None, Some(format!("b{index}")));
+            let result = block_on(engine.deliver(burst));
+            assert!(
+                matches!(result, GatewayDeliveryResult::Ok { .. }),
+                "send {index}: {result:?}"
+            );
+        }
+        let ninth = send("A", "B", "burst 9", None, Some("b9".into()));
+        let error = match block_on(engine.deliver(ninth)) {
+            GatewayDeliveryResult::Error { error } => error,
+            other => panic!("expected the 9th send refused, got {other:?}"),
+        };
+        assert_eq!(error.code.as_str(), "pair_loop_guard");
+        assert_eq!(
+            error.details,
+            Some(
+                json!({ "guard": "pair_loop", "burst": 8, "window_ms": 40_000, "retry_after_ms": 5_000 })
+            )
+        );
+        assert!(error.message.contains("session:A"), "{}", error.message);
+        clock.fetch_add(5_000, Ordering::Relaxed);
+        let retried = block_on(engine.deliver(send("A", "B", "burst 9", None, Some("b9".into()))));
+        assert!(
+            matches!(retried, GatewayDeliveryResult::Ok { .. }),
+            "{retried:?}"
+        );
     }
 }

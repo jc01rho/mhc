@@ -2,7 +2,7 @@
 //!
 //! Upstream counterpart: `thread/gateway/result.ts`.
 
-use super::errors::{ThreadToolFailure, thread_tool_failure};
+use super::errors::{ThreadToolFailure, pair_loop_guard_next_action, thread_tool_failure};
 use super::types::{
     DeliveryRow, DeliveryState, GatewayDeliveryDelivery, GatewayDeliveryResult, GatewayEndpointKind,
 };
@@ -133,13 +133,35 @@ pub fn engine_next_action(code: &str) -> &'static str {
     }
 }
 
-/// The failure an engine reports for a code.
+/// What to do about a full backlog whose target nobody runs: nothing drains it until the target resumes (omo#14466).
+const QUEUE_FULL_NOT_RUNNING: &str = "The target is not running, so nothing takes its queue until it resumes. Resume it, or send again after details.frees_at, when its oldest queued message expires and frees a slot.";
+
+fn detail<'a>(details: Option<&'a serde_json::Value>, key: &str) -> Option<&'a serde_json::Value> {
+    details.and_then(|details| details.get(key))
+}
+
+/// The failure an engine reports for a code. A refusal whose details say how to recover gets the next action that
+/// reads them: the pair loop guard's wait, and the full backlog of a target nobody runs.
 pub fn engine_failure(
     code: &str,
     message: impl Into<String>,
     details: Option<serde_json::Value>,
 ) -> ThreadToolFailure {
-    thread_tool_failure(code, message, engine_next_action(code), details)
+    let next_action = match code {
+        "pair_loop_guard" => pair_loop_guard_next_action(
+            detail(details.as_ref(), "retry_after_ms")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+        ),
+        "queue_full"
+            if detail(details.as_ref(), "target_running").and_then(serde_json::Value::as_bool)
+                == Some(false) =>
+        {
+            QUEUE_FULL_NOT_RUNNING.to_owned()
+        }
+        _ => engine_next_action(code).to_owned(),
+    };
+    thread_tool_failure(code, message, next_action, details)
 }
 
 #[cfg(test)]

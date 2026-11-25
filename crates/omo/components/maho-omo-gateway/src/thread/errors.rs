@@ -43,6 +43,7 @@ pub const THREAD_ERROR_CODES: &[&str] = &[
     "model_ambiguous",
     "thinking_level_unsupported",
     "loop_detected",
+    "pair_loop_guard",
     "chain_count_limit",
     "binding_conflict",
     "binding_mismatch",
@@ -108,6 +109,23 @@ pub fn thread_tool_failure(
         next_action: next_action.into(),
         details,
     }
+}
+
+/// The pair loop guard (`store_ops.rs` `take_pair_token`): one sender spent its burst to one target within the
+/// bucket's refill window, which only a send loop between two sessions does. The message names both ends and the
+/// burst; the next action names when the next send to that target is accepted.
+pub fn pair_loop_guard_message(sender: &str, target: &str, burst: i64, window_ms: i64) -> String {
+    format!(
+        "{burst} sends from {sender} to {target} within {} s; this one was not delivered.",
+        window_ms as f64 / 1000.0
+    )
+}
+
+pub fn pair_loop_guard_next_action(retry_after_ms: i64) -> String {
+    format!(
+        "This looks like a send loop between these two sessions; the next send to this target is accepted after {} s.",
+        (retry_after_ms as f64 / 1000.0).ceil() as i64
+    )
 }
 
 /// A details object built from one key, as most call sites need.
