@@ -288,7 +288,7 @@ mod unix_tests {
         assert_eq!(missing.insecure_cause, Some(InsecureStateCause::Unreadable));
 
         let socket = state_dir.join(SOCKET_FILE);
-        let listener = UnixListener::bind(&socket).expect("bind");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
         posix_secure_file(&socket, EntryKind::Socket).expect("private socket");
         drop(listener);
 
