@@ -3,6 +3,11 @@ use crate::lsp::cleanup_errors::report_best_effort_cleanup_error;
 use crate::lsp::client::LspClient;
 use crate::lsp::client::LspClientOptions;
 use crate::lsp::client::LspDiagnosticsResult;
+use crate::lsp::client_key::lsp_client_key;
+use crate::lsp::client_startup::InitOutcome;
+use crate::lsp::client_startup::ManagedClient;
+use crate::lsp::client_startup::await_init;
+use crate::lsp::client_startup::await_with_signal;
 use crate::lsp::constants::CLIENT_RESPAWN_COOLDOWN_MS;
 use crate::lsp::constants::CLIENT_RESPAWN_RETRY_LIMIT;
 use crate::lsp::constants::IDLE_TIMEOUT_MS;
@@ -12,6 +17,10 @@ use crate::lsp::constants::REAPER_INTERVAL_MS;
 use crate::lsp::errors::LspError;
 use crate::lsp::process_signal_cleanup::SignalCleanupGuard;
 use crate::lsp::process_signal_cleanup::install_process_signal_cleanup;
+use crate::lsp::timer_provider::RepeatHandle;
+use crate::lsp::timer_provider::SharedTimerProvider;
+use crate::lsp::timer_provider::real_timer_provider;
+use crate::lsp::timer_provider::repeat_every;
 use crate::lsp::types::ResolvedServer;
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -22,7 +31,6 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::Weak;
-use std::time::Duration;
 use tokio::sync::watch;
 
 pub type ClientFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -107,19 +115,8 @@ pub struct LspManagerOptions {
     pub reaper_interval_ms: Option<u64>,
     pub client_factory: Option<ClientFactory>,
     pub now: Option<ManagerNow>,
-}
-
-type InitOutcome = Option<Result<(), LspError>>;
-
-struct ManagedClient {
-    id: u64,
-    client: SharedClient,
-    ref_count: usize,
-    pending_waiters: usize,
-    last_used_at: f64,
-    init: Option<watch::Receiver<InitOutcome>>,
-    is_initializing: bool,
-    initializing_since: Option<f64>,
+    /// Schedules the reaper.
+    pub timers: Option<SharedTimerProvider>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,22 +132,22 @@ struct ManagerState {
     respawn_budgets: HashMap<String, RespawnBudget>,
     disposed: bool,
     next_id: u64,
-    reaper: Option<tokio::task::JoinHandle<()>>,
     signal_cleanup: Option<SignalCleanupGuard>,
 }
 
-/// TS `LspManager`: pools one client per `(root, server id)`, shares initialization
-/// between concurrent callers, limits resident clients via idle LRU eviction,
-/// enforces pending-stop tombstones to prevent duplicate client spawn races,
-/// and bounds respawn attempts for crash-looping servers.
+/// TS `LspManager`: pools one client per `(root, server id, resolved command)`, shares
+/// initialization between concurrent callers, limits resident clients via idle LRU eviction,
+/// enforces pending-stop tombstones to prevent duplicate client spawn races, and bounds respawn
+/// attempts for crash-looping servers. The startup lifecycle contract is in
+/// [`crate::lsp::client_startup`].
 pub struct LspManager {
     state: Mutex<ManagerState>,
     idle_timeout_ms: f64,
     init_timeout_ms: f64,
     max_resident_clients: usize,
-    reaper_interval_ms: u64,
     client_factory: ClientFactory,
     now: ManagerNow,
+    stop_reaper: RepeatHandle,
 }
 
 impl std::fmt::Debug for LspManager {
@@ -172,78 +169,52 @@ fn system_now_ms() -> f64 {
         .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0)
 }
 
-fn get_key(root: &str, server_id: &str) -> String {
-    format!("{root}::{server_id}")
-}
-
-async fn await_with_signal<F, T>(fut: F, signal: Option<&AbortSignal>) -> Result<T, LspError>
-where
-    F: Future<Output = T>,
-{
-    match signal {
-        None => Ok(fut.await),
-        Some(sig) => {
-            if sig.aborted() {
-                return Err(LspError::Aborted);
-            }
-            tokio::select! {
-                res = fut => Ok(res),
-                () = sig.cancelled() => Err(LspError::Aborted),
-            }
-        }
-    }
-}
-
-async fn await_init(
-    mut receiver: watch::Receiver<InitOutcome>,
-    signal: Option<&AbortSignal>,
-) -> Result<(), LspError> {
-    let wait = async {
-        match receiver.wait_for(Option::is_some).await {
-            Ok(outcome) => outcome.clone().unwrap_or(Ok(())),
-            Err(_) => Err(LspError::other("LSP client initialization was abandoned")),
-        }
-    };
-    match signal {
-        None => wait.await,
-        Some(signal) => {
-            if signal.aborted() {
-                return Err(LspError::Aborted);
-            }
-            tokio::select! {
-                outcome = wait => outcome,
-                () = signal.cancelled() => Err(LspError::Aborted),
-            }
-        }
-    }
+fn disposed_error() -> LspError {
+    LspError::other("LspManager has been disposed")
 }
 
 impl LspManager {
     /// Creates a manager and starts its reaper when a Tokio runtime is available.
     pub fn new(options: LspManagerOptions) -> Arc<Self> {
-        let manager = Arc::new(Self {
-            state: Mutex::new(ManagerState {
-                next_id: 1,
-                ..ManagerState::default()
-            }),
-            idle_timeout_ms: options.idle_timeout_ms.unwrap_or(IDLE_TIMEOUT_MS) as f64,
-            init_timeout_ms: options.init_timeout_ms.unwrap_or(INIT_TIMEOUT_MS) as f64,
-            max_resident_clients: options.max_resident_clients.unwrap_or(MAX_RESIDENT_CLIENTS),
-            reaper_interval_ms: options.reaper_interval_ms.unwrap_or(REAPER_INTERVAL_MS),
-            client_factory: options.client_factory.unwrap_or_else(|| {
-                Arc::new(|root: &str, server: &ResolvedServer| {
-                    Ok(Arc::new(LspClient::new(
-                        root,
-                        server.clone(),
-                        LspClientOptions::default(),
-                    )) as SharedClient)
-                })
-            }),
-            now: options.now.unwrap_or_else(|| Arc::new(system_now_ms)),
+        let idle_timeout_ms = options.idle_timeout_ms.unwrap_or(IDLE_TIMEOUT_MS) as f64;
+        let init_timeout_ms = options.init_timeout_ms.unwrap_or(INIT_TIMEOUT_MS) as f64;
+        let reaper_interval_ms = options.reaper_interval_ms.unwrap_or(REAPER_INTERVAL_MS);
+        let timers = options.timers.clone().unwrap_or_else(real_timer_provider);
+        let client_factory = options.client_factory.unwrap_or_else(|| {
+            Arc::new(|root: &str, server: &ResolvedServer| {
+                Ok(Arc::new(LspClient::new(
+                    root,
+                    server.clone(),
+                    LspClientOptions::default(),
+                )) as SharedClient)
+            })
         });
-        manager.start_reaper();
+        let now: ManagerNow = options.now.unwrap_or_else(|| Arc::new(system_now_ms));
+
+        let manager = Arc::new_cyclic(|weak| {
+            let weak: Weak<LspManager> = weak.clone();
+            let tick: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                if let Some(manager) = weak.upgrade() {
+                    manager.reap_stale();
+                }
+            });
+            let stop_reaper = repeat_every(timers, reaper_interval_ms.max(1), tick);
+            Self {
+                state: Mutex::new(ManagerState {
+                    next_id: 1,
+                    ..ManagerState::default()
+                }),
+                idle_timeout_ms,
+                init_timeout_ms,
+                max_resident_clients: options.max_resident_clients.unwrap_or(MAX_RESIDENT_CLIENTS),
+                client_factory,
+                now,
+                stop_reaper,
+            }
+        });
+
         let weak = Arc::downgrade(&manager);
-        manager.lock().signal_cleanup = install_process_signal_cleanup(move || {
+        let signal_cleanup = install_process_signal_cleanup(move || {
             let manager = weak.upgrade();
             async move {
                 if let Some(manager) = manager {
@@ -251,31 +222,12 @@ impl LspManager {
                 }
             }
         });
+        manager.lock().signal_cleanup = Some(signal_cleanup);
         manager
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, ManagerState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn start_reaper(self: &Arc<Self>) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let weak: Weak<Self> = Arc::downgrade(self);
-        let interval = Duration::from_millis(self.reaper_interval_ms.max(1));
-        let task = handle.spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                let Some(manager) = weak.upgrade() else {
-                    return;
-                };
-                manager.reap_stale();
-            }
-        });
-        self.lock().reaper = Some(task);
     }
 
     /// Deletes-then-stops with a tombstone: the pending stop is recorded so a concurrent getClient
@@ -314,8 +266,7 @@ impl LspManager {
         budget.dead_generations += 1;
     }
 
-    fn mark_healthy_generation(&self, key: &str) {
-        let mut state = self.lock();
+    fn mark_healthy_generation(state: &mut ManagerState, key: &str) {
         state.respawn_budgets.remove(key);
     }
 
@@ -370,7 +321,6 @@ impl LspManager {
                 if state.clients.len() < self.max_resident_clients {
                     break;
                 }
-                // Find least recently used idle client
                 let mut candidate_key: Option<String> = None;
                 let mut candidate_last_used = f64::MAX;
                 for (key, managed) in state.clients.iter() {
@@ -385,13 +335,13 @@ impl LspManager {
                         candidate_last_used = managed.last_used_at;
                     }
                 }
-                candidate_key
-                    .and_then(|key| state.clients.shift_remove(&key).map(|m| (key, m.client)))
+                candidate_key.and_then(|key| state.clients.shift_remove(&key))
             };
 
             match victim {
-                Some((key, client)) => {
-                    self.tombstone_stop(&key, client);
+                Some(managed) => {
+                    let key = managed.key.clone();
+                    self.tombstone_stop(&key, managed.client);
                 }
                 None => break,
             }
@@ -400,282 +350,301 @@ impl LspManager {
 
     fn reap_stale(self: &Arc<Self>) {
         let now = (self.now)();
-        let mut stale = Vec::new();
-        {
+        let stale: Vec<(String, SharedClient)> = {
             let mut state = self.lock();
-            let mut remove_keys = Vec::new();
-            for (key, managed) in state.clients.iter() {
-                let init_stuck = managed.is_initializing
-                    && managed
-                        .initializing_since
-                        .is_some_and(|since| now - since > self.init_timeout_ms);
-                let idle = !managed.is_initializing
-                    && managed.ref_count == 0
-                    && managed.pending_waiters == 0
-                    && now - managed.last_used_at > self.idle_timeout_ms;
-                if init_stuck || idle {
-                    remove_keys.push(key.clone());
-                }
-            }
-            for key in remove_keys {
-                if let Some(managed) = state.clients.shift_remove(&key) {
-                    stale.push((key, managed.client));
-                }
-            }
-        }
+            let expired: Vec<String> = state
+                .clients
+                .iter()
+                .filter(|(_, managed)| {
+                    let idle = !managed.is_initializing
+                        && managed.ref_count == 0
+                        && managed.pending_waiters == 0
+                        && now - managed.last_used_at > self.idle_timeout_ms;
+                    idle || managed.startup_expired(now, self.init_timeout_ms)
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            expired
+                .into_iter()
+                .filter_map(|key| {
+                    state
+                        .clients
+                        .shift_remove(&key)
+                        .map(|managed| (key, managed.client))
+                })
+                .collect()
+        };
         for (key, client) in stale {
             self.tombstone_stop(&key, client);
         }
     }
 
-    async fn try_delete_if_orphaned(self: &Arc<Self>, key: &str, id: u64) {
+    /// Drops `managed` from the pool and stops it as a tracked tombstone, once; nothing here awaits
+    /// the stop.
+    fn discard_if_same(self: &Arc<Self>, key: &str, id: u64) {
         let removed = {
             let mut state = self.lock();
-            let orphaned = state.clients.get(key).is_some_and(|managed| {
-                managed.id == id
-                    && managed.ref_count == 0
-                    && managed.pending_waiters == 0
-                    && !managed.is_initializing
-            });
-            if orphaned {
+            let matches = state
+                .clients
+                .get(key)
+                .is_some_and(|managed| managed.id == id);
+            if matches {
                 state.clients.shift_remove(key)
             } else {
                 None
             }
         };
         if let Some(managed) = removed {
-            let mut rx = self.tombstone_stop(key, managed.client);
-            let _ = rx.wait_for(|settled| *settled).await;
+            self.tombstone_stop(key, managed.client);
         }
     }
 
-    fn remove_if_same(&self, key: &str, id: u64) -> Option<ManagedClient> {
+    fn count_waiter(&self, key: &str, id: u64) {
         let mut state = self.lock();
-        if state
+        if let Some(managed) = state
             .clients
-            .get(key)
-            .is_some_and(|managed| managed.id == id)
+            .get_mut(key)
+            .filter(|managed| managed.id == id)
         {
-            state.clients.shift_remove(key)
-        } else {
-            None
+            managed.pending_waiters += 1;
         }
     }
 
-    fn start_init(&self, client: SharedClient) -> watch::Receiver<InitOutcome> {
-        let (sender, receiver) = watch::channel(None);
+    fn uncount_waiter(&self, key: &str, id: u64) {
+        let mut state = self.lock();
+        if let Some(managed) = state
+            .clients
+            .get_mut(key)
+            .filter(|managed| managed.id == id)
+            && managed.pending_waiters > 0
+        {
+            managed.pending_waiters -= 1;
+        }
+    }
+
+    /// TS `ClientStartups.detach`: the last waiter of a waiter-held startup that holds no reference
+    /// makes the manager drop and stop it.
+    fn detach_waiter(self: &Arc<Self>, key: &str, id: u64) {
+        let orphans = {
+            let mut state = self.lock();
+            let mut orphans = None;
+            if let Some(managed) = state
+                .clients
+                .get_mut(key)
+                .filter(|managed| managed.id == id)
+            {
+                managed.pending_waiters = managed.pending_waiters.saturating_sub(1);
+                if managed.pending_waiters == 0 && managed.ref_count == 0 && managed.held_by_waiters
+                {
+                    orphans = state.clients.shift_remove(key);
+                }
+            }
+            orphans
+        };
+        if let Some(managed) = orphans {
+            self.tombstone_stop(key, managed.client);
+        }
+    }
+
+    fn finish_startup(&self, key: &str, id: u64) {
+        let now = (self.now)();
+        let mut state = self.lock();
+        if let Some(managed) = state
+            .clients
+            .get_mut(key)
+            .filter(|managed| managed.id == id)
+        {
+            managed.is_initializing = false;
+            managed.initializing_since = None;
+            managed.init = None;
+            managed.last_used_at = now;
+        }
+    }
+
+    fn start_client(
+        self: &Arc<Self>,
+        key: &str,
+        root: &str,
+        server: &ResolvedServer,
+        held_by_waiters: bool,
+    ) -> Result<(), LspError> {
+        let client = (self.client_factory)(root, server)?;
+        let started_at = (self.now)();
+        let (sender, receiver) = watch::channel(None::<InitOutcome>);
+        let id = {
+            let mut state = self.lock();
+            let id = state.next_id;
+            state.next_id += 1;
+            state.clients.insert(
+                key.to_string(),
+                ManagedClient {
+                    id,
+                    key: key.to_string(),
+                    root: root.to_string(),
+                    server_id: server.id.clone(),
+                    client: Arc::clone(&client),
+                    held_by_waiters,
+                    ref_count: 0,
+                    pending_waiters: 0,
+                    last_used_at: started_at,
+                    init: Some(receiver),
+                    is_initializing: true,
+                    initializing_since: Some(started_at),
+                },
+            );
+            id
+        };
+
+        let weak = Arc::downgrade(self);
+        let task_key = key.to_string();
         tokio::spawn(async move {
             let outcome = match client.start().await {
                 Ok(()) => client.initialize().await,
                 Err(error) => Err(error),
             };
+            if let Some(manager) = weak.upgrade() {
+                match &outcome {
+                    Ok(()) => manager.finish_startup(&task_key, id),
+                    Err(_) => manager.discard_if_same(&task_key, id),
+                }
+            }
             sender.send_replace(Some(outcome));
         });
-        receiver
+        Ok(())
     }
 
-    /// TS `getClient`: returns a started, initialized client and takes one reference.
+    /// TS `getClient`: returns a started, initialized client and takes one reference. Every await
+    /// happens before the acquisition counts or while it counts as a waiter (client-startup.ts).
     pub async fn get_client(
         self: &Arc<Self>,
         root: &str,
         server: &ResolvedServer,
         signal: Option<&AbortSignal>,
     ) -> Result<SharedClient, LspError> {
-        if self.lock().disposed {
-            return Err(LspError::other("LspManager has been disposed"));
-        }
-        if let Some(signal) = signal {
-            signal.throw_if_aborted()?;
-        }
-
-        let key = get_key(root, &server.id);
-
+        let key = lsp_client_key(root, server);
         loop {
+            if self.lock().disposed {
+                return Err(disposed_error());
+            }
+            if let Some(signal) = signal {
+                signal.throw_if_aborted()?;
+            }
+
             let pending_stop = {
                 let state = self.lock();
                 state.pending_stops.get(&key).cloned()
             };
-            match pending_stop {
-                None => break,
-                Some(mut rx) => {
-                    await_with_signal(rx.wait_for(|settled| *settled), signal)
-                        .await?
-                        .map_err(|error| LspError::other(error.to_string()))?;
-                    if let Some(signal) = signal {
-                        signal.throw_if_aborted()?;
+            if let Some(mut rx) = pending_stop {
+                await_with_signal(rx.wait_for(|settled| *settled), signal)
+                    .await?
+                    .map_err(|error| LspError::other(error.to_string()))?;
+                continue;
+            }
+
+            let expired_id = {
+                let state = self.lock();
+                let now = (self.now)();
+                state
+                    .clients
+                    .get(&key)
+                    .filter(|managed| managed.startup_expired(now, self.init_timeout_ms))
+                    .map(|managed| managed.id)
+            };
+            if let Some(id) = expired_id {
+                self.discard_if_same(&key, id);
+                continue;
+            }
+
+            if !self.lock().clients.contains_key(&key) {
+                self.evict_for_admission();
+                self.ensure_respawn_allowed(&key, root, &server.id)?;
+                self.start_client(&key, root, server, true)?;
+            }
+
+            let (id, client, init) = {
+                let state = self.lock();
+                match state.clients.get(&key) {
+                    Some(managed) => (
+                        managed.id,
+                        Arc::clone(&managed.client),
+                        managed.init.clone(),
+                    ),
+                    None => continue,
+                }
+            };
+
+            if let Some(init) = init {
+                self.count_waiter(&key, id);
+                match await_init(init, signal).await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        self.detach_waiter(&key, id);
+                        return Err(error);
                     }
                 }
-            }
-        }
-
-        if self.lock().disposed {
-            return Err(LspError::other("LspManager has been disposed"));
-        }
-
-        let now = (self.now)();
-        let stuck = {
-            let mut state = self.lock();
-            let is_stuck = state.clients.get(&key).is_some_and(|managed| {
-                managed.is_initializing
-                    && managed
-                        .initializing_since
-                        .is_some_and(|since| now - since > self.init_timeout_ms)
-            });
-            if is_stuck {
-                state.clients.shift_remove(&key)
-            } else {
-                None
-            }
-        };
-        if let Some(managed) = stuck {
-            let mut rx = self.tombstone_stop(&key, managed.client);
-            let _ = rx.wait_for(|settled| *settled).await;
-        }
-
-        let existing = {
-            let mut state = self.lock();
-            state.clients.get_mut(&key).map(|managed| {
-                if managed.init.is_some() {
-                    managed.pending_waiters += 1;
+                if let Some(signal) = signal.filter(|signal| signal.aborted()) {
+                    self.detach_waiter(&key, id);
+                    signal.throw_if_aborted()?;
                 }
-                (managed.id, managed.client.clone(), managed.init.clone())
-            })
-        };
-
-        if let Some((id, client, init)) = existing {
-            if let Some(init) = init {
-                let outcome = await_init(init, signal).await;
-                if let Some(managed) = self
-                    .lock()
-                    .clients
-                    .get_mut(&key)
-                    .filter(|managed| managed.id == id)
-                {
-                    managed.pending_waiters -= 1;
-                }
-                if let Err(error) = outcome {
-                    self.try_delete_if_orphaned(&key, id).await;
-                    return Err(error);
-                }
+                self.uncount_waiter(&key, id);
             }
 
-            if let Some(signal) = signal.filter(|signal| signal.aborted()) {
-                self.try_delete_if_orphaned(&key, id).await;
-                signal.throw_if_aborted()?;
-            }
-
-            if !client.is_alive() {
-                self.record_dead_generation(&key);
-                self.remove_if_same(&key, id);
-                let mut rx = self.tombstone_stop(&key, client);
-                let _ = rx.wait_for(|settled| *settled).await;
-                return Box::pin(self.get_client(root, server, signal)).await;
-            }
-
-            self.mark_healthy_generation(&key);
             let now = (self.now)();
-            if let Some(managed) = self
-                .lock()
-                .clients
-                .get_mut(&key)
-                .filter(|managed| managed.id == id)
-            {
-                managed.ref_count += 1;
-                managed.last_used_at = now;
+            let outcome = {
+                let mut state = self.lock();
+                match state
+                    .clients
+                    .get(&key)
+                    .map(|managed| (managed.id, managed.client.is_alive()))
+                {
+                    Some((current_id, alive)) if current_id == id => {
+                        if alive {
+                            Self::mark_healthy_generation(&mut state, &key);
+                            if let Some(managed) = state.clients.get_mut(&key) {
+                                managed.ref_count += 1;
+                                managed.last_used_at = now;
+                            }
+                            Some(true)
+                        } else {
+                            Some(false)
+                        }
+                    }
+                    _ => None,
+                }
+            };
+            match outcome {
+                None => continue,
+                Some(true) => return Ok(client),
+                Some(false) => {
+                    self.record_dead_generation(&key);
+                    self.discard_if_same(&key, id);
+                    continue;
+                }
             }
-            return Ok(client);
         }
-
-        self.evict_for_admission();
-        self.ensure_respawn_allowed(&key, root, &server.id)?;
-
-        let client = (self.client_factory)(root, server)?;
-        let init_started_at = (self.now)();
-        let init = self.start_init(client.clone());
-        let id = {
-            let mut state = self.lock();
-            let id = state.next_id;
-            state.next_id += 1;
-            state.clients.insert(
-                key.clone(),
-                ManagedClient {
-                    id,
-                    client: client.clone(),
-                    ref_count: 0,
-                    pending_waiters: 1,
-                    last_used_at: init_started_at,
-                    init: Some(init.clone()),
-                    is_initializing: true,
-                    initializing_since: Some(init_started_at),
-                },
-            );
-            id
-        };
-
-        if let Err(error) = await_init(init, signal).await {
-            if let Some(managed) = self
-                .lock()
-                .clients
-                .get_mut(&key)
-                .filter(|managed| managed.id == id)
-            {
-                managed.pending_waiters -= 1;
-            }
-            self.remove_if_same(&key, id);
-            let mut rx = self.tombstone_stop(&key, client);
-            let _ = rx.wait_for(|settled| *settled).await;
-            return Err(error);
-        }
-
-        if let Some(managed) = self
-            .lock()
-            .clients
-            .get_mut(&key)
-            .filter(|managed| managed.id == id)
-        {
-            managed.pending_waiters -= 1;
-            managed.is_initializing = false;
-            managed.initializing_since = None;
-            managed.init = None;
-        }
-
-        if let Some(signal) = signal.filter(|signal| signal.aborted()) {
-            self.try_delete_if_orphaned(&key, id).await;
-            signal.throw_if_aborted()?;
-        }
-
-        if !client.is_alive() {
-            self.record_dead_generation(&key);
-            self.remove_if_same(&key, id);
-            let mut rx = self.tombstone_stop(&key, client);
-            let _ = rx.wait_for(|settled| *settled).await;
-            return Box::pin(self.get_client(root, server, signal)).await;
-        }
-
-        self.mark_healthy_generation(&key);
-        let now = (self.now)();
-        if let Some(managed) = self
-            .lock()
-            .clients
-            .get_mut(&key)
-            .filter(|managed| managed.id == id)
-        {
-            managed.ref_count += 1;
-            managed.last_used_at = now;
-        }
-        Ok(client)
     }
 
-    pub fn release_client(&self, root: &str, server_id: &str) {
+    /// Gives back the reference on `client`; a client no longer pooled for the key has none left to
+    /// give back.
+    pub fn release_client(
+        &self,
+        root: &str,
+        server: &ResolvedServer,
+        client: Option<&SharedClient>,
+    ) {
+        let key = lsp_client_key(root, server);
         let now = (self.now)();
-        if let Some(managed) = self
-            .lock()
-            .clients
-            .get_mut(&get_key(root, server_id))
-            .filter(|managed| managed.ref_count > 0)
-        {
-            managed.ref_count -= 1;
-            managed.last_used_at = now;
+        let mut state = self.lock();
+        if let Some(managed) = state.clients.get_mut(&key) {
+            if let Some(client) = client
+                && !Arc::ptr_eq(&managed.client, client)
+            {
+                return;
+            }
+            if managed.ref_count > 0 {
+                managed.ref_count -= 1;
+                managed.last_used_at = now;
+            }
         }
     }
 
@@ -683,10 +652,10 @@ impl LspManager {
     pub fn invalidate_client(
         self: &Arc<Self>,
         root: &str,
-        server_id: &str,
+        server: &ResolvedServer,
         client: Option<&SharedClient>,
     ) {
-        let key = get_key(root, server_id);
+        let key = lsp_client_key(root, server);
         let removed = {
             let mut state = self.lock();
             let matches = state.clients.get(&key).is_some_and(|managed| {
@@ -705,7 +674,7 @@ impl LspManager {
 
     /// TS `warmupClient`: starts initialization in the background without taking a reference.
     pub fn warmup_client(self: &Arc<Self>, root: &str, server: &ResolvedServer) {
-        let key = get_key(root, &server.id);
+        let key = lsp_client_key(root, server);
         {
             let state = self.lock();
             if state.disposed
@@ -721,91 +690,37 @@ impl LspManager {
             return;
         }
 
-        let Ok(client) = (self.client_factory)(root, server) else {
-            return;
-        };
-        let init_started_at = (self.now)();
-        let mut init = self.start_init(client.clone());
-        let id = {
-            let mut state = self.lock();
-            let id = state.next_id;
-            state.next_id += 1;
-            state.clients.insert(
-                key.clone(),
-                ManagedClient {
-                    id,
-                    client: client.clone(),
-                    ref_count: 0,
-                    pending_waiters: 0,
-                    last_used_at: init_started_at,
-                    init: Some(init.clone()),
-                    is_initializing: true,
-                    initializing_since: Some(init_started_at),
-                },
-            );
-            id
-        };
-        let manager = Arc::downgrade(self);
-        tokio::spawn(async move {
-            let outcome = init
-                .wait_for(Option::is_some)
-                .await
-                .map(|outcome| outcome.clone().unwrap_or(Ok(())));
-            let Some(manager) = manager.upgrade() else {
-                return;
-            };
-            match outcome {
-                Ok(Ok(())) => {
-                    let now = (manager.now)();
-                    if let Some(managed) = manager
-                        .lock()
-                        .clients
-                        .get_mut(&key)
-                        .filter(|managed| managed.id == id)
-                    {
-                        managed.is_initializing = false;
-                        managed.initializing_since = None;
-                        managed.init = None;
-                        managed.last_used_at = now;
-                    }
-                }
-                _ => {
-                    manager.remove_if_same(&key, id);
-                    manager.tombstone_stop(&key, client);
-                }
-            }
-        });
+        let _ = self.start_client(&key, root, server, false);
     }
 
-    pub fn is_server_initializing(&self, root: &str, server_id: &str) -> bool {
+    pub fn is_server_initializing(&self, root: &str, server: &ResolvedServer) -> bool {
         self.lock()
             .clients
-            .get(&get_key(root, server_id))
+            .get(&lsp_client_key(root, server))
             .is_some_and(|managed| managed.is_initializing)
     }
 
     pub fn get_snapshot(&self) -> Vec<ClientSnapshot> {
         self.lock()
             .clients
-            .iter()
-            .map(|(key, managed)| {
-                let (root, server_id) = key.split_once("::").unwrap_or((key.as_str(), ""));
-                ClientSnapshot {
-                    root: root.to_string(),
-                    server_id: server_id.to_string(),
-                    ref_count: managed.ref_count,
-                    pending_waiters: managed.pending_waiters,
-                    last_used_at: managed.last_used_at,
-                    is_initializing: managed.is_initializing,
-                    alive: managed.client.is_alive(),
-                    command: managed.client.command(),
-                }
+            .values()
+            .map(|managed| ClientSnapshot {
+                root: managed.root.clone(),
+                server_id: managed.server_id.clone(),
+                ref_count: managed.ref_count,
+                pending_waiters: managed.pending_waiters,
+                last_used_at: managed.last_used_at,
+                is_initializing: managed.is_initializing,
+                alive: managed.client.is_alive(),
+                command: managed.client.command(),
             })
             .collect()
     }
 
-    pub fn has_client(&self, root: &str, server_id: &str) -> bool {
-        self.lock().clients.contains_key(&get_key(root, server_id))
+    pub fn has_client(&self, root: &str, server: &ResolvedServer) -> bool {
+        self.lock()
+            .clients
+            .contains_key(&lsp_client_key(root, server))
     }
 
     pub fn client_count(&self) -> usize {
@@ -817,9 +732,7 @@ impl LspManager {
         let (clients, pending_stops): (Vec<SharedClient>, Vec<watch::Receiver<bool>>) = {
             let mut state = self.lock();
             state.disposed = true;
-            if let Some(reaper) = state.reaper.take() {
-                reaper.abort();
-            }
+            self.stop_reaper.stop();
             state.signal_cleanup = None;
             state.respawn_budgets.clear();
             let clients = state
@@ -843,10 +756,8 @@ impl LspManager {
 
 impl Drop for LspManager {
     fn drop(&mut self) {
+        self.stop_reaper.stop();
         let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
-        if let Some(reaper) = state.reaper.take() {
-            reaper.abort();
-        }
         if !state.clients.is_empty() {
             report_best_effort_cleanup_error(
                 "manager drop",

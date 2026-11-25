@@ -2,6 +2,8 @@
 
 use crate::lsp::config_loader::get_merged_servers;
 use crate::lsp::config_loader::get_merged_servers_and_disabled_ids;
+use crate::lsp::native_typescript::native_typescript_command;
+use crate::lsp::native_typescript::native_typescript_search_directory;
 use crate::lsp::server_definitions::builtin_server;
 use crate::lsp::server_definitions::install_hint;
 use crate::lsp::server_installation::{
@@ -17,15 +19,45 @@ use crate::request_context::context_cwd;
 pub fn find_server_for_extension(
     ext: &str,
 ) -> Result<ServerLookupResult, LspRequestContextUnavailableError> {
+    find_server_for_extension_for_target(ext, None)
+}
+
+pub fn find_server_for_extension_for_target(
+    ext: &str,
+    target_path: Option<&str>,
+) -> Result<ServerLookupResult, LspRequestContextUnavailableError> {
+    find_server_for_extension_with_options(ext, target_path, &ResolveServerBinaryOptions::default())
+}
+
+pub fn find_server_for_extension_with_options(
+    ext: &str,
+    target_path: Option<&str>,
+    binary_options: &ResolveServerBinaryOptions,
+) -> Result<ServerLookupResult, LspRequestContextUnavailableError> {
     let servers = get_merged_servers()?;
     let working_directory = context_cwd()?;
+    let search_directory = native_typescript_search_directory(target_path, &working_directory);
     let has_ext = |server: &ResolvedServer| server.extensions.iter().any(|e| e == ext);
 
     for entry in servers.iter().filter(|entry| has_ext(&entry.server)) {
+        if let Some(native_ts) = native_typescript_command(entry, &search_directory) {
+            // The builtin initialization is typescript-language-server's option set; tsc gets only
+            // what a config file supplied.
+            return Ok(ServerLookupResult::Found {
+                server: ResolvedServer {
+                    id: entry.server.id.clone(),
+                    command: native_ts,
+                    extensions: entry.server.extensions.clone(),
+                    priority: entry.server.priority,
+                    env: entry.server.env.clone(),
+                    initialization: entry.configured_initialization.clone(),
+                },
+            });
+        }
         if let Some(binary) = resolve_server_binary(
             &entry.server.command,
             Some(&working_directory),
-            &ResolveServerBinaryOptions::default(),
+            binary_options,
         ) {
             let mut server = entry.server.clone();
             server.command[0] = binary;
@@ -76,10 +108,16 @@ pub struct ServerStatus {
 
 /// TS `getAllServers`.
 pub fn get_all_servers() -> Result<Vec<ServerStatus>, LspRequestContextUnavailableError> {
+    get_all_servers_with_options(&ResolveServerBinaryOptions::default())
+}
+
+pub fn get_all_servers_with_options(
+    binary_options: &ResolveServerBinaryOptions,
+) -> Result<Vec<ServerStatus>, LspRequestContextUnavailableError> {
     // PERF-DIVERGENCE(omo lsp config-loader): upstream reads the LSP config files twice per call (merged servers, then disabled ids); this port loads them once. Output is identical.
     let (servers, disabled) = get_merged_servers_and_disabled_ids()?;
     let working_directory = context_cwd()?;
-    let options = ResolveServerBinaryOptions::default();
+    let native_search_directory = native_typescript_search_directory(None, &working_directory);
     let mut result: Vec<ServerStatus> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     for entry in servers {
@@ -87,12 +125,13 @@ pub fn get_all_servers() -> Result<Vec<ServerStatus>, LspRequestContextUnavailab
             continue;
         }
         seen.push(entry.server.id.clone());
+        let installed = is_server_installed_with_options(
+            &entry.server.command,
+            Some(&working_directory),
+            binary_options,
+        ) || native_typescript_command(&entry, &native_search_directory).is_some();
         result.push(ServerStatus {
-            installed: is_server_installed_with_options(
-                &entry.server.command,
-                Some(&working_directory),
-                &options,
-            ),
+            installed,
             id: entry.server.id,
             extensions: entry.server.extensions,
             disabled: false,
@@ -110,7 +149,7 @@ pub fn get_all_servers() -> Result<Vec<ServerStatus>, LspRequestContextUnavailab
                 is_server_installed_with_options(
                     &b.command_vec(),
                     Some(&working_directory),
-                    &options,
+                    binary_options,
                 )
             }),
             extensions: builtin.map(|b| b.extensions_vec()).unwrap_or_default(),

@@ -167,6 +167,7 @@ async fn bounded_concurrency_keeps_file_failures_structured() {
             workspace_root: Some(root.clone()),
             server: Some(typescript_server()),
             signal: None,
+            ..DirectoryDiagnosticsOptions::default()
         },
     )
     .await
@@ -214,13 +215,13 @@ async fn abort_after_first_file_schedules_no_later_file() {
             workspace_root: Some(root.clone()),
             server: Some(typescript_server()),
             signal: Some(controller.signal()),
+            ..DirectoryDiagnosticsOptions::default()
         },
     )
-    .await
-    .expect("aggregate");
+    .await;
     manager.stop_all().await;
 
-    assert_eq!(result.total_diagnostics, 0);
+    assert!(matches!(result, Err(LspError::Aborted)), "{result:?}");
     assert_eq!(*visited.lock().expect("visited"), vec![file("a.ts")]);
 }
 
@@ -244,6 +245,7 @@ async fn aborting_cold_acquisition_settles_and_cleans_up_before_startup_releases
         workspace_root: Some(root.clone()),
         server: Some(typescript_server()),
         signal: Some(controller.signal()),
+        ..DirectoryDiagnosticsOptions::default()
     };
     let aggregation = tokio::spawn({
         let root = root.clone();

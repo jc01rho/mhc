@@ -1,15 +1,20 @@
 use crate::abort::AbortSignal;
-use crate::lsp::client_wrapper::find_workspace_root;
-use crate::lsp::client_wrapper::require_found_server;
+use crate::lsp::client_wrapper::format_server_lookup_error;
 use crate::lsp::constants::DEFAULT_MAX_DIAGNOSTICS;
 use crate::lsp::constants::DEFAULT_MAX_DIRECTORY_FILES;
+use crate::lsp::directory_group_scan::GroupScanOptions;
+use crate::lsp::directory_group_scan::scan_served_groups;
+use crate::lsp::directory_server_groups::FixedDirectoryServer;
+use crate::lsp::directory_server_groups::group_files_by_client;
 use crate::lsp::effective_extension::effective_extension;
 use crate::lsp::errors::LspError;
 use crate::lsp::formatters::filter_diagnostics_by_severity;
 use crate::lsp::formatters::format_diagnostic;
 use crate::lsp::manager::LspManager;
+use crate::lsp::manager::SharedClient;
 use crate::lsp::manager::get_lsp_manager;
-use crate::lsp::server_resolution::find_server_for_extension;
+use crate::lsp::server_installation::ResolveServerBinaryOptions;
+use crate::lsp::timer_provider::SharedTimerProvider;
 use crate::lsp::types::Diagnostic;
 use crate::lsp::types::ResolvedServer;
 use crate::lsp::types::SeverityFilter;
@@ -47,6 +52,10 @@ pub struct DirectoryDiagnosticsOptions {
     pub workspace_root: Option<String>,
     pub server: Option<ResolvedServer>,
     pub signal: Option<AbortSignal>,
+    pub timers: Option<SharedTimerProvider>,
+    /// Binary-resolution overrides for the per-file server lookup. Upstream reads the process
+    /// environment; mhc threads the same knobs so a test never mutates it.
+    pub binary_options: Option<ResolveServerBinaryOptions>,
 }
 
 /// TS `collectFilesWithExtension`: depth-first, skips symlinks and build directories.
@@ -113,10 +122,6 @@ pub async fn aggregate_diagnostics_for_directory(
             "Directory does not exist: {abs_dir}"
         )));
     }
-    let server = match options.server.clone() {
-        Some(server) => server,
-        None => require_found_server(find_server_for_extension(extension)?)?,
-    };
     let all_files = match &options.list_files {
         Some(list_files) => list_files(&abs_dir, extension, max_files + 1),
         None => {
@@ -146,70 +151,128 @@ pub async fn aggregate_diagnostics_for_directory(
         });
     }
 
-    let root = match &options.workspace_root {
-        Some(root) => root.clone(),
-        None => find_workspace_root(&abs_dir)?,
-    };
+    // Each file goes to the client a single-file request for it would use; one scan at a repository
+    // root can span packages served by different servers. File cap and concurrency stay per request.
+    let groups = group_files_by_client(
+        &files_to_process,
+        extension,
+        FixedDirectoryServer {
+            server: options.server.as_ref(),
+            workspace_root: options.workspace_root.as_deref(),
+            binary_options: options.binary_options.as_ref(),
+        },
+    )?;
+    if groups.served.is_empty()
+        && let Some(first) = groups.unserved.first()
+    {
+        return Err(LspError::ServerLookup {
+            message: format_server_lookup_error(&first.lookup)?,
+            lookup: Some(first.lookup.clone()),
+        });
+    }
+
     let manager = options.manager.clone().unwrap_or_else(get_lsp_manager);
     let max_concurrency = options
         .max_concurrency
         .unwrap_or(DIRECTORY_DIAGNOSTICS_MAX_CONCURRENCY)
         .max(1);
-    let signal = options.signal.as_ref();
+    let signal = options.signal.clone();
 
-    if let Some(signal) = signal {
+    let outcomes: Arc<Mutex<Vec<(String, Result<Vec<Diagnostic>, String>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let file_errors: Vec<DirectoryDiagnosticsFileFailure> = groups
+        .unserved
+        .iter()
+        .flat_map(|group| {
+            let first_line = format_server_lookup_error(&group.lookup)
+                .unwrap_or_else(|_| "No LSP server".to_string())
+                .lines()
+                .next()
+                .unwrap_or("No LSP server")
+                .to_string();
+            group
+                .files
+                .iter()
+                .map(move |file| DirectoryDiagnosticsFileFailure {
+                    file: file.clone(),
+                    error: first_line.clone(),
+                })
+        })
+        .collect();
+
+    if let Some(signal) = options.signal.as_ref() {
         signal.throw_if_aborted()?;
     }
-    let client = manager.get_client(&root, &server, signal).await?;
-    let next_index = Mutex::new(0usize);
-    let all_diagnostics: Mutex<Vec<(String, Diagnostic)>> = Mutex::new(Vec::new());
-    let file_errors: Mutex<Vec<DirectoryDiagnosticsFileFailure>> = Mutex::new(Vec::new());
-    let worker = || async {
-        loop {
-            if signal.is_some_and(AbortSignal::aborted) {
-                return;
-            }
-            let file = {
-                let mut index = next_index.lock().unwrap_or_else(PoisonError::into_inner);
-                let file = files_to_process.get(*index).cloned();
-                *index += 1;
-                file
-            };
-            let Some(file) = file else {
-                return;
-            };
-            match client.diagnostics(&file, signal).await {
-                Ok(result) => {
-                    let filtered = filter_diagnostics_by_severity(result.items, severity);
-                    all_diagnostics
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .extend(
-                            filtered
-                                .into_iter()
-                                .map(|diagnostic| (file.clone(), diagnostic)),
-                        );
-                }
-                Err(error) => file_errors
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(DirectoryDiagnosticsFileFailure {
-                        file,
-                        error: error.to_string(),
-                    }),
-            }
-        }
-    };
-    let worker_count = max_concurrency.min(files_to_process.len());
-    futures::future::join_all((0..worker_count).map(|_| worker())).await;
-    manager.release_client(&root, &server.id);
 
-    let all_diagnostics = all_diagnostics
+    let collected = Arc::clone(&outcomes);
+    let check_signal = signal.clone();
+    let check_file = Arc::new(move |client: SharedClient, file: String| {
+        let collected = Arc::clone(&collected);
+        let check_signal = check_signal.clone();
+        Box::pin(async move {
+            let outcome = match client.diagnostics(&file, check_signal.as_ref()).await {
+                Ok(result) => Ok(result.items),
+                Err(error) => Err(error.to_string()),
+            };
+            collected
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((file, outcome));
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+    });
+    let unavailable_errors: Arc<Mutex<Vec<DirectoryDiagnosticsFileFailure>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let unavailable = Arc::clone(&unavailable_errors);
+    let on_group_unavailable = Arc::new(
+        move |group: &crate::lsp::directory_server_groups::ServedFileGroup, error: String| {
+            let mut errors = unavailable.lock().unwrap_or_else(PoisonError::into_inner);
+            errors.extend(
+                group
+                    .files
+                    .iter()
+                    .map(|file| DirectoryDiagnosticsFileFailure {
+                        file: file.clone(),
+                        error: error.clone(),
+                    }),
+            );
+        },
+    );
+
+    scan_served_groups(GroupScanOptions {
+        manager: &manager,
+        groups: &groups.served,
+        max_concurrency,
+        signal,
+        timers: options.timers.clone(),
+        check_file,
+        on_group_unavailable,
+    })
+    .await?;
+
+    let mut diagnostics: Vec<(String, Diagnostic)> = Vec::new();
+    let mut errors = file_errors;
+    errors.extend(
+        unavailable_errors
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+    for (file, outcome) in outcomes
         .into_inner()
-        .unwrap_or_else(PoisonError::into_inner);
-    let file_errors = file_errors
-        .into_inner()
-        .unwrap_or_else(PoisonError::into_inner);
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        match outcome {
+            Ok(items) => {
+                let filtered = filter_diagnostics_by_severity(items, severity);
+                diagnostics.extend(
+                    filtered
+                        .into_iter()
+                        .map(|diagnostic| (file.clone(), diagnostic)),
+                );
+            }
+            Err(error) => errors.push(DirectoryDiagnosticsFileFailure { file, error }),
+        }
+    }
+
     let capped_note = if was_capped {
         format!(" (capped at {max_files})")
     } else {
@@ -219,38 +282,38 @@ pub async fn aggregate_diagnostics_for_directory(
         format!("Directory: {abs_dir}"),
         format!("Extension: {extension}"),
         format!("Files scanned: {}{capped_note}", files_to_process.len()),
-        format!("Files with errors: {}", file_errors.len()),
-        format!("Total diagnostics: {}", all_diagnostics.len()),
+        format!("Files with errors: {}", errors.len()),
+        format!("Total diagnostics: {}", diagnostics.len()),
     ];
-    if !file_errors.is_empty() {
+    if !errors.is_empty() {
         lines.push(String::new());
         lines.push("File processing errors:".to_string());
         lines.extend(
-            file_errors
+            errors
                 .iter()
                 .map(|failure| format!("  {}: {}", failure.file, failure.error)),
         );
     }
-    if !all_diagnostics.is_empty() {
+    if !diagnostics.is_empty() {
         lines.push(String::new());
         lines.extend(
-            all_diagnostics
+            diagnostics
                 .iter()
                 .take(DEFAULT_MAX_DIAGNOSTICS)
                 .map(|(file, diagnostic)| format!("{file}: {}", format_diagnostic(diagnostic))),
         );
-        if all_diagnostics.len() > DEFAULT_MAX_DIAGNOSTICS {
+        if diagnostics.len() > DEFAULT_MAX_DIAGNOSTICS {
             lines.push(String::new());
             lines.push(format!(
                 "... ({} more diagnostics not shown)",
-                all_diagnostics.len() - DEFAULT_MAX_DIAGNOSTICS
+                diagnostics.len() - DEFAULT_MAX_DIAGNOSTICS
             ));
         }
     }
     Ok(DirectoryDiagnosticsResult {
         output: lines.join("\n"),
-        total_diagnostics: all_diagnostics.len(),
-        file_failures: file_errors,
+        total_diagnostics: diagnostics.len(),
+        file_failures: errors,
     })
 }
 

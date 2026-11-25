@@ -10,16 +10,18 @@ struct LocalBinRule {
     bin_dirs: &'static [&'static [&'static str]],
 }
 
+pub(crate) const NODE_PROJECT_MARKERS: &[&str] = &[
+    "package.json",
+    "bun.lock",
+    "bun.lockb",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+];
+
 const LOCAL_BIN_RULES: &[LocalBinRule] = &[
     LocalBinRule {
-        markers: &[
-            "package.json",
-            "bun.lock",
-            "bun.lockb",
-            "package-lock.json",
-            "yarn.lock",
-            "pnpm-lock.yaml",
-        ],
+        markers: NODE_PROJECT_MARKERS,
         bin_dirs: &[&["node_modules", ".bin"]],
     },
     LocalBinRule {
@@ -77,11 +79,11 @@ pub fn server_binary_probe_count_for_tests() -> usize {
     PROBE_COUNT.load(Ordering::SeqCst)
 }
 
-fn probe<P: AsRef<Path>>(path: P) -> bool {
+pub(crate) fn probe<P: AsRef<Path>>(path: P) -> bool {
     PROBE_COUNT.fetch_add(1, Ordering::SeqCst);
     path.as_ref().exists()
 }
-fn executable_suffixes(platform: &str, path_ext: Option<&str>) -> Vec<String> {
+pub(crate) fn executable_suffixes(platform: &str, path_ext: Option<&str>) -> Vec<String> {
     if platform != "win32" {
         return vec![String::new()];
     }
@@ -110,7 +112,11 @@ fn executable_suffixes(platform: &str, path_ext: Option<&str>) -> Vec<String> {
     res
 }
 
-fn probe_with_suffixes(directory: &Path, command: &str, suffixes: &[String]) -> Option<String> {
+pub(crate) fn probe_with_suffixes(
+    directory: &Path,
+    command: &str,
+    suffixes: &[String],
+) -> Option<String> {
     for suffix in suffixes {
         let candidate = directory.join(format!("{command}{suffix}"));
         if probe(&candidate) {
