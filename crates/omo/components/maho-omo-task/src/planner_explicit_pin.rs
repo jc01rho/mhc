@@ -67,34 +67,11 @@ pub struct PinDecorators {
 
 /// `splitModelDecorators`: the base id plus its `:thinking-level` and `:service-tier` suffixes.
 pub fn split_model_decorators(pin: &str) -> PinDecorators {
-    let mut base = pin.trim().to_string();
-    let mut thinking_level = None;
-    let mut service_tier = None;
-    // The suffixes are `:level` and `:tier`, in that order, and neither may contain a further colon.
-    while let Some((head, tail)) = base.rsplit_once(':') {
-        if tail.is_empty() || head.is_empty() || tail.contains('/') {
-            break;
-        }
-        let tail_lower = tail.to_ascii_lowercase();
-        if matches!(tail_lower.as_str(), "priority" | "standard" | "flex") {
-            if service_tier.is_none() {
-                service_tier = Some(tail.to_string());
-                base = head.to_string();
-                continue;
-            }
-            break;
-        }
-        if thinking_level.is_none() {
-            thinking_level = Some(tail.to_string());
-            base = head.to_string();
-            continue;
-        }
-        break;
-    }
+    let decorators = senpi_task::senpi::split_model_decorators(pin.trim(), false);
     PinDecorators {
-        base,
-        thinking_level,
-        service_tier,
+        base: decorators.base,
+        thinking_level: decorators.thinking_level,
+        service_tier: decorators.service_tier,
     }
 }
 
@@ -381,6 +358,27 @@ mod tests {
                 assert_eq!(error.code, ExplicitPinCode::InvalidTarget)
             }
             ExplicitPinResolution::Resolved { .. } => panic!("a tier suffix is refused"),
+        }
+    }
+
+    #[test]
+    fn a_colon_model_id_is_never_mistaken_for_a_thinking_level() {
+        let registry = Registry {
+            models: ["openrouter/model:exacto"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        };
+        match resolve_explicit_pin("openrouter/model:exacto:high", Some(&registry), None, None) {
+            ExplicitPinResolution::Resolved {
+                canonical,
+                thinking_level,
+                ..
+            } => {
+                assert_eq!(canonical, "openrouter/model:exacto");
+                assert_eq!(thinking_level.as_deref(), Some("high"));
+            }
+            ExplicitPinResolution::Error(error) => panic!("unexpected refusal: {}", error.message),
         }
     }
 }
