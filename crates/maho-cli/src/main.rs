@@ -93,6 +93,7 @@ fn root_metadata_output(argv: &[String], grok: bool) -> Result<Option<String>, S
             "install"
                 | "remove"
                 | "uninstall"
+                | "sync"
                 | "update"
                 | "list"
                 | "config"
@@ -1054,6 +1055,9 @@ fn run_omo_entry(argv: &[String]) -> Option<Result<(), String>> {
     {
         return Some(run_remote_entry(verb, &argv[1..]));
     }
+    if argv.first().is_some_and(|arg| arg == "sync") {
+        return Some(run_sync_entry(&argv[1..]));
+    }
     if argv.first().is_some_and(|arg| arg == "ulw-loop") {
         let code = ulw_loop_core::cli::main_cli(argv);
         if code != 0 {
@@ -1129,6 +1133,7 @@ fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
         "ulw-loop" => "mhc ulw-loop",
         "senpi-install" => "mhc senpi-install",
         "remote" => "mhc remote",
+        "sync" => "mhc sync",
         "login" | "whoami" | "logout" => "mhc login, whoami and logout",
         "--memory-supervisor" | "--child-bootstrap" => "the memory supervisor",
         _ => return None,
@@ -1138,6 +1143,25 @@ fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
     ));
     Some(1)
 }
+/// `mhc sync ...` (omo `sync-cli.ts`, `sync-status-cli.ts`): a read-only report of this device's
+/// memory sync over the same sources `mhc remote` and `mhc login` read (omo#14437).
+#[cfg(feature = "omo")]
+fn run_sync_entry(args: &[String]) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let context = maho_omo_remote::RemoteContext::for_process(
+        std::path::PathBuf::from(maho_core::config::get_agent_dir()),
+        option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+    );
+    let code = runtime.block_on(maho_omo_remote::run_sync(&context, args));
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
 /// MIT profile entries for the agent home (`mhc home`), first-run setup (`mhc setup`) and project
 /// context files (`mhc init-deep`). `None` means argv names none of them.
 #[cfg(not(feature = "omo"))]

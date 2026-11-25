@@ -9,8 +9,10 @@ autotests = false
 
 [dependencies]
 chrono = { workspace = true, features = ["clock", "std"] }
+maho-core = { path = "../../../maho-core" }
 maho-device-service-core = { path = "../../device-service-core" }
 maho-ext-api = { path = "../../../maho-ext-api" }
+maho-memory-core.workspace = true
 maho-rpc = { path = "../../../maho-rpc" }
 maho-service-endpoints = { path = "../../../maho-service-endpoints" }
 maho-thread-address-core = { path = "../../thread-address-core" }

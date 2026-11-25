@@ -25,7 +25,9 @@ const UNAPPLIED_FLAGS: &[UnappliedFlag] = &[
     ("--no-tools", |parsed| parsed.no_tools),
     ("--no-builtin-tools", |parsed| parsed.no_builtin_tools),
     ("--tool-runtime", |parsed| parsed.tool_runtime.is_some()),
-    ("--extension", |parsed| !parsed.extensions.is_empty()),
+    ("--extension", |parsed| {
+        !user_extension_arguments(parsed).is_empty()
+    }),
     ("--no-extensions", |parsed| parsed.no_extensions),
     ("--skill", |parsed| !parsed.skills.is_empty()),
     ("--no-skills", |parsed| parsed.no_skills),
@@ -45,6 +47,42 @@ const UNAPPLIED_FLAGS: &[UnappliedFlag] = &[
     ("--grok-neo", |parsed| parsed.grok_neo),
     ("- (stdin)", |parsed| parsed.read_stdin),
 ];
+/// The `--extension` paths that are not this distribution's own (omo#14465).
+///
+/// A launcher prepends its plugin with `--extension` on every start, and an attaching start applies the
+/// command line to a session another process already runs, so that flag was refused. The brand profile
+/// naming the same plugin is how the engine tells the distribution's own extension from a user's: a
+/// path the profile lists is not a user flag, and a launch carrying only that path attaches.
+pub fn user_extension_arguments(parsed: &Args) -> Vec<&String> {
+    let branded = maho_core::brand::brand_profile()
+        .extensions
+        .unwrap_or_default();
+    extensions_except(parsed, &branded)
+}
+
+/// `parsed`'s `--extension` paths minus `branded`; the pure form of the check above.
+pub fn extensions_except<'a>(parsed: &'a Args, branded: &[String]) -> Vec<&'a String> {
+    parsed
+        .extensions
+        .iter()
+        .filter(|path| {
+            !branded
+                .iter()
+                .any(|own| same_extension_path(own.as_str(), path.as_str()))
+        })
+        .collect()
+}
+
+/// A profile names absolute paths; a launch may spell one with a trailing separator or through a
+/// symlinked parent, so both sides compare resolved where the filesystem can resolve them.
+fn same_extension_path(branded: &str, given: &str) -> bool {
+    let trimmed = |value: &str| value.trim_end_matches(['/', '\\']).to_owned();
+    if trimmed(branded) == trimmed(given) {
+        return true;
+    }
+    let resolve = |value: &str| std::fs::canonicalize(value).ok();
+    matches!((resolve(branded), resolve(given)), (Some(own), Some(given)) if own == given)
+}
 
 fn unapplied_flags(parsed: &Args) -> Vec<String> {
     let mut flags: Vec<String> = UNAPPLIED_FLAGS
@@ -246,5 +284,47 @@ mod tests {
             panic!("expected refusal");
         };
         assert!(msg.contains("--model claude* names no provider"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn an_extension_the_brand_profile_names_is_not_a_user_flag() {
+        // given a plugin directory a distribution's launcher names in its brand profile (#14465)
+        let home = tempfile::tempdir().expect("tempdir");
+        let plugin = home.path().join("plugin");
+        std::fs::create_dir(&plugin).expect("plugin dir");
+        let branded_path = plugin.to_string_lossy().into_owned();
+        let branded = parse(&["--extension", &branded_path, "hello"]);
+        let with_user_flag = parse(&[
+            "--extension",
+            &branded_path,
+            "--extension",
+            "/tmp/user-ext.ts",
+            "hello",
+        ]);
+        // then the branded path alone counts as the distribution's own, and a user path beside it does not
+        let user = "/tmp/user-ext.ts".to_owned();
+        assert!(extensions_except(&branded, std::slice::from_ref(&branded_path)).is_empty());
+        assert_eq!(
+            extensions_except(&with_user_flag, std::slice::from_ref(&branded_path)),
+            vec![&user]
+        );
+        // a trailing separator and a symlinked parent name the same plugin
+        assert!(
+            extensions_except(&branded, std::slice::from_ref(&format!("{branded_path}/")))
+                .is_empty()
+        );
+        #[cfg(unix)]
+        {
+            let link = home.path().join("link");
+            std::os::unix::fs::symlink(&plugin, &link).expect("symlink");
+            let linked = link.join(".").to_string_lossy().into_owned();
+            let through_link = parse(&["--extension", &linked, "hello"]);
+            assert!(
+                extensions_except(&through_link, std::slice::from_ref(&branded_path)).is_empty(),
+                "a resolved path names the same plugin"
+            );
+        }
+        // and with no injected profile nothing is the distribution's own
+        assert_eq!(extensions_except(&branded, &[]), vec![&branded_path]);
     }
 }

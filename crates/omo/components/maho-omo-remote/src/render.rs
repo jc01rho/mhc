@@ -82,6 +82,16 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
+/// A refusal's next action may name the eval-only `thread_list` tool; a person at a terminal runs the
+/// CLI verb instead (omo#14305 review M4).
+pub fn person_next_action(text: &str) -> String {
+    if text.contains("thread_list") {
+        "Run mhc remote sessions to see the account's sessions.".to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
 pub fn status_lines(
     status: &Value,
     service_version: &str,

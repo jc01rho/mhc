@@ -17,6 +17,7 @@ pub mod device;
 pub mod exit;
 pub mod render;
 pub mod rpc_host;
+pub mod sync_status;
 pub mod usage;
 pub mod verbs;
 
@@ -25,4 +26,5 @@ pub use command::RemoteCommandComponent;
 pub use context::RemoteContext;
 pub use exit::RemoteExit;
 pub use maho_service_endpoints::mark_local_only_process;
+pub use sync_status::run_sync;
 pub use verbs::run_remote;

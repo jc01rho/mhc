@@ -5967,8 +5967,10 @@ name = "maho-omo-remote"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "maho-core",
  "maho-device-service-core",
  "maho-ext-api",
+ "maho-memory-core",
  "maho-rpc",
  "maho-service-endpoints",
  "maho-thread-address-core",

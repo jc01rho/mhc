@@ -18,6 +18,10 @@ pub async fn dispatch_internal_supervisor(args: &[String]) -> bool {
     let Some(launch) = crate::host_lifecycle::parse_supervisor_args(payload) else {
         return false;
     };
+    // omo#14341: entered before the supervisor spawns its host, so the host and every tool child it
+    // starts are born inside the supervisor's own systemd scope. A launch that cannot enter one
+    // continues exactly as before.
+    crate::host_scope::enter_own_host_scope(args, &maho_core::config::current_env()).await;
     if crate::host_lifecycle::run_host_supervisor(launch)
         .await
         .is_err()

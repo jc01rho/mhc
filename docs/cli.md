@@ -35,10 +35,11 @@ message; every other positional argument is a message.
 | `mhc host <ensure\|status\|stop\|handoff>` | Get, inspect or end the shared RPC host daemon; one JSON line per call. |
 | `mhc mini [-c]` | Experimental minimal TUI client. |
 | `mhc remote <verb> [--json]` | Devices and sessions on your other devices, through this device's device service (omo's, or mhc's open `mhc-relayd`): `status`, `devices`, `sessions [--device D] [--project P] [--state S]`, `enable`/`disable`, `control [on\|off]`, `wake [on\|off\|default]`, `send <device>/<session> <text> [--steer\|--follow-up]`, `model`, `interrupt`, `close [--force]`, `bootstrap` (key, `relayd.json`, always-on units) and `daemon` (run `mhc-relayd`). Exit codes: 0 ok, 1 failed, 2 usage, 3 unavailable. `mhc remote help` prints the usage. See docs/remote.md. |
+| `mhc sync status [--json]` | This device's memory sync, read-only: the account, this device's join and switch, the account's devices, pending join requests and whether an engine runs here. Each section reports its own failure; exit 1 when none could be read. |
 | `mhc login [--name N]` / `mhc whoami` / `mhc logout [--forget-key]` | This device's key for remote sessions, in local mode (no hosted sign-in). |
 
-`install`, `remove`, `update`, `list`, `config`, `auth`, `import-omo`, `doctor`, `remote`, `login`,
-`whoami` and `logout` accept `--help`;
+`install`, `remove`, `update`, `list`, `config`, `auth`, `import-omo`, `doctor`, `remote`, `sync`,
+`login`, `whoami` and `logout` accept `--help`;
 `host` prints its usage on an unknown argument.
 
 `app-server` has been removed. Use `mhc --mode rpc` for process integration over stdin/stdout.
