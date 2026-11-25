@@ -24,6 +24,7 @@ use super::control::locate::{LocatedControl, ThreadCall, book_of, locate_control
 use super::control::operations::{error_json, ok_json};
 use super::control::port::{ControlResult, control_identity};
 use super::errors::thread_tool_failure;
+use super::host_view::ThreadHostView;
 use super::read_item::read_item;
 use super::reader::{ReadSource, read_transcript};
 use super::store_api::GatewayStoreApi;
@@ -79,8 +80,6 @@ pub fn scan_listed_sessions(
     sessions.truncate(LIST_DISK_LIMIT);
     ScannedSessions { sessions, unread }
 }
-
-use super::host_view::ThreadHostView;
 
 /// `thread_list`: the live sessions in scope with their listing facts, then the inactive threads the book holds, in
 /// the address book's order (newest first), filtered by `states` (every state but `archived` by default).
@@ -430,14 +429,23 @@ mod tests {
             unread: vec!["d-2".into(), "d-3".into()],
         };
         let dropped = list_threads(
-            &call(view.clone()),
+            &view,
+            NOW,
+            ROOT,
             &scanned,
             false,
             Some(&[ThreadState::Inactive]),
         );
         assert_eq!(dropped.inactive_dropped, Some(2));
         assert_eq!(dropped.inactive_truncated, Some(true));
-        let listable = list_threads(&view, NOW, ROOT, &scanned, false, Some(&[ThreadState::Idle]));
+        let listable = list_threads(
+            &view,
+            NOW,
+            ROOT,
+            &scanned,
+            false,
+            Some(&[ThreadState::Idle]),
+        );
         assert_eq!(listable.inactive_dropped, None);
         assert_eq!(listable.inactive_truncated, None);
     }

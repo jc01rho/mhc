@@ -165,7 +165,14 @@ fn list_body(options: Arc<ThreadToolsOptions>, args: Value) -> BoxFuture<Value> 
                 unread: Vec::new(),
             },
         };
-        let listed = list_threads(&call, &scanned, all_scope, states.as_deref());
+        let listed = list_threads(
+            &call.view,
+            &call.now,
+            &call.caller_workspace_root,
+            &scanned,
+            all_scope,
+            states.as_deref(),
+        );
         ok_json(&with_backlog(options.store.as_ref(), listed))
     })
 }
