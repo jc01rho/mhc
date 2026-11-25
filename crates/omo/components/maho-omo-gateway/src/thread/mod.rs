@@ -57,6 +57,7 @@ pub mod thread_row;
 pub mod thread_state;
 pub mod tools;
 pub mod types;
+pub mod wake;
 
 pub use adapter::{
     Admission, DeliverySender, DrainWakeEvent, EndpointLiveness, GatewayAdmissionKind,
