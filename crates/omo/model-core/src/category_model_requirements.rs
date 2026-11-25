@@ -61,111 +61,36 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
             (
                 "ultrabrain",
                 ModelRequirement {
-                    fallback_chain: vec![
-                        // Each GPT-6.2 rung keeps GPT-6 Astra right behind it, so a registry without 6.2
-                        // resolves what it did before; Copilot does not serve 6.2 and keeps its GPT-6 Astra rung.
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-6.2-astra",
-                            Some("max"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-6-astra",
-                            Some("max"),
-                        ),
-                        entry(&["github-copilot"], "gpt-6-astra", Some("max")),
-                        entry(
-                            &["openai", "chatgpt-subscription", "opencode"],
-                            "gpt-6.2-astra",
-                            Some("max"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription", "opencode"],
-                            "gpt-6-astra",
-                            Some("max"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-5.6-sol",
-                            Some("max"),
-                        ),
-                        entry(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-                        entry(
-                            &["openai", "chatgpt-subscription", "opencode"],
-                            "gpt-5.6-sol",
-                            Some("max"),
-                        ),
-                    ],
+                    fallback_chain: vec![entry(
+                        &["openai", "chatgpt-subscription", "opencode"],
+                        "gpt-6.2-astra",
+                        Some("max"),
+                    )],
+                    requires_any_model: Some(true),
                     ..ModelRequirement::default()
                 },
             ),
             (
                 "deep-low",
                 ModelRequirement {
-                    fallback_chain: vec![
-                        // GPT-6.2 Sol leads at the same medium effort on the OpenAI lanes (plain, then the Fast
-                        // tier), then GPT-6.1 Sol for a registry without 6.2. GPT-5.6 Sol stays behind them so
-                        // Copilot, OpenCode Zen and a registry without either still resolve the lane.
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-6.2-sol",
-                            Some("medium"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-6.2-sol-fast",
-                            Some("medium"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-6.1-sol",
-                            Some("medium"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-6.1-sol-fast",
-                            Some("medium"),
-                        ),
-                        entry(
-                            &[
-                                "openai",
-                                "chatgpt-subscription",
-                                "github-copilot",
-                                "opencode",
-                            ],
-                            "gpt-5.6-sol",
-                            Some("medium"),
-                        ),
-                        entry(
-                            &["openai", "chatgpt-subscription"],
-                            "gpt-5.6-sol-fast",
-                            Some("medium"),
-                        ),
-                    ],
+                    fallback_chain: vec![entry(
+                        &["openai", "chatgpt-subscription"],
+                        "gpt-6.2-sol",
+                        Some("medium"),
+                    )],
+                    requires_any_model: Some(true),
                     ..ModelRequirement::default()
                 },
             ),
             (
                 "deep-high",
                 ModelRequirement {
-                    fallback_chain: vec![
-                        entry(
-                            &["openai", "chatgpt-subscription", "opencode"],
-                            "gpt-6.2-astra",
-                            Some("high"),
-                        ),
-                        entry(
-                            &[
-                                "openai",
-                                "chatgpt-subscription",
-                                "github-copilot",
-                                "opencode",
-                            ],
-                            "gpt-6-astra",
-                            Some("high"),
-                        ),
-                    ],
+                    fallback_chain: vec![entry(
+                        &["openai", "chatgpt-subscription", "opencode"],
+                        "gpt-6.2-astra",
+                        Some("high"),
+                    )],
+                    requires_any_model: Some(true),
                     ..ModelRequirement::default()
                 },
             ),

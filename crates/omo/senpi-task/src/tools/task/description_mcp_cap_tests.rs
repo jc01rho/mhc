@@ -1,25 +1,16 @@
-//! `tools/task/description-mcp-cap.test.ts` (#14291)
+//! `tools/task/description-mcp-cap.test.ts` (#14291, #14292)
 
 use std::collections::BTreeMap;
 
 use serde_json::json;
 
 use crate::agents::AgentDefinition;
+use crate::tools::task::categories::list_task_categories;
 use crate::tools::task::description::{DescriptionInput, build_task_tool_description};
 
 // Claude Code (the Claude subscription path) keeps only the first 4096 chars of an MCP tool
 // description and appends "... [truncated]" (#14291).
 const CLAUDE_CODE_MCP_DESCRIPTION_CAP: usize = 4096;
-
-const RULE_ANCHORS: [&str; 7] = [
-    "Choose exactly one input form",
-    "Each spawn MUST provide EITHER category OR subagent_type",
-    "model is an explicit override for subagent_type spawns ONLY",
-    "NEVER combine model with category",
-    "task_send continues an existing child; task always spawns.",
-    "Prompts MUST be in English.",
-    "plan-reviewer is one-shot",
-];
 
 fn agent(name: &str, description: &str) -> AgentDefinition {
     let mut definition = AgentDefinition::named(name);
@@ -28,21 +19,27 @@ fn agent(name: &str, description: &str) -> AgentDefinition {
 }
 
 #[test]
-fn given_builtin_categories_plus_a_long_custom_one_when_built_then_every_rule_ends_inside_the_mcp_cap()
+fn given_many_agents_and_a_long_custom_category_when_built_then_only_the_category_catalogue_lies_past_the_cap()
  {
     let config = json!({
         "categories": { "release-crew": { "description": "Ships the release train. ".repeat(80) } },
         "agents": {},
     });
-    let agents: BTreeMap<String, AgentDefinition> = [
-        ("explore", "Codebase search"),
-        ("librarian", "Docs research"),
-        ("plan-consultant", "Pre-planning consultant"),
-        ("plan-reviewer", "Plan reviewer"),
-    ]
-    .into_iter()
-    .map(|(name, description)| (name.to_string(), agent(name, description)))
-    .collect();
+    let categories = list_task_categories(&config);
+    let mut agents: BTreeMap<String, AgentDefinition> = (0..40)
+        .map(|index| {
+            let name = format!("agent-{index}");
+            (name.clone(), agent(&name, "Plain agent"))
+        })
+        .collect();
+    agents.insert(
+        "plan-consultant".to_string(),
+        agent("plan-consultant", "Pre-planning consultant"),
+    );
+    agents.insert(
+        "plan-reviewer".to_string(),
+        agent("plan-reviewer", "Plan reviewer"),
+    );
 
     let description = build_task_tool_description(&DescriptionInput {
         omo_config: &config,
@@ -50,17 +47,27 @@ fn given_builtin_categories_plus_a_long_custom_one_when_built_then_every_rule_en
     });
 
     assert!(description.chars().count() > CLAUDE_CODE_MCP_DESCRIPTION_CAP);
-    let kept: String = description
-        .chars()
-        .take(CLAUDE_CODE_MCP_DESCRIPTION_CAP)
-        .collect();
-    let cut: Vec<&str> = RULE_ANCHORS
-        .into_iter()
-        .filter(|anchor| !kept.contains(anchor))
+    let first_category = categories.first().expect("at least one category");
+    let catalogue_marker = format!("\n  - {}", first_category.name);
+    let catalogue_start = description
+        .find(&catalogue_marker)
+        .expect("category catalogue marker");
+    assert!(catalogue_start > 0);
+    assert!(
+        description[..catalogue_start].chars().count() <= CLAUDE_CODE_MCP_DESCRIPTION_CAP,
+        "rules and agent list exceeded MCP cap: {}",
+        description[..catalogue_start].chars().count()
+    );
+    let tail: Vec<&str> = description[catalogue_start + 1..].lines().collect();
+    let unexpected: Vec<&str> = tail
+        .iter()
+        .copied()
+        .filter(|line| !line.starts_with("  - ") && !line.starts_with("    "))
         .collect();
     assert!(
-        cut.is_empty(),
-        "rules past the MCP description cap: {cut:?}"
+        unexpected.is_empty(),
+        "non-catalogue lines after catalogue start: {unexpected:?}"
     );
-    assert!(kept.contains("Available agents: explore, librarian"));
+    let category_lines = tail.iter().filter(|line| line.starts_with("  - ")).count();
+    assert_eq!(category_lines, categories.len());
 }

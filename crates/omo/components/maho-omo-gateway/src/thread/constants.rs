@@ -15,14 +15,19 @@ pub const MAX_HOPS: i64 = 4;
 pub const PAIR_BUCKET_BURST: f64 = 8.0;
 pub const PAIR_BUCKET_REFILL_MS: f64 = 5_000.0;
 
-pub const MAX_FANOUT_PER_TURN: i64 = 16;
 pub const MAX_CAUSAL_DELIVERIES: i64 = 64;
 
 pub const QUEUED_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 pub const ROOT_LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
+/// One target's undelivered follow-up and auto deliveries (in the gateway or in the session's own queue).
 pub const TARGET_MAX_MESSAGES: i64 = 128;
 pub const TARGET_MAX_BYTES: usize = 1024 * 1024;
+
+/// A target's steers count only against this reserve, so follow-ups the session has not written never shut a steer
+/// out (omo#14428).
+pub const STEER_RESERVE_MESSAGES: i64 = 16;
+pub const STEER_RESERVE_BYTES: i64 = 256 * 1024;
 
 pub const GATEWAY_RECEIPT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 /// An `applied` or `refused` delivery (with its body) is kept this long after its last change.

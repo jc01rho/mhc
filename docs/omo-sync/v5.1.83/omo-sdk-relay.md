@@ -1,0 +1,132 @@
+# omo v5.1.80..v5.1.83 sync ledger — `omo-sdk-relay` track
+
+Source range: `822bd923038` (`v5.1.79`) .. `69a1863a457` (`v5.1.83`); v5.1.80 was unreleased.
+Upstream paths: `packages/omo-senpi/src/components/omo-sdk`, `packages/omo-senpi/skills/omo-relay`,
+`packages/omo-senpi/plugin`, `packages/omo-senpi/src/install`, `packages/omo-senpi/src/extension`.
+Non-merge commits in range touching those paths: **147**.
+
+## Summary
+
+| verdict | rows |
+|---|---:|
+| port | 3 |
+| ported | 1 |
+| gap | 0 |
+| n/a | 81 |
+| total | 85 |
+
+One row per upstream PR or commit group; every non-merge commit in the range appears in exactly one row.
+
+## Per PR
+
+| omo PR | verdict | mhc location or reason |
+|---|---|---|
+| 69a1863a45 (69a1863a45; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 79405d0ced (79405d0ced; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14838 (2c56b2b4f7; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #13965 (c26eaf68a9, 7752e500ff, 35f23e2a80, caf0705abc, 3d33409a67, 5789e5fff1, 31248494b1, 965b406442, 0269a668e2, 6f7934b041, 60c2127feb, 8d76c2403c, 9ac934666d, aef7cde136, 648e8b5ed7; 15 commits) | n/a | TS plugin build/minify script and test-harness updates (`plugin/scripts/build-artifact.mjs`, `build-extension.test-support.mjs`, regenerated bundles); mhc has no JS plugin build pipeline. |
+| f0fff0fbb5 (f0fff0fbb5; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14825 (ba60b2b829, cd79033f47; 2 commits) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #13046 (e8cd22e516; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| a19011adbd (a19011adbd; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14808 (66763e56b7; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| c6649a9460 (c6649a9460; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #13165 (40791cd470; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 545c032b48 (545c032b48; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| a90a664ac4 (a90a664ac4; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| c82583ff75 (c82583ff75; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14616 (994721b19c, b087c3cfcf, d2b5700404, 198dd683ee, 32f17cc8de; 5 commits) | n/a | TS shipped `plugin/runtime/thread-sdk/sdk.js` wrapper (`src/extension/thread-sdk.ts`) attaching `createAccountRemoteSurface`; Rust `ThreadSdk` (`crates/omo/components/maho-omo-gateway/src/thread/sdk.rs`) and `thread/remote/device_service.rs` belong to `thread-core` and `thread-remote` tracks. |
+| #14622 (30b3a2efd6, f7bca224a0, 5546223cc6, 3d29c8e416, 27731e71d4, 0c56060059, 5ad49782d7; 7 commits) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| f0d5f0df20 (f0d5f0df20; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14624 (d83b94a9f3, c460dd28af, ce10661ecc, 01eaaf633b, 445d0df079; 5 commits) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| e65d576c8d (e65d576c8d; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 154ebbe854 (154ebbe854; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #10933 (6262f0e112, 72e7f21847, ae53517c20; 3 commits) | n/a | TS `prewarm-diagnostics-engine.test.ts` testing JS extension staging under `HOME/agent/extensions`; mhc runs native `nextest` without JS extension staging (`agent_settled` wrapping is in `crates/omo/maho-omo/src/compose.rs`). |
+| #14639 (054f330e13, ca66171a34; 2 commits) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 74d4ebc707 (74d4ebc707; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 89051df6bf (89051df6bf; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 4ca98913ae (4ca98913ae; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| e248b9f7e0 (e248b9f7e0; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14335 (7ba479ac1c; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14382 (9d13dad6e2, 7e666c8c1e, 50c3da8323, 63133463e9, 5036654c32; 5 commits) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #13258 (50beb58b1c, 5b0681cbb0, 4416eb61fe, 2b53966d8a, 0651ae23be; 5 commits) | port | `crates/omo/components/maho-omo-agent-home/src/install_plugin_artifacts.rs` (`LAUNCHER_HEADER`, `LAUNCHER_CMD_SHIM`, `LauncherOwnership`, `LauncherLeftAlone`, `local_launcher_cmd_path`, `launcher_ownership`, `launcher_ownership_with`, `launcher_cmd_ownership`, `uninstall_local_launcher`, `left_alone_report`, `run_plugin_uninstaller`, 5 test suites) and `crates/maho-cli/src/senpi_install.rs` (`LauncherLeftAlone`, `InstallResult.launchers_left_alone`, `install_with_platform`, `uninstall_with_platform`, prefix-header/symlink/size/`omo.cmd` ownership checks, 3 test suites). |
+| 913be9ff5b (913be9ff5b; 1 commit) | n/a | TS-only plugin/build change (src/extension/thread-sdk.test.ts) with no Rust counterpart in this track. |
+| 1f4085ab06 (1f4085ab06; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 5835a98e88 (5835a98e88; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 13d18f61d5 (13d18f61d5; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 6c06d2cf03 (6c06d2cf03; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| f23e7ad390 (f23e7ad390; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 10d8c5f2ca (10d8c5f2ca; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14537 (5e997fc61e; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14535 (268368e4f9; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14437 (a7645299fa; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14514 (0b74338b74; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| omo-sdk (c00e6420f5, a8b7054435, 8f064be19e, f53f3823f1, 02ec428161, 5f2eb92b4b, b8f814338e, 252aed4681, bbab929dff, 98dba14202, ebc23159e3; 11 commits) | n/a | TS JS SDK entry (`packages/omo-senpi/src/components/omo-sdk/**`, `src/extension/omo-sdk.ts`, `plugin/runtime/omo-sdk/sdk.js`); mhc has no JS SDK bundle or hosted account sign-in service (`crates/omo/components/maho-omo-remote/src/account.rs` handles local `mhc login/whoami/logout`, `device-service-core` handles local API; hosted sign-in excluded by BRIEF rule 6). |
+| #14517 (eac345e8c5; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| ee29e3c501 (ee29e3c501; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 593c73e826 (593c73e826; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14468 (be08f4a95d; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14415 (3b9eeae111, 7ee1bcefe1, 7971a00fb1, be3bd2f1aa, c220f56507, 1b5a79b7e1; 6 commits) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14465 (659fa1d783; 1 commit) | port | `crates/maho-cli/src/senpi_install.rs` (`install_launcher` embeds `"extensions": [options.plugin_path]` in `SENPI_BRAND`, verified by `launcher_brand_carries_the_omo_logo_and_injected_extension`). |
+| #14392 (0a185bda8f, d37ab58681, f4243bd92e; 3 commits) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14442 (f87b57c4b3; 1 commit) | n/a | TS directive embedder (`plugin/scripts/embed-directive.mjs`) and routing bundle regen; ultrawork directives and model routing belong to `ultrawork-skills` and `cfg` tracks. |
+| 28e258db5a (28e258db5a; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| embed-directive (db42f0a6a7; 1 commit) | n/a | TS directive embedder (`plugin/scripts/embed-directive.mjs`) and routing bundle regen; ultrawork directives and model routing belong to `ultrawork-skills` and `cfg` tracks. |
+| #14427 (333fd844e2; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| b9c468be2f (b9c468be2f; 1 commit) | n/a | TS directive embedder (`plugin/scripts/embed-directive.mjs`) and routing bundle regen; ultrawork directives and model routing belong to `ultrawork-skills` and `cfg` tracks. |
+| 28c8cc0449 (28c8cc0449; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 8f2c5a60f5 (8f2c5a60f5; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| omo-relay (2393d144b6, 8d95580240, ca7e2139e3, bb6bf97cda; 4 commits) | ported | `assets/omo-latest/skills/omo-relay/` (`SKILL.md`, `references/{errors,machines,parallel}.md`, `scripts/sdk/{bind-eval,index,machines,outcome,ports,threads}.ts`, `tsconfig.json`; 11/11 sha256 matches in `assets/omo-latest/manifest.json`) and `crates/omo/components/maho-omo-bundled-skills/tests/all_skills_check.rs`; upstream `scripts/sdk/*.test.ts` are TS-only test fixtures (`n/a`). |
+| eb760265c1 (eb760265c1; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14404 (5ef2498f73; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 57ba9fbf2f (57ba9fbf2f; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14363 (91fb80ad60, 4f4274367b; 2 commits) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14351 (2090ccd3e4, d5d5bcf7cd; 2 commits) | port | `crates/omo/maho-omo/src/settle_observers.rs` (`SettleObservers`, `InFlightHookKey`, `InFlightKey`, `ObserverSlotGuard`, `extension_handler_superseded` logging, `in_flight_count`) and `crates/omo/maho-omo/tests/all/settle_observers.rs` (3 new tests: concurrent supersession with cancellation absorption, multi-turn sequential supersession with 2 logged skips, and per-slot isolation for unnamed handlers). Cross-component 90-journal mass-settle relies on `maho-omo-memory`'s incremental journal cache (ported in PR #69). |
+| 320fee78d2 (320fee78d2; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 32fe5b945b (32fe5b945b; 1 commit) | n/a | TS-only plugin/build change (plugin/scripts/build-extension-core.mjs, plugin/scripts/build-extension.d.mts, plugin/scripts/build-extension.mjs, plugin/scripts/build-extension.test-support.mjs, plugin/scripts/check-extension-current.mjs, src/components/omo-sdk/access.ts, src/components/omo-sdk/account/index.ts, src/components/omo-sdk/config/index.ts, src/components/omo-sdk/device-service/index.ts, src/components/omo-sdk/devices/index.ts, src/components/omo-sdk/index.ts, src/components/omo-sdk/result.ts, src/extension/compose.ts, src/extension/omo-sdk.ts, src/extension/sdk-root-provisioning.ts, src/install/cli-local.test.ts, src/install/install-test-fixture.ts, src/install/plugin-artifacts.ts) with no Rust counterpart in this track. |
+| b19fa1bf52 (b19fa1bf52; 1 commit) | n/a | TS-only plugin/build change (src/components/omo-sdk/omo-sdk.test.ts, src/extension/sdk-root-provisioning.test.ts) with no Rust counterpart in this track. |
+| #14356 (c469ad1ca8; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14361 (50ff0d4231; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14345 (4db631f8b7; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #13077 (da590471ae; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14321 (15c9c133b8; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| cf9179c7ed (cf9179c7ed; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| d4fb19f71f (d4fb19f71f; 1 commit) | n/a | TS `senpi-seams.ts` host capability guard (`pi.registerRpcRemoteSource`, `tool_call` interception); Rust `ExtensionApi` is statically typed, and monitor target parsing / address grammar live in `crates/builtins/maho-ext-terminal/src/rpc_monitor_targets.rs` and `thread-address-core`/`thread-core`/`thread-remote`. |
+| #14318 (568cda257d; 1 commit) | n/a | TS `senpi-seams.ts` host capability guard (`pi.registerRpcRemoteSource`, `tool_call` interception); Rust `ExtensionApi` is statically typed, and monitor target parsing / address grammar live in `crates/builtins/maho-ext-terminal/src/rpc_monitor_targets.rs` and `thread-address-core`/`thread-core`/`thread-remote`. |
+| #14303 (31f091de88; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 1e41f87365 (1e41f87365; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14307 (bd54812e5c; 1 commit) | n/a | TS `senpi-seams.ts` host capability guard (`pi.registerRpcRemoteSource`, `tool_call` interception); Rust `ExtensionApi` is statically typed, and monitor target parsing / address grammar live in `crates/builtins/maho-ext-terminal/src/rpc_monitor_targets.rs` and `thread-address-core`/`thread-core`/`thread-remote`. |
+| #14305 (b09dfed503; 1 commit) | n/a | TS `senpi-seams.ts` host capability guard (`pi.registerRpcRemoteSource`, `tool_call` interception); Rust `ExtensionApi` is statically typed, and monitor target parsing / address grammar live in `crates/builtins/maho-ext-terminal/src/rpc_monitor_targets.rs` and `thread-address-core`/`thread-core`/`thread-remote`. |
+| d4080e2e82 (d4080e2e82; 1 commit) | n/a | TS `senpi-seams.ts` host capability guard (`pi.registerRpcRemoteSource`, `tool_call` interception); Rust `ExtensionApi` is statically typed, and monitor target parsing / address grammar live in `crates/builtins/maho-ext-terminal/src/rpc_monitor_targets.rs` and `thread-address-core`/`thread-core`/`thread-remote`. |
+| 88d1cfb3fc (88d1cfb3fc; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14294 (df9fe89b0a; 1 commit) | n/a | TS `senpi-seams.ts` host capability guard (`pi.registerRpcRemoteSource`, `tool_call` interception); Rust `ExtensionApi` is statically typed, and monitor target parsing / address grammar live in `crates/builtins/maho-ext-terminal/src/rpc_monitor_targets.rs` and `thread-address-core`/`thread-core`/`thread-remote`. |
+| d2a4011a9a (d2a4011a9a; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14265 (16442fa1bd; 1 commit) | n/a | TS `build-extension-core.mjs` bundler adjustment (inlining typebox into `omo-thread-client.js`) and formatting; no JS sidecar bundler in mhc. |
+| #14262 (1427a404d1; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| a8810d9cd7 (a8810d9cd7; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| 9d737ff5c6 (9d737ff5c6; 1 commit) | n/a | Regenerated JS plugin bundles / release version bump in `packages/omo-senpi/plugin` (cross-track changes live in their owning tracks; mhc compiles native binaries and keeps its pin in `PINS.md`). |
+| #14204 (d788725d2e; 1 commit) | n/a | TS `build-extension-core.mjs` bundler adjustment (inlining typebox into `omo-thread-client.js`) and formatting; no JS sidecar bundler in mhc. |
+
+## Tests
+
+- `crates/omo/maho-omo/tests/all/settle_observers.rs`:
+  - `concurrent_settles_of_one_session_supersede_the_older_and_absorb_cancellation` (#14351)
+  - `repeated_settles_of_one_session_only_newest_completes_and_superseded_are_logged` (#14351)
+  - `unnamed_wrappers_of_distinct_slots_do_not_supersede_each_other` (#14351)
+- `crates/omo/components/maho-omo-agent-home/src/install_plugin_artifacts.rs`:
+  - `foreign_files_including_compiled_binary_directory_and_oversized_are_left_alone` (#13258)
+  - `symlinks_including_owned_target_and_dangling_are_treated_as_foreign` (#13258, `#[cfg(unix)]`)
+  - `legacy_and_current_headers_remain_owned_across_install_and_uninstall` (#13258)
+  - `unreadable_launcher_sized_file_is_classified_foreign` (#13258)
+  - `windows_wrapper_respects_ownership_on_install_and_uninstall` (#13258)
+  - `installer_and_uninstaller_report_every_launcher_file_left_alone` (#13258)
+- `crates/maho-cli/src/senpi_install.rs`:
+  - `launcher_brand_carries_the_omo_logo_and_injected_extension` (#14465)
+  - `compiled_binary_directory_and_oversized_launchers_are_left_alone_and_reported` (#13258)
+  - `symlink_and_dangling_symlink_launchers_are_reported_as_foreign` (#13258, `#[cfg(unix)]`)
+  - `windows_install_reports_exact_left_alone_launchers` (#13258)
+
+## Verification notes
+
+- Formatted all modified Rust files with `~/.cargo/bin/rustfmt --edition 2024` and verified `cargo fmt --all --check`.
+- Local cargo compilation/tests are forbidden by the owner's rule; GitHub Actions `ci` is the build/test authority.

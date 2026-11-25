@@ -19,6 +19,7 @@ pub type DefaultFn = fn() -> Value;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Pattern {
     LowerSlug,
+    EnvVarName,
 }
 
 impl Pattern {
@@ -30,12 +31,21 @@ impl Pattern {
                         .chars()
                         .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
             }
+            Pattern::EnvVarName => {
+                let mut chars = text.chars();
+                let Some(first) = chars.next() else {
+                    return false;
+                };
+                (first.is_ascii_alphabetic() || first == '_')
+                    && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            }
         }
     }
 
     fn source(self) -> &'static str {
         match self {
             Pattern::LowerSlug => "^[a-z0-9-]+$",
+            Pattern::EnvVarName => "^[A-Za-z_][A-Za-z0-9_]*$",
         }
     }
 }
@@ -227,6 +237,13 @@ pub fn lower_slug_string() -> Node {
     Node::String(StringRules {
         min_len: None,
         pattern: Some(Pattern::LowerSlug),
+    })
+}
+
+pub fn env_var_name_string() -> Node {
+    Node::String(StringRules {
+        min_len: None,
+        pattern: Some(Pattern::EnvVarName),
     })
 }
 

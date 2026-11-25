@@ -24,6 +24,13 @@ pub fn is_gpt_model(model: &str) -> bool {
 }
 
 #[must_use]
+pub fn is_deepseek_v41_flash_model(model: &str) -> bool {
+    static DEEPSEEK_V41_FLASH: LazyLock<Regex> =
+        LazyLock::new(|| regex(r"^deepseek-(?:v4(?:[.-]1|p1)-)?flash(?:$|[-:@])"));
+    DEEPSEEK_V41_FLASH.is_match(&extract_model_name(model).to_lowercase())
+}
+
+#[must_use]
 pub fn is_gpt6_astra_model(model: Option<&str>) -> bool {
     let Some(model) = model.filter(|model| !model.is_empty()) else {
         return false;
@@ -43,7 +50,12 @@ pub fn is_gpt6_astra_model(model: Option<&str>) -> bool {
     }
     matches!(
         extract_model_name(&parsed.model_id),
-        "gpt-6-astra" | "gpt-6-astra-fast" | "gpt-6.2-astra" | "gpt-6.2-astra-fast"
+        "gpt-6-astra"
+            | "gpt-6-astra-fast"
+            | "gpt-6-astra-ultrafast"
+            | "gpt-6.2-astra"
+            | "gpt-6.2-astra-fast"
+            | "gpt-6.2-astra-ultrafast"
     )
 }
 
@@ -277,6 +289,8 @@ mod tests {
             "gpt-6-astra-fast:max",
             "gpt-6.2-astra",
             "openai/gpt-6.2-astra-fast:max",
+            "gpt-6.2-astra-ultrafast",
+            "chatgpt-subscription/gpt-6.2-astra-ultrafast:xhigh",
             "chatgpt-subscription/gpt-6-astra (high)",
             "openai/gpt-6-astra-fast xhigh",
             "vercel/openai/gpt-6-astra: auto",

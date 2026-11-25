@@ -132,6 +132,38 @@ fn all_29_bundled_entries_and_28_skill_frontmatters_and_manifest_are_valid() {
         .collect();
     assert!(!retired.contains("hyperplan"));
     assert!(retired.contains("mass-ulw"));
+
+    let skills_map = manifest["skills"].as_object().expect("skills object");
+    let mut declared_total: u64 = 0;
+    for skill_name in EXPECTED_SKILLS {
+        let entries = skills_map
+            .get(skill_name)
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("missing manifest.skills[{skill_name}]"));
+        for entry in entries {
+            let rel_path = entry["path"].as_str().expect("entry path");
+            let expected_bytes = entry["bytes"].as_u64().expect("entry bytes");
+            let file_path = root.join(skill_name).join(rel_path);
+            let actual_bytes = std::fs::metadata(&file_path)
+                .unwrap_or_else(|e| panic!("missing {}: {e}", file_path.display()))
+                .len();
+            assert_eq!(
+                actual_bytes,
+                expected_bytes,
+                "byte count mismatch for {}",
+                file_path.display()
+            );
+            declared_total += 1;
+        }
+    }
+    assert_eq!(
+        manifest["contentBinding"]["files"].as_u64(),
+        Some(declared_total)
+    );
+    assert_eq!(
+        manifest["contentBinding"]["declaredSha256"].as_u64(),
+        Some(declared_total)
+    );
 }
 
 #[tokio::test]

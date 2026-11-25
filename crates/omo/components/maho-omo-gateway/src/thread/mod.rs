@@ -5,9 +5,11 @@
 //! module here (`gateway/<name>.ts` -> `thread/<name>.rs`).
 
 pub mod adapter;
+pub mod address;
 pub mod address_book;
 pub mod addressing;
 pub mod attachment_fence;
+pub mod backlog;
 pub mod component;
 pub mod constants;
 pub mod contracts_results;
@@ -23,6 +25,7 @@ pub mod extension_registrations;
 pub mod extension_session_await;
 pub mod extension_transaction;
 pub mod gateway_replies;
+pub mod graceful_close_returns;
 pub mod host_view;
 pub mod lazy_live_surface;
 pub mod live_surface;
@@ -37,6 +40,7 @@ pub mod reader;
 pub mod relay;
 pub mod remote;
 pub mod result;
+pub mod run_alerts;
 pub mod schema;
 pub mod sdk;
 pub mod session_args_schema;
@@ -54,6 +58,7 @@ pub mod thread_row;
 pub mod thread_state;
 pub mod tools;
 pub mod types;
+pub mod wake;
 
 pub use adapter::{
     Admission, DeliverySender, DrainWakeEvent, EndpointLiveness, GatewayAdmissionKind,

@@ -446,14 +446,14 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("task missing")?;
     let cancelled = AbortSignal::default();
     cancelled.abort();
-    assert!((task.definition.execute)(ToolCall { id:"cancelled-launch", params:json!({"prompt":"never launch","subagent_type":"explore","model":"faux/native","run_in_background":true}), signal:cancelled, on_update:None, context:Some(&context) }).await.is_err());
+    assert!((task.definition.execute)(ToolCall { id:"cancelled-launch", params:json!({"prompt":"never launch","subagent_type":"dag-worker","model":"faux/native","run_in_background":true}), signal:cancelled, on_update:None, context:Some(&context) }).await.is_err());
     assert!(
         child_slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_none()
     );
-    let result = (task.definition.execute)(ToolCall { id:"native-launch", params:json!({"prompt":"produce native result","subagent_type":"explore","model":"faux/native","run_in_background":true}), signal:Default::default(), on_update:None, context:Some(&context) }).await?;
+    let result = (task.definition.execute)(ToolCall { id:"native-launch", params:json!({"prompt":"produce native result","subagent_type":"dag-worker","model":"faux/native","run_in_background":true}), signal:Default::default(), on_update:None, context:Some(&context) }).await?;
     println!(
         "REGISTERED TASK {}",
         serde_json::to_string(&result.details)?
@@ -511,7 +511,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let progress = Mutex::new(Some(progress));
     let mut invocation = (task.definition.execute)(ToolCall {
         id: "dropped-foreground",
-        params: json!({"prompt":"drop foreground invocation","subagent_type":"explore","model":"faux/native","run_in_background":false}),
+        params: json!({"prompt":"drop foreground invocation","subagent_type":"dag-worker","model":"faux/native","run_in_background":false}),
         signal: Default::default(),
         on_update: Some(Arc::new(move |_| {
             if let Some(progress) = progress
@@ -544,7 +544,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "PASS dropped registered foreground invocation settles owned executor before lifecycle cleanup"
     );
-    let running = (task.definition.execute)(ToolCall { id:"shutdown-launch", params:json!({"prompt":"suspend without dropping notification obligation","subagent_type":"explore","model":"faux/native","run_in_background":true}), signal:Default::default(), on_update:None, context:Some(&context) }).await?;
+    let running = (task.definition.execute)(ToolCall { id:"shutdown-launch", params:json!({"prompt":"suspend without dropping notification obligation","subagent_type":"dag-worker","model":"faux/native","run_in_background":true}), signal:Default::default(), on_update:None, context:Some(&context) }).await?;
     let running_id = running
         .details
         .as_ref()
@@ -631,7 +631,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: "one".into(),
                     prompt: "one".into(),
                     target: senpi_task::dag::types::DagNodeTarget::SubagentType {
-                        subagent_type: "explore".into(),
+                        subagent_type: "dag-worker".into(),
                         model: Some("faux/native".into()),
                     },
                     label: None,
@@ -781,7 +781,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: "pending".into(),
                     prompt: "pending".into(),
                     target: senpi_task::dag::types::DagNodeTarget::SubagentType {
-                        subagent_type: "explore".into(),
+                        subagent_type: "dag-worker".into(),
                         model: Some("faux/native".into()),
                     },
                     label: None,
@@ -973,7 +973,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find(|tool| tool.definition.name == maho_omo_task::dag_tool::WORKFLOW_TOOL_NAME)
         .ok_or("workflow tool missing")?
         .definition;
-    let result = tokio::time::timeout(Duration::from_secs(10), (tool.execute)(ToolCall { id:"native-dag", params:json!({"action":"start","definition":{"key":"native-proof","name":"native","nodes":[{"id":"one","prompt":"one","subagent_type":"explore","model":"faux/native"},{"id":"two","prompt":"two","subagent_type":"explore","model":"faux/native","dependsOn":["one"]}]}}), signal:Default::default(), on_update:None, context:Some(&context) })).await??;
+    let result = tokio::time::timeout(Duration::from_secs(10), (tool.execute)(ToolCall { id:"native-dag", params:json!({"action":"start","definition":{"key":"native-proof","name":"native","nodes":[{"id":"one","prompt":"one","subagent_type":"dag-worker","model":"faux/native"},{"id":"two","prompt":"two","subagent_type":"dag-worker","model":"faux/native","dependsOn":["one"]}]}}), signal:Default::default(), on_update:None, context:Some(&context) })).await??;
     observed_live.recv_timeout(Duration::from_secs(10))?;
     release_native.send(())?;
     let run = result

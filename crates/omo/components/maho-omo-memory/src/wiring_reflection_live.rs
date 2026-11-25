@@ -57,6 +57,38 @@ impl MemoryRpcBridgeDeps for OwnedDeps {
         self.runs.get(identity)
     }
 }
+struct GuardedFooterUi<'a> {
+    inner: &'a mut dyn MemoryFooterUi,
+    signal: Option<maho_ext_api::AbortSignal>,
+}
+
+impl GuardedFooterUi<'_> {
+    fn allowed(&self) -> bool {
+        self.signal
+            .as_ref()
+            .is_none_or(|signal| !signal.is_aborted())
+    }
+}
+
+impl MemoryFooterUi for GuardedFooterUi<'_> {
+    fn set_status(&mut self, key: &str, text: &str) {
+        if self.allowed() {
+            self.inner.set_status(key, text);
+        }
+    }
+
+    fn begin_refresh(&mut self) -> Option<crate::wiring_context::StatusHandle> {
+        let base = self.inner.begin_refresh()?;
+        let guarded = match self.signal.clone() {
+            Some(signal) => {
+                crate::wiring_context::guarded_status(&base, move || !signal.is_aborted())
+            }
+            None => base,
+        };
+        Some(crate::wiring_context::sequenced_status(&guarded))
+    }
+}
+
 pub type MemoryRpcContexts = Arc<dyn Fn() -> BTreeMap<String, MemoryIdentityContext> + Send + Sync>;
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -290,7 +322,14 @@ impl MemoryReflectionLiveWiring {
         let active = context.is_some_and(|context| {
             lock(&self.active_runs).is_active_for_session(&context.identity, session)
         });
-        self.footer.refresh(context, Some(session), active, now, ui);
+        if let Some(ui) = ui {
+            let mut guarded = GuardedFooterUi {
+                inner: ui,
+                signal: signal.cloned(),
+            };
+            self.footer
+                .refresh(context, Some(session), active, now, Some(&mut guarded));
+        }
         let unchanged = self
             .contexts
             .get(session)

@@ -162,6 +162,7 @@ pub mod sync_runner;
 pub mod sync_runtime;
 pub mod sync_session_deferred;
 pub mod sync_status_surface;
+pub mod tool_call_bound;
 pub mod tool_metadata;
 pub mod tool_receipts;
 pub mod tools;

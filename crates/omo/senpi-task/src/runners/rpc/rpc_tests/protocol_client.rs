@@ -293,6 +293,8 @@ fn fallback_capability_refusal_and_expired_probe_never_prevent_the_prompt() {
         let spawned = child.clone();
         let runner = RpcProcessRunner::new(RpcProcessRunnerOptions {
             fallback_chain_deadline_ms: Some(if mode == "silent" { 0 } else { 5000 }),
+            startup_stall_ms: Some(if mode == "silent" { 50 } else { 5000 }),
+            read_cpu_seconds: Some(Arc::new(|_| Some(0.5))),
             spawn_child: Some(Arc::new(move |_| spawned.clone())),
             build_spawn: Some(Arc::new(|_| RpcSpawnDescriptor::default())),
             model_admission: Some(Arc::new(|_| Ok(()))),
@@ -333,6 +335,8 @@ fn designated_chain_only_children_start_only_on_an_engine_that_holds_their_chain
         let spawned = child.clone();
         let runner = RpcProcessRunner::new(RpcProcessRunnerOptions {
             fallback_chain_deadline_ms: Some(if mode == "silent" { 0 } else { 5000 }),
+            startup_stall_ms: Some(if mode == "silent" { 50 } else { 5000 }),
+            read_cpu_seconds: Some(Arc::new(|_| Some(0.5))),
             spawn_child: Some(Arc::new(move |_| spawned.clone())),
             build_spawn: Some(Arc::new(|_| RpcSpawnDescriptor::default())),
             model_admission: Some(Arc::new(|_| Ok(()))),

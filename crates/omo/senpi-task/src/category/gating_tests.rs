@@ -95,41 +95,33 @@ fn ultrabrain_on_cross_family_models_is_unavailable_and_never_falls_back() {
 }
 
 #[test]
-fn ultrabrain_resolves_on_gpt_6_astra_alone_at_max() {
+fn ultrabrain_resolves_on_gpt_6_2_astra_alone_at_max() {
     let resolved = expect_resolved(resolve(
         "ultrabrain",
         json!({}),
-        &models_of(&[("openai", "gpt-6-astra")]),
+        &models_of(&[("openai", "gpt-6.2-astra")]),
     ));
     assert_eq!(
         spec_triple(&resolved),
-        ("openai", "gpt-6-astra", Some("max"))
+        ("openai", "gpt-6.2-astra", Some("max"))
     );
     assert!(contains(&resolved.available_categories, "ultrabrain"));
 }
 
 #[test]
-fn ultrabrain_falls_back_to_the_sol_rung_at_max() {
-    let resolved = expect_resolved(resolve(
-        "ultrabrain",
-        json!({}),
-        &models_of(&[("openai", "gpt-5.6-sol")]),
-    ));
-    assert_eq!(
-        spec_triple(&resolved),
-        ("openai", "gpt-5.6-sol", Some("max"))
-    );
-}
-
-#[test]
-fn ultrabrain_opens_on_copilots_gpt_5_6_sol() {
-    let resolved = expect_resolved(resolve(
-        "ultrabrain",
-        json!({}),
-        &models_of(&[("github-copilot", "gpt-5.6-sol")]),
-    ));
-    assert_eq!(resolved.spec.provider, "github-copilot");
-    assert_eq!(resolved.spec.variant.as_deref(), Some("max"));
+fn ultrabrain_is_unavailable_on_older_fast_sol_or_copilot_models() {
+    for offered in [
+        ("openai", "gpt-6-astra"),
+        ("chatgpt-subscription", "gpt-6.2-astra-fast"),
+        ("openai", "gpt-5.6-sol"),
+        ("chatgpt-subscription", "gpt-6.2-sol"),
+        ("github-copilot", "gpt-6-astra"),
+        ("github-copilot", "gpt-6.2-astra"),
+    ] {
+        let result = resolve("ultrabrain", json!({}), &models_of(&[offered]));
+        assert_eq!(result.kind(), "model_unavailable", "{offered:?}");
+        assert!(!contains(result.available_categories(), "ultrabrain"));
+    }
 }
 
 #[test]
@@ -144,12 +136,12 @@ fn neither_deep_lane_falls_back_to_cross_family_models() {
 }
 
 #[test]
-fn deep_high_resolves_on_gpt_6_astra_while_deep_low_stays_unavailable() {
-    let models = models_of(&[("openai", "gpt-6-astra")]);
+fn deep_high_resolves_on_gpt_6_2_astra_while_deep_low_stays_unavailable() {
+    let models = models_of(&[("openai", "gpt-6.2-astra")]);
     let resolved = expect_resolved(resolve("deep-high", json!({}), &models));
     assert_eq!(
         spec_triple(&resolved),
-        ("openai", "gpt-6-astra", Some("high"))
+        ("openai", "gpt-6.2-astra", Some("high"))
     );
     assert!(contains(&resolved.available_categories, "deep-high"));
     assert!(!contains(&resolved.available_categories, "deep-low"));
@@ -160,12 +152,12 @@ fn deep_high_resolves_on_gpt_6_astra_while_deep_low_stays_unavailable() {
 }
 
 #[test]
-fn deep_low_resolves_on_gpt_5_6_sol_while_deep_high_stays_unavailable() {
-    let models = models_of(&[("openai", "gpt-5.6-sol")]);
+fn deep_low_resolves_on_gpt_6_2_sol_while_deep_high_stays_unavailable() {
+    let models = models_of(&[("openai", "gpt-6.2-sol")]);
     let resolved = expect_resolved(resolve("deep-low", json!({}), &models));
     assert_eq!(
         spec_triple(&resolved),
-        ("openai", "gpt-5.6-sol", Some("medium"))
+        ("openai", "gpt-6.2-sol", Some("medium"))
     );
     assert!(contains(&resolved.available_categories, "deep-low"));
     assert!(!contains(&resolved.available_categories, "deep-high"));
@@ -210,9 +202,9 @@ fn artistry_on_fable_alone_is_a_primary_hit() {
 fn a_model_whose_last_segment_collides_with_a_gate_model_opens_no_gate() {
     for (category, colliding) in [
         ("architect", ("custom", "unrelated/claude-fable-5-1")),
-        ("ultrabrain", ("custom", "unrelated/gpt-5.6-sol")),
-        ("ultrabrain", ("custom", "unrelated/gpt-6-astra")),
-        ("ultrabrain", ("vercel", "openai/gpt-5.6-sol")),
+        ("deep-low", ("custom", "unrelated/gpt-6.2-sol")),
+        ("ultrabrain", ("custom", "unrelated/gpt-6.2-astra")),
+        ("ultrabrain", ("vercel", "openai/gpt-6.2-astra")),
     ] {
         let result = resolve(category, json!({}), &models_of(&[colliding]));
         assert_eq!(

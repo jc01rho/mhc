@@ -1,5 +1,9 @@
 //! Port of `local-api/vocabulary.ts`: the value lists of the local API v1 vocabulary.
 
+pub use super::policy::{
+    POLICY_STATES, POLICY_WAIT_REASONS, POLICY_WAITING_STATES, THIS_DEVICE_STATES,
+};
+
 pub const LOCAL_API_VERSION: u64 = 1;
 
 pub const STATUS_STATES: [&str; 14] = [
@@ -36,6 +40,10 @@ pub const ROUND_DEVICE_STATES: [&str; 7] = [
 pub const LISTING_SOURCES: [&str; 2] = ["live", "cache"];
 pub const SESSION_ROW_STATES: [&str; 3] = ["running", "idle", "ended"];
 pub const FILTER_KEYS: [&str; 3] = ["device", "project", "state"];
+pub const LISTING_ROWS: [u64; 6] = [2, 3, 4, 5, 6, 7];
+pub const WAIT_KINDS: [&str; 2] = ["rate_limit", "retry"];
+pub const LISTING_SETTLED_BY_KINDS: [&str; 5] =
+    ["user", "agent", "pr-merged", "pr-closed", "inactivity"];
 
 /// A command_id is exactly this many base64url characters.
 pub const COMMAND_ID_CHARS: usize = 22;
@@ -52,6 +60,29 @@ pub const COMMAND_STATES: [&str; 9] = [
 ];
 /// Only a retry by the sender can help, and only when the recipient provably cannot hold the command.
 pub const RETRYABLE_STATES: [&str; 2] = ["not confirmed", "not delivered: never_sent"];
+
+pub const COMMAND_REFUSAL_REASONS: [&str; 20] = [
+    "parts_conflict",
+    "peer_unauthorized",
+    "message_too_long",
+    "engine_capability_missing",
+    "malformed",
+    "method_unclassified",
+    "method_local_only",
+    "capability_missing",
+    "schema_stale",
+    "tool_unknown",
+    "cancelled",
+    "hand_restarted",
+    "scope_unknown",
+    "scope_closed",
+    "epoch_fenced",
+    "epoch_step_exceeded",
+    "route_unlisted",
+    "rate_limited",
+    "unbound",
+    "unknown_reason",
+];
 
 pub fn is_terminal_command_state(state: &str) -> bool {
     matches!(

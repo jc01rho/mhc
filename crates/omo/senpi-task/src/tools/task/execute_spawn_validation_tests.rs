@@ -174,3 +174,25 @@ fn given_category_with_model_when_executed_then_it_returns_the_exclusivity_error
     assert_eq!(result.details.status, "invalid_arguments");
     assert!(first_text(&result).contains("omo.json"));
 }
+
+#[test]
+fn given_builtin_agent_with_model_when_executed_then_it_returns_agent_with_model_without_spawning()
+{
+    let harness = default_manager();
+    let tool = TaskToolDeps::default();
+    let deps = make_deps(&harness.manager, &tool);
+    let execute = build_task_execute(deps, ForegroundWaitOptions::default());
+
+    let input = SpawnParamsInput {
+        subagent_type: Some("explore".to_string()),
+        model: Some("anthropic/claude-opus-5-5".to_string()),
+        ..params("p")
+    };
+    let result = execute
+        .execute("c", &input, None, None, &ctx())
+        .expect("execute");
+
+    assert!(harness.manager.list(&ListScope::All).is_empty());
+    assert_eq!(result.details.status, "invalid_arguments");
+    assert!(first_text(&result).contains("agent_with_model"));
+}

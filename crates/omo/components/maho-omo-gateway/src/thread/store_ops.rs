@@ -12,18 +12,19 @@ pub type AfterCommitCallback = Mutex<Option<Vec<Box<dyn FnOnce() + Send>>>>;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use rusqlite::types::Value as SqliteValue;
 use serde_json::Value;
 
+use super::backlog::{BacklogCheck, backlog_refusal};
 use super::constants::{
-    GATEWAY_RECEIPT_RETENTION_MS, MAX_CAUSAL_DELIVERIES, MAX_FANOUT_PER_TURN, MAX_HOPS,
-    PAIR_BUCKET_BURST, PAIR_BUCKET_REFILL_MS, QUEUED_TTL_MS, ROOT_LIFETIME_MS, TARGET_MAX_BYTES,
-    TARGET_MAX_MESSAGES, is_durable_id,
+    GATEWAY_RECEIPT_RETENTION_MS, MAX_CAUSAL_DELIVERIES, MAX_HOPS, PAIR_BUCKET_BURST,
+    PAIR_BUCKET_REFILL_MS, QUEUED_TTL_MS, RETENTION_SWEEP_BATCH, ROOT_LIFETIME_MS, is_durable_id,
 };
+use super::errors::pair_loop_guard_message;
 use super::provenance_record::is_provenance;
 use super::schema::{GATEWAY_MIGRATIONS, GATEWAY_NEEDS_FK_OFF, GatewaySchemaVersionError};
 use super::types::{
@@ -135,6 +136,7 @@ impl SqlAccess for StoreContext {
     }
 
     fn run(&self, sql: &str, params: &[SqliteValue]) -> Result<usize, StoreError> {
+        end_read_snapshot(self)?;
         let changed = self
             .conn
             .execute(sql, rusqlite::params_from_iter(params.iter()))?;
@@ -210,6 +212,8 @@ pub struct StoreContext {
     events: Mutex<Vec<GatewayStoreEvent>>,
     after_commit: AfterCommitCallback,
     after_rollback: AfterCommitCallback,
+    /// Whether an op's checked read snapshot is open on `conn` (omo#14622 review M7).
+    read_snapshot: AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -243,6 +247,7 @@ impl StoreContext {
             events: Mutex::new(Vec::new()),
             after_commit: Mutex::new(None),
             after_rollback: Mutex::new(None),
+            read_snapshot: AtomicBool::new(false),
         }
     }
 
@@ -309,11 +314,18 @@ pub fn begin_immediate(
         ctx.exec("SAVEPOINT gateway_enqueue")?;
         return Ok(true);
     }
+    end_read_snapshot(ctx)?;
     let started = Instant::now();
     loop {
         match ctx.conn.execute_batch("BEGIN IMMEDIATE") {
             Ok(()) => {
                 ctx.stats.transactions.fetch_add(1, Ordering::Relaxed);
+                // A newer binary may have migrated the store after this one opened it (omo#14622 review M5): a
+                // store this binary no longer meets is refused under the lock, before anything is written.
+                if let Err(error) = schema_version(ctx) {
+                    rollback_quietly(ctx);
+                    return Err(error);
+                }
                 return Ok(true);
             }
             Err(error) if is_busy(&error) => {
@@ -346,6 +358,36 @@ pub fn rollback_quietly(ctx: &StoreContext) {
     } else {
         "ROLLBACK"
     });
+}
+
+/// Runs one store op inside the read snapshot its schema check opens (omo#14622 review M4, M7): a migration another
+/// process commits after the check stays invisible to the op's reads, so they never meet a schema the check did not
+/// accept. A write leaves the snapshot first (`begin_immediate`, `SqlAccess::run`) and is checked again under its
+/// write lock. An op that already runs inside a transaction checks the schema and runs as it is.
+pub fn in_checked_snapshot<T>(
+    ctx: &StoreContext,
+    body: impl FnOnce() -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    if !ctx.conn.is_autocommit() {
+        schema_version(ctx)?;
+        return body();
+    }
+    ctx.exec("BEGIN")?;
+    ctx.read_snapshot.store(true, Ordering::Relaxed);
+    let result = schema_version(ctx).and_then(|_| body());
+    let ended = end_read_snapshot(ctx);
+    let value = result?;
+    ended?;
+    Ok(value)
+}
+
+/// Ends the read snapshot an op opened, when it is still open; the snapshot only ever read, so its commit cannot
+/// meet a write conflict.
+fn end_read_snapshot(ctx: &StoreContext) -> Result<(), StoreError> {
+    if ctx.read_snapshot.swap(false, Ordering::Relaxed) && !ctx.conn.is_autocommit() {
+        ctx.conn.execute_batch("COMMIT")?;
+    }
+    Ok(())
 }
 
 /// Runs `body` inside the store's write transaction (or the joined outer one).
@@ -516,7 +558,7 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
     }
 }
 
-fn select_rows(
+pub(crate) fn select_rows(
     ctx: &StoreContext,
     where_clause: &str,
     params: &[SqliteValue],
@@ -714,7 +756,11 @@ pub fn migrate(ctx: &StoreContext) -> Result<(), StoreError> {
     }
 }
 
-fn refused(code: &str, message: impl Into<String>, details: Option<Value>) -> EnqueueOutcome {
+pub(crate) fn refused(
+    code: &str,
+    message: impl Into<String>,
+    details: Option<Value>,
+) -> EnqueueOutcome {
     EnqueueOutcome::Refused {
         code: super::errors::ThreadErrorCode::parse(code)
             .unwrap_or_else(|| panic!("unknown thread error code: {code}")),
@@ -974,32 +1020,6 @@ pub fn closes_cycle(edges: &[(String, String)], from: &str, to: &str) -> bool {
     false
 }
 
-fn check_fanout(
-    ctx: &StoreContext,
-    request: &EnqueueRequest,
-) -> Result<Option<EnqueueOutcome>, StoreError> {
-    let Some(sender_turn) = &request.sender_turn else {
-        return Ok(None);
-    };
-    let targets: Vec<String> = ctx
-        .all(
-            "SELECT DISTINCT target_durable_id AS t FROM deliveries WHERE sender = ? AND sender_turn = ? AND state != 'refused'",
-            &[v_str(&request.sender_principal), v_str(sender_turn)],
-        )?
-        .iter()
-        .map(|row| row_str(row, "t"))
-        .collect();
-    if targets.contains(&request.target_durable_id) || (targets.len() as i64) < MAX_FANOUT_PER_TURN
-    {
-        return Ok(None);
-    }
-    Ok(Some(refused(
-        "overloaded",
-        format!("One turn may reach at most {MAX_FANOUT_PER_TURN} sessions."),
-        Some(serde_json::json!({ "budget": "fanout" })),
-    )))
-}
-
 fn take_pair_token(
     ctx: &StoreContext,
     request: &EnqueueRequest,
@@ -1021,13 +1041,20 @@ fn take_pair_token(
                 .min(stored + ((request.now - updated).max(0) as f64) / PAIR_BUCKET_REFILL_MS)
         }
     };
+    // An empty bucket means the sender spent at least the whole burst on this target within the time the bucket
+    // takes to refill from empty: that is the burst the refusal reports, measured from the bucket it read.
     if tokens < 1.0 {
+        let burst = PAIR_BUCKET_BURST as i64;
+        let window_ms = (PAIR_BUCKET_BURST * PAIR_BUCKET_REFILL_MS) as i64;
         return Ok(Some(refused(
-            "overloaded",
-            "Too many deliveries to this session; wait before sending again.",
-            Some(
-                serde_json::json!({ "budget": "pair_rate", "retry_after_ms": ((1.0 - tokens) * PAIR_BUCKET_REFILL_MS).ceil() as i64 }),
-            ),
+            "pair_loop_guard",
+            pair_loop_guard_message(&sender, &request.target_durable_id, burst, window_ms),
+            Some(serde_json::json!({
+                "guard": "pair_loop",
+                "burst": burst,
+                "window_ms": window_ms,
+                "retry_after_ms": ((1.0 - tokens) * PAIR_BUCKET_REFILL_MS).ceil() as i64,
+            })),
         )));
     }
     ctx.run(
@@ -1155,6 +1182,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             None,
         ));
     }
+    let dead_claims = expired_dead_claims(ctx, &request.target_durable_id, request.now)?;
     if !begin_immediate(ctx, "enqueue", false)? {
         return Ok(EnqueueOutcome::Busy);
     }
@@ -1189,24 +1217,27 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 return Ok(refusal);
             }
         };
-        let backlog = ctx.one(
-            &format!("SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM deliveries WHERE target_durable_id = ? AND state IN {OPEN_STATES}"),
-            &[v_str(&request.target_durable_id)],
+        // Expired queued rows of this target are refused first, so the cap never counts them (omo#14466).
+        let expired = refuse_expired_queued(
+            ctx,
+            request.now,
+            RETENTION_SWEEP_BATCH,
+            &request.target_durable_id,
         )?;
         let bytes = request.body.len() as i64;
-        let pending_messages = backlog.as_ref().map(|row| row_i64(row, "n")).unwrap_or(0);
-        let pending_bytes = backlog.as_ref().map(|row| row_i64(row, "b")).unwrap_or(0);
-        if pending_messages >= TARGET_MAX_MESSAGES
-            || pending_bytes + bytes > TARGET_MAX_BYTES as i64
-        {
+        if let Some(full) = backlog_refusal(
+            ctx,
+            &BacklogCheck {
+                target: &request.target_durable_id,
+                mode: request.mode,
+                bytes,
+                now: request.now,
+                dead_claims: &dead_claims,
+                target_running: request.endpoint_kind.is_some(),
+            },
+        )? {
             rollback_quietly(ctx);
-            return Ok(refused(
-                "queue_full",
-                "The target's delivery backlog is full.",
-                Some(
-                    serde_json::json!({ "max_messages": TARGET_MAX_MESSAGES, "max_bytes": TARGET_MAX_BYTES }),
-                ),
-            ));
+            return Ok(full);
         }
         let placement = match place_causally(ctx, request)? {
             Ok(placement) => placement,
@@ -1215,7 +1246,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 return Ok(refusal);
             }
         };
-        if let Some(budget) = check_fanout(ctx, request)?.or(take_pair_token(ctx, request)?) {
+        if let Some(budget) = take_pair_token(ctx, request)? {
             rollback_quietly(ctx);
             return Ok(budget);
         }
@@ -1297,6 +1328,11 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
         let position = queue_position(ctx, &row)?;
         ctx.exec(commit_sql)?;
         committed = true;
+        // The markers of rows this enqueue refused go only once those refusals committed: a rolled-back enqueue
+        // leaves every queued row its wake.
+        for gone in &expired {
+            unlink_marker(ctx, &gone.target_durable_id, &gone.delivery_id);
+        }
         Ok(EnqueueOutcome::Inserted {
             row: Box::new(row),
             queue_position: position,
@@ -1323,7 +1359,7 @@ fn delete_expired_receipt(
     )
 }
 
-fn claim_fingerprint(row: &DeliveryRow) -> String {
+pub(crate) fn claim_fingerprint(row: &DeliveryRow) -> String {
     let admitted = row
         .admitted_by
         .as_ref()
@@ -1501,6 +1537,64 @@ fn claimant_is_dead(claimant: &ProcessIdentity) -> bool {
     !alive
 }
 
+/// Rows of `target` past their lifetime that a runtime took and then died holding (omo#14466). No process can still
+/// write them, so they do not count against the target's backlog; the target's own `reconcile` settles each one when
+/// it runs again. Read before the write lock: the claim fingerprint lets the count notice a row reclaimed in between.
+fn expired_dead_claims(
+    ctx: &StoreContext,
+    target: &str,
+    now: i64,
+) -> Result<BTreeMap<String, String>, StoreError> {
+    let mut found = BTreeMap::new();
+    for row in select_rows(
+        ctx,
+        "target_durable_id = ? AND state IN ('admitting', 'admitted') AND admitted_by IS NOT NULL AND expires_at <= ?",
+        &[v_str(target), v_i64(now)],
+        None,
+    )? {
+        if row.admitted_by.as_ref().is_some_and(claimant_is_dead) {
+            found.insert(row.delivery_id.clone(), claim_fingerprint(&row));
+        }
+    }
+    Ok(found)
+}
+
+/// A queued row past its lifetime that an enqueue refused `expired` without the target's drain (omo#14466).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpiredQueued {
+    pub delivery_id: String,
+    pub target_durable_id: String,
+}
+
+/// Settles `target`'s queued rows past their lifetime as `refused`/`expired`, at most `limit` of them, so a target
+/// that stopped taking its queue frees its slots as its rows expire instead of answering `queue_full` until it runs
+/// again. Answers what it refused; the caller unlinks their inbox markers once its transaction commits.
+pub fn refuse_expired_queued(
+    ctx: &StoreContext,
+    now: i64,
+    limit: i64,
+    target: &str,
+) -> Result<Vec<ExpiredQueued>, StoreError> {
+    let expired: Vec<ExpiredQueued> = ctx
+        .all(
+            "SELECT delivery_id, target_durable_id FROM deliveries WHERE state = 'queued' AND expires_at <= ? AND target_durable_id = ? LIMIT ?",
+            &[v_i64(now), v_str(target), v_i64(limit)],
+        )?
+        .iter()
+        .map(|row| ExpiredQueued {
+            delivery_id: row_str(row, "delivery_id"),
+            target_durable_id: row_str(row, "target_durable_id"),
+        })
+        .collect();
+    for row in &expired {
+        ctx.run(
+            "UPDATE deliveries SET state = 'refused', reason = 'expired', updated_at = ? WHERE delivery_id = ? AND state = 'queued'",
+            &[v_i64(now), v_str(&row.delivery_id)],
+        )?;
+    }
+    Ok(expired)
+}
+
 pub fn claim(ctx: &StoreContext, request: &ClaimRequest) -> Result<ClaimOutcome, StoreError> {
     transaction(ctx, "claim", || {
         let Some(row) = select_row(ctx, &request.delivery_id)? else {
@@ -1608,6 +1702,31 @@ pub fn refuse_queued(
             return Ok(false);
         };
         if row.state != DeliveryState::Queued {
+            return Ok(false);
+        }
+        transition(ctx, &row, DeliveryState::Refused, now, Some(reason))?;
+        unlink_marker(ctx, &row.target_durable_id, &row.delivery_id);
+        Ok(true)
+    })
+}
+
+/// omo#14313: a delivery the engine took in (`admitting`/`admitted`) and handed back unread when its session was
+/// closed gracefully. The row is refused with `reason`, so its sender reads it as not delivered instead of admitted.
+/// An `applied` row (the session read it) is never touched. Answers whether this call refused it.
+pub fn refuse_returned(
+    ctx: &StoreContext,
+    now: i64,
+    delivery_id: &str,
+    reason: RefusalReason,
+) -> Result<bool, StoreError> {
+    transaction(ctx, "refuse_returned", || {
+        let Some(row) = select_row(ctx, delivery_id)? else {
+            return Ok(false);
+        };
+        if !matches!(
+            row.state,
+            DeliveryState::Admitting | DeliveryState::Admitted
+        ) {
             return Ok(false);
         }
         transition(ctx, &row, DeliveryState::Refused, now, Some(reason))?;
@@ -1874,5 +1993,74 @@ mod tests {
         assert!(closes_cycle(&edges, "b", "a"));
         assert!(!closes_cycle(&edges, "a", "c"));
         assert!(!closes_cycle(&[], "a", "b"));
+    }
+
+    fn file_context(dir: &tempfile::TempDir) -> StoreContext {
+        let mut config = StoreContext::test_config();
+        config.agent_dir = dir.path().to_string_lossy().into_owned();
+        let path = crate::paths::gateway_database_path(dir.path());
+        let ctx = StoreContext::new(
+            open_connection(&path, config.busy_timeout_ms).expect("open the store"),
+            config,
+            StoreContext::test_identity(),
+        );
+        migrate(&ctx).expect("migrate");
+        ctx
+    }
+
+    /// Another process's connection to the same store, as a newer binary would hold it.
+    fn other_process(dir: &tempfile::TempDir) -> Connection {
+        open_connection(&crate::paths::gateway_database_path(dir.path()), 50)
+            .expect("second connection")
+    }
+
+    fn migrate_past_this_binary(connection: &Connection) {
+        connection
+            .execute_batch(&format!(
+                "PRAGMA user_version = {}",
+                GATEWAY_MIGRATIONS.len() + 1
+            ))
+            .expect("a newer binary migrates the store");
+    }
+
+    fn user_version(ctx: &StoreContext) -> Result<i64, StoreError> {
+        Ok(ctx
+            .one("SELECT user_version FROM pragma_user_version()", &[])?
+            .map(|row| row_i64(&row, "user_version"))
+            .unwrap_or(0))
+    }
+
+    #[test]
+    fn a_write_lock_on_a_store_another_binary_migrated_is_refused_and_released() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = file_context(&dir);
+        migrate_past_this_binary(&other_process(&dir));
+        let error = begin_immediate(&ctx, "test", false).expect_err("refused under the lock");
+        assert_eq!(error.code(), "gateway_schema_too_new");
+        assert!(
+            ctx.conn.is_autocommit(),
+            "the refused write lock is released"
+        );
+    }
+
+    #[test]
+    fn an_op_reads_inside_the_snapshot_its_schema_check_opened() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = file_context(&dir);
+        let other = other_process(&dir);
+        let seen = in_checked_snapshot(&ctx, || {
+            migrate_past_this_binary(&other);
+            user_version(&ctx)
+        })
+        .expect("the op runs on the store it checked");
+        assert_eq!(seen, GATEWAY_MIGRATIONS.len() as i64);
+        assert!(ctx.conn.is_autocommit(), "the snapshot ends with its op");
+        let error = in_checked_snapshot(&ctx, || user_version(&ctx))
+            .expect_err("the next op meets the newer store");
+        assert_eq!(error.code(), "gateway_schema_too_new");
+        assert!(
+            ctx.conn.is_autocommit(),
+            "a refused op leaves no snapshot open"
+        );
     }
 }

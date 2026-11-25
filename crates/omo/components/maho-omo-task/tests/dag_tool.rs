@@ -678,7 +678,7 @@ fn subagent_type_and_model_accepted() {
             prompt: "draft".into(),
             label: None,
             category: None,
-            subagent_type: Some("plan-reviewer".into()),
+            subagent_type: Some("my-reviewer".into()),
             model: Some("anthropic/claude-opus-4".into()),
             depends_on: None,
             task_summary: None,
@@ -708,8 +708,52 @@ fn subagent_type_and_model_accepted() {
     assert_eq!(details["kind"], "started");
     let node = &details["snapshot"]["nodes"][0];
     assert_eq!(node["route"]["kind"], "agent");
-    assert_eq!(node["route"]["agent"], "plan-reviewer");
+    assert_eq!(node["route"]["agent"], "my-reviewer");
     assert_eq!(node["route"]["model"], "anthropic/claude-opus-4");
+}
+
+#[test]
+fn builtin_agent_with_model_rejected() {
+    let f = fixture();
+    let conflicted = DefinitionInput {
+        key: "release-plan".into(),
+        name: "release plan".into(),
+        nodes: vec![NodeInput {
+            id: "plan".into(),
+            prompt: "draft".into(),
+            label: None,
+            category: None,
+            subagent_type: Some("explore".into()),
+            model: Some("anthropic/claude-opus-4".into()),
+            depends_on: None,
+            task_summary: None,
+            description: None,
+            load_skills: None,
+        }],
+    };
+    let result = run_dag_tool(
+        &deps(&f.manager),
+        DagToolInput {
+            action: "start".into(),
+            definition: Some(conflicted),
+            run_id: None,
+            reason: None,
+            detach: None,
+            node_id: None,
+            node_ids: None,
+            message: None,
+            prompt: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
+        },
+    )
+    .unwrap();
+    let details = result.details.unwrap();
+    assert_eq!(details["kind"], "error");
+    assert_eq!(details["error"]["code"], "invalid_definition");
+    assert_eq!(details["error"]["nodes"][0]["code"], "agent_with_model");
+    assert_eq!(f.run_file_count(), 0);
 }
 
 #[test]
@@ -1466,7 +1510,7 @@ fn retired_momus_id_starts_as_ordinary_agent() {
             prompt: "TASK: review the plan. DELIVERABLE: findings. SCOPE: read-only. VERIFY: findings listed. STOP WHEN: findings are written.".into(),
             label: None,
             category: None,
-            subagent_type: Some("plan-reviewer".into()),
+            subagent_type: Some("my-reviewer".into()),
             model: Some("anthropic/claude-opus-4".into()),
             depends_on: None,
             task_summary: None,
@@ -1496,7 +1540,7 @@ fn retired_momus_id_starts_as_ordinary_agent() {
     assert_eq!(details["kind"], "started");
     let node = &details["snapshot"]["nodes"][0];
     assert_eq!(node["route"]["kind"], "agent");
-    assert_eq!(node["route"]["agent"], "plan-reviewer");
+    assert_eq!(node["route"]["agent"], "my-reviewer");
     assert_eq!(node["route"]["model"], "anthropic/claude-opus-4");
     assert!(details["warnings"].as_array().unwrap().is_empty());
 }

@@ -17,6 +17,7 @@ pub mod model_chain;
 pub mod model_chains;
 pub mod model_exclusion;
 pub mod pause;
+pub mod platform;
 pub mod progress;
 pub mod renderer_text;
 pub mod run_stats;

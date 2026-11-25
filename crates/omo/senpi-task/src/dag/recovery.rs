@@ -3,7 +3,7 @@
 // allow: SIZE_OK - recovery keeps lease claiming, node reconciliation, and resumed wave admission
 // in one crash-safety boundary.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -23,8 +23,11 @@ use crate::dag::types::{
     DagRoute, DagRunEvent, DagRunEventPayload, DagRunId, DagRunStatus,
 };
 use crate::manager::TaskManager;
-use crate::manager::types::{ManagerStartSpec, OwnedStartResult, StartFailure, StartResult};
+use crate::manager::types::{
+    ListScope, ManagerStartSpec, OwnedStartResult, StartFailure, StartResult,
+};
 use crate::state::{TaskRecord, TaskStatus};
+use crate::steering::CancelOptions;
 
 fn is_live_run_status(status: DagRunStatus) -> bool {
     matches!(status, DagRunStatus::Pending | DagRunStatus::Running)
@@ -777,6 +780,17 @@ fn reconcile_nodes(
     pre_attached_tasks: &mut BTreeMap<DagNodeId, String>,
 ) {
     let nodes = journal.snapshot().record.nodes;
+    // A child still waiting for a concurrency slot in this host has no resident handle either, but
+    // this host's queue will launch it and settle it through the same waiters.
+    let queued_here: HashSet<String> = context
+        .task_manager
+        .list(&ListScope::All)
+        .into_iter()
+        .filter(|entry| {
+            entry.record.status == TaskStatus::Pending && entry.queue_position.is_some()
+        })
+        .map(|entry| entry.record.task_id)
+        .collect();
     for observed in &nodes {
         match observed.state {
             DagNodeState::Completed => {
@@ -912,12 +926,42 @@ fn reconcile_nodes(
             current_task.status,
             TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
         ) {
-            if !started_here
+            let orphaned = !started_here
+                && !queued_here.contains(&current_task.task_id)
                 && context
                     .task_manager
                     .get_resident_handle(&current_task.task_id)
-                    .is_none()
+                    .is_none();
+            // A child that never launched and that no queue here still holds lost no work: retire
+            // its record so it can never launch beside a replacement, and re-admit the node (#12107).
+            if orphaned
+                && current_task.status == TaskStatus::Pending
+                && current_task.started_at.is_none()
+                && observed.exec_attempt.unwrap_or(0) < MAX_RECOVERY_READMISSIONS
             {
+                context
+                    .task_manager
+                    .withdraw_task_admissions(&[&current_task.task_id]);
+                let _ = context.task_manager.cancel_task(
+                    &current_task.task_id,
+                    Some("never launched; the DAG node was re-admitted on recovery"),
+                    CancelOptions::default(),
+                );
+                let next_attempt = observed.exec_attempt.unwrap_or(0) + 1;
+                pending_terminal_results
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&observed.id);
+                let _ = journal.append(DagRunEventPayload::NodeRetried {
+                    node_id: observed.id.clone(),
+                    prior_task_id: Some(current_task.task_id),
+                    exec_attempt: next_attempt,
+                    prompt_changed: false,
+                    automatic: None,
+                });
+                continue;
+            }
+            if orphaned {
                 let detail = format!(
                     "residency_state={}, host_pid={:?}, runner_kind={:?}",
                     current_task.residency_state.as_str(),

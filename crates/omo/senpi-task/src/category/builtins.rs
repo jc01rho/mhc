@@ -39,6 +39,8 @@ pub struct BuiltinCategoryDefinition {
     pub resolve_prompt_append: Option<fn(Option<&str>) -> &'static str>,
     /// Every model id that opens the category; one present id is enough. Empty means ungated.
     pub requires_model: &'static [&'static str],
+    /// Builtin default and chain resolve on exact registry ids only (#14155).
+    pub exact_models: bool,
 }
 
 const fn config(model: &'static str, variant: Option<&'static str>) -> BuiltinCategoryConfig {
@@ -97,18 +99,10 @@ pub fn resolve_unspecified_high_category_prompt_append(model: Option<&str>) -> &
     }
 }
 
-// The GPT flagship gate: either flagship id keeps ultrabrain available. Each deep lane gates on its
-// own models and disappears without them, so it never falls through to a cross-family model.
-const GPT_FLAGSHIP_GATE_MODELS: &[&str] = &["gpt-6.2-astra", "gpt-6-astra", "gpt-5.6-sol"];
-const DEEP_LOW_GATE_MODELS: &[&str] = &[
-    "gpt-6.2-sol",
-    "gpt-6.2-sol-fast",
-    "gpt-6.1-sol",
-    "gpt-6.1-sol-fast",
-    "gpt-5.6-sol-fast",
-    "gpt-5.6-sol",
-];
-const DEEP_HIGH_GATE_MODELS: &[&str] = &["gpt-6.2-astra", "gpt-6-astra"];
+// ultrabrain and both deep lanes are a single exact-model rung (#14155), so each gates on that one
+// model and disappears without it; the gate also pins resolution to that exact id.
+const GPT_ASTRA_GATE_MODELS: &[&str] = &["gpt-6.2-astra"];
+const DEEP_LOW_GATE_MODELS: &[&str] = &["gpt-6.2-sol"];
 const ARCHITECT_GATE_MODELS: &[&str] = &["claude-fable-5-2", "claude-fable-5-1"];
 
 /// Declared in the TypeScript order: google, openai, anthropic, then kimi categories.
@@ -121,6 +115,7 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         prompt_append: prompts::VISUAL_ENGINEERING_PROMPT_APPEND,
         resolve_prompt_append: None,
         requires_model: &[],
+        exact_models: false,
     },
     BuiltinCategoryDefinition {
         name: "artistry",
@@ -130,6 +125,7 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         prompt_append: prompts::ARTISTRY_PROMPT_APPEND,
         resolve_prompt_append: None,
         requires_model: &[],
+        exact_models: false,
     },
     BuiltinCategoryDefinition {
         name: "ultrabrain",
@@ -138,7 +134,8 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         caller_guidance: None,
         prompt_append: prompts::ULTRABRAIN_PROMPT_APPEND,
         resolve_prompt_append: Some(resolve_ultrabrain_category_prompt_append),
-        requires_model: GPT_FLAGSHIP_GATE_MODELS,
+        requires_model: GPT_ASTRA_GATE_MODELS,
+        exact_models: true,
     },
     BuiltinCategoryDefinition {
         name: "deep-low",
@@ -148,6 +145,7 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         prompt_append: prompts::DEEP_LOW_PROMPT_APPEND,
         resolve_prompt_append: Some(resolve_deep_low_category_prompt_append),
         requires_model: DEEP_LOW_GATE_MODELS,
+        exact_models: true,
     },
     BuiltinCategoryDefinition {
         name: "deep-high",
@@ -156,7 +154,8 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         caller_guidance: Some(prompts::DEEP_HIGH_CALLER_GUIDANCE),
         prompt_append: prompts::DEEP_HIGH_PROMPT_APPEND,
         resolve_prompt_append: Some(resolve_deep_high_category_prompt_append),
-        requires_model: DEEP_HIGH_GATE_MODELS,
+        requires_model: GPT_ASTRA_GATE_MODELS,
+        exact_models: true,
     },
     BuiltinCategoryDefinition {
         name: "quick",
@@ -166,6 +165,7 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         prompt_append: prompts::QUICK_PROMPT_APPEND,
         resolve_prompt_append: None,
         requires_model: &[],
+        exact_models: false,
     },
     BuiltinCategoryDefinition {
         name: "unspecified-low",
@@ -175,6 +175,7 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         prompt_append: prompts::UNSPECIFIED_LOW_PROMPT_APPEND,
         resolve_prompt_append: None,
         requires_model: &[],
+        exact_models: false,
     },
     BuiltinCategoryDefinition {
         name: "unspecified-high",
@@ -184,6 +185,7 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         prompt_append: prompts::UNSPECIFIED_HIGH_PROMPT_APPEND,
         resolve_prompt_append: Some(resolve_unspecified_high_category_prompt_append),
         requires_model: &[],
+        exact_models: false,
     },
     BuiltinCategoryDefinition {
         name: "architect",
@@ -193,6 +195,7 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         prompt_append: prompts::ARCHITECT_PROMPT_APPEND,
         resolve_prompt_append: None,
         requires_model: ARCHITECT_GATE_MODELS,
+        exact_models: false,
     },
     BuiltinCategoryDefinition {
         name: "writing",
@@ -202,6 +205,7 @@ pub const BUILTIN_CATEGORY_DEFAULTS: [BuiltinCategoryDefinition; 10] = [
         prompt_append: prompts::WRITING_PROMPT_APPEND,
         resolve_prompt_append: None,
         requires_model: &[],
+        exact_models: false,
     },
 ];
 
@@ -272,6 +276,47 @@ pub fn is_category_gate_satisfied(
             .iter()
             .any(|provider| provider_serves_model(provider, gate_model, available_models))
     })
+}
+
+pub(crate) type ExactServedRung = (DelegateFallbackEntry, DelegateFallbackEntry);
+
+fn is_exact_model_category(category_name: &str) -> bool {
+    builtin_category(category_name).is_some_and(|definition| definition.exact_models)
+}
+
+pub(crate) fn exact_served_rungs(
+    category_name: &str,
+    chain: &[DelegateFallbackEntry],
+    available_models: &BTreeSet<String>,
+) -> Option<Vec<ExactServedRung>> {
+    if !is_exact_model_category(category_name) {
+        return None;
+    }
+    Some(
+        chain
+            .iter()
+            .filter_map(|rung| {
+                let providers: Vec<String> = rung
+                    .providers
+                    .iter()
+                    .filter(|provider| {
+                        provider_serves_model(provider, &rung.model, available_models)
+                    })
+                    .cloned()
+                    .collect();
+                (!providers.is_empty()).then(|| {
+                    (
+                        DelegateFallbackEntry {
+                            providers,
+                            model: rung.model.clone(),
+                            variant: rung.variant.clone(),
+                        },
+                        rung.clone(),
+                    )
+                })
+            })
+            .collect(),
+    )
 }
 
 /// A chain rung resolves when one of its own providers serves its model in the live registry.

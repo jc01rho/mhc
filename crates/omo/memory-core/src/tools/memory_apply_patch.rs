@@ -22,7 +22,7 @@ use super::memfs::{
 };
 use super::memory::{
     MemoryToolCommit, MemoryToolLock, MemoryToolProvenance, MemoryToolProvenanceInput,
-    MemoryToolResult, MemoryWriter, memory_commit_message,
+    MemoryToolResult, MemoryWriteStage, MemoryWriter, memory_commit_message,
 };
 use super::patch_parser::{PatchOperation, apply_memory_patch_hunk, parse_memory_patch};
 use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
@@ -58,6 +58,15 @@ pub fn run_memory_apply_patch(
     params: &MemoryApplyPatchParams,
     lock: Option<&dyn MemoryToolLock>,
 ) -> Result<MemoryApplyPatchResult, MemoryToolError> {
+    run_memory_apply_patch_with_stage(repo, params, lock, None)
+}
+
+pub(crate) fn run_memory_apply_patch_with_stage(
+    repo: &GitMemoryRepo,
+    params: &MemoryApplyPatchParams,
+    lock: Option<&dyn MemoryToolLock>,
+    on_stage: Option<&(dyn Fn(MemoryWriteStage) + Send + Sync)>,
+) -> Result<MemoryApplyPatchResult, MemoryToolError> {
     let reason = params.reason.trim();
     if reason.is_empty() {
         return Err(err("'reason' must be a non-empty string"));
@@ -67,12 +76,15 @@ pub fn run_memory_apply_patch(
     }
 
     let Some(lock) = lock else {
-        return apply_and_commit(repo, params, reason);
+        return apply_and_commit_with_stage(repo, params, reason, on_stage);
     };
+    if let Some(enter) = on_stage {
+        enter(MemoryWriteStage::Lock);
+    }
     // The lock seam carries the memory tool's result type; the patch result rides out beside it.
     let mut outcome = None;
     lock.with_lock(MEMORY_WRITE_LOCK_DOMAIN, &mut || {
-        let result = apply_and_commit(repo, params, reason)?;
+        let result = apply_and_commit_with_stage(repo, params, reason, on_stage)?;
         let provenance = MemoryToolProvenance {
             agent_id: params.author.agent_id.clone(),
             author_name: params.author.author_name.clone(),
@@ -93,13 +105,20 @@ pub fn run_memory_apply_patch(
 
 const MEMORY_WRITE_LOCK_DOMAIN: &str = "memory-write";
 
-fn apply_and_commit(
+fn apply_and_commit_with_stage(
     repo: &GitMemoryRepo,
     params: &MemoryApplyPatchParams,
     reason: &str,
+    on_stage: Option<&(dyn Fn(MemoryWriteStage) + Send + Sync)>,
 ) -> Result<MemoryApplyPatchResult, MemoryToolError> {
+    if let Some(enter) = on_stage {
+        enter(MemoryWriteStage::Check);
+    }
     repo.clean_check().map_err(|e| err(e.to_string()))?;
 
+    if let Some(enter) = on_stage {
+        enter(MemoryWriteStage::Apply);
+    }
     // Parse and hunk errors already carry their own `memory apply_patch:` prefix (pin
     // `memory-apply-patch.ts:105-110`): they pass through unchanged.
     let operations =
@@ -115,6 +134,9 @@ fn apply_and_commit(
         return Err(err(violation));
     }
 
+    if let Some(enter) = on_stage {
+        enter(MemoryWriteStage::Commit);
+    }
     let commit_res = repo.commit_write(
         &affected_paths,
         &memory_commit_message(

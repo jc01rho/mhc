@@ -2,7 +2,7 @@
 //!
 //! Upstream counterpart: `thread/gateway/result.ts`.
 
-use super::errors::{ThreadToolFailure, thread_tool_failure};
+use super::errors::{ThreadToolFailure, pair_loop_guard_next_action, thread_tool_failure};
 use super::types::{
     DeliveryRow, DeliveryState, GatewayDeliveryDelivery, GatewayDeliveryResult, GatewayEndpointKind,
 };
@@ -21,6 +21,10 @@ pub fn refusal_mapping(reason: Option<&str>) -> (&'static str, &'static str) {
         Some("expired") => (
             "not_resumable",
             "The target did not take the message within its lifetime; send it again if it still matters.",
+        ),
+        Some("target_closed") => (
+            "not_resumable",
+            "The thread was closed before it read this message; reopen it and send again if it still matters.",
         ),
         Some("binding_closed") => (
             "invalid_arguments",
@@ -122,7 +126,9 @@ pub fn engine_next_action(code: &str) -> &'static str {
             "Stop relaying here: a direct reply to the session that messaged you is a cycle. That session reads your answer with thread_read; a bound external thread gets it through thread_report, and its questions come back through thread_answer."
         }
         "overloaded" => "Wait before sending to this session again.",
-        "queue_full" => "Wait for the target to take its queued messages, then send again.",
+        "queue_full" => {
+            "Read details.reason: the target is not taking its queue. A steer has its own reserve, so a steer still reaches a running turn."
+        }
         "idempotency_conflict" => "Retry with a new idempotency_key.",
         "idempotency_in_progress" => "Wait for the earlier call to settle, then retry.",
         "idempotency_uncertain" => {
@@ -133,13 +139,35 @@ pub fn engine_next_action(code: &str) -> &'static str {
     }
 }
 
-/// The failure an engine reports for a code.
+/// What to do about a full backlog whose target nobody runs: nothing drains it until the target resumes (omo#14466).
+const QUEUE_FULL_NOT_RUNNING: &str = "The target is not running, so nothing takes its queue until it resumes. Resume it, or send again after details.frees_at, when its oldest queued message expires and frees a slot.";
+
+fn detail<'a>(details: Option<&'a serde_json::Value>, key: &str) -> Option<&'a serde_json::Value> {
+    details.and_then(|details| details.get(key))
+}
+
+/// The failure an engine reports for a code. A refusal whose details say how to recover gets the next action that
+/// reads them: the pair loop guard's wait, and the full backlog of a target nobody runs.
 pub fn engine_failure(
     code: &str,
     message: impl Into<String>,
     details: Option<serde_json::Value>,
 ) -> ThreadToolFailure {
-    thread_tool_failure(code, message, engine_next_action(code), details)
+    let next_action = match code {
+        "pair_loop_guard" => pair_loop_guard_next_action(
+            detail(details.as_ref(), "retry_after_ms")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+        ),
+        "queue_full"
+            if detail(details.as_ref(), "target_running").and_then(serde_json::Value::as_bool)
+                == Some(false) =>
+        {
+            QUEUE_FULL_NOT_RUNNING.to_owned()
+        }
+        _ => engine_next_action(code).to_owned(),
+    };
+    thread_tool_failure(code, message, next_action, details)
 }
 
 #[cfg(test)]
@@ -248,6 +276,41 @@ mod tests {
             }
             other => panic!("expected error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_row_its_closed_session_handed_back_reads_not_delivered() {
+        let mut returned = row(DeliveryState::Refused, Some("queued"), Some(1));
+        returned.reason = Some("target_closed".into());
+        match result_from_row(&returned, 0, None, false, false) {
+            GatewayDeliveryResult::Error { error } => {
+                assert_eq!(error.code.as_str(), "not_resumable");
+                assert!(error.message.contains("was refused: target_closed"));
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refusal_that_names_its_recovery_gets_the_next_action_reading_it() {
+        let guard = engine_failure(
+            "pair_loop_guard",
+            "loop",
+            Some(serde_json::json!({ "retry_after_ms": 5_000 })),
+        );
+        assert_eq!(guard.next_action, pair_loop_guard_next_action(5_000));
+        let stopped = engine_failure(
+            "queue_full",
+            "full",
+            Some(serde_json::json!({ "target_running": false })),
+        );
+        assert_eq!(stopped.next_action, QUEUE_FULL_NOT_RUNNING);
+        let running = engine_failure(
+            "queue_full",
+            "full",
+            Some(serde_json::json!({ "target_running": true })),
+        );
+        assert_eq!(running.next_action, engine_next_action("queue_full"));
     }
 
     #[test]

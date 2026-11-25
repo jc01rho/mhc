@@ -239,6 +239,20 @@ fn handle_session_command(command: &Value) {
 }
 
 fn run_rpc(session_mode: bool) {
+    if let Ok(raw) = std::env::var("FAKE_BOOT_BUSY_MS")
+        && let Ok(ms) = raw.parse::<u64>()
+        && ms > 0
+    {
+        let until = Instant::now() + Duration::from_millis(ms);
+        let mut acc = 1_u64;
+        while Instant::now() < until {
+            for step in 1..10_000_u64 {
+                acc =
+                    std::hint::black_box(acc.wrapping_mul(6364136223846793005).wrapping_add(step));
+            }
+        }
+        std::hint::black_box(acc);
+    }
     let ignore_term = std::env::var("FAKE_IGNORE_TERM").as_deref() == Ok("1");
     let emit_malformed = std::env::var("FAKE_EMIT_MALFORMED").as_deref() == Ok("1");
     let emit_ui = std::env::var("FAKE_EMIT_UI").as_deref() == Ok("1");

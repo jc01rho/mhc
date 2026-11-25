@@ -1335,3 +1335,151 @@ fn given_a_paused_run_that_captured_the_parent_model_when_recovery_starts_its_no
         Some(crate::state::ParentModelFallbackReason::UsageLimit)
     );
 }
+
+#[test]
+fn given_an_orphaned_unstarted_pending_task_below_the_readmission_limit_when_resumed_then_recovery_cancels_it_and_readmits_the_node()
+ {
+    let store = temp_store();
+    let input = definition(vec![node("queued", &[])]);
+    let mut record = base_record(&input, &[("queued", DagNodeState::Scheduled)]);
+    record.record.nodes[0].task_id = Some("st_00000006".into());
+    record.record.nodes[0].exec_attempt = Some(0);
+    record.previous_lease_holder_pid = Some(9001);
+    store
+        .write_checkpoint(&run_id(), &record)
+        .expect("checkpoint");
+    let harness = make_manager(HarnessOptions::default());
+    let mut task = durable_task(&harness, "queued", TaskStatus::Pending);
+    task.task_id = "st_00000006".into();
+    harness
+        .store
+        .replace(&task)
+        .expect("persist unstarted pending task");
+    *harness.in_process.hook.lock().unwrap() = Some(Arc::new(|spec, _| {
+        let handle = crate::manager::manager_tests::fakes::FakeHandle::new(&spec.task_id, None);
+        handle.complete("readmitted-pending");
+        Some(Ok(handle as Arc<dyn crate::manager::ManagedChildHandle>))
+    }));
+    let manager = Arc::new(harness.manager);
+
+    let result =
+        recovered(recovery_for(&store, Arc::clone(&manager)).resume_paused_runs(PARENT_SESSION_ID));
+
+    assert_eq!(result.nodes[0].state, DagNodeState::Completed);
+    assert_eq!(result.nodes[0].exec_attempt, Some(1));
+    let prior = manager.get("st_00000006").expect("prior task remains");
+    assert_eq!(prior.status, TaskStatus::Cancelled);
+    assert!(
+        store
+            .read_events(
+                &run_id(),
+                0,
+                &crate::dag::store::DagEventReadOptions {
+                    limit: 100,
+                    ..Default::default()
+                }
+            )
+            .expect("events")
+            .events
+            .iter()
+            .any(|event| matches!(
+                &event.payload,
+                DagRunEventPayload::NodeRetried {
+                    node_id,
+                    prior_task_id: Some(prior_id),
+                    exec_attempt: 1,
+                    ..
+                } if node_id == "queued" && prior_id == "st_00000006"
+            ))
+    );
+}
+
+#[test]
+fn given_a_pending_task_still_queued_in_this_host_when_resumed_then_recovery_keeps_it_attached() {
+    use std::sync::mpsc;
+    let store = temp_store();
+    let input = definition(vec![node("queued", &[])]);
+    let mut record = base_record(&input, &[("queued", DagNodeState::Scheduled)]);
+    record.previous_lease_holder_pid = Some(9001);
+
+    let runner = crate::manager::manager_tests::fakes::FakeRunner::new();
+    let harness = make_manager(HarnessOptions {
+        config: Some(config(1, 1)),
+        in_process: Some(Arc::clone(&runner)),
+        ..HarnessOptions::default()
+    });
+    let manager = Arc::new(harness.manager);
+    let blocker_id = match manager.start(&ManagerStartSpec {
+        prompt: "block concurrency".into(),
+        parent_session_id: PARENT_SESSION_ID.into(),
+        root_session_id: Some(ROOT_SESSION_ID.into()),
+        category: Some("quick".into()),
+        run_in_background: true,
+        ..Default::default()
+    }) {
+        StartResult::Started(started) => started.task_id,
+        other => panic!("blocker start failed: {other:?}"),
+    };
+    let blocker_handle = runner.wait_handle(&blocker_id);
+
+    let queued_id = match manager.start_owned(
+        &ManagerStartSpec {
+            prompt: "do queued".into(),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: Some(ROOT_SESSION_ID.into()),
+            depth: 1,
+            category: Some("quick".into()),
+            name: Some("queued".into()),
+            run_in_background: true,
+            ..Default::default()
+        },
+        &DagTaskOwner {
+            kind: DagOwnerKind::Dag,
+            run_id: run_id(),
+            node_id: "queued".into(),
+            fingerprint: "definition-fingerprint".into(),
+        },
+    ) {
+        OwnedStartResult::Started { task, .. } => task.task_id,
+        other => panic!("queued start failed: {other:?}"),
+    };
+    assert!(manager.get_resident_handle(&queued_id).is_none());
+    record.record.nodes[0].task_id = Some(queued_id.clone());
+    store
+        .write_checkpoint(&run_id(), &record)
+        .expect("checkpoint");
+
+    let (reattach_tx, reattach_rx) = mpsc::channel();
+    let recovery = create_dag_recovery(DagRecoveryOptions {
+        store: Arc::clone(&store),
+        task_manager: Arc::clone(&manager),
+        host_pid: Some(101),
+        is_process_alive: Some(Arc::new(|_| false)),
+        is_run_held_in_process: None,
+        now: None,
+        subscriber_ring: None,
+        stop_admission: None,
+        reattach: Some(Arc::new(move |_, task_id| {
+            let _ = reattach_tx.send(task_id.to_string());
+        })),
+        ancestry: None,
+        node_spawn_policy: None,
+        paused_children: None,
+        resume_credential: None,
+    });
+
+    let done = std::thread::spawn(move || recovery.resume_paused_runs(PARENT_SESSION_ID));
+    assert_eq!(
+        reattach_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("queued task reattach"),
+        queued_id
+    );
+    blocker_handle.complete("blocker done");
+    runner.wait_handle(&queued_id).complete("queued done");
+    let result = recovered(done.join().expect("resume thread"));
+    assert_eq!(result.status, crate::dag::types::DagRunStatus::Completed);
+    assert_eq!(result.nodes[0].state, DagNodeState::Completed);
+    assert_eq!(result.nodes[0].exec_attempt, None);
+    assert_eq!(result.nodes[0].error, None);
+}

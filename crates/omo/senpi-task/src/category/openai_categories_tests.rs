@@ -226,30 +226,33 @@ fn the_gpt_lanes_default_to_astra_and_sol_on_the_subscription_lane() {
 fn the_gpt_gates_open_on_their_own_models() {
     assert_eq!(
         definition("ultrabrain").requires_model.to_vec(),
-        vec!["gpt-6.2-astra", "gpt-6-astra", "gpt-5.6-sol"]
+        vec!["gpt-6.2-astra"]
     );
     assert_eq!(
         definition("deep-low").requires_model.to_vec(),
-        vec![
-            "gpt-6.2-sol",
-            "gpt-6.2-sol-fast",
-            "gpt-6.1-sol",
-            "gpt-6.1-sol-fast",
-            "gpt-5.6-sol-fast",
-            "gpt-5.6-sol"
-        ]
+        vec!["gpt-6.2-sol"]
     );
     assert_eq!(
         definition("deep-high").requires_model.to_vec(),
-        vec!["gpt-6.2-astra", "gpt-6-astra"]
+        vec!["gpt-6.2-astra"]
     );
     assert!(definition("unspecified-high").requires_model.is_empty());
+}
+
+fn served_models(spec: &ResolvedChildSpec) -> Vec<String> {
+    let mut models = vec![format!("{}/{}", spec.provider, spec.model_id)];
+    if let Some(fallbacks) = &spec.fallback_models {
+        for entry in fallbacks {
+            models.push(format!("{}/{}", entry.provider, entry.model_id));
+        }
+    }
+    models
 }
 
 #[test]
 fn astra_resolves_ultrabrain_and_deep_high_with_their_appends_on_either_lane() {
     for provider in ["openai", "chatgpt-subscription"] {
-        let models = models_of(&[(provider, "gpt-6-astra")]);
+        let models = models_of(&[(provider, "gpt-6.2-astra")]);
         for (category, variant, append) in [
             (
                 "ultrabrain",
@@ -261,7 +264,7 @@ fn astra_resolves_ultrabrain_and_deep_high_with_their_appends_on_either_lane() {
             let resolved = expect_resolved(resolve(category, json!({}), &models));
             assert_eq!(
                 spec_triple(&resolved),
-                (provider, "gpt-6-astra", Some(variant))
+                (provider, "gpt-6.2-astra", Some(variant))
             );
             assert_eq!(
                 resolved.spec.prompt_append.as_deref(),
@@ -273,44 +276,136 @@ fn astra_resolves_ultrabrain_and_deep_high_with_their_appends_on_either_lane() {
 }
 
 #[test]
-fn deep_low_walks_its_sol_tiers_in_order() {
-    for (pairs, winner, gpt_append) in [
+fn deep_low_selects_gpt_6_2_sol_with_no_older_sol_fallback() {
+    let models = models_of(&[
+        ("chatgpt-subscription", "gpt-5.6-sol"),
+        ("chatgpt-subscription", "gpt-6.1-sol"),
+        ("chatgpt-subscription", "gpt-6.2-sol"),
+    ]);
+    let resolved = expect_resolved(resolve("deep-low", json!({}), &models));
+    assert_eq!(
+        spec_triple(&resolved),
+        ("chatgpt-subscription", "gpt-6.2-sol", Some("medium"))
+    );
+    assert_eq!(
+        resolved.spec.prompt_append.as_deref(),
+        Some(prompts::DEEP_LOW_PROMPT_APPEND_GPT)
+    );
+    assert_eq!(
+        served_models(&resolved.spec),
+        vec!["chatgpt-subscription/gpt-6.2-sol".to_string()]
+    );
+}
+
+#[test]
+fn fast_on_preferred_provider_never_blocks_exact_model_on_secondary() {
+    for (category, fast, exact, secondary) in [
+        ("deep-low", "gpt-6.2-sol-fast", "gpt-6.2-sol", "openai"),
+        ("deep-high", "gpt-6.2-astra-fast", "gpt-6.2-astra", "openai"),
         (
-            &[
-                ("chatgpt-subscription", "gpt-5.6-sol"),
-                ("chatgpt-subscription", "gpt-6.1-sol"),
-            ][..],
-            ("chatgpt-subscription", "gpt-6.1-sol", Some("medium")),
-            true,
-        ),
-        (
-            &[("openai", "gpt-5.6-sol"), ("openai", "gpt-6.1-sol-fast")][..],
-            ("openai", "gpt-6.1-sol-fast", Some("medium")),
-            false,
-        ),
-        (
-            &[
-                ("chatgpt-subscription", "gpt-5.6-sol"),
-                ("chatgpt-subscription", "gpt-5.6-sol-fast"),
-            ][..],
-            ("chatgpt-subscription", "gpt-5.6-sol", Some("medium")),
-            true,
-        ),
-        (
-            &[("github-copilot", "gpt-5.6-sol")][..],
-            ("github-copilot", "gpt-5.6-sol", Some("medium")),
-            false,
+            "ultrabrain",
+            "gpt-6.2-astra-fast",
+            "gpt-6.2-astra",
+            "opencode",
         ),
     ] {
-        let resolved = expect_resolved(resolve("deep-low", json!({}), &models_of(pairs)));
-        assert_eq!(spec_triple(&resolved), winner);
-        if gpt_append {
+        for config in [
+            json!({}),
+            json!({ "categories": { category: { "description": "house lane" } } }),
+        ] {
+            let resolved = expect_resolved(resolve(
+                category,
+                config,
+                &models_of(&[("chatgpt-subscription", fast), (secondary, exact)]),
+            ));
+            assert_eq!(resolved.selection.source, ModelSelectionSource::Builtin);
             assert_eq!(
-                resolved.spec.prompt_append.as_deref(),
-                Some(prompts::DEEP_LOW_PROMPT_APPEND_GPT)
+                resolved.selection.fallback_entry,
+                category_fallback_chain(category).and_then(|chain| chain.first().cloned())
+            );
+            assert_eq!(
+                served_models(&resolved.spec),
+                vec![format!("{secondary}/{exact}")]
             );
         }
     }
+}
+
+#[test]
+fn subscription_exact_model_wins_over_fast_and_api_lane() {
+    let resolved = expect_resolved(resolve(
+        "deep-low",
+        json!({}),
+        &models_of(&[
+            ("openai", "gpt-6.2-sol"),
+            ("chatgpt-subscription", "gpt-6.2-sol-fast"),
+            ("chatgpt-subscription", "gpt-6.2-sol"),
+        ]),
+    ));
+    assert_eq!(
+        served_models(&resolved.spec),
+        vec!["chatgpt-subscription/gpt-6.2-sol".to_string()]
+    );
+}
+
+#[test]
+fn older_and_fast_models_leave_all_three_lanes_unavailable() {
+    let mut pairs = Vec::new();
+    for provider in [
+        "chatgpt-subscription",
+        "openai",
+        "github-copilot",
+        "opencode",
+    ] {
+        for id in [
+            "gpt-6-astra",
+            "gpt-6.2-astra-fast",
+            "gpt-6.1-sol",
+            "gpt-6.2-sol-fast",
+            "gpt-5.6-sol",
+        ] {
+            pairs.push((provider, id));
+        }
+    }
+    let models = models_of(&pairs);
+    for category in ["ultrabrain", "deep-low", "deep-high"] {
+        let result = resolve(category, json!({}), &models);
+        assert_eq!(result.kind(), "model_unavailable", "{category}");
+        assert!(!contains(result.available_categories(), category));
+    }
+}
+
+#[test]
+fn description_only_entry_with_fast_tier_never_selects_fast() {
+    let result = resolve(
+        "deep-low",
+        json!({ "categories": { "deep-low": { "description": "house lane" } } }),
+        &models_of(&[("chatgpt-subscription", "gpt-6.2-sol-fast")]),
+    );
+    assert_eq!(result.kind(), "model_unavailable");
+}
+
+#[test]
+fn user_model_override_onto_older_astra_is_honored() {
+    let resolved = expect_resolved(resolve(
+        "ultrabrain",
+        json!({ "categories": { "ultrabrain": { "model": "openai/gpt-6-astra" } } }),
+        &models_of(&[("openai", "gpt-6-astra")]),
+    ));
+    assert_eq!(resolved.spec.provider, "openai");
+    assert_eq!(resolved.spec.model_id, "gpt-6-astra");
+    assert_eq!(resolved.selection.source, ModelSelectionSource::User);
+}
+
+#[test]
+fn user_fallback_models_naming_fast_tier_is_honored() {
+    let resolved = expect_resolved(resolve(
+        "deep-low",
+        json!({ "categories": { "deep-low": { "fallback_models": ["chatgpt-subscription/gpt-6.2-sol-fast"] } } }),
+        &models_of(&[("chatgpt-subscription", "gpt-6.2-sol-fast")]),
+    ));
+    assert_eq!(resolved.spec.model_id, "gpt-6.2-sol-fast");
+    assert_eq!(resolved.selection.source, ModelSelectionSource::User);
 }
 
 #[test]
@@ -330,7 +425,7 @@ fn unspecified_high_carries_no_gpt_rung_and_runs_opus_5_5_at_medium() {
         let result = resolve(
             "unspecified-high",
             json!({}),
-            &models_of(&[(provider, "gpt-6-astra")]),
+            &models_of(&[(provider, "gpt-6.2-astra")]),
         );
         assert_eq!(result.kind(), "model_unavailable", "{provider}");
     }
@@ -376,10 +471,10 @@ fn the_retired_deep_name_resolves_as_deep_low() {
     let resolved = expect_resolved(resolve(
         "deep",
         json!({}),
-        &models_of(&[("openai", "gpt-5.6-sol")]),
+        &models_of(&[("openai", "gpt-6.2-sol")]),
     ));
     assert_eq!(resolved.category, "deep-low");
-    assert_eq!(resolved.spec.model_id, "gpt-5.6-sol");
+    assert_eq!(resolved.spec.model_id, "gpt-6.2-sol");
     assert_eq!(resolved.spec.variant.as_deref(), Some("medium"));
 }
 
@@ -388,7 +483,7 @@ fn a_deep_high_overlay_follows_the_lane_append() {
     let resolved = expect_resolved(resolve(
         "deep-high",
         json!({ "categories": { "deep-high": { "prompt_append": "team-overlay" } } }),
-        &models_of(&[("openai", "gpt-6-astra")]),
+        &models_of(&[("openai", "gpt-6.2-astra")]),
     ));
     assert_eq!(
         resolved.spec.prompt_append,

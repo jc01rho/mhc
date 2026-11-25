@@ -1,6 +1,6 @@
 //! Replaces inactive regions of a prompt with spaces, keeping byte length and newlines.
 
-use crate::mask_phrases::{NEGATIONS, header_spans, prohibitive_spans};
+use crate::mask_phrases::{NEGATIONS, PROHIBITIONS, header_spans, prohibitive_spans};
 
 pub(crate) type Span = (usize, usize);
 
@@ -60,7 +60,10 @@ pub fn mask(input: &str, directive_tag: &str) -> Masked {
 /// detector reads, and folds exactly the way its `normalise` does, so the two cannot drift apart.
 fn negates(text: &str) -> bool {
     let lower = text.to_lowercase().replace('\u{2019}', "'");
-    NEGATIONS.iter().any(|token| lower.contains(token))
+    NEGATIONS
+        .iter()
+        .chain(PROHIBITIONS.iter())
+        .any(|token| lower.contains(token))
 }
 
 fn blank(text: &str, spans: &[Span]) -> String {

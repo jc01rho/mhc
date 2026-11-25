@@ -158,6 +158,19 @@ impl Drop for PendingResponse {
 }
 
 impl PendingResponse {
+    pub fn try_wait_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Option<Result<Value, RpcClientError>> {
+        match self.receiver.recv_timeout(timeout) {
+            Ok(result) => Some(result),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => Some(Err(RpcClientError::Exited {
+                message: "RPC process exited".to_string(),
+            })),
+        }
+    }
+
     pub fn wait_until(self, deadline: std::time::Instant) -> Result<Value, RpcClientError> {
         self.receiver
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))

@@ -3,6 +3,7 @@
 use model_core::CATEGORY_MODEL_REQUIREMENTS;
 use model_core::ExtendedModelResolutionInput;
 use model_core::GetModelCapabilitiesInput;
+use model_core::ModelResolutionProvenance;
 use model_core::ModelResolutionResult;
 use model_core::get_model_capabilities;
 use model_core::is_gpt6_astra_model;
@@ -66,68 +67,55 @@ fn gpt_6_2_astra_is_the_astra_tier_and_gpt_6_2_sol_is_not() {
         "chatgpt-subscription/gpt-6.2-astra"
     )));
     assert!(is_gpt6_astra_model(Some("openai/gpt-6.2-astra-fast")));
+    assert!(is_gpt6_astra_model(Some(
+        "chatgpt-subscription/gpt-6.2-astra-ultrafast"
+    )));
     assert!(!is_gpt6_astra_model(Some(
         "chatgpt-subscription/gpt-6.2-sol"
+    )));
+    assert!(!is_gpt6_astra_model(Some(
+        "chatgpt-subscription/gpt-6.2-sol-ultrafast"
     )));
 }
 
 #[test]
-fn deep_low_resolves_gpt_6_2_sol_when_the_registry_serves_it_beside_6_1_sol() {
-    assert_eq!(
-        model_and_variant(resolve_category(
-            "deep-low",
-            &[
-                "chatgpt-subscription/gpt-6.2-sol",
-                "chatgpt-subscription/gpt-6.1-sol"
-            ]
-        )),
-        pair("chatgpt-subscription/gpt-6.2-sol", "medium")
-    );
+fn deep_gpt_6_2_lanes_resolve_only_their_exact_model() {
+    for (category, model, variant) in [
+        ("ultrabrain", "gpt-6.2-astra", "max"),
+        ("deep-high", "gpt-6.2-astra", "high"),
+        ("deep-low", "gpt-6.2-sol", "medium"),
+    ] {
+        let registry = [
+            format!("chatgpt-subscription/{model}"),
+            "chatgpt-subscription/gpt-6-astra".to_string(),
+            "openai/gpt-6.1-sol".to_string(),
+        ];
+        let refs: Vec<&str> = registry.iter().map(String::as_str).collect();
+        assert_eq!(
+            model_and_variant(resolve_category(category, &refs)),
+            pair(&format!("chatgpt-subscription/{model}"), variant),
+            "{category}"
+        );
+    }
 }
 
 #[test]
-fn deep_low_keeps_gpt_6_1_sol_on_a_registry_without_6_2() {
-    assert_eq!(
-        model_and_variant(resolve_category(
-            "deep-low",
-            &[
-                "chatgpt-subscription/gpt-6.1-sol",
-                "chatgpt-subscription/gpt-5.6-sol"
-            ]
-        )),
-        pair("chatgpt-subscription/gpt-6.1-sol", "medium")
-    );
-}
-
-#[test]
-fn deep_high_resolves_gpt_6_2_astra_and_falls_back_to_gpt_6_astra_without_6_2() {
-    assert_eq!(
-        model_and_variant(resolve_category(
-            "deep-high",
-            &["openai/gpt-6.2-astra", "openai/gpt-6-astra"]
-        )),
-        pair("openai/gpt-6.2-astra", "high")
-    );
-    assert_eq!(
-        model_and_variant(resolve_category("deep-high", &["openai/gpt-6-astra"])),
-        pair("openai/gpt-6-astra", "high")
-    );
-}
-
-#[test]
-fn ultrabrain_leads_with_gpt_6_2_astra_and_keeps_copilot_on_gpt_6_astra_max() {
-    assert_eq!(
-        model_and_variant(resolve_category(
-            "ultrabrain",
-            &["openai/gpt-6.2-astra", "openai/gpt-6-astra"]
-        )),
-        pair("openai/gpt-6.2-astra", "max")
-    );
-    assert_eq!(
-        model_and_variant(resolve_category(
-            "ultrabrain",
-            &["github-copilot/gpt-6-astra"]
-        )),
-        pair("github-copilot/gpt-6-astra", "max")
-    );
+fn deep_gpt_6_2_lanes_find_no_rung_on_older_gpt_and_copilot_models() {
+    let registry = [
+        "openai/gpt-6-astra",
+        "openai/gpt-6.1-sol",
+        "openai/gpt-5.6-sol",
+        "github-copilot/gpt-6-astra",
+    ];
+    for category in ["ultrabrain", "deep-high", "deep-low"] {
+        assert_eq!(
+            resolve_category(category, &registry),
+            Some(ModelResolutionResult {
+                model: "system/default".to_string(),
+                source: ModelResolutionProvenance::SystemDefault,
+                variant: None,
+            }),
+            "{category}"
+        );
+    }
 }
