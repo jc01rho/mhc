@@ -104,7 +104,7 @@ impl Account {
     pub fn missed_holder(&self, id: &str) -> Option<String> {
         let device = self.earlier.as_ref()?.get(id)?;
         let on_here = Some(device.as_str()) == self.here.as_deref();
-        let missed = self.incomplete.iter().any(|missing| *missing == device);
+        let missed = self.incomplete.contains(&device);
         (!on_here && missed).then_some(device)
     }
 }

@@ -213,7 +213,11 @@ async fn listed_once(
             all_scope: Some(true),
         }));
     }
-    if listing.incomplete.iter().any(|id| id == pin.device) {
+    if listing
+        .incomplete
+        .iter()
+        .any(|id| id.as_str() == pin.device)
+    {
         let (id, name) = pinned_device(remote, known, pin).await;
         let silent = [SilentDevice {
             id,
