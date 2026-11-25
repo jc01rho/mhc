@@ -39,9 +39,10 @@ use super::session_host::created_thread_id;
 const RENAME_REASON_MAX_CHARS: usize = 300;
 
 /// A create's first prompt as the one send path takes it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CreatePromptSend {
     pub thread: String,
+    pub device: Option<String>,
     pub message: String,
     pub delivery: Option<String>,
 }
@@ -200,7 +201,7 @@ async fn create_inner(
     let Some(opened) = opened.filter(|_| is_ok(&result)) else {
         return Ok(result);
     };
-    let first = first_prompt(&opened.thread, value, surface).await;
+    let first = first_prompt(&opened, value, surface).await;
     match prompt_that_ran(first, &opened, surface).await? {
         PromptOutcome::NotStarted(failure) => Ok(error_json(*failure)),
         PromptOutcome::Prompt(prompt) => {
@@ -520,12 +521,14 @@ async fn name_created_thread(
 /// target is the created thread itself, never a lookup by name, so a listing that has not caught up yet cannot answer
 /// not_found (#13001).
 async fn first_prompt(
-    thread_id: &str,
+    thread: &ThreadResultSummary,
     value: &ThreadCreateInput,
     surface: &dyn CreateSurface,
 ) -> FirstPrompt {
+    let thread_id = thread.thread.as_str();
     let send = CreatePromptSend {
         thread: thread_id.to_owned(),
+        device: thread.device.clone(),
         message: value.prompt.clone().unwrap_or_default(),
         delivery: value.delivery.clone(),
     };
@@ -634,14 +637,22 @@ async fn prompt_that_ran(
         .and_then(|wait| wait.get("kind"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let local = thread.device.is_none();
+    let where_text = thread
+        .device
+        .as_deref()
+        .map_or_else(String::new, |device| format!(" on device {device}"));
     if waiting_kind.as_deref() == Some("wake") {
         prompt.insert(
             "next_action".to_owned(),
             json!(format!(
-                "The prompt is stored and runs when {} wakes: do not send it again. Check it with thread_read (tool.thread_read({{ thread }}) in an eval cell).",
+                "The prompt is stored{where_text} and runs when {} wakes: do not send it again. Check it with thread_read (tool.thread_read({{ thread }}) in an eval cell).",
                 thread.thread
             )),
         );
+        return Ok(PromptOutcome::Prompt(Value::Object(prompt)));
+    }
+    if !local && kind == "queued" {
         return Ok(PromptOutcome::Prompt(Value::Object(prompt)));
     }
     let delivery_id = prompt
@@ -649,13 +660,13 @@ async fn prompt_that_ran(
         .and_then(Value::as_str)
         .map(str::to_owned);
     let waited = match delivery_id.clone() {
-        Some(id) => Some(
+        Some(id) if local => Some(
             surface
                 .await_prompt_start(id)
                 .await
                 .map_err(ControlError::Transport)?,
         ),
-        None => None,
+        _ => None,
     };
     match &waited {
         Some(PromptStart::Started { delivery }) => {
@@ -697,6 +708,9 @@ async fn prompt_that_ran(
         .unwrap_or_default();
     let mut details = Map::new();
     details.insert("thread".to_owned(), json!(thread.thread));
+    if let Some(device) = &thread.device {
+        details.insert("device".to_owned(), json!(device));
+    }
     if let Some(id) = &delivery_id {
         details.insert("delivery_id".to_owned(), json!(id));
     }
@@ -707,7 +721,7 @@ async fn prompt_that_ran(
     Ok(PromptOutcome::NotStarted(Box::new(thread_tool_failure(
         "prompt_not_started",
         format!(
-            "Thread {} was created, but its first prompt did not start a turn (its delivery is {state}{waiting_text}).",
+            "Thread {} was created{where_text}, but its first prompt did not start a turn (its delivery is {state}{waiting_text}).",
             thread.thread
         ),
         format!(

@@ -843,3 +843,180 @@ fn attach_pool_manual_clock_expires_catalog_at_max_age_plus_one_and_detaches_idl
     assert!(matches!(r3, RemoteCommandOutcome::Ok { local: true, .. }));
     assert_eq!(*lock(&cmds), 2);
 }
+
+#[test]
+fn thread_create_for_live_remote_thread_sends_prompt_without_opening_and_supports_here_address() {
+    use maho_omo_gateway::thread::control::locate::{
+        LocatedControl, ThreadCall, book_of, locate_control,
+    };
+
+    const ENDED_B: &str = "0dd00001-0000-4000-8000-000000000004";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cwd = dir.path().join("app");
+    std::fs::create_dir_all(&cwd).expect("mkdir");
+    let cwd_str = cwd.to_string_lossy().into_owned();
+
+    let remote = ScriptedRemote::new(
+        vec![RemoteDevice {
+            device: "b".to_owned(),
+            label: "Laptop".to_owned(),
+            online: true,
+            platform: Some("darwin".to_owned()),
+            kind: Some("laptop".to_owned()),
+            last_seen_ms: Some(1_700_000_000_000),
+        }],
+        vec![
+            RemoteSessionRow {
+                device: "b".to_owned(),
+                session_id: "rk-b".to_owned(),
+                durable_id: Some(B_ID.to_owned()),
+                title: "Remote Live".to_owned(),
+                project: "/work/b".to_owned(),
+                path: "/work/b".to_owned(),
+                state: "idle".to_owned(),
+                updated_ms: 1_000,
+                ..RemoteSessionRow::default()
+            },
+            RemoteSessionRow {
+                device: "b".to_owned(),
+                session_id: "rk-ended".to_owned(),
+                durable_id: Some(ENDED_B.to_owned()),
+                title: "Remote Ended".to_owned(),
+                project: "/work/b".to_owned(),
+                path: "/work/b".to_owned(),
+                state: "ended".to_owned(),
+                updated_ms: 900,
+                ..RemoteSessionRow::default()
+            },
+        ],
+    );
+    *lock(&remote.command_replies) = VecDeque::from([
+        RemoteCommandOutcome::Ok {
+            response: json!({ "success": true, "data": { "isStreaming": false } }),
+            local: false,
+            located: None,
+        },
+        RemoteCommandOutcome::Ok {
+            response: json!({
+                "success": true,
+                "data": { "disposition": "started", "turnId": "t-9" }
+            }),
+            local: false,
+            located: None,
+        },
+        RemoteCommandOutcome::Ok {
+            response: json!({
+                "success": true,
+                "data": { "isStreaming": true, "pendingQuestions": [{ "id": "q1" }] }
+            }),
+            local: false,
+            located: None,
+        },
+        RemoteCommandOutcome::Ok {
+            response: json!({ "success": true, "data": { "kind": "queued" } }),
+            local: false,
+            located: None,
+        },
+    ]);
+
+    let view = ThreadHostView {
+        sessions: vec![local_session(LOCAL_ID, &cwd_str)],
+        hosts: Vec::new(),
+        disk: Vec::new(),
+    };
+    let component = make_component(&dir, None, view.clone(), cwd_str.clone(), remote.clone());
+
+    let started = run(
+        &component,
+        "thread_create",
+        json!({ "thread": B_ID, "prompt": "carry on" }),
+    );
+    assert_eq!(started["kind"], "ok", "{started}");
+    assert_eq!(started["thread"], B_ID);
+    assert_eq!(started["deduplicated"], true);
+    assert_eq!(started["device"], "b");
+    assert_eq!(started["prompt"]["delivery"]["kind"], "started");
+    assert_eq!(started["prompt"]["delivery"]["turn_id"], "t-9");
+    assert_eq!(started["prompt"]["effective_mode"], "start");
+
+    let queued = run(
+        &component,
+        "thread_create",
+        json!({ "thread": format!("b/{B_ID}"), "prompt": "queued prompt" }),
+    );
+    assert_eq!(queued["kind"], "ok", "{queued}");
+    assert_eq!(queued["thread"], B_ID);
+    assert_eq!(queued["deduplicated"], true);
+    assert_eq!(queued["device"], "b");
+    assert_eq!(queued["prompt"]["delivery"]["kind"], "queued");
+
+    let sent = lock(&remote.sent_commands);
+    assert_eq!(sent.len(), 4);
+    assert_eq!(sent[0].0, "b");
+    assert_eq!(sent[0].1, "rk-b");
+    assert_eq!(sent[0].2["type"], "get_state");
+    assert_eq!(sent[1].2["type"], "prompt");
+    assert_eq!(sent[1].2["message"], "carry on");
+    assert_eq!(sent[2].2["type"], "get_state");
+    assert_eq!(sent[3].2["type"], "follow_up");
+    assert_eq!(sent[3].2["message"], "queued prompt");
+    drop(sent);
+
+    let reopen_ended = run(&component, "thread_create", json!({ "thread": ENDED_B }));
+    assert_eq!(reopen_ended["kind"], "error", "{reopen_ended}");
+    assert_eq!(reopen_ended["error"]["code"], "unsupported");
+    assert_eq!(
+        reopen_ended["error"]["details"]["reason"],
+        "relay_session_host_unsupported"
+    );
+
+    let new_remote = run(
+        &component,
+        "thread_create",
+        json!({ "device": "b", "name": "remote-child" }),
+    );
+    assert_eq!(new_remote["kind"], "error", "{new_remote}");
+    assert_eq!(new_remote["error"]["code"], "unsupported");
+    assert_eq!(
+        new_remote["error"]["details"]["reason"],
+        "relay_session_host_unsupported"
+    );
+
+    let surface = Arc::new(RemoteThreadSurface::new(
+        remote.clone(),
+        remote.clone(),
+        Some(remote),
+    ));
+    let locator = Arc::new(RelayControlLocator::new(surface));
+    let now = "2026-11-26T00:00:00.000Z".to_owned();
+    let book = book_of(&view, &[], &now);
+    let call = ThreadCall {
+        host: Arc::new(StubHost {
+            view: Mutex::new(view),
+        }),
+        view: ThreadHostView {
+            sessions: vec![local_session(LOCAL_ID, &cwd_str)],
+            hosts: Vec::new(),
+            disk: Vec::new(),
+        },
+        book,
+        caller_id: LOCAL_ID.to_owned(),
+        caller_workspace_root: cwd_str,
+        sessions_directory: None,
+        remote: Some(locator),
+        now,
+    };
+    let LocatedControl::Control(here_ctrl) =
+        block_on(locate_control(&call, &format!("here/{LOCAL_ID}"), false))
+    else {
+        panic!("expected local control for here/<LOCAL_ID>");
+    };
+    assert_eq!(here_ctrl.thread_id(), LOCAL_ID);
+    assert_eq!(here_ctrl.device(), None);
+
+    let LocatedControl::Control(remote_ctrl) = block_on(locate_control(&call, B_ID, false)) else {
+        panic!("expected relay control for remote B_ID");
+    };
+    assert_eq!(remote_ctrl.thread_id(), B_ID);
+    assert_eq!(remote_ctrl.device(), Some("b"));
+}

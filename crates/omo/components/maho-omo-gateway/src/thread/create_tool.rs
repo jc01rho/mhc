@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use device_service_core::local_api::CommandOutcome;
+use maho_thread_address_core::row_key;
 use serde_json::{Map, Value, json};
 
 use super::adapter::BoxFuture;
@@ -14,7 +16,7 @@ use super::contracts_create_params::{ThreadCreateInput, thread_create_parameters
 use super::control::create::{
     CreatePromptSend, CreateSurface, PromptDeliveryError, Retrying, create_thread,
 };
-use super::control::locate::{ThreadCall, book_of};
+use super::control::locate::{RemoteControlLocator, ThreadCall, book_of};
 use super::control::operations::error_json;
 use super::control::port::{ControlError, ControlResult};
 use super::control::prompt_start::{
@@ -22,9 +24,19 @@ use super::control::prompt_start::{
     thread_delay,
 };
 use super::control_tools::{finish, thread_call};
+use super::errors::thread_tool_failure;
+use super::remote::RemoteAddress;
+use super::remote::outcome::{
+    engine_state_of, plan_delivery, relay_outcome_failure, result_of, steer_conflict,
+};
+use super::remote::ports::{
+    RemoteCommandOutcome, RemoteThreadSurface, SessionCommandOptions, keyed,
+};
+use super::remote::remote_ops::reply_data;
 use super::store_extension_facade::ThreadCreationRecord;
 use super::store_ops::rfc3339;
 use super::tools::{ThreadTool, ThreadToolsOptions, deliver_thread_send};
+use super::types::GatewayDeliveryMode;
 
 const DESCRIPTION: &str = "Starts a fresh agent session that runs alongside this one, for when the user wants a second session working in parallel; to spawn a child task instead, use task.";
 
@@ -52,6 +64,134 @@ struct ToolCreateSurface {
     options: Arc<ThreadToolsOptions>,
     operation_id: String,
     caller_id: String,
+}
+
+async fn deliver_remote_prompt(
+    surface: &RemoteThreadSurface,
+    device: &str,
+    send: &CreatePromptSend,
+    idempotency_key: &str,
+) -> Value {
+    let requested_mode = match send.delivery.as_deref() {
+        Some(mode) => match GatewayDeliveryMode::parse(mode) {
+            Some(mode) => mode,
+            None => {
+                return error_json(thread_tool_failure(
+                    "invalid_arguments",
+                    "delivery must be auto, steer or follow_up",
+                    "Fix the arguments and call again.",
+                    None,
+                ));
+            }
+        },
+        None => GatewayDeliveryMode::Auto,
+    };
+    let session_id = match surface.sessions.sessions(Some(device.to_owned())).await {
+        Ok(rows) => rows
+            .into_iter()
+            .find(|row| {
+                row.device == device
+                    && (row_key(&keyed(row)) == send.thread
+                        || row.durable_id.as_deref() == Some(send.thread.as_str())
+                        || row.session_id == send.thread)
+            })
+            .map_or_else(|| send.thread.clone(), |row| row.session_id),
+        Err(_) => send.thread.clone(),
+    };
+    let (mut method, mut planned_lane, expected_turn) =
+        if requested_mode != GatewayDeliveryMode::FollowUp {
+            match surface
+                .sessions
+                .session_command(
+                    device.to_owned(),
+                    session_id.clone(),
+                    json!({ "type": "get_state", "sessionId": session_id }),
+                    SessionCommandOptions::default(),
+                )
+                .await
+            {
+                RemoteCommandOutcome::Ok { response, .. } => {
+                    let state = engine_state_of(&Value::Object(reply_data(&response)));
+                    match plan_delivery(&state, requested_mode, None, device, &session_id) {
+                        Ok(plan) => (plan.method, plan.planned_lane, plan.expected_turn_id),
+                        Err(failure) => return failure,
+                    }
+                }
+                ref other => return error_json(*relay_outcome_failure(other, device)),
+            }
+        } else {
+            ("follow_up", "follow_up", None)
+        };
+    let build_record = |kind: &str, turn_id: Option<i64>| -> Value {
+        let mut record = json!({
+            "type": kind,
+            "sessionId": session_id,
+            "message": send.message,
+        });
+        if kind == "steer"
+            && let Some(turn_id) = turn_id
+            && let Some(map) = record.as_object_mut()
+        {
+            map.insert("expectedTurnId".into(), Value::String(turn_id.to_string()));
+        }
+        record
+    };
+    let to_command_outcome = |response: &Value| -> CommandOutcome {
+        CommandOutcome {
+            command_id: idempotency_key.to_owned(),
+            state: "engine_applied".to_owned(),
+            reason: None,
+            retryable: false,
+            receipt: Some(Value::Object(reply_data(response))),
+        }
+    };
+    let mut outcome = surface
+        .sessions
+        .session_command(
+            device.to_owned(),
+            session_id.clone(),
+            build_record(method, expected_turn),
+            SessionCommandOptions::default(),
+        )
+        .await;
+    if requested_mode == GatewayDeliveryMode::Auto && method == "steer" {
+        let raced = match &outcome {
+            RemoteCommandOutcome::Refused { reason, .. } => {
+                matches!(reason.as_str(), "turn_conflict" | "not_steerable")
+            }
+            RemoteCommandOutcome::Ok { response, .. } => {
+                steer_conflict(&to_command_outcome(response)).is_some()
+            }
+            RemoteCommandOutcome::Uncertain { .. } => false,
+        };
+        if raced {
+            method = "follow_up";
+            planned_lane = "follow_up";
+            outcome = surface
+                .sessions
+                .session_command(
+                    device.to_owned(),
+                    session_id.clone(),
+                    build_record(method, None),
+                    SessionCommandOptions::default(),
+                )
+                .await;
+        }
+    }
+    match &outcome {
+        RemoteCommandOutcome::Ok { response, .. } => result_of(
+            &RemoteAddress {
+                device: device.to_owned(),
+                session: send.thread.clone(),
+            },
+            device,
+            &to_command_outcome(response),
+            method,
+            planned_lane,
+            None,
+        ),
+        _ => error_json(*relay_outcome_failure(&outcome, device)),
+    }
 }
 
 impl CreateSurface for ToolCreateSurface {
@@ -84,6 +224,21 @@ impl CreateSurface for ToolCreateSurface {
         let options = self.options.clone();
         let caller_id = self.caller_id.clone();
         Box::pin(async move {
+            if let Some(device) = send.device.as_deref() {
+                let Some(surface) = options
+                    .remote
+                    .as_deref()
+                    .and_then(RemoteControlLocator::remote_surface)
+                else {
+                    return Ok(error_json(thread_tool_failure(
+                        "host_unavailable",
+                        "Remote thread surface is not available to deliver the prompt.",
+                        "Retry when the remote surface is configured.",
+                        Some(json!({ "device": device })),
+                    )));
+                };
+                return Ok(deliver_remote_prompt(surface, device, &send, &idempotency_key).await);
+            }
             let mut args = Map::new();
             args.insert("thread".to_owned(), json!(send.thread));
             args.insert("message".to_owned(), json!(send.message));
