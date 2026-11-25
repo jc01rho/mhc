@@ -12,7 +12,10 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -27,15 +30,57 @@ pub const SETTLE_OBSERVER_BUDGET: Duration = Duration::from_millis(2_000);
 const DEFAULT_HOOK_LABEL: &str = "onSettled";
 const RETIRED: &str = "Settle observer retired";
 const EXHAUSTED: &str = "Settle observer budget exhausted";
+const SUPERSEDED: &str = "Settle hook superseded by a newer settle";
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum InFlightHookKey {
+    Named(String),
+    Unnamed(u64),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct InFlightKey {
+    session_id: Option<String>,
+    hook: InFlightHookKey,
+}
 
 type Pending = Arc<Mutex<BTreeMap<u64, (AbortController, Option<String>)>>>;
+type InFlight = Arc<Mutex<BTreeMap<InFlightKey, (u64, AbortController)>>>;
 struct CancellationOwner(Arc<()>);
+
+struct ObserverSlotGuard {
+    pending: Pending,
+    in_flight: InFlight,
+    id: u64,
+    key: InFlightKey,
+}
+
+impl Drop for ObserverSlotGuard {
+    fn drop(&mut self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if in_flight
+            .get(&self.key)
+            .is_some_and(|(current_id, _)| *current_id == self.id)
+        {
+            in_flight.remove(&self.key);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct SettleObservers {
     pending: Pending,
+    in_flight: InFlight,
     cancellation_owner: Arc<()>,
     next: Arc<Mutex<u64>>,
+    next_slot: Arc<AtomicU64>,
     logger: Arc<dyn ComponentLogger>,
     budget: Duration,
 }
@@ -52,8 +97,10 @@ impl SettleObservers {
     pub fn with_budget(logger: Arc<dyn ComponentLogger>, budget: Duration) -> Self {
         Self {
             pending: Arc::default(),
+            in_flight: Arc::default(),
             cancellation_owner: Arc::new(()),
             next: Arc::default(),
+            next_slot: Arc::default(),
             logger,
             budget,
         }
@@ -99,6 +146,13 @@ impl SettleObservers {
             .len()
     }
 
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
     /// Wraps one `agent_settled` handler in a bounded observation.
     pub fn wrap(
         &self,
@@ -108,26 +162,43 @@ impl SettleObservers {
     ) -> ExtensionHandler {
         let this = self.clone();
         let component = component.to_owned();
-        let label = hook_label.unwrap_or(DEFAULT_HOOK_LABEL).to_owned();
+        let (label, hook_key) = match hook_label {
+            Some(explicit) => (
+                explicit.to_owned(),
+                InFlightHookKey::Named(explicit.to_owned()),
+            ),
+            None => {
+                let slot = self.next_slot.fetch_add(1, Ordering::Relaxed);
+                (
+                    DEFAULT_HOOK_LABEL.to_owned(),
+                    InFlightHookKey::Unnamed(slot),
+                )
+            }
+        };
         Arc::new(
             move |event: &mut ExtensionEvent, context: &ExtensionContext| {
                 let this = this.clone();
                 let component = component.clone();
                 let label = label.clone();
+                let hook_key = hook_key.clone();
                 let handler = handler.clone();
                 let session_id = session_id_of(context);
                 Box::pin(async move {
-                    this.observe(&component, label, handler, event, context, session_id)
-                        .await
+                    this.observe(
+                        &component, label, hook_key, handler, event, context, session_id,
+                    )
+                    .await
                 })
             },
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn observe(
         &self,
         component: &str,
         label: String,
+        hook_key: InFlightHookKey,
         handler: ExtensionHandler,
         event: &mut ExtensionEvent,
         context: &ExtensionContext,
@@ -135,17 +206,48 @@ impl SettleObservers {
     ) -> Result<EventResult, ExtensionFailure> {
         let controller = AbortController::new();
         let signal = controller.signal();
-        let observer = SettleObserver::new(signal.clone(), label);
+        let observer = SettleObserver::new(signal.clone(), label.clone());
         let hook = observer.clone();
         let id = {
             let mut next = self.next.lock().unwrap_or_else(PoisonError::into_inner);
             *next += 1;
             *next
         };
+        let key = InFlightKey {
+            session_id: session_id.clone(),
+            hook: hook_key,
+        };
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, (controller, session_id.clone()));
+            .insert(id, (controller.clone(), session_id.clone()));
+        let superseded = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.clone(), (id, controller.clone()));
+        let slot_guard = ObserverSlotGuard {
+            pending: Arc::clone(&self.pending),
+            in_flight: Arc::clone(&self.in_flight),
+            id,
+            key,
+        };
+        // Abort after releasing the map lock; listeners fire synchronously.
+        if let Some((_, prev)) = superseded.filter(|(_, prev)| !prev.signal().aborted()) {
+            prev.abort(Some(self.cancellation_reason("AbortError", SUPERSEDED)));
+            self.logger.warn(
+                "extension_handler_superseded",
+                Some(&serde_json::json!({
+                    "event": "extension_handler_superseded",
+                    "extension": "omo.js",
+                    "component": component,
+                    "hook": label,
+                    "handlerEvent": "agent_settled",
+                    "stage": "superseded",
+                    "sessionId": session_id,
+                })),
+            );
+        }
         let started = Instant::now();
         let outcome = {
             // Invoke inside the scope: a handler may read the observer before its first await.
@@ -174,10 +276,7 @@ impl SettleObservers {
                 result = work => Some(result),
             }
         };
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
+        drop(slot_guard);
         match outcome {
             Some(Err(err)) => {
                 if signal.aborted() || self.is_cancellation(&err) {
