@@ -134,6 +134,7 @@ pub mod host_request_key_root;
 pub mod host_reservations;
 pub mod host_run_activity;
 pub mod host_runner;
+pub mod host_scope;
 pub mod host_session_control;
 pub mod host_session_detach;
 pub mod host_session_find;
