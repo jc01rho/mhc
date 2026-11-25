@@ -819,20 +819,16 @@ mod tests {
 
     #[test]
     fn foreign_files_including_compiled_binary_directory_and_oversized_are_left_alone() {
-        let cases: Vec<(&str, Box<dyn Fn() -> Vec<u8>>)> = vec![
-            ("compiled binary", Box::new(compiled_binary_bytes)),
-            (
-                "unrelated script",
-                Box::new(|| b"#!/bin/sh\nexec /opt/other/omo \"$@\"\n".to_vec()),
-            ),
-            (
-                "oversized with header",
-                Box::new(|| {
-                    let mut bytes = LEGACY_MAHO_HEADER.as_bytes().to_vec();
-                    bytes.extend(vec![b'a'; 2 * 1024 * 1024]);
-                    bytes
-                }),
-            ),
+        let cases: [(&str, fn() -> Vec<u8>); 3] = [
+            ("compiled binary", compiled_binary_bytes),
+            ("unrelated script", || {
+                b"#!/bin/sh\nexec /opt/other/omo \"$@\"\n".to_vec()
+            }),
+            ("oversized with header", || {
+                let mut bytes = LEGACY_MAHO_HEADER.as_bytes().to_vec();
+                bytes.extend(vec![b'a'; 2 * 1024 * 1024]);
+                bytes
+            }),
         ];
 
         for (name, make_bytes) in cases {
