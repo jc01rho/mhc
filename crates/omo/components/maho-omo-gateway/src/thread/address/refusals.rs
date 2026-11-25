@@ -40,8 +40,8 @@ pub fn as_refusal(failure: ThreadToolFailure) -> ThreadRefusal {
     Box::new(failure)
 }
 
-pub fn as_failure(refused: ThreadRefusal) -> ThreadToolFailure {
-    *refused
+pub fn as_failure(refused: &ThreadToolFailure) -> ThreadToolFailure {
+    refused.clone()
 }
 
 const LIST_ALL: &str =
