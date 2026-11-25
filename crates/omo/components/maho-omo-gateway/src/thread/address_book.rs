@@ -5,6 +5,7 @@
 //! only fallback when a host disappears.
 
 use std::collections::BTreeMap;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -101,6 +102,11 @@ impl ThreadSurface {
     }
 }
 
+pub const SESSION_FACTS_WINDOW_BYTES: usize = 64 * 1024;
+pub const SESSION_FACTS_LAST_LINE_MAX_BYTES: usize = SESSION_FACTS_WINDOW_BYTES * 4;
+pub const THREAD_TITLE_MAX_CHARS: usize = 60;
+const SESSION_ARCHIVED_CUSTOM_TYPE: &str = "session_archived";
+
 /// A session read from disk, for a thread no endpoint lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskSession {
@@ -112,6 +118,7 @@ pub struct DiskSession {
     pub session_path: String,
     pub source_host: Option<String>,
     pub first_user_text: Option<String>,
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,16 +148,17 @@ pub struct AddressEntry {
     pub surface: Option<ThreadSurface>,
     pub alive: bool,
     pub title: Option<String>,
+    pub archived: bool,
 }
 
 /// The title a listing shows: the name, else the first user message's opening, never the durable id.
 pub fn thread_title(name: Option<&str>, first_user_text: Option<&str>) -> Option<String> {
-    if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
+    if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
         return Some(name.to_owned());
     }
     first_user_text.and_then(|text| {
-        let opening: String = text.trim().chars().take(80).collect();
-        (!opening.is_empty()).then_some(opening)
+        let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!collapsed.is_empty()).then(|| collapsed.chars().take(THREAD_TITLE_MAX_CHARS).collect())
     })
 }
 
@@ -222,6 +230,7 @@ fn from_disk(
         endpoint,
         alive: false,
         title: thread_title(session.name.as_deref(), session.first_user_text.as_deref()),
+        archived: session.archived,
     }
 }
 
@@ -243,6 +252,16 @@ pub fn assemble_address_book(
 
     for session in disk_sessions {
         if session.durable_id.is_empty() {
+            continue;
+        }
+        // The workspace scan reads a file an endpoint already claimed with no endpoint: keep the endpoint's
+        // record, which carries its failure (`live_unresponsive`), so the thread never reads as plain closed (#14308).
+        if session.source_host.is_none()
+            && by_durable_id
+                .get(&session.durable_id)
+                .and_then(|existing| existing.source_host.as_ref())
+                .is_some()
+        {
             continue;
         }
         let failure = session
@@ -332,6 +351,7 @@ pub fn assemble_address_book(
                     )),
                     alive: host.alive != Some(false),
                     title: thread_title(name.as_deref(), None).or_else(|| disk_title.clone()),
+                    archived: false,
                 },
             );
         }
@@ -377,31 +397,211 @@ fn json_str(value: Option<&Value>, key: &str) -> Option<String> {
     value?.get(key)?.as_str().map(str::to_owned)
 }
 
-/// One session file's durable identity, or none when the file is unreadable or has no header.
+fn read_window(file: &mut std::fs::File, position: u64, length: usize) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(position)).ok()?;
+    let mut buffer = vec![0u8; length];
+    let mut read_total = 0usize;
+    while read_total < length {
+        match file.read(&mut buffer[read_total..]) {
+            Ok(0) => break,
+            Ok(n) => read_total += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
+    buffer.truncate(read_total);
+    Some(buffer)
+}
+
+fn parse_session_lines(text: &str, drop_first: bool, drop_last: bool) -> Vec<Value> {
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    if drop_first && !lines.is_empty() {
+        lines.remove(0);
+    }
+    if drop_last {
+        lines.pop();
+    }
+    lines
+        .into_iter()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(Value::is_object)
+        .collect()
+}
+
+fn message_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                (part.get("type").and_then(Value::as_str) == Some("text"))
+                    .then(|| part.get("text").and_then(Value::as_str))
+                    .flatten()
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    }
+}
+
+fn final_complete_line(file: &mut std::fs::File, size: u64) -> Option<Vec<u8>> {
+    if size == 0 {
+        return None;
+    }
+    let last = read_window(file, size - 1, 1)?;
+    if last.as_slice() != [b'\n'] {
+        return None;
+    }
+    let mut remaining = size - 1;
+    let mut scanned = 0usize;
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    while remaining > 0 && scanned < SESSION_FACTS_LAST_LINE_MAX_BYTES {
+        let length = SESSION_FACTS_WINDOW_BYTES
+            .min(remaining as usize)
+            .min(SESSION_FACTS_LAST_LINE_MAX_BYTES - scanned);
+        let start = remaining - length as u64;
+        let chunk = read_window(file, start, length)?;
+        if chunk.len() != length {
+            return None;
+        }
+        if let Some(newline) = chunk.iter().rposition(|byte| *byte == b'\n') {
+            chunks.push(chunk[newline + 1..].to_vec());
+            chunks.reverse();
+            return Some(chunks.concat());
+        }
+        chunks.push(chunk);
+        if start == 0 {
+            chunks.reverse();
+            return Some(chunks.concat());
+        }
+        scanned += length;
+        remaining = start;
+    }
+    None
+}
+
+/// One session file's facts, read from bounded head and tail windows (`session-facts.ts`), or none when unreadable or
+/// lacking a valid session header.
 pub fn read_disk_session(path: &Path, source_host: Option<&str>) -> Option<DiskSession> {
-    let header = std::fs::read_to_string(path)
-        .ok()?
-        .lines()
-        .next()?
-        .to_owned();
-    let value: Value = serde_json::from_str(&header).ok()?;
-    let durable_id = json_str(Some(&value), "session_id")
-        .or_else(|| json_str(Some(&value), "sessionId"))
-        .or_else(|| json_str(Some(&value), "durable_id"))?;
-    let cwd = json_str(Some(&value), "cwd").unwrap_or_default();
-    let created_at = json_str(Some(&value), "created_at")
-        .or_else(|| json_str(Some(&value), "createdAt"))
+    let mut file = std::fs::File::open(path).ok()?;
+    let before = file.metadata().ok()?;
+    let size = before.len();
+    if size == 0 {
+        return None;
+    }
+    let head_length = usize::try_from(size)
+        .unwrap_or(usize::MAX)
+        .min(SESSION_FACTS_WINDOW_BYTES);
+    let head_bytes = read_window(&mut file, 0, head_length)?;
+    let whole = size <= SESSION_FACTS_WINDOW_BYTES as u64;
+    let head_entries = parse_session_lines(&String::from_utf8_lossy(&head_bytes), false, !whole);
+    let first = head_entries.first()?;
+    if first
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind != "session")
+    {
+        return None;
+    }
+    let durable_id = json_str(Some(first), "id")
+        .or_else(|| json_str(Some(first), "session_id"))
+        .or_else(|| json_str(Some(first), "sessionId"))
+        .or_else(|| json_str(Some(first), "durable_id"))
+        .filter(|id| !id.is_empty())?;
+    let cwd = json_str(Some(first), "cwd").unwrap_or_default();
+    let created_at = json_str(Some(first), "timestamp")
+        .or_else(|| json_str(Some(first), "created_at"))
+        .or_else(|| json_str(Some(first), "createdAt"))
         .unwrap_or_default();
+    let mut tail_entries: Vec<Value> = Vec::new();
+    if !whole {
+        let tail_start = size - SESSION_FACTS_WINDOW_BYTES as u64;
+        let tail_bytes = read_window(&mut file, tail_start - 1, SESSION_FACTS_WINDOW_BYTES + 1)?;
+        if let Some((&before_byte, body)) = tail_bytes.split_first() {
+            tail_entries =
+                parse_session_lines(&String::from_utf8_lossy(body), before_byte != b'\n', false);
+        }
+    }
+    let mut name = json_str(Some(first), "name")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let mut first_user_text: Option<String> = None;
+    let mut archived = false;
+    for entry in head_entries.iter().chain(tail_entries.iter()) {
+        let kind = entry.get("type").and_then(Value::as_str);
+        if kind == Some("session_info") {
+            name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+        } else if kind == Some("custom")
+            && entry.get("customType").and_then(Value::as_str) == Some(SESSION_ARCHIVED_CUSTOM_TYPE)
+        {
+            let data = entry.get("data");
+            let same_session = data
+                .and_then(|data| data.get("sessionId"))
+                .and_then(Value::as_str)
+                .is_none_or(|id| id == durable_id);
+            if same_session {
+                archived = data
+                    .and_then(|data| data.get("archived"))
+                    .and_then(Value::as_bool)
+                    == Some(true);
+            }
+        } else if first_user_text.is_none()
+            && kind == Some("message")
+            && let Some(message) = entry.get("message").and_then(Value::as_object)
+            && message.get("role").and_then(Value::as_str) == Some("user")
+        {
+            let text = message_text(message.get("content")).trim().to_owned();
+            if !text.is_empty() {
+                first_user_text = Some(text);
+            }
+        }
+    }
+    let final_line = final_complete_line(&mut file, size);
+    let after = file.metadata().ok();
+    let unchanged = after.as_ref().is_some_and(|meta| {
+        meta.len() == before.len() && meta.modified().ok() == before.modified().ok()
+    });
+    let updated_at = if !unchanged {
+        None
+    } else if let Some(line_bytes) = final_line {
+        serde_json::from_slice::<Value>(&line_bytes)
+            .ok()
+            .filter(Value::is_object)
+            .and_then(|entry| {
+                entry
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .filter(|timestamp| !timestamp.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        (head_entries.len() == 1 && tail_entries.is_empty())
+                            .then(|| {
+                                json_str(Some(first), "updated_at")
+                                    .or_else(|| json_str(Some(first), "updatedAt"))
+                            })
+                            .flatten()
+                    })
+            })
+    } else {
+        None
+    };
     Some(DiskSession {
         durable_id,
-        name: json_str(Some(&value), "name"),
+        name,
         cwd,
         created_at,
-        updated_at: json_str(Some(&value), "updated_at")
-            .or_else(|| json_str(Some(&value), "updatedAt")),
+        updated_at,
         session_path: path.to_string_lossy().into_owned(),
         source_host: source_host.map(str::to_owned),
-        first_user_text: None,
+        first_user_text,
+        archived,
     })
 }
 
@@ -524,6 +724,7 @@ mod tests {
             session_path: format!("/sessions/{durable_id}.jsonl"),
             source_host: Some("/run/i-host.sock".into()),
             first_user_text: None,
+            archived: false,
         }
     }
 
@@ -645,5 +846,154 @@ mod tests {
             session_directory_prefix("/home/indo/work"),
             "--home-indo-work-"
         );
+    }
+
+    #[test]
+    fn workspace_scan_does_not_overwrite_a_claimed_unresponsive_endpoint_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("dur-stopped.jsonl");
+        let content = [
+            serde_json::json!({
+                "type": "session",
+                "version": 3,
+                "id": "dur-stopped",
+                "cwd": "/work",
+                "timestamp": "2026-11-01T00:00:00.000Z",
+            }),
+            serde_json::json!({
+                "type": "message",
+                "timestamp": "2026-11-01T00:01:00.000Z",
+                "message": { "role": "user", "content": "fix the build" },
+            }),
+        ]
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        std::fs::write(&path, content).expect("write");
+
+        let socket = "/run/t-stopped.sock";
+        let claimed = read_disk_session(&path, Some(socket)).expect("claimed");
+        let scanned = read_disk_session(&path, None).expect("scanned");
+        let unresponsive = AddressBookHost {
+            socket: socket.to_owned(),
+            list_sessions: None,
+            endpoint_kind: Some(GatewayEndpointKind::Tui),
+            alive: Some(false),
+            reason: Some("live_unresponsive".into()),
+            legacy: false,
+        };
+        for order in [
+            vec![claimed.clone(), scanned.clone()],
+            vec![scanned, claimed],
+        ] {
+            let entries = assemble_address_book(
+                std::slice::from_ref(&unresponsive),
+                &order,
+                "2026-11-02T00:00:00.000Z",
+            );
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].durable_id, "dur-stopped");
+            assert_eq!(entries[0].error_note.as_deref(), Some("live_unresponsive"));
+            assert_eq!(entries[0].source_host.as_deref(), Some(socket));
+            assert_eq!(entries[0].title.as_deref(), Some("fix the build"));
+        }
+    }
+
+    #[test]
+    fn read_disk_session_extracts_info_first_user_text_archived_and_bounded_tail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("session.jsonl");
+        let lines = [
+            serde_json::json!({
+                "type": "session",
+                "version": 3,
+                "id": "dur-1",
+                "cwd": "/work",
+                "timestamp": "2026-11-14T01:00:00.000Z",
+            }),
+            serde_json::json!({
+                "type": "message",
+                "timestamp": "2026-11-14T01:01:00.000Z",
+                "message": { "role": "user", "content": [{ "type": "text", "text": "  plan   the move  " }] },
+            }),
+            serde_json::json!({
+                "type": "session_info",
+                "timestamp": "2026-11-14T01:02:00.000Z",
+                "name": "Initial",
+            }),
+            serde_json::json!({
+                "type": "session_info",
+                "timestamp": "2026-11-14T01:03:00.000Z",
+                "name": "   ",
+            }),
+            serde_json::json!({
+                "type": "custom",
+                "customType": "session_archived",
+                "data": { "archived": true },
+                "timestamp": "2026-11-14T01:04:00.000Z",
+            }),
+        ];
+        std::fs::write(
+            &path,
+            lines
+                .iter()
+                .map(serde_json::Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .expect("write");
+
+        let facts = read_disk_session(&path, None).expect("facts");
+        assert_eq!(facts.durable_id, "dur-1");
+        assert_eq!(facts.name, None);
+        assert_eq!(facts.first_user_text.as_deref(), Some("plan   the move"));
+        assert_eq!(
+            thread_title(facts.name.as_deref(), facts.first_user_text.as_deref()).as_deref(),
+            Some("plan the move")
+        );
+        assert!(facts.archived);
+        assert_eq!(
+            facts.updated_at.as_deref(),
+            Some("2026-11-14T01:04:00.000Z")
+        );
+
+        let unarchived = serde_json::json!({
+            "type": "custom",
+            "customType": "session_archived",
+            "data": { "archived": false },
+            "timestamp": "2026-11-14T01:05:00.000Z",
+        });
+        let mut content = std::fs::read_to_string(&path).expect("read");
+        content.push_str(&format!("{unarchived}\n"));
+        std::fs::write(&path, content).expect("rewrite");
+        let after = read_disk_session(&path, None).expect("after");
+        assert!(!after.archived);
+        assert_eq!(
+            after.updated_at.as_deref(),
+            Some("2026-11-14T01:05:00.000Z")
+        );
+
+        let truncated = dir.path().join("truncated.jsonl");
+        std::fs::write(
+            &truncated,
+            format!(
+                "{}\n{{\"type\":\"message\",\"timestamp\":\"2026-11-14T02:00:00.000Z\"",
+                lines[0]
+            ),
+        )
+        .expect("truncated");
+        assert_eq!(
+            read_disk_session(&truncated, None)
+                .expect("truncated facts")
+                .updated_at,
+            None
+        );
+
+        let message_only = dir.path().join("no-header.jsonl");
+        std::fs::write(&message_only, format!("{}\n", lines[1])).expect("no header");
+        assert_eq!(read_disk_session(&message_only, None), None);
     }
 }

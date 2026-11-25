@@ -6,12 +6,12 @@
 //! `error_note`), and one whose session file is in the scanned session directories after its engine closed it.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use super::address_book::{
-    DiskSession, find_disk_sessions, scan_disk_sessions, session_directory_prefix,
+    DiskSession, find_disk_sessions, read_disk_session, session_directory_prefix,
 };
 use super::addressing::{to_thread_address_entries, workspace_directories, workspace_entries};
 use super::backlog::TargetBacklog;
@@ -34,6 +34,8 @@ use super::thread_state::listed_states;
 
 /// The most session files one list reads, newest first; older inactive threads are left out and counted instead.
 pub const LIST_DISK_LIMIT: usize = 200;
+/// The most session files one list stats to rank by modification time (`disk-list.ts`).
+pub const LIST_DISK_MAX_STATS: usize = 1000;
 
 /// The session files one listing read, and the durable ids of the files in scope it did not read (a session file is
 /// named `<creation time>_<id>.jsonl`, so the id is known without reading it).
@@ -42,42 +44,93 @@ pub struct ScannedSessions {
     pub unread: Vec<String>,
 }
 
-/// The session files in the caller's workspace directories (every directory with `all_scope`), newest first, and the
-/// ids of those past what one list reads.
+fn file_durable_id(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    stem.rsplit('_').next().unwrap_or_default().to_owned()
+}
+
+/// The session files in the caller's workspace directories (every directory with `all_scope`), newest by modification
+/// time first (ranking the newest by name up to `LIST_DISK_MAX_STATS`), and the durable ids of those past `LIST_DISK_LIMIT`.
 pub fn scan_listed_sessions(
     sessions_directory: &Path,
     all_scope: bool,
     caller_workspace_root: &str,
 ) -> ScannedSessions {
+    let Ok(dir_entries) = std::fs::read_dir(sessions_directory) else {
+        return ScannedSessions {
+            sessions: Vec::new(),
+            unread: Vec::new(),
+        };
+    };
     let prefixes: Vec<String> = workspace_directories(caller_workspace_root)
         .iter()
         .map(|root| session_directory_prefix(root.as_str()))
         .collect();
-    let in_scope = |session: &DiskSession| {
-        all_scope
-            || Path::new(&session.session_path)
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    prefixes
-                        .iter()
-                        .any(|prefix| name.starts_with(prefix.as_str()))
-                })
-    };
-    let mut sessions: Vec<DiskSession> = scan_disk_sessions(sessions_directory, None)
-        .into_iter()
-        .filter(in_scope)
-        .collect();
-    let unread = sessions
-        .get(LIST_DISK_LIMIT..)
-        .map(|rest| {
-            rest.iter()
-                .map(|session| session.durable_id.clone())
-                .collect()
+    let mut paths: Vec<PathBuf> = dir_entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_ok_and(|kind| kind.is_dir() || kind.is_symlink())
         })
-        .unwrap_or_default();
-    sessions.truncate(LIST_DISK_LIMIT);
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .filter(|name| name.starts_with("--") && name.ends_with("--"))
+        .filter(|name| {
+            all_scope
+                || prefixes
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix.as_str()))
+        })
+        .flat_map(|dir| {
+            std::fs::read_dir(sessions_directory.join(dir))
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
+        })
+        .collect();
+    paths.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let right_name = right
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        right_name.cmp(left_name).then_with(|| left.cmp(right))
+    });
+    let mut files: Vec<(PathBuf, std::time::SystemTime)> = paths
+        .iter()
+        .take(LIST_DISK_MAX_STATS)
+        .filter_map(|path| {
+            let meta = std::fs::metadata(path).ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            Some((path.clone(), modified))
+        })
+        .collect();
+    files.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let read_count = files.len().min(LIST_DISK_LIMIT);
+    let read_files = &files[..read_count];
+    let read_paths: BTreeSet<&Path> = read_files.iter().map(|(path, _)| path.as_path()).collect();
+    let sessions: Vec<DiskSession> = read_files
+        .iter()
+        .filter_map(|(path, _)| read_disk_session(path, None))
+        .collect();
+    let unread: Vec<String> = paths
+        .iter()
+        .map(PathBuf::as_path)
+        .filter(|path| !read_paths.contains(path))
+        .map(file_durable_id)
+        .filter(|id| !id.is_empty())
+        .collect();
     ScannedSessions { sessions, unread }
 }
 
@@ -168,7 +221,7 @@ pub fn list_threads(
             let failed = host
                 .list_sessions
                 .as_ref()
-                .is_some_and(|listing| listing.error.is_some());
+                .is_none_or(|listing| listing.error.is_some());
             (failed || host.alive == Some(false)) && host.reason.as_deref() != Some("dead")
         })
         .count();
@@ -465,5 +518,265 @@ mod tests {
         assert_eq!(shown.held, 3);
         assert_eq!(shown.waiting_in_gateway, 2);
         assert_eq!(shown.oldest_at, "1970-01-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn with_backlog_attaches_backlogs_and_records_store_error_without_failing_listing() {
+        use std::sync::Arc;
+
+        use crate::gateway_database_path;
+        use crate::thread::schema::GATEWAY_MIGRATIONS;
+        use crate::thread::store::{GatewayStoreOptions, create_gateway_store};
+        use crate::thread::types::{
+            EnqueueOutcome, EnqueueRequest, EnvelopeOrigin, GatewayDeliveryMode, Provenance,
+            ReceiptRef,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store_opts = GatewayStoreOptions::new(dir.path().to_string_lossy().into_owned());
+        store_opts.now = Some(Arc::new(|| 1_000));
+        let store = create_gateway_store(store_opts).expect("store");
+        let sent = store
+            .enqueue(&EnqueueRequest {
+                provenance: Provenance {
+                    workspace: "w".into(),
+                    project: "p".into(),
+                    lane: None,
+                    session: None,
+                },
+                now: 1_000,
+                delivery_id: "d-msg-1".into(),
+                target_durable_id: "d-1".into(),
+                sender_principal: "session:sender".into(),
+                rate_principal: None,
+                sender_node: "sender".into(),
+                sender_turn: None,
+                cause_delivery_id: None,
+                claimed_root_id: None,
+                origin: EnvelopeOrigin::Session {
+                    session: "sender".into(),
+                },
+                actor: "sender".into(),
+                body: "hello".into(),
+                mode: GatewayDeliveryMode::FollowUp,
+                expected_turn_id: None,
+                binding: None,
+                receipt: ReceiptRef {
+                    idempotency_key: "d-msg-1".into(),
+                    args_hash: "d-msg-1".into(),
+                },
+                endpoint_kind: None,
+                collapse_key: None,
+            })
+            .expect("enqueue");
+        assert!(matches!(sent, EnqueueOutcome::Inserted { .. }));
+
+        let sessions = vec![session("d-1"), session("d-quiet")];
+        let view = ThreadHostView {
+            hosts: vec![host(
+                Some(HostListSessions::ok(
+                    sessions
+                        .iter()
+                        .map(ThreadHostSession::host_session)
+                        .collect(),
+                )),
+                Some(true),
+                "",
+            )],
+            sessions,
+            disk: Vec::new(),
+        };
+        let listed = list_threads(&view, NOW, "/work/builder", &none(), false, None);
+        let with = with_backlog(store.as_ref(), listed);
+        assert_eq!(with.backlog_error, None);
+        let row1 = with
+            .threads
+            .iter()
+            .find(|t| t.thread == "d-1")
+            .expect("d-1 row");
+        assert_eq!(
+            row1.backlog,
+            Some(ThreadBacklog {
+                held: 1,
+                held_by_session: 0,
+                waiting_in_gateway: 1,
+                oldest_at: "1970-01-01T00:00:01.000Z".into(),
+            })
+        );
+        let quiet = with
+            .threads
+            .iter()
+            .find(|t| t.thread == "d-quiet")
+            .expect("d-quiet row");
+        assert_eq!(quiet.backlog, None);
+
+        // A store another binary migrated past this one sets backlog_error and preserves the listing.
+        let other = rusqlite::Connection::open(gateway_database_path(dir.path()))
+            .expect("newer binary connection");
+        other
+            .execute_batch(&format!(
+                "DELETE FROM gateway_meta WHERE key = 'reader_floor'; PRAGMA user_version = {}",
+                GATEWAY_MIGRATIONS.len() + 1
+            ))
+            .expect("bump schema");
+        let empty = with_backlog(
+            store.as_ref(),
+            ThreadListOk {
+                threads: Vec::new(),
+                scope: "workspace".into(),
+                inactive_truncated: None,
+                inactive_dropped: None,
+                listing: None,
+                unanswered_endpoints: None,
+                backlog_error: None,
+            },
+        );
+        assert_eq!(empty.backlog_error, None);
+
+        let broken = with_backlog(
+            store.as_ref(),
+            list_threads(&view, NOW, "/work/builder", &none(), false, None),
+        );
+        assert_eq!(broken.threads.len(), 2);
+        assert!(
+            broken
+                .backlog_error
+                .as_deref()
+                .is_some_and(|message| message.contains("newer"))
+        );
+    }
+
+    #[test]
+    fn scan_listed_sessions_ranks_by_mtime_and_counts_unread_for_inactive_and_archived() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = dir.path().join("sessions");
+        let project = sessions_dir.join("--work--");
+        std::fs::create_dir_all(&project).expect("create dir");
+        let mut ids = Vec::new();
+        for index in 0..203usize {
+            let id = format!("0195f0c2-1a2b-7c3d-8e4f-{index:012x}");
+            let created = format!("2026-01-01T00-{:02}-{:02}-000Z", index / 60, index % 60);
+            let file_path = project.join(format!("{created}_{id}.jsonl"));
+            let mut file = std::fs::File::create(&file_path).expect("create");
+            let header = serde_json::json!({
+                "type": "session",
+                "version": 3,
+                "id": id,
+                "cwd": "/work",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+            });
+            writeln!(file, "{header}").expect("write");
+            if index == 202 {
+                let archived = serde_json::json!({
+                    "type": "custom",
+                    "customType": "session_archived",
+                    "data": { "archived": true },
+                    "timestamp": "2026-01-01T00:05:00.000Z",
+                });
+                writeln!(file, "{archived}").expect("write archived");
+            }
+            let modified = std::time::UNIX_EPOCH
+                + std::time::Duration::from_secs(1_800_000_000 + index as u64);
+            file.set_modified(modified).expect("set_modified");
+            ids.push(id);
+        }
+
+        let scanned = scan_listed_sessions(&sessions_dir, true, ROOT);
+        assert_eq!(scanned.sessions.len(), 200);
+        assert_eq!(scanned.unread.len(), 3);
+        assert!(scanned.unread.contains(&ids[0]));
+        assert!(scanned.unread.contains(&ids[1]));
+        assert!(scanned.unread.contains(&ids[2]));
+
+        // The oldest unread file (ids[0]) is running live, so only 2 unread files are inactive/archived.
+        let view = ThreadHostView {
+            sessions: vec![session(&ids[0])],
+            hosts: Vec::new(),
+            disk: Vec::new(),
+        };
+        let default_listed = list_threads(&view, NOW, ROOT, &scanned, true, None);
+        assert_eq!(default_listed.inactive_truncated, Some(true));
+        assert_eq!(default_listed.inactive_dropped, Some(2));
+        assert!(
+            default_listed
+                .threads
+                .iter()
+                .any(|row| row.thread == ids[0])
+        );
+        assert!(
+            !default_listed
+                .threads
+                .iter()
+                .any(|row| row.thread == ids[202])
+        );
+
+        let archived_listed = list_threads(
+            &view,
+            NOW,
+            ROOT,
+            &scanned,
+            true,
+            Some(&[ThreadState::Archived]),
+        );
+        assert_eq!(archived_listed.inactive_truncated, Some(true));
+        assert_eq!(archived_listed.inactive_dropped, Some(2));
+        assert_eq!(archived_listed.threads.len(), 1);
+        assert_eq!(archived_listed.threads[0].thread, ids[202]);
+        assert_eq!(archived_listed.threads[0].state, ThreadState::Archived);
+
+        let live_only = list_threads(
+            &view,
+            NOW,
+            ROOT,
+            &scanned,
+            true,
+            Some(&[ThreadState::Running, ThreadState::Idle]),
+        );
+        assert_eq!(live_only.inactive_dropped, None);
+        assert_eq!(live_only.inactive_truncated, None);
+    }
+
+    #[test]
+    fn list_threads_keeps_live_unresponsive_note_when_workspace_scan_also_sees_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = dir.path().join("sessions");
+        let project = sessions_dir.join("--work--");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        let file = project.join("2026-11-01T00-00-00-000Z_d-unresp.jsonl");
+        let header = serde_json::json!({
+            "type": "session",
+            "version": 3,
+            "id": "d-unresp",
+            "cwd": "/work",
+            "timestamp": "2026-11-01T00:00:00.000Z",
+        });
+        std::fs::write(&file, format!("{header}\n")).expect("write");
+
+        let socket = "/run/t-slow.sock";
+        let claimed = read_disk_session(&file, Some(socket)).expect("claimed");
+        let scanned = scan_listed_sessions(&sessions_dir, true, ROOT);
+        let view = ThreadHostView {
+            sessions: Vec::new(),
+            hosts: vec![AddressBookHost {
+                socket: socket.to_owned(),
+                list_sessions: None,
+                endpoint_kind: Some(GatewayEndpointKind::Tui),
+                alive: Some(false),
+                reason: Some("live_unresponsive".into()),
+                legacy: false,
+            }],
+            disk: vec![claimed],
+        };
+        let listed = list_threads(&view, NOW, ROOT, &scanned, true, None);
+        assert_eq!(listed.listing.as_deref(), Some("incomplete"));
+        assert_eq!(listed.unanswered_endpoints, Some(1));
+        assert_eq!(listed.threads.len(), 1);
+        assert_eq!(listed.threads[0].thread, "d-unresp");
+        assert_eq!(
+            listed.threads[0].error_note.as_deref(),
+            Some("live_unresponsive")
+        );
     }
 }
