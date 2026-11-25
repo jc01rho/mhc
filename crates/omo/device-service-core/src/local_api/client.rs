@@ -579,6 +579,15 @@ impl LocalApiClient {
         self.request("device.forget", json!({})).await.map(|_| ())
     }
 
+    /// Every engine endpoint key `device` lists, and its primary key when the service names it
+    /// (0.1.11+, omo#14271).
+    pub async fn engine_endpoints(
+        &self,
+        device: &str,
+    ) -> Result<crate::engine_endpoint::EngineEndpoints, LocalApiError> {
+        crate::engine_endpoint::engine_endpoints_of(self, device).await
+    }
+
     /// One `sessions.list` query, followed through its round until `done` or the request bound; the
     /// last complete revision wins (a client replaces its whole view at each `listing_end`).
     pub async fn sessions_list(

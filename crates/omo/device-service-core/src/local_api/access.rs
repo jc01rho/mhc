@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use super::errors::LocalApiError;
+use super::errors::{InsecureStateCause, LocalApiError};
 use super::proof::decoded_bytes;
 
 pub const TOKEN_FILE: &str = "token";
@@ -15,6 +15,51 @@ pub const TOKEN_BYTES: usize = 32;
 pub const SOCKET_FILE: &str = "service.sock";
 /// The endpoint both proofs are bound to on POSIX.
 pub const UNIX_ENDPOINT: &str = "unix";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecureOrigin {
+    Created,
+    Existing,
+}
+
+/// Creates `path` and reports whether this call made the leaf itself (`Created`) or found an
+/// existing directory (`Existing`).
+pub fn make_dir(path: &Path) -> Result<SecureOrigin, LocalApiError> {
+    if let Some(parent) = path.parent() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(|error| LocalApiError::new("internal", error.to_string()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| LocalApiError::new("internal", error.to_string()))?;
+        }
+    }
+    let created = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(path)
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir(path)
+        }
+    };
+    match created {
+        Ok(()) => Ok(SecureOrigin::Created),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Ok(SecureOrigin::Existing)
+        }
+        Err(error) => Err(LocalApiError::new("internal", error.to_string())),
+    }
+}
 
 /// The endpoint both proofs are bound to for a Windows loopback listener.
 pub fn tcp_endpoint(port: u16) -> String {
@@ -40,6 +85,13 @@ impl EntryKind {
 
 pub fn insecure(detail: impl Into<String>) -> LocalApiError {
     LocalApiError::new("insecure_state_dir", detail)
+}
+
+pub fn insecure_with_cause(
+    detail: impl Into<String>,
+    cause: Option<InsecureStateCause>,
+) -> LocalApiError {
+    LocalApiError::new("insecure_state_dir", detail).with_insecure_cause(cause)
 }
 
 fn is_missing(error: &std::io::Error) -> bool {
@@ -69,7 +121,10 @@ pub fn private_entry(
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if is_missing(&error) => {
-            return Err(insecure(format!("the {label} is missing")));
+            return Err(insecure_with_cause(
+                format!("the {label} is missing"),
+                Some(InsecureStateCause::Unreadable),
+            ));
         }
         Err(error) => return Err(LocalApiError::new("read_failed", error.to_string())),
     };
@@ -80,13 +135,22 @@ pub fn private_entry(
         EntryKind::File => file_type.is_file(),
     };
     if !is_kind {
-        return Err(insecure(format!("the {label} is not a plain {label}")));
+        return Err(insecure_with_cause(
+            format!("the {label} is not a plain {label}"),
+            Some(InsecureStateCause::Reparse),
+        ));
     }
     if metadata.uid() != uid {
-        return Err(insecure(format!("the {label} belongs to another user")));
+        return Err(insecure_with_cause(
+            format!("the {label} belongs to another user"),
+            Some(InsecureStateCause::OwnerOther),
+        ));
     }
     if check_mode && metadata.mode() & 0o077 != 0 {
-        return Err(insecure(format!("the {label} is open to group or others")));
+        return Err(insecure_with_cause(
+            format!("the {label} is open to group or others"),
+            Some(InsecureStateCause::DaclNotExact),
+        ));
     }
     Ok(())
 }
