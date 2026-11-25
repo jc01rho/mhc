@@ -19,11 +19,61 @@ impl ModelChoice {
     }
 }
 
+/// Thinking levels recognized when stripping `:level` suffixes from model patterns (`3d4af11b30`).
+pub const THINKING_SUFFIXES: [&str; 7] =
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 /// What a catalog answers for a pattern: the one model, or the failure the tool answers.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelMatch {
     Match(ModelChoice),
     Failure(ThreadToolFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedModel {
+    pub model: ModelChoice,
+    pub thinking_level: Option<String>,
+}
+
+/// Splits a trailing `:thinking` level only when the final segment names a known thinking level.
+pub fn split_thinking_suffix(reference: &str) -> Option<(&str, &str)> {
+    let (base, suffix) = reference.trim().rsplit_once(':')?;
+    if base.is_empty() || !THINKING_SUFFIXES.contains(&suffix) {
+        return None;
+    }
+    Some((base, suffix))
+}
+
+/// Matches literally first, then retries after stripping one trailing `:thinking` suffix.
+pub fn match_model_with_thinking(
+    catalog: &[ModelChoice],
+    model: &str,
+    provider: Option<&str>,
+) -> Result<MatchedModel, Box<ThreadToolFailure>> {
+    match match_model(catalog, model, provider) {
+        ModelMatch::Match(chosen) => Ok(MatchedModel {
+            model: chosen,
+            thinking_level: None,
+        }),
+        ModelMatch::Failure(literal_failure) => {
+            let Some((base, level)) = split_thinking_suffix(model) else {
+                return Err(Box::new(literal_failure));
+            };
+            match match_model(catalog, base, provider) {
+                ModelMatch::Match(chosen) => Ok(MatchedModel {
+                    model: chosen,
+                    thinking_level: Some(level.to_owned()),
+                }),
+                ModelMatch::Failure(base_failure)
+                    if base_failure.code.as_str() == "model_ambiguous" =>
+                {
+                    Err(Box::new(base_failure))
+                }
+                ModelMatch::Failure(_) => Err(Box::new(literal_failure)),
+            }
+        }
+    }
 }
 
 /// An empty model pattern is refused before any catalog is read, on this device or another.
@@ -101,7 +151,12 @@ pub fn match_model(catalog: &[ModelChoice], model: &str, provider: Option<&str>)
                 .trim()
                 .find('/')
                 .map(|slash| model.trim()[..slash].trim().to_owned())
-                .or_else(|| provider.map(|provider| provider.trim().to_owned()));
+                .or_else(|| {
+                    provider
+                        .map(|provider| provider.trim().to_owned())
+                        .filter(|provider| !provider.is_empty())
+                })
+                .filter(|provider| !provider.is_empty());
             if let Some(requested_provider) = requested_provider
                 && !catalog.iter().any(|choice| {
                     choice.provider.to_lowercase() == requested_provider.to_lowercase()
@@ -249,5 +304,36 @@ mod tests {
         assert_eq!(exact_model(&catalog(), "gpt-6", None), None);
         assert!(model_pattern_failure("  ").is_some());
         assert!(model_pattern_failure("opus").is_none());
+    }
+
+    #[test]
+    fn thinking_suffixes_strip_only_after_a_literal_miss_and_preserve_colon_ids() {
+        let mut with_colon = catalog();
+        with_colon.push(choice("openai", "gpt-other:max", None));
+
+        assert_eq!(
+            match_model_with_thinking(&with_colon, "openai/gpt-6:max", None),
+            Ok(MatchedModel {
+                model: choice("openai", "gpt-6", Some("GPT 6")),
+                thinking_level: Some("max".into()),
+            })
+        );
+        assert_eq!(
+            match_model_with_thinking(&with_colon, "openai/gpt-other:max", None),
+            Ok(MatchedModel {
+                model: choice("openai", "gpt-other:max", None),
+                thinking_level: None,
+            })
+        );
+        let ambiguous =
+            match_model_with_thinking(&with_colon, "gpt-6:max", None).expect_err("ambiguous");
+        assert_eq!(ambiguous.code.as_str(), "model_ambiguous");
+        let missing = match_model_with_thinking(&with_colon, "apitopia/glm-5.1:max", None)
+            .expect_err("missing provider");
+        assert_eq!(missing.code.as_str(), "model_not_found");
+        assert_eq!(
+            missing.details.expect("details")["reason"],
+            "provider_not_configured"
+        );
     }
 }

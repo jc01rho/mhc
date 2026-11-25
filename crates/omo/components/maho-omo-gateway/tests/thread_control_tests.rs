@@ -373,6 +373,8 @@ fn an_auto_send_to_a_running_session_steers_the_turn_its_runtime_reports() {
         log: None,
         notify: None,
         on_admitted: None,
+        admit_intake: None,
+        wake_gated: None,
     });
     drain
         .drain(&DrainWakeEvent {

@@ -58,6 +58,7 @@ pub enum ExternalAdmissionKind {
     Started,
     Queued,
     Steered,
+    Held,
     TurnConflict,
     HeldDraft,
     AlreadyAdmitted,
@@ -69,6 +70,7 @@ impl ExternalAdmissionKind {
             "started" => Some(Self::Started),
             "queued" => Some(Self::Queued),
             "steered" => Some(Self::Steered),
+            "held" => Some(Self::Held),
             "turn_conflict" => Some(Self::TurnConflict),
             "held_draft" => Some(Self::HeldDraft),
             "already_admitted" => Some(Self::AlreadyAdmitted),
@@ -77,19 +79,21 @@ impl ExternalAdmissionKind {
     }
 }
 
-/// The drain reports two omo-only outcomes the host has no member for: `not_steerable` and `expired`
-/// are refusals decided by the gateway before the runtime was asked.
+/// The drain reports omo-only outcomes the host has no member for: `not_steerable`, `expired`, and
+/// `sender_not_admitted` are refusals decided by the gateway before the runtime was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayAdmissionKind {
     Started,
     Queued,
     Steered,
+    Held,
     TurnConflict,
     HeldDraft,
     AlreadyAdmitted,
     NotSteerable,
     Expired,
+    SenderNotAdmitted,
 }
 
 impl GatewayAdmissionKind {
@@ -98,11 +102,13 @@ impl GatewayAdmissionKind {
             Self::Started => "started",
             Self::Queued => "queued",
             Self::Steered => "steered",
+            Self::Held => "held",
             Self::TurnConflict => "turn_conflict",
             Self::HeldDraft => "held_draft",
             Self::AlreadyAdmitted => "already_admitted",
             Self::NotSteerable => "not_steerable",
             Self::Expired => "expired",
+            Self::SenderNotAdmitted => "sender_not_admitted",
         }
     }
 
@@ -111,6 +117,7 @@ impl GatewayAdmissionKind {
             ExternalAdmissionKind::Started => Self::Started,
             ExternalAdmissionKind::Queued => Self::Queued,
             ExternalAdmissionKind::Steered => Self::Steered,
+            ExternalAdmissionKind::Held => Self::Held,
             ExternalAdmissionKind::TurnConflict => Self::TurnConflict,
             ExternalAdmissionKind::HeldDraft => Self::HeldDraft,
             ExternalAdmissionKind::AlreadyAdmitted => Self::AlreadyAdmitted,
@@ -355,7 +362,9 @@ pub fn to_session_control_drain_result(
     for (delivery_id, kind) in admitted {
         if matches!(
             kind,
-            GatewayAdmissionKind::NotSteerable | GatewayAdmissionKind::Expired
+            GatewayAdmissionKind::NotSteerable
+                | GatewayAdmissionKind::Expired
+                | GatewayAdmissionKind::SenderNotAdmitted
         ) {
             continue;
         }
@@ -363,10 +372,13 @@ pub fn to_session_control_drain_result(
             GatewayAdmissionKind::Started => ExternalAdmissionKind::Started,
             GatewayAdmissionKind::Queued => ExternalAdmissionKind::Queued,
             GatewayAdmissionKind::Steered => ExternalAdmissionKind::Steered,
+            GatewayAdmissionKind::Held => ExternalAdmissionKind::Held,
             GatewayAdmissionKind::TurnConflict => ExternalAdmissionKind::TurnConflict,
             GatewayAdmissionKind::HeldDraft => ExternalAdmissionKind::HeldDraft,
             GatewayAdmissionKind::AlreadyAdmitted => ExternalAdmissionKind::AlreadyAdmitted,
-            GatewayAdmissionKind::NotSteerable | GatewayAdmissionKind::Expired => continue,
+            GatewayAdmissionKind::NotSteerable
+            | GatewayAdmissionKind::Expired
+            | GatewayAdmissionKind::SenderNotAdmitted => continue,
         };
         taken.push(Admission {
             delivery_id: delivery_id.clone(),
@@ -388,6 +400,8 @@ mod tests {
             ("a".to_owned(), GatewayAdmissionKind::Started),
             ("b".to_owned(), GatewayAdmissionKind::NotSteerable),
             ("c".to_owned(), GatewayAdmissionKind::Expired),
+            ("e".to_owned(), GatewayAdmissionKind::SenderNotAdmitted),
+            ("f".to_owned(), GatewayAdmissionKind::Held),
             ("d".to_owned(), GatewayAdmissionKind::Queued),
         ];
         let result = to_session_control_drain_result(&admitted);
@@ -396,7 +410,7 @@ mod tests {
             .iter()
             .map(|entry| entry.delivery_id.as_str())
             .collect();
-        assert_eq!(ids, vec!["a", "d"]);
+        assert_eq!(ids, vec!["a", "f", "d"]);
     }
 
     #[test]

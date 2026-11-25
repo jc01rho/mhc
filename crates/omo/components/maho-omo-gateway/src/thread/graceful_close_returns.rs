@@ -169,6 +169,7 @@ mod tests {
                 "d-handed-back",
                 OutcomeRecord::Admitted {
                     admission_kind: "queued".into(),
+                    wait_kind: None,
                     turn_epoch: 1,
                 },
             ),
@@ -176,6 +177,7 @@ mod tests {
                 "d-read",
                 OutcomeRecord::Applied {
                     admission_kind: "started".into(),
+                    wait_kind: None,
                     turn_epoch: 1,
                 },
             ),

@@ -90,6 +90,8 @@ pub fn create_gateway_thread_component_with_alerts(
         log: options.log.clone(),
         notify: options.notify.clone(),
         on_admitted: None,
+        admit_intake: None,
+        wake_gated: None,
     }));
     let tool_options = Arc::new(ThreadToolsOptions {
         store: options.store.clone(),

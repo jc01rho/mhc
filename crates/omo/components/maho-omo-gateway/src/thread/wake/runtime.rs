@@ -291,6 +291,47 @@ pub fn process_intake_admission(
     })
 }
 
+pub struct ProcessSameDeviceWakeInput {
+    pub latch: Option<Arc<ThreadWakeLatch>>,
+    pub store: Arc<SqliteGatewayStore>,
+    pub agent_dir: PathBuf,
+    pub sessions_directory: PathBuf,
+    pub settings: WakeSettings,
+}
+
+/// The local transport's same-device wake: the process's running carrier takes the wake when present.
+pub fn process_same_device_wake(
+    input: ProcessSameDeviceWakeInput,
+) -> crate::thread::same_device_wake::SameDeviceWake {
+    let latch = input.latch;
+    let agent_dir = input.agent_dir;
+    let settings = input.settings;
+    let enabled: CwdSwitch = Arc::new(move |cwd: &str| settings(Some(cwd)).same_device);
+    let carrier_lookup: crate::thread::same_device_wake::SameDeviceCarrierLookup =
+        Arc::new(move || {
+            let running = match &latch {
+                Some(latch) => latch_lock(latch).get(&agent_dir).cloned(),
+                None => latch_lock(process_latch()).get(&agent_dir).cloned(),
+            }?;
+            let wake: crate::thread::same_device_wake::SameDeviceCarrier =
+                Arc::new(move |durable_id: &str| {
+                    let running = running.clone();
+                    let durable_id = durable_id.to_owned();
+                    std::thread::spawn(move || {
+                        let _ = running.wake(&durable_id);
+                    });
+                    Ok(())
+                });
+            Some(wake)
+        });
+    crate::thread::same_device_wake::SameDeviceWake::with_carrier_lookup(
+        input.store,
+        input.sessions_directory,
+        enabled,
+        carrier_lookup,
+    )
+}
+
 fn start_running(input: ThreadWakeStart) -> Option<Arc<RunningThreadWake>> {
     let ThreadWakeStart {
         options,

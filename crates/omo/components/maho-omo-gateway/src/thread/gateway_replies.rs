@@ -134,14 +134,17 @@ mod tests {
     fn only_well_formed_admissions_survive() {
         let reply = wake_reply(&json!({ "admitted": [
             { "delivery_id": "a", "kind": "started" },
+            { "delivery_id": "h", "kind": "held" },
             { "delivery_id": "b", "kind": "not_a_kind" },
             { "delivery_id": 3, "kind": "queued" },
             { "kind": "queued" },
             "junk",
         ] }));
-        assert_eq!(reply.admitted.len(), 1);
+        assert_eq!(reply.admitted.len(), 2);
         assert_eq!(reply.admitted[0].delivery_id, "a");
         assert_eq!(reply.admitted[0].kind, ExternalAdmissionKind::Started);
+        assert_eq!(reply.admitted[1].delivery_id, "h");
+        assert_eq!(reply.admitted[1].kind, ExternalAdmissionKind::Held);
         assert!(wake_reply(&json!({})).admitted.is_empty());
     }
 }

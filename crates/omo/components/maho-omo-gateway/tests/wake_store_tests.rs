@@ -338,6 +338,37 @@ fn given_queued_and_claimed_rows_when_the_session_work_is_read_then_each_open_st
 }
 
 #[test]
+fn given_four_rows_past_requested_when_two_stores_start_a_fifth_and_a_sixth_then_both_start() {
+    let h = WakeHarness::new();
+    for id in ["o1", "o2", "o3", "o4", "s5", "s6"] {
+        h.store
+            .woken()
+            .request(id, &format!("/sessions/{id}.jsonl"))
+            .expect("request");
+    }
+    for id in ["o1", "o2", "o3", "o4"] {
+        assert!(matches!(
+            h.store.woken().start(id).expect("start"),
+            WakeStartOutcome::Started { .. }
+        ));
+    }
+    let other = h.other_store();
+    let (first, second) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| h.store.woken().start("s5").expect("start s5"));
+        let b = scope.spawn(|| other.woken().start("s6").expect("start s6"));
+        (a.join().expect("join s5"), b.join().expect("join s6"))
+    });
+    assert!(
+        matches!(first, WakeStartOutcome::Started { .. }),
+        "{first:?}"
+    );
+    assert!(
+        matches!(second, WakeStartOutcome::Started { .. }),
+        "{second:?}"
+    );
+}
+
+#[test]
 fn given_ledger_ids_when_their_device_is_read_then_only_a_named_device_counts() {
     assert_eq!(ledger_device("device:dev-b/d-1"), Some("dev-b"));
     assert_eq!(ledger_device("device:/d-1"), None);

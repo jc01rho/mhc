@@ -661,35 +661,41 @@ fn admit_input(
         Ok(result) => result,
         Err(error) => return failure(command.get("id"), kind, &error),
     };
-    let admitted = |disposition: &'static str| {
+    let admitted = |disposition: &'static str, holds: Option<Value>| {
+        let mut payload = json!({"disposition": disposition});
+        if let Some(holds) = holds.as_ref().filter(|v| v.is_array()) {
+            payload["holds"] = holds.clone();
+        }
         let Some(client_message_id) = client_message_id else {
-            return answered(id, kind, json!({"disposition": disposition}));
+            return answered(id, kind, payload);
         };
+        let mut admission = json!({
+            "clientMessageId": client_message_id,
+            "durableSessionId": session.session_id(),
+            "disposition": disposition,
+        });
+        if let Some(holds) = holds.as_ref().filter(|v| v.is_array()) {
+            admission["holds"] = holds.clone();
+        }
         let receipt = TerminalInputReceipt {
             fingerprint: fingerprint.clone(),
             disposition,
-            admission: json!({
-                "clientMessageId": client_message_id,
-                "durableSessionId": session.session_id(),
-                "disposition": disposition,
-            }),
+            admission: admission.clone(),
         };
-        let admission = receipt.admission.clone();
         context
             .attachments
             .receipts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(client_message_id.to_owned(), receipt);
-        answered(
-            id,
-            kind,
-            json!({"disposition": disposition, "clientMessageId": client_message_id, "admission": admission}),
-        )
+        payload["clientMessageId"] = client_message_id.into();
+        payload["admission"] = admission;
+        answered(id, kind, payload)
     };
     match result["kind"].as_str().unwrap_or_default() {
-        "started" => admitted("started"),
-        "steered" | "queued" => admitted("queued"),
+        "started" => admitted("started", None),
+        "held" => admitted("held", result.get("holds").cloned()),
+        "steered" | "queued" => admitted("queued", None),
         "already_admitted" => {
             let mut data = json!({"disposition": "queued", "duplicate": true});
             if let Some(client_message_id) = client_message_id {

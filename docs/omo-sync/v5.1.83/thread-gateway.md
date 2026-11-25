@@ -8,10 +8,12 @@ mhc counterpart: `crates/omo/components/maho-omo-gateway/src/thread/`.
 
 | verdict | rows |
 |---|---:|
-| port | 23 |
+| verdict | rows |
+|---|---:|
+| port | 27 |
 | ported | 4 |
 | n/a | 6 |
-| gap | 9 |
+| gap | 5 |
 | total | 42 |
 
 One row per upstream PR, or per commit group where a change carries no PR number; a PR whose slice is partly portable
@@ -29,8 +31,10 @@ and v16.
 counts upstream's steps, so mhc's numbering is omo's. Each step commits the reader floor (#14382) of the version it
 reaches: a store at v16 carries floor 14, which omo v5.1.79 and older do not read (they refuse it, as they refuse a
 store omo v5.1.83 migrated). A drain reads an intake row (v12) under its ledger key with the sender's text as
-written; what writes intake rows and reads the v13-v14 tables (the #13037 wake carrier, the intake consumer and their
-store ops) is not ported, and the rows that need it stay gap here and in `thread-wake.md`.
+written (`drain.rs` `intake_admission_pass`), while the #13037 wake carrier, `woken_sessions`/`session_wait`/`intake_marks`
+store ops (`store_woken_ops.rs`, `store_woken_facade.rs`), `same_device_wake.rs`, `local_transport.rs`, and
+`wake/closed_intake.rs` are ported on top of v12-v14; only the delivery consumer's `intake` write (`store-worker.ts`
+`intake`) stays unported (`thread-wake.md` baseline).
 
 The part of #14622 that protects a store mhc does run against is ported. Every op re-reads the schema inside the read
 snapshot it works in, and every write lock re-checks it before anything is written. A store that another binary
@@ -67,11 +71,11 @@ written with an older schema.
 | #14333 relay lane (5825d630a4, 5c80bd4657) | ported | The relay leg reports the lane the receiver answered: `thread/remote/{device_service,outcome}.rs` (`thread-remote.md` #14333). |
 | #14333 default delivery auto (484cafd3b2) | ported | `crates/omo/components/maho-omo-gateway/src/thread/engine.rs` `deliver_inner` defaults an omitted mode to `GatewayDeliveryMode::Auto`; the thread_send schema in `tools.rs` offers auto, steer and follow_up. |
 | 9b6ee2e310 (no PR) | ported | An unknown field is refused, not dropped: every thread tool schema declares `additionalProperties: false` (`tools.rs`, `control_tools.rs` `object`) and the harness validates arguments before execute. `thread_create` carries the did-you-mean table (`message` -> `prompt`, `contracts_create_params.rs`) and answers `prompt: null` when it was given none; the other tools keep the schema-level refusal without the table. |
-| 07bec8317f (no PR) | gap | Stored session waits and holds: the v14 `session_wait` table exists (PR #86); the carrier's `waitBlocksDelivery` and the session-wait store op it reads (#13037 wake carrier) are not ported. |
+| 07bec8317f (no PR) | port | `session_wait_types.rs` `wait_blocks_delivery`, `store_woken_ops.rs` `waiting_on`, `wake/carrier.rs` (unattended-only holds block no later wake), and `result.rs` `result_from_row_with_wait` (`session_wait` precedes `admission_kind`). Tests: `tests/wake_store_tests.rs`, `tests/wake_carrier_tests.rs`, `tests/same_device_wake_tests.rs` (`queued_waiting_order_and_held_result_from_row_follow_upstream_precedence`, `given_a_session_handed_back_held_unattended_when_a_later_send_arrives_then_it_wakes_and_starts_again`). |
 | pair loop guard (3707d9dcef, 308a8cf429, f70d96145e) | port | `crates/omo/components/maho-omo-gateway/src/thread/store_ops.rs` `take_pair_token` answers `pair_loop_guard` with `guard`, `burst`, `window_ms`, `retry_after_ms`; `errors.rs` code, `pair_loop_guard_message`, `pair_loop_guard_next_action`; `result.rs` `engine_failure`. Not ported: the intake consumer and relay transport legs (no intake consumer in mhc). Tests: `engine.rs` `a_ninth_burst_send_to_one_session_is_refused_pair_loop_guard_with_the_measured_burst`, `result.rs` `a_refusal_that_names_its_recovery_gets_the_next_action_reading_it`. |
-| 01fa0b0220 (no PR) | gap | The v13 `woken_sessions` table exists (PR #86); the woken-session store ops and the carrier that replace the count cap with measured memory (#13037) are not ported. |
+| 01fa0b0220 (no PR) | port | `constants.rs`, `woken_types.rs`, `store_woken_ops.rs` `start_wake`, `store_woken_facade.rs` (`SqliteGatewayStore::woken`), `wake/memory_headroom.rs`, `wake/carrier.rs`, and `wake/session_waker.rs`: no woken-session count cap; starts defer only on measured `host_memory_pressure`. Tests: `tests/wake_store_tests.rs` (`given_four_rows_past_requested_when_two_stores_start_a_fifth_and_a_sixth_then_both_start`), `tests/wake_carrier_tests.rs`, `tests/wake_session_waker_tests.rs`. |
 | no per-turn cap (48dd6841e2, ce613b134e) | port | `crates/omo/components/maho-omo-gateway/src/thread/store_ops.rs` `check_fanout` and `constants.rs` `MAX_FANOUT_PER_TURN` removed. Test: `engine.rs` `one_sender_turn_reaches_forty_sessions`. |
-| senpi#7014 held admission (cdb5488d0f, f015ad1077, 6272d2b84b, 661f6142a9, 6912c97fad) | gap | mhc's session runtime never answers `held` (`maho-core/src/external_admission.rs` has no such admission; senpi#7014 is not in its pin), and the answer's `waiting_on` needs the #13014 delivery wait, whose v11 column exists (PR #86) but which mhc's drain does not write yet. |
+| senpi#7014 held admission (cdb5488d0f, f015ad1077, 6272d2b84b, 661f6142a9, 6912c97fad) | port | `maho-core/src/peer_delivery_hold.rs` `holds_keeping_peer_delivery`, `maho-core/src/external_admission.rs` `admit_with_holds` (`held` + `holds`), `maho-core/src/agent_session.rs` (`admit_external_message`, `released_by_peer`), `maho-interactive/src/session_control_rpc_commands.rs` (`held` disposition), `adapter.rs` `ExternalAdmissionKind::Held`/`GatewayAdmissionKind::Held`, `gateway_replies.rs` `wake_reply`, `drain.rs` + `store_ops.rs` `record_outcome` (records `admission_kind = "held"` and v11 `wait_kind = "approval"` on `WaitingQuestion`), and `result.rs` `admitted_wait` (`hold`). Tests: `maho-core` `peer_delivery_continues_unattended_session_and_answers_held_under_stop_or_interrupted`, `maho-interactive` `session_control_endpoint.rs`, `engine.rs` `a_send_to_a_target_its_engine_holds_answers_queued_waiting_on_the_hold`, `drain.rs` `held_admission_and_waiting_question_write_their_outcomes_without_noticing_a_held_row`, `result.rs` `held_admission_and_session_wait_report_hold_before_started`, `tests/same_device_wake_tests.rs`. |
 | #14324 (ae55079bdb) | gap | Graceful close of another device's thread: `thread_close { graceful, wait_ms }` lives in the control and remote paths; `REMOTE_GRACEFUL_MAX_WAIT_MS` has no consumer here. |
 | #14313 (336f5fa4b9) | port | `crates/omo/components/maho-omo-gateway/src/thread/store_ops.rs` `refuse_returned` (+ `store_api.rs`, `store.rs`, `store_worker.rs`); `graceful_close_returns.rs` `returned_at_close`, `settle_graceful_close`; `types.rs` `RefusalReason::TargetClosed`. Not wired: the `session_shutdown { closed }` hook (thread component) and `thread_close { graceful }` (control) need senpi#7046's `session-closed` record, which maho-core does not write yet; the closed-intake settle needs an intake ledger. Tests: `graceful_close_returns.rs` (2). |
 | #14304 archived unread count (93d376f3c4) | port | `read_ops.rs` `list_threads` counts unread session files in `inactive_dropped` / `inactive_truncated` when `state` includes `inactive` or `archived`; `address_book.rs` `read_disk_session` reads `custom` `session_archived` entries (`DiskSession.archived`, `AddressEntry.archived`) and `thread_row.rs` `degraded_row` passes `entry.archived` into `thread_state`. Tests: `read_ops.rs` (2), `address_book.rs` (1), `thread_row.rs` (1), `tests/thread_control_tests.rs`. |
@@ -81,7 +85,7 @@ written with an older schema.
 | #14295 inactive_dropped on this device (1eb9f9b48d) | port | `read_ops.rs` `scan_listed_sessions` ranks up to `LIST_DISK_MAX_STATS` (1000) files by name then mtime, reads `LIST_DISK_LIMIT` (200), and derives `unread` durable ids from file names without reading unread files (`file_durable_id`); `list_threads` counts unread non-live ids in `inactive_dropped` / `inactive_truncated` when `state` shows `inactive` or `archived`. Tests: `read_ops.rs` `scan_listed_sessions_ranks_by_mtime_and_counts_unread_for_inactive_and_archived`. |
 | #14295 partial remote devices (1eb9f9b48d) | gap | `ThreadListOk.devices[].listing` (`incomplete` / `offline` / `listed`) and `devices[].dropped` in `list_across` wait on `thread/remote/ports.rs` extensions and `mhc-relayd` (`thread-remote.md` gap after PR #92; `maho-omo-remote` already ports `unanswered_devices` for the `mhc remote sessions` CLI). |
 | #14273 target_closed answer (030e18d0a8) | port | `crates/omo/components/maho-omo-gateway/src/thread/result.rs` `refusal_mapping` answers `target_closed` as `not_resumable` with a next action; the eval-form `thread_create` hint is carried now that mhc has `thread_create`. Test: `a_row_its_closed_session_handed_back_reads_not_delivered`. |
-| #14273 closed intake settle (a397780f93) | gap | The intake ledger columns exist (v12, PR #86); settling queued intake on a close needs the intake consumer and the wake carrier (#13037, thread-wake). |
+| #14273 closed intake settle (a397780f93) | port | Settling rows queued at or before a recorded close (`target_closed`) over v12 `ledger_id` is ported in `wake/closed_intake.rs` `settle_closed_intake`, `wake/session_target.rs` `resolve_wake_target`, `wake/carrier.rs`, `wake/pending_sweep.rs`, `wake/consumer_start.rs`, and `drain.rs` `intake_admission_pass` (`intake_admission.rs`); the delivery consumer's `intake` write (`store-worker.ts` `intake`) stays unported (`thread-wake.md` baseline). Tests: `wake/closed_intake.rs`, `tests/wake_pending_sweep_tests.rs`, `tests/wake_carrier_tests.rs`, `tests/wake_runtime_tests.rs`, `tests/same_device_wake_tests.rs`. |
 | b4f841607a (no PR) | port | `crates/omo/components/maho-omo-gateway/src/thread/relay.rs` inbound `binding_inactive` and `unsupported` refusals name the connector's next step. |
 
 ## Tests
@@ -100,6 +104,9 @@ New cases, all under `crates/omo/components/maho-omo-gateway`:
   `a_graceful_close_refuses_only_the_deliveries_its_session_handed_back` (#14313).
 - `tests/gateway_store_tests.rs` (registered in `tests/main.rs`): the store through its public API for #14622 and
   #14466.
+- `tests/same_device_wake_tests.rs` (registered in `tests/main.rs`), `src/thread/drain.rs`, `src/thread/engine.rs`,
+  `src/thread/result.rs`: `same_device_wake`, `local_transport`, `intake_admission_pass` + `wake_gated`, `held`
+  admission, and `wait_kind = approval`.
 
 Added by the `thread_list` listing-producer pass:
 
