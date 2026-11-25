@@ -1054,7 +1054,7 @@ impl MemoryRuntime {
             .map_err(|error| error.to_string())?;
         let result = maho_omo_memory::status::refresh_memory_status(
             &repo,
-            &mut StatusUi(context.ui.clone()),
+            &mut StatusUi::new(context.ui.clone()),
             &maho_omo_memory::status::RefreshMemoryStatusInput {
                 context: identity,
                 compile_warn_tokens: settings["compile_warn_tokens"]
@@ -1430,13 +1430,27 @@ enum StatusRefresh {
     Initial,
     Footer,
 }
-struct StatusUi(Arc<dyn ExtensionUi>);
+struct StatusUi {
+    ui: Arc<dyn ExtensionUi>,
+    handle: maho_omo_memory::wiring_context::StatusHandle,
+}
+impl StatusUi {
+    fn new(ui: Arc<dyn ExtensionUi>) -> Self {
+        let handle = maho_omo_memory::wiring_context::StatusHandle::from_extension_ui(ui.clone());
+        Self { ui, handle }
+    }
+}
 impl maho_omo_memory::status::MemoryStatusUi for StatusUi {
     fn set_status(&mut self, key: &str, text: Option<&str>) {
-        self.0.set_status(key, text);
+        self.handle.set_status(key, text);
     }
     fn notify(&mut self, message: &str, _: &str) {
-        self.0.notify(message, NotificationType::Warning);
+        self.ui.notify(message, NotificationType::Warning);
+    }
+    fn begin_refresh(&mut self) -> Option<maho_omo_memory::wiring_context::StatusHandle> {
+        Some(maho_omo_memory::wiring_context::sequenced_status(
+            &self.handle,
+        ))
     }
 }
 struct MemoryEntryTheme(maho_ext_api::Theme);

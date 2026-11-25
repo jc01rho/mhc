@@ -9,6 +9,18 @@ pub const SYNC_BLOCKED_SEGMENT: &str = " sync blocked";
 pub trait MemoryStatusUi {
     fn set_status(&mut self, key: &str, text: Option<&str>);
     fn notify(&mut self, message: &str, level: &str);
+    fn begin_refresh(&mut self) -> Option<crate::wiring_context::StatusHandle> {
+        None
+    }
+}
+impl MemoryStatusUi for crate::wiring_context::StatusHandle {
+    fn set_status(&mut self, key: &str, text: Option<&str>) {
+        Self::set_status(self, key, text);
+    }
+    fn notify(&mut self, _message: &str, _level: &str) {}
+    fn begin_refresh(&mut self) -> Option<crate::wiring_context::StatusHandle> {
+        Some(crate::wiring_context::sequenced_status(self))
+    }
 }
 #[derive(Default)]
 pub struct MemoryStatusSegments {
@@ -86,6 +98,35 @@ pub fn format_memory_status_line(
     }
     format!("{base}{sync}")
 }
+/// How long a dirty-marker sample waits for an in-flight memory write to commit before dropping (`#13046`).
+const DIRTY_SAMPLE_LOCK_WAIT_MS: u64 = 2_000;
+
+fn read_dirty(repo: &GitMemoryRepo, locks_dir: &std::path::Path) -> bool {
+    let sample = || {
+        repo.status(&[] as &[&str])
+            .is_ok_and(|status| !status.trim().is_empty())
+    };
+    if !locks_dir.exists() {
+        return sample();
+    }
+    let Ok(record) = memory_core::locks::create_lock_record(
+        "memory status",
+        memory_core::locks::CreateLockRecordOptions::default(),
+    ) else {
+        return false;
+    };
+    memory_core::locks::with_lock(
+        &memory_core::locks::memory_writer_lock_path(locks_dir),
+        &record,
+        &memory_core::locks::AcquireLockOptions {
+            wait_timeout_ms: Some(DIRTY_SAMPLE_LOCK_WAIT_MS),
+            ..Default::default()
+        },
+        || Ok::<bool, std::convert::Infallible>(sample()),
+    )
+    .unwrap_or(false)
+}
+
 pub fn read_memory_status_segments(
     repo: &GitMemoryRepo,
     context: &MemoryIdentityContext,
@@ -93,9 +134,7 @@ pub fn read_memory_status_segments(
     now: i64,
     sync_status: Option<&SyncStatusReader>,
 ) -> MemoryStatusSegments {
-    let dirty = repo
-        .status(&[] as &[&str])
-        .is_ok_and(|status| !status.trim().is_empty());
+    let dirty = read_dirty(repo, &context.identity_paths.locks);
     let backlog_steps = session_id
         .filter(|id| !id.is_empty())
         .and_then(|id| {
@@ -149,6 +188,7 @@ pub fn refresh_memory_status(
     ui: &mut dyn MemoryStatusUi,
     input: &RefreshMemoryStatusInput<'_>,
 ) -> Result<MemoryStatusResult, GitError> {
+    let sequenced = ui.begin_refresh();
     let Some(head) = repo.head()? else {
         return Ok(MemoryStatusResult {
             notified: false,
@@ -170,14 +210,12 @@ pub fn refresh_memory_status(
             input.now_ms,
             input.sync_status,
         );
-        ui.set_status(
-            MEMORY_STATUS_KEY,
-            Some(&format_memory_status_line(
-                &input.context.identity,
-                &age,
-                &segments,
-            )),
-        );
+        let line = format_memory_status_line(&input.context.identity, &age, &segments);
+        if let Some(ref handle) = sequenced {
+            handle.set_status(MEMORY_STATUS_KEY, Some(&line));
+        } else {
+            ui.set_status(MEMORY_STATUS_KEY, Some(&line));
+        }
         footer_shown = true;
     }
     if !input.check_advisory || input.already_notified {
@@ -656,5 +694,221 @@ mod tests {
         );
         assert_eq!(ui.notifications, 1);
         assert_eq!(ui.lines, ["mem:agent just now", "mem:agent just now"]);
+    }
+
+    type StatusHook = Box<
+        dyn Fn(
+                &[String],
+                &memory_core::git::exec::GitExecOptions,
+            ) -> std::io::Result<memory_core::git::exec::GitExecResult>
+            + Send
+            + Sync,
+    >;
+
+    struct HookedGitExec {
+        inner: std::sync::Arc<dyn memory_core::git::exec::GitExec>,
+        on_status: StatusHook,
+    }
+
+    impl memory_core::git::exec::GitExec for HookedGitExec {
+        fn run(
+            &self,
+            argv: &[String],
+            options: &memory_core::git::exec::GitExecOptions,
+        ) -> std::io::Result<memory_core::git::exec::GitExecResult> {
+            if argv.iter().any(|arg| arg == "status") {
+                return (self.on_status)(argv, options);
+            }
+            self.inner.run(argv, options)
+        }
+    }
+
+    fn hooked_repo(
+        dir: &std::path::Path,
+        on_status: impl Fn(
+            &[String],
+            &memory_core::git::exec::GitExecOptions,
+        ) -> std::io::Result<memory_core::git::exec::GitExecResult>
+        + Send
+        + Sync
+        + 'static,
+    ) -> GitMemoryRepo {
+        let mut options = memory_core::git::repo_types::GitMemoryRepoOptions::new(dir, "agent");
+        options.exec = Some(std::sync::Arc::new(HookedGitExec {
+            inner: memory_core::git::exec::system_git_exec(),
+            on_status: Box::new(on_status),
+        }));
+        GitMemoryRepo::new(options).expect("open hooked repo")
+    }
+
+    #[test]
+    fn dirty_sample_acquires_memory_writer_lock_when_locks_dir_exists() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (engine, context, _) = fixture(root.path());
+        std::fs::create_dir_all(&context.identity_paths.locks).expect("locks dir");
+        let lock_path = memory_core::locks::memory_writer_lock_path(&context.identity_paths.locks);
+        let saw_lock_held = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw_flag = std::sync::Arc::clone(&saw_lock_held);
+        let repo = hooked_repo(&engine.repo.dir, move |_, _| {
+            saw_flag.store(
+                memory_core::locks::is_held(&lock_path),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Ok(memory_core::git::exec::GitExecResult {
+                code: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+                termination: None,
+            })
+        });
+
+        let segments = read_memory_status_segments(&repo, &context, Some("session"), 0, None);
+        assert!(
+            saw_lock_held.load(std::sync::atomic::Ordering::SeqCst),
+            "read_dirty must sample repo.status under the memory-write lock"
+        );
+        assert!(!segments.dirty);
+    }
+
+    #[derive(Default)]
+    struct SyncGate {
+        ready: std::sync::Mutex<bool>,
+        cv: std::sync::Condvar,
+    }
+
+    impl SyncGate {
+        fn signal(&self) {
+            *self.ready.lock().expect("gate lock") = true;
+            self.cv.notify_all();
+        }
+
+        fn wait(&self) {
+            let mut guard = self.ready.lock().expect("gate lock");
+            while !*guard {
+                guard = self.cv.wait(guard).expect("gate wait");
+            }
+        }
+    }
+
+    #[test]
+    fn older_in_flight_refresh_never_replaces_newer_or_cleared_line() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (engine, context, now) = fixture(root.path());
+        let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = crate::wiring_context::StatusHandle::from_fallible({
+            let published = std::sync::Arc::clone(&published);
+            std::sync::Arc::new(move |_key, text| {
+                published
+                    .lock()
+                    .expect("published lock")
+                    .push(text.map(str::to_owned));
+                Ok(())
+            })
+        });
+        let entered = std::sync::Arc::new(SyncGate::default());
+        let release = std::sync::Arc::new(SyncGate::default());
+        let slow_repo = hooked_repo(&engine.repo.dir, {
+            let entered = std::sync::Arc::clone(&entered);
+            let release = std::sync::Arc::clone(&release);
+            move |_, _| {
+                entered.signal();
+                release.wait();
+                Ok(memory_core::git::exec::GitExecResult {
+                    code: 0,
+                    stdout: " M system/persona.md\n".into(),
+                    stderr: String::new(),
+                    termination: None,
+                })
+            }
+        });
+
+        let mut older_ui = host.clone();
+        let older_context = context.clone();
+        let older_thread = std::thread::spawn(move || {
+            refresh_memory_status(
+                &slow_repo,
+                &mut older_ui,
+                &RefreshMemoryStatusInput {
+                    context: &older_context,
+                    compile_warn_tokens: 30_000,
+                    already_notified: false,
+                    now_ms: now + 60_000,
+                    show_footer: true,
+                    check_advisory: false,
+                    session_id: None,
+                    sync_status: None,
+                },
+            )
+            .expect("older refresh");
+        });
+        entered.wait();
+
+        let mut newer_ui = host.clone();
+        refresh_memory_status(
+            &engine.repo,
+            &mut newer_ui,
+            &RefreshMemoryStatusInput {
+                context: &context,
+                compile_warn_tokens: 30_000,
+                already_notified: false,
+                now_ms: now + 60_000,
+                show_footer: true,
+                check_advisory: false,
+                session_id: None,
+                sync_status: None,
+            },
+        )
+        .expect("newer refresh");
+
+        release.signal();
+        older_thread.join().expect("join older refresh");
+
+        assert_eq!(
+            *published.lock().expect("published lock"),
+            vec![Some("mem:agent 1m ago".to_owned())]
+        );
+
+        published.lock().expect("published lock").clear();
+        let entered2 = std::sync::Arc::new(SyncGate::default());
+        let release2 = std::sync::Arc::new(SyncGate::default());
+        let slow_repo2 = hooked_repo(&engine.repo.dir, {
+            let entered2 = std::sync::Arc::clone(&entered2);
+            let release2 = std::sync::Arc::clone(&release2);
+            move |_, _| {
+                entered2.signal();
+                release2.wait();
+                Ok(memory_core::git::exec::GitExecResult {
+                    code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    termination: None,
+                })
+            }
+        });
+        let mut settle_ui = crate::wiring_context::guarded_status(&host, || true);
+        let settle_context = context.clone();
+        let settle_thread = std::thread::spawn(move || {
+            refresh_memory_status(
+                &slow_repo2,
+                &mut settle_ui,
+                &RefreshMemoryStatusInput {
+                    context: &settle_context,
+                    compile_warn_tokens: 30_000,
+                    already_notified: false,
+                    now_ms: now + 60_000,
+                    show_footer: true,
+                    check_advisory: false,
+                    session_id: None,
+                    sync_status: None,
+                },
+            )
+            .expect("in-flight refresh before clear");
+        });
+        entered2.wait();
+        host.set_status(MEMORY_STATUS_KEY, None);
+        release2.signal();
+        settle_thread.join().expect("join second refresh");
+
+        assert_eq!(*published.lock().expect("published lock"), vec![None]);
     }
 }

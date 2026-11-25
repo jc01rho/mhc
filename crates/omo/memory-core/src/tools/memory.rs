@@ -24,6 +24,15 @@ use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
 use super::tool_errors::MemoryToolError;
 use crate::memfs::validate_repository_path_with_field;
 
+/// Lifecycle stages reported during a memory repository write (omo #14543).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryWriteStage {
+    Lock,
+    Check,
+    Apply,
+    Commit,
+}
+
 /// Supported CRUD commands for the memory tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -192,7 +201,25 @@ pub fn run_memory_tool(
     params: &MemoryToolParams,
     lock: Option<&dyn MemoryToolLock>,
 ) -> Result<MemoryToolResult, MemoryToolError> {
-    run_memory_tool_as(repo, author, params, lock, MemoryWriter::MemoryTool)
+    run_memory_tool_as_with_stage(repo, author, params, lock, MemoryWriter::MemoryTool, None)
+}
+
+/// [`run_memory_tool`] reporting each write stage (`lock`, `check`, `apply`, `commit`).
+pub fn run_memory_tool_with_stage(
+    repo: &GitMemoryRepo,
+    author: &GitCommitAuthor,
+    params: &MemoryToolParams,
+    lock: Option<&dyn MemoryToolLock>,
+    on_stage: &(dyn Fn(MemoryWriteStage) + Send + Sync),
+) -> Result<MemoryToolResult, MemoryToolError> {
+    run_memory_tool_as_with_stage(
+        repo,
+        author,
+        params,
+        lock,
+        MemoryWriter::MemoryTool,
+        Some(on_stage),
+    )
 }
 
 /// [`run_memory_tool`] with an explicit writer identity.
@@ -203,11 +230,26 @@ pub fn run_memory_tool_as(
     lock: Option<&dyn MemoryToolLock>,
     writer: MemoryWriter,
 ) -> Result<MemoryToolResult, MemoryToolError> {
+    run_memory_tool_as_with_stage(repo, author, params, lock, writer, None)
+}
+
+/// [`run_memory_tool_as`] with an optional stage callback.
+pub fn run_memory_tool_as_with_stage(
+    repo: &GitMemoryRepo,
+    author: &GitCommitAuthor,
+    params: &MemoryToolParams,
+    lock: Option<&dyn MemoryToolLock>,
+    writer: MemoryWriter,
+    on_stage: Option<&(dyn Fn(MemoryWriteStage) + Send + Sync)>,
+) -> Result<MemoryToolResult, MemoryToolError> {
+    if let Some(enter) = on_stage {
+        enter(MemoryWriteStage::Lock);
+    }
     let default_lock = NoopMemoryToolLock;
     let effective_lock = lock.unwrap_or(&default_lock);
 
     effective_lock.with_lock("memory-write", &mut || {
-        run_memory_tool_inner(repo, author, params, writer)
+        run_memory_tool_inner(repo, author, params, writer, on_stage)
     })
 }
 
@@ -216,6 +258,7 @@ fn run_memory_tool_inner(
     author: &GitCommitAuthor,
     params: &MemoryToolParams,
     writer: MemoryWriter,
+    on_stage: Option<&(dyn Fn(MemoryWriteStage) + Send + Sync)>,
 ) -> Result<MemoryToolResult, MemoryToolError> {
     if params.reason.trim().is_empty() {
         return Err(err("'reason' must be a non-empty string"));
@@ -230,7 +273,7 @@ fn run_memory_tool_inner(
 
     if command_str == "apply_patch" {
         let input = require_str("apply_patch", "input", params.input.as_deref())?;
-        let result = super::memory_apply_patch::run_memory_apply_patch(
+        let result = super::memory_apply_patch::run_memory_apply_patch_with_stage(
             repo,
             &super::memory_apply_patch::MemoryApplyPatchParams {
                 reason: params.reason.clone(),
@@ -239,6 +282,7 @@ fn run_memory_tool_inner(
                 provenance: params.provenance.clone(),
             },
             None,
+            on_stage,
         )
         .map_err(|error| {
             // Pin `memory.ts` runMemoryTool: every failure surfaces as a `memory:` tool error
@@ -271,11 +315,17 @@ fn run_memory_tool_inner(
     let root = &repo.dir;
     // Pin `memory.ts:69`: unrelated dirty files fail before anything is written, so a refused
     // write never leaves its own file behind to make the next write fail too.
+    if let Some(enter) = on_stage {
+        enter(MemoryWriteStage::Check);
+    }
     repo.clean_check().map_err(|e| err(e.to_string()))?;
     let mut affected_relative_paths: Vec<String> = Vec::new();
     let mut stripped_paths = Vec::new();
     let claim = params.provenance.as_ref().and_then(|p| p.claim.as_ref());
 
+    if let Some(enter) = on_stage {
+        enter(MemoryWriteStage::Apply);
+    }
     let mut execute_command = || -> Result<(), MemoryToolError> {
         match command_str {
             "create" => {
@@ -531,6 +581,9 @@ fn run_memory_tool_inner(
         return Err(err(violation));
     }
 
+    if let Some(enter) = on_stage {
+        enter(MemoryWriteStage::Commit);
+    }
     let commit_res = repo.commit_write(
         &affected_relative_paths,
         &memory_commit_message(

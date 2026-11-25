@@ -442,3 +442,67 @@ fn given_a_failing_patch_when_apply_patch_runs_through_the_memory_tool_then_the_
         error.message
     );
 }
+
+#[test]
+fn run_memory_tool_with_stage_reports_lock_check_apply_commit_in_order() {
+    use crate::tools::memory::{MemoryWriteStage, run_memory_tool_with_stage};
+    let (_temp, repo) = fixture();
+    let stages = std::sync::Mutex::new(Vec::new());
+    let lock = crate::tools::memory_apply_patch_test_support::RecordingLock::default();
+
+    run_memory_tool_with_stage(
+        &repo,
+        &test_author(),
+        &MemoryToolParams {
+            command: Some("create".to_string()),
+            reason: "stage create".to_string(),
+            file_path: Some("reference/stages.md".to_string()),
+            description: Some("Stages".to_string()),
+            file_text: Some("ok".to_string()),
+            ..Default::default()
+        },
+        Some(&lock),
+        &|stage| stages.lock().expect("stages lock").push(stage),
+    )
+    .expect("create with stage callback");
+
+    assert_eq!(
+        *stages.lock().expect("stages lock"),
+        vec![
+            MemoryWriteStage::Lock,
+            MemoryWriteStage::Check,
+            MemoryWriteStage::Apply,
+            MemoryWriteStage::Commit,
+        ]
+    );
+}
+
+#[test]
+fn run_memory_tool_with_stage_stops_at_check_when_repo_is_dirty() {
+    use crate::tools::memory::{MemoryWriteStage, run_memory_tool_with_stage};
+    let (_temp, repo) = fixture();
+    fs::write(repo.dir.join("stray.md"), "dirty").expect("write stray");
+    let stages = std::sync::Mutex::new(Vec::new());
+
+    let error = run_memory_tool_with_stage(
+        &repo,
+        &test_author(),
+        &MemoryToolParams {
+            command: Some("create".to_string()),
+            reason: "blocked by dirty".to_string(),
+            file_path: Some("reference/blocked.md".to_string()),
+            description: Some("Blocked".to_string()),
+            file_text: Some("no".to_string()),
+            ..Default::default()
+        },
+        None,
+        &|stage| stages.lock().expect("stages lock").push(stage),
+    )
+    .unwrap_err();
+
+    assert!(error.message.contains("stray.md"), "{}", error.message);
+    assert_eq!(
+        *stages.lock().expect("stages lock"),
+        vec![MemoryWriteStage::Lock, MemoryWriteStage::Check]
+    );
+}

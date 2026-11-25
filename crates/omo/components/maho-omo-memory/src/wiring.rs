@@ -55,10 +55,18 @@ impl crate::sync_status_cached::SyncNoticeUi for NativeSyncNotice {
         self.0.notify(message, kind);
     }
 }
-struct NativeFooter(std::sync::Arc<dyn maho_ext_api::ExtensionUi>);
+struct NativeFooter(crate::wiring_context::StatusHandle);
+impl NativeFooter {
+    fn new(ui: std::sync::Arc<dyn maho_ext_api::ExtensionUi>) -> Self {
+        Self(crate::wiring_context::StatusHandle::from_extension_ui(ui))
+    }
+}
 impl MemoryFooterUi for NativeFooter {
     fn set_status(&mut self, key: &str, text: &str) {
         self.0.set_status(key, Some(text));
+    }
+    fn begin_refresh(&mut self) -> Option<crate::wiring_context::StatusHandle> {
+        Some(crate::wiring_context::sequenced_status(&self.0))
     }
 }
 /// Bound-session live surface for the bind-time completion drain (pin `wiring-reflection-live.ts`
@@ -163,7 +171,7 @@ pub fn spawn_footer_ticker(
                     guard
                         .reflection_live
                         .footer
-                        .tick_session(&session, &mut NativeFooter(ui));
+                        .tick_session(&session, &mut NativeFooter::new(ui));
                 }
             }
         });
@@ -218,7 +226,7 @@ fn register_settled_handler(
                     .map(|entry| entry.data)
                     .collect::<Vec<_>>();
                 let provenance = context.session_manager.fork_provenance();
-                let mut ui = NativeFooter(context.ui.clone());
+                let mut ui = NativeFooter::new(context.ui.clone());
                 let observer = maho_ext_api::current_settle_observer();
                 let signal = observer
                     .as_ref()
@@ -385,7 +393,7 @@ impl MemoryWiring {
                             .map(|entry| entry.data)
                             .collect::<Vec<_>>();
                         let mut wiring = wiring.lock().await;
-                        let mut ui = NativeFooter(context.ui.clone());
+                        let mut ui = NativeFooter::new(context.ui.clone());
                         wiring
                             .live_hosts
                             .insert(session.to_owned(), (api.clone(), context.ui.clone()));
@@ -497,9 +505,8 @@ impl MemoryWiring {
                     })
                 }),
                 clear_status: std::sync::Arc::new(|context| {
-                    context
-                        .ui
-                        .set_status(crate::status::MEMORY_STATUS_KEY, None)
+                    crate::wiring_context::StatusHandle::from_extension_ui(context.ui.clone())
+                        .set_status(crate::status::MEMORY_STATUS_KEY, None);
                 }),
                 warn: options.warn.clone(),
             },
@@ -720,7 +727,7 @@ impl MemoryWiring {
                 Some(session),
                 &run_id,
                 now,
-                Some(&mut NativeFooter(ui)),
+                Some(&mut NativeFooter::new(ui)),
             );
         }
         if let Some(api) = api
@@ -774,7 +781,7 @@ impl MemoryWiring {
                 Some(session),
                 &run_id,
                 now,
-                Some(&mut NativeFooter(ui)),
+                Some(&mut NativeFooter::new(ui)),
             );
         }
         match api {
@@ -838,8 +845,12 @@ impl MemoryWiring {
                 return Ok(());
             };
             // Redrawing the footer and pushing the desktop snapshot is exactly what a settle does.
-            self.reflection_live
-                .on_settled(session, api, now, Some(&mut NativeFooter(ui.clone())))
+            self.reflection_live.on_settled(
+                session,
+                api,
+                now,
+                Some(&mut NativeFooter::new(ui.clone())),
+            )
         };
         crate::sync_status_cached::deliver_sync_status_change(
             crate::sync_status_cached::SyncStatusChange {

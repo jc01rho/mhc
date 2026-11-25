@@ -832,3 +832,101 @@ fn test_prune_stamp_is_kept_until_a_rebuild_from_nothing_happens() {
         "2026-08-01T00:00:00.000Z"
     );
 }
+
+#[test]
+fn noop_reconcile_skips_state_rewrite_while_finalize_still_persists_cursor() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let journal = create_journal(temp_dir.path());
+    let messages = vec![user_message("user-1"), assistant_message("assistant-1")];
+    journal.reconcile(&messages).unwrap();
+
+    let frozen_mtime = filetime::FileTime::from_unix_time(1_600_000_000, 0);
+    filetime::set_file_mtime(&journal.state_path, frozen_mtime).unwrap();
+
+    let second = journal.reconcile(&messages).unwrap();
+    assert_eq!(
+        second,
+        AppendResult {
+            appended: 0,
+            skipped: 2
+        }
+    );
+    let mtime_after_noop = filetime::FileTime::from_last_modification_time(
+        &std::fs::metadata(&journal.state_path).unwrap(),
+    );
+    assert_eq!(mtime_after_noop, frozen_mtime);
+
+    let snapshot = journal.capture_reflection_snapshot(None).unwrap().unwrap();
+    journal.finalize_reflection(&snapshot, true).unwrap();
+
+    let state = stored_state(&journal);
+    assert_eq!(state["reflected_through_message_id"], "assistant-1");
+    assert_eq!(state["reflected_completed_steps"], 1);
+}
+
+#[test]
+fn incremental_tail_cache_reads_appended_rows_and_reloads_on_shrink_or_mtime_change() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let journal = create_journal(temp_dir.path());
+    journal
+        .reconcile(&[user_message("user-1"), assistant_message("assistant-1")])
+        .unwrap();
+    assert_eq!(journal.read_entries().unwrap().len(), 2);
+
+    let extra = TranscriptEntry::Text(crate::journal::entries::TextTranscriptEntry::new(
+        "assistant",
+        "appended",
+        "2026-08-09T12:00:00.000Z",
+        "line-extra-1",
+        "assistant-2",
+    ));
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&journal.transcript_path)
+            .unwrap();
+        writeln!(file, "{}", serde_json::to_string(&extra).unwrap()).unwrap();
+    }
+    let after_append = journal.read_entries().unwrap();
+    assert_eq!(after_append.len(), 3);
+    assert_eq!(after_append[2].source_message_id(), "assistant-2");
+
+    let row_a = TranscriptEntry::Text(crate::journal::entries::TextTranscriptEntry::new(
+        "assistant",
+        "same",
+        "2026-08-09T12:00:00.000Z",
+        "line-a",
+        "msg-a",
+    ));
+    let row_b = TranscriptEntry::Text(crate::journal::entries::TextTranscriptEntry::new(
+        "assistant",
+        "same",
+        "2026-08-09T12:00:00.000Z",
+        "line-b",
+        "msg-b",
+    ));
+    let raw_a = format!("{}\n", serde_json::to_string(&row_a).unwrap());
+    let raw_b = format!("{}\n", serde_json::to_string(&row_b).unwrap());
+    assert_eq!(raw_a.len(), raw_b.len());
+
+    std::fs::write(&journal.transcript_path, &raw_a).unwrap();
+    filetime::set_file_mtime(
+        &journal.transcript_path,
+        filetime::FileTime::from_unix_time(1_700_000_000, 0),
+    )
+    .unwrap();
+    let after_shrink = journal.read_entries().unwrap();
+    assert_eq!(after_shrink.len(), 1);
+    assert_eq!(after_shrink[0].source_message_id(), "msg-a");
+
+    std::fs::write(&journal.transcript_path, &raw_b).unwrap();
+    filetime::set_file_mtime(
+        &journal.transcript_path,
+        filetime::FileTime::from_unix_time(1_700_000_010, 0),
+    )
+    .unwrap();
+    let after_same_size = journal.read_entries().unwrap();
+    assert_eq!(after_same_size.len(), 1);
+    assert_eq!(after_same_size[0].source_message_id(), "msg-b");
+}
