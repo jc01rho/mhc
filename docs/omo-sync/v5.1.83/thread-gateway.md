@@ -8,10 +8,10 @@ mhc counterpart: `crates/omo/components/maho-omo-gateway/src/thread/`.
 
 | verdict | rows |
 |---|---:|
-| port | 16 |
+| port | 17 |
 | ported | 4 |
 | n/a | 6 |
-| gap | 12 |
+| gap | 11 |
 | total | 38 |
 
 One row per upstream PR, or per commit group where a change carries no PR number; a PR whose slice is partly portable
@@ -58,7 +58,7 @@ written with an older schema.
 | #14428 collapse key (7baf0c1da4) | port | `crates/omo/components/maho-omo-gateway/src/thread/schema.rs` v16 `deliveries.collapse_key`; `store_ops.rs` `collapse_earlier` (the sender's queued row under the key is refused `superseded`, a row the session already took absorbs the repeat: `EnqueueOutcome::Collapsed`); `types.rs` `RefusalReason::Superseded`, `EnqueueRequest.collapse_key`; `engine.rs` `GatewayDeliverRequest.collapse_key` (in the receipt's args hash); `tools.rs` `thread_send.collapse_key`; `result.rs` `superseded` reads `not_resumable`, queue_full next action. Not carried: the SDK `send` (thread-core) and `omo thread send --collapse-key` (omo-native). Ported with schema v16 (gateway-schema track, PR #86). |
 | #14278 (67a4f3a199, 039e8efc29) | gap | `engine_version` and the provider retry wait (`waiting_on`) on `thread_list` rows need the listing producer (thread-core) and senpi#7025's published retry wait; `ThreadResultSummary` is built literally in `thread_row.rs`. |
 | #14363 create half (b41242db44, 0fcdd7cd47) | port | A create answers a first prompt the thread admitted to its queue as `queued` (with what it waits on) and a prompt stored for a woken session as `queued` waiting on the wake: `crates/omo/components/maho-omo-gateway/src/thread/control/create.rs` `prompt_that_ran`, `result.rs` `admitted_wait` (the hold or approval a queued row waits on, `DeliveryWait`), `types.rs` / `contracts_results.rs` (`waiting_on` on a queued delivery). Tests: `tests/thread_create_tests.rs` `a_prompt_stored_for_a_wake_is_queued_with_a_next_action_not_to_send_it_again`, `a_prompt_not_yet_admitted_waits_for_its_start_and_answers_what_it_became`; `control/prompt_start.rs` (5). |
-| #14363 wake memory floor (b41242db44, 0fcdd7cd47) | gap | The wake floor (a quarter of a limit below 4 GiB, at least one wake's measured cost) belongs to the #13037 wake carrier, which is not ported (`thread-wake.md`). |
+| #14363 wake memory floor (b41242db44, 0fcdd7cd47) | port | The wake floor (a quarter of a limit below 4 GiB, at least one wake's measured cost) is ported by the wake runtime (PR #90): `crates/omo/components/maho-omo-gateway/src/thread/wake/memory_headroom.rs` `read_wake_memory_floor` and the carrier's `host_memory_pressure` deferral in `wake/carrier.rs` (`thread-wake.md` #14363 rows). |
 | #14305 (4960cedb07) | gap | `thread_list` row identity, `unnamed` names: listing producer (thread-core) and thread-address-core `rowName`. |
 | #14355, #14339 (640d1bd2ce) | n/a | Formatting of TS merge resolutions. |
 | #14335 (929de417e1) | port | `thread_create` now sends its `prompt` to a thread it opens live already: `crates/omo/components/maho-omo-gateway/src/thread/control/create.rs` (`thread-control.md` #14335). |

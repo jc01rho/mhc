@@ -10,10 +10,10 @@ Counts computed programmatically from the per-PR rows below (`direct` included),
 
 | verdict | rows |
 |---|---:|
-| port | 21 |
+| port | 22 |
 | gap | 2 |
 | n/a | 2 |
-| port and gap (own half ported, other half in a sibling track) | 3 |
+| port and gap (own half ported, other half in a sibling track) | 2 |
 | total | 28 |
 
 One row per upstream PR, or per commit group where a change carries no PR number; every non-merge commit in the range that touches these paths is named in exactly one row.
@@ -40,7 +40,7 @@ None of these rows changes the gateway store schema: mhc's gateway store stops a
 | #14305 | gap | `resolveAddress`, `resolveStoredSession`, `replyOnDevice`, `resolveAcross` and the account-wide resolver belong to `thread-address` (its own track) once `thread-address-core` `resolve_address` lands here; `thread-core`'s half (`rowName`-based naming in `read_ops.rs`, `thread_row.rs`) is ported below, the cross-device half waits on `thread-address`. Memo (thread-address track): the account-wide resolver (`resolve_address` over `RemoteThreadSurface` ports, `resolve_on_device`, `pinned`, `probe_across`) is ported; the thread tools still resolve through the local ladder until a live surface is wired. |
 | #14394 `ca6a781cee` | n/a | A remote create whose new session the device's route does not reach is refused with nothing left: the create exists now (`thread-control.md` #14394, `confirm_reach` is passed), but the remote leg is `RelaySessionHost`, thread-remote's. |
 | #14355 `#14339` `640d1bd2ce` | n/a | Formatting of TS merge resolutions; no Rust semantics. |
-| #14363 `b41242db44`, `0fcdd7cd47`, `f1ec5e79ae` | port/gap | `thread_create` first prompt admitted to a queue is ported (`control/create.rs`, `result.rs` `admitted_wait`, `thread-control.md` #14363); the wake memory floor needs the #13037 wake carrier (`thread-wake.md`). |
+| #14363 `b41242db44`, `0fcdd7cd47`, `f1ec5e79ae` | port | `thread_create` first prompt admitted to a queue is ported (`control/create.rs`, `result.rs` `admitted_wait`, `thread-control.md` #14363); the wake memory floor is ported by the wake runtime (`wake/memory_headroom.rs`, `thread-wake.md` #14363). |
 | #14333 `484cafd3b2`, `d82e7a2436`, `fc22f87e44` | port | One shared default delivery `auto` on every send surface and an idle start reports `effective=start`: `DEFAULT_THREAD_DELIVERY` in `tools.rs`/`ports.rs`; `gateway.rs` effective mode. |
 | #14322 (#14328) series `4b23044c34`, `cc41f926b0`, `bff7f45c76`, `0bb0d1a7c7`, `7b5ea02f79`, `1fd262161a`, `0a1fb1001d`, `ea62ff8e94`, `71fd48e112`, `372ab20d96` | port | The thread SDK resolves every address through the shared `resolveAddress` module: `sdk.rs` `locate`/`send`/`bind` use `resolve_address` over this device's book per address part; store-only operations resolve locally first and consult the account only on a local `not_found`. |
 | #14313 `336f5fa4b9` | port | `thread_close { graceful }` drains the turn and answers every unread message: ported by `thread-control` #68 (`close_options`, `close_thread_with_options`, TUI graceful-only refusal); `tools.rs` `close_body` already passes `close_options(value)`. The `session_shutdown { closed }` hook and `thread_close { graceful }` control wiring wait on `senpi#7046`'s session-closed record (mahocore gap). |
