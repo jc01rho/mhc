@@ -6,6 +6,7 @@ use model_core::is_claude_opus46_model;
 use model_core::is_claude_opus47_model;
 use model_core::is_claude_opus47_or_later_model;
 use model_core::is_claude_opus48_model;
+use model_core::is_deepseek_v41_flash_model;
 use model_core::is_gemini_model;
 use model_core::is_glm_model;
 use model_core::is_gpt_model;
@@ -36,6 +37,27 @@ fn gpt_model_ids_detect_gpt_family_only() {
             ("github-copilot/gpt-4o", true),
             ("openai/o3-mini", false),
             ("anthropic/claude-opus-4-7", false),
+        ],
+    );
+}
+
+#[test]
+fn deepseek_v41_flash_model_ids_match_only_v41_flash_variants() {
+    check(
+        is_deepseek_v41_flash_model,
+        &[
+            ("deepseek-flash", true),
+            ("deepseek/deepseek-flash", true),
+            ("deepseek/deepseek-v4.1-flash", true),
+            ("deepseek/deepseek-v4-1-flash", true),
+            ("openrouter/deepseek/deepseek-v4p1-flash:free", true),
+            ("deepseek-v4.1-flash-0731", true),
+            ("deepseek-v4.1-flash@latest", true),
+            ("deepseek-v4-flash", false),
+            ("deepseek-v4-flash-0731", false),
+            ("deepseek-v4-pro", false),
+            ("deepseek/deepseek-chat", false),
+            ("openai/gpt-5.5", false),
         ],
     );
 }

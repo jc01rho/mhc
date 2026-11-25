@@ -7,7 +7,6 @@ use model_core::ModelResolutionResult;
 use model_core::resolve_model_with_fallback;
 use pretty_assertions::assert_eq;
 
-use crate::support::entry;
 use crate::support::set;
 
 fn resolve(chain: &[FallbackEntry], available: &[&str]) -> Option<ModelResolutionResult> {
@@ -25,29 +24,6 @@ fn provider_fallback(model: &str, variant: &str) -> Option<ModelResolutionResult
         source: ModelResolutionProvenance::ProviderFallback,
         variant: Some(variant.to_string()),
     })
-}
-
-#[test]
-fn ultrabrain_and_deep_high_prefer_copilot_astra_when_available() {
-    let available_models = ["github-copilot/gpt-6-astra", "github-copilot/gpt-5.6-sol"];
-
-    let res_ultrabrain = resolve(
-        &CATEGORY_MODEL_REQUIREMENTS["ultrabrain"].fallback_chain,
-        &available_models,
-    );
-    assert_eq!(
-        res_ultrabrain,
-        provider_fallback("github-copilot/gpt-6-astra", "max")
-    );
-
-    let res_deep_high = resolve(
-        &CATEGORY_MODEL_REQUIREMENTS["deep-high"].fallback_chain,
-        &available_models,
-    );
-    assert_eq!(
-        res_deep_high,
-        provider_fallback("github-copilot/gpt-6-astra", "high")
-    );
 }
 
 #[test]
@@ -81,39 +57,24 @@ fn unspecified_high_never_borrows_copilot_astra() {
 }
 
 #[test]
-fn ultrabrain_falls_back_to_copilot_sol_when_astra_is_absent() {
-    let available_models = ["github-copilot/gpt-5.6-sol"];
+fn deep_lanes_take_no_copilot_gpt_rung() {
+    let available_models = ["github-copilot/gpt-6-astra", "github-copilot/gpt-5.6-sol"];
 
-    let res_ultrabrain = resolve(
-        &CATEGORY_MODEL_REQUIREMENTS["ultrabrain"].fallback_chain,
-        &available_models,
-    );
-    assert_eq!(
-        res_ultrabrain,
-        provider_fallback("github-copilot/gpt-5.6-sol", "max")
-    );
-
-    let res_deep_low = resolve(
-        &CATEGORY_MODEL_REQUIREMENTS["deep-low"].fallback_chain,
-        &available_models,
-    );
-    assert_eq!(
-        res_deep_low,
-        provider_fallback("github-copilot/gpt-5.6-sol", "medium")
-    );
-
-    let res_deep_high = resolve(
-        &CATEGORY_MODEL_REQUIREMENTS["deep-high"].fallback_chain,
-        &available_models,
-    );
-    assert_eq!(
-        res_deep_high,
-        Some(ModelResolutionResult {
-            model: "system/default".to_string(),
-            source: ModelResolutionProvenance::SystemDefault,
-            variant: None,
-        })
-    );
+    for category in ["ultrabrain", "deep-high", "deep-low"] {
+        let resolved = resolve(
+            &CATEGORY_MODEL_REQUIREMENTS[category].fallback_chain,
+            &available_models,
+        );
+        assert_eq!(
+            resolved,
+            Some(ModelResolutionResult {
+                model: "system/default".to_string(),
+                source: ModelResolutionProvenance::SystemDefault,
+                variant: None,
+            }),
+            "{category}"
+        );
+    }
 }
 
 #[test]
@@ -128,24 +89,6 @@ fn each_requirement_selects_its_copilot_gpt_model_with_its_configured_variant() 
         (
             "momus",
             &AGENT_MODEL_REQUIREMENTS["momus"],
-            "github-copilot/gpt-6-astra",
-            "high",
-        ),
-        (
-            "ultrabrain",
-            &CATEGORY_MODEL_REQUIREMENTS["ultrabrain"],
-            "github-copilot/gpt-6-astra",
-            "max",
-        ),
-        (
-            "deep-low",
-            &CATEGORY_MODEL_REQUIREMENTS["deep-low"],
-            "github-copilot/gpt-5.6-sol",
-            "medium",
-        ),
-        (
-            "deep-high",
-            &CATEGORY_MODEL_REQUIREMENTS["deep-high"],
             "github-copilot/gpt-6-astra",
             "high",
         ),
@@ -197,22 +140,6 @@ fn warm_cache_prefers_the_copilot_rung_over_a_transformed_vercel_astra() {
     assert_eq!(
         result,
         provider_fallback("github-copilot/gpt-6-astra", "high")
-    );
-}
-
-#[test]
-fn copilot_keeps_the_gpt_6_astra_max_tier_because_no_copilot_cap_applies() {
-    let entries: Vec<&FallbackEntry> = CATEGORY_MODEL_REQUIREMENTS["ultrabrain"]
-        .fallback_chain
-        .iter()
-        .filter(|entry| {
-            entry.model == "gpt-6-astra" && entry.providers.iter().any(|p| p == "github-copilot")
-        })
-        .collect();
-
-    assert_eq!(
-        entries,
-        vec![&entry(&["github-copilot"], "gpt-6-astra", Some("max"))]
     );
 }
 
