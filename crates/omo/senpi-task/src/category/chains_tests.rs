@@ -156,100 +156,27 @@ fn the_mirrored_fallback_table_matches_the_independent_transcription() {
         ),
         (
             "ultrabrain",
-            vec![
-                entry(
-                    &["chatgpt-subscription", "openai"],
-                    "gpt-6.2-astra",
-                    Some("max"),
-                ),
-                entry(
-                    &["chatgpt-subscription", "openai"],
-                    "gpt-6-astra",
-                    Some("max"),
-                ),
-                entry(&["github-copilot"], "gpt-6-astra", Some("max")),
-                entry(
-                    &["chatgpt-subscription", "openai", "opencode"],
-                    "gpt-6.2-astra",
-                    Some("max"),
-                ),
-                entry(
-                    &["chatgpt-subscription", "openai", "opencode"],
-                    "gpt-6-astra",
-                    Some("max"),
-                ),
-                entry(
-                    &["chatgpt-subscription", "openai"],
-                    "gpt-5.6-sol",
-                    Some("max"),
-                ),
-                entry(&["github-copilot"], "gpt-5.6-sol", Some("max")),
-                entry(
-                    &["chatgpt-subscription", "openai", "opencode"],
-                    "gpt-5.6-sol",
-                    Some("max"),
-                ),
-            ],
+            vec![entry(
+                &["chatgpt-subscription", "openai", "opencode"],
+                "gpt-6.2-astra",
+                Some("max"),
+            )],
         ),
         (
             "deep-low",
-            vec![
-                entry(
-                    &["chatgpt-subscription", "openai"],
-                    "gpt-6.2-sol",
-                    Some("medium"),
-                ),
-                entry(
-                    &["chatgpt-subscription", "openai"],
-                    "gpt-6.2-sol-fast",
-                    Some("medium"),
-                ),
-                entry(
-                    &["chatgpt-subscription", "openai"],
-                    "gpt-6.1-sol",
-                    Some("medium"),
-                ),
-                entry(
-                    &["chatgpt-subscription", "openai"],
-                    "gpt-6.1-sol-fast",
-                    Some("medium"),
-                ),
-                entry(
-                    &[
-                        "chatgpt-subscription",
-                        "openai",
-                        "github-copilot",
-                        "opencode",
-                    ],
-                    "gpt-5.6-sol",
-                    Some("medium"),
-                ),
-                entry(
-                    &["chatgpt-subscription", "openai"],
-                    "gpt-5.6-sol-fast",
-                    Some("medium"),
-                ),
-            ],
+            vec![entry(
+                &["chatgpt-subscription", "openai"],
+                "gpt-6.2-sol",
+                Some("medium"),
+            )],
         ),
         (
             "deep-high",
-            vec![
-                entry(
-                    &["chatgpt-subscription", "openai", "opencode"],
-                    "gpt-6.2-astra",
-                    Some("high"),
-                ),
-                entry(
-                    &[
-                        "chatgpt-subscription",
-                        "openai",
-                        "github-copilot",
-                        "opencode",
-                    ],
-                    "gpt-6-astra",
-                    Some("high"),
-                ),
-            ],
+            vec![entry(
+                &["chatgpt-subscription", "openai", "opencode"],
+                "gpt-6.2-astra",
+                Some("high"),
+            )],
         ),
         (
             "artistry",
@@ -718,10 +645,16 @@ fn a_listed_provider_beats_the_gateways_copy() {
     let ultrabrain = expect_resolved(resolve(
         "ultrabrain",
         json!({}),
-        &with(openrouter_only(), &[("github-copilot", "gpt-5.6-sol")]),
+        &with(
+            openrouter_only(),
+            &[
+                ("openrouter", "openai/gpt-6.2-astra"),
+                ("opencode", "gpt-6.2-astra"),
+            ],
+        ),
     ));
-    assert_eq!(ultrabrain.spec.provider, "github-copilot");
-    assert_eq!(ultrabrain.spec.model_id, "gpt-5.6-sol");
+    assert_eq!(ultrabrain.spec.provider, "opencode");
+    assert_eq!(ultrabrain.spec.model_id, "gpt-6.2-astra");
     let agent = expect_resolved_agent(resolve_builtin_agent(
         "plan-consultant",
         &builtin_agents(),
@@ -1024,21 +957,11 @@ fn without_the_subscription_lane_selection_matches_the_pre_lane_table() {
 
 // ---- category/openai-lane.test.ts ----
 
-const GPT_CATEGORY_CASES: [(&str, &str, &str); 4] = [
-    ("ultrabrain", "gpt-6-astra", "max"),
-    ("deep-high", "gpt-6-astra", "high"),
-    ("deep-low", "gpt-5.6-sol-fast", "medium"),
-    ("deep-low", "gpt-5.6-sol", "medium"),
+const GPT_CATEGORY_CASES: [(&str, &str, &str); 3] = [
+    ("ultrabrain", "gpt-6.2-astra", "max"),
+    ("deep-high", "gpt-6.2-astra", "high"),
+    ("deep-low", "gpt-6.2-sol", "medium"),
 ];
-
-fn api_lane_first() -> FakeRegistry {
-    models_of(&[
-        ("openai", "gpt-6-astra"),
-        ("openai", "gpt-5.6-sol"),
-        ("chatgpt-subscription", "gpt-5.6-sol"),
-        ("chatgpt-subscription", "gpt-6-astra"),
-    ])
-}
 
 #[test]
 fn the_subscription_lane_wins_when_both_gpt_lanes_serve_the_model() {
@@ -1054,30 +977,37 @@ fn the_subscription_lane_wins_when_both_gpt_lanes_serve_the_model() {
 }
 
 #[test]
-fn the_subscription_lane_wins_even_when_the_api_lane_is_listed_first() {
-    let resolved = expect_resolved(resolve("ultrabrain", json!({}), &api_lane_first()));
-    assert_eq!(resolved.spec.provider, "chatgpt-subscription");
-    assert_eq!(resolved.spec.model_id, "gpt-6-astra");
+fn the_subscription_lane_wins_even_when_the_api_lane_is_listed_first_and_no_lane_carries_cross_model_fallback()
+ {
+    let models = models_of(&[
+        ("openai", "gpt-6.2-astra"),
+        ("openai", "gpt-6.2-sol"),
+        ("openai", "gpt-6-astra"),
+        ("openai", "gpt-5.6-sol"),
+        ("chatgpt-subscription", "gpt-5.6-sol"),
+        ("chatgpt-subscription", "gpt-6-astra"),
+        ("chatgpt-subscription", "gpt-6.2-sol"),
+        ("chatgpt-subscription", "gpt-6.2-astra"),
+    ]);
+    let results: Vec<_> = ["ultrabrain", "deep-high", "deep-low"]
+        .into_iter()
+        .map(|category| expect_resolved(resolve(category, json!({}), &models)))
+        .collect();
+    let displays: Vec<String> = results
+        .iter()
+        .map(|resolved| format!("{}/{}", resolved.spec.provider, resolved.spec.model_id))
+        .collect();
     assert_eq!(
-        resolved
-            .spec
-            .fallback_models
-            .unwrap_or_default()
-            .into_iter()
-            .map(|record| record.display)
-            .collect::<Vec<_>>(),
-        vec!["chatgpt-subscription/gpt-5.6-sol".to_string()]
+        displays,
+        vec![
+            "chatgpt-subscription/gpt-6.2-astra".to_string(),
+            "chatgpt-subscription/gpt-6.2-astra".to_string(),
+            "chatgpt-subscription/gpt-6.2-sol".to_string(),
+        ]
     );
-}
-
-#[test]
-fn the_deep_lanes_carry_no_cross_model_fallback() {
-    let high = expect_resolved(resolve("deep-high", json!({}), &api_lane_first()));
-    let low = expect_resolved(resolve("deep-low", json!({}), &api_lane_first()));
-    assert_eq!(high.spec.model_id, "gpt-6-astra");
-    assert_eq!(low.spec.model_id, "gpt-5.6-sol");
-    assert!(high.spec.fallback_models.unwrap_or_default().is_empty());
-    assert!(low.spec.fallback_models.unwrap_or_default().is_empty());
+    for resolved in results {
+        assert!(resolved.spec.fallback_models.unwrap_or_default().is_empty());
+    }
 }
 
 #[test]
@@ -1098,10 +1028,10 @@ fn deep_high_on_the_subscription_lane_requests_gpt_6_2_astra() {
     let resolved = expect_resolved(resolve(
         "deep-high",
         json!({}),
-        &models_of(&[("chatgpt-subscription", "gpt-6-astra")]),
+        &models_of(&[("chatgpt-subscription", "gpt-6.2-astra")]),
     ));
     assert_eq!(resolved.spec.provider, "chatgpt-subscription");
-    assert_eq!(resolved.spec.model_id, "gpt-6-astra");
+    assert_eq!(resolved.spec.model_id, "gpt-6.2-astra");
     assert_eq!(
         resolved
             .spec
@@ -1115,29 +1045,18 @@ fn deep_high_on_the_subscription_lane_requests_gpt_6_2_astra() {
 // ---- category/gpt-5.6-sol-routing.test.ts ----
 
 #[test]
-fn opencode_sol_alone_serves_ultrabrain_deep_low_and_unspecified_low() {
+fn opencode_sol_alone_serves_unspecified_low_while_exact_gpt62_lanes_are_unavailable() {
     let models = models_of(&[("opencode", "gpt-5.6-sol")]);
-    let ultrabrain = expect_resolved(resolve("ultrabrain", json!({}), &models));
-    assert_eq!(
-        spec_triple(&ultrabrain),
-        ("opencode", "gpt-5.6-sol", Some("max"))
-    );
-    assert_eq!(
-        ultrabrain
-            .selection
-            .fallback_entry
-            .as_ref()
-            .map(|entry| entry.model.as_str()),
-        Some("gpt-5.6-sol")
-    );
-    for category in ["deep-low", "unspecified-low"] {
-        let resolved = expect_resolved(resolve(category, json!({}), &models));
-        assert_eq!(
-            spec_triple(&resolved),
-            ("opencode", "gpt-5.6-sol", Some("medium")),
-            "{category}"
-        );
+    for category in ["ultrabrain", "deep-low", "deep-high"] {
+        let result = resolve(category, json!({}), &models);
+        assert_eq!(result.kind(), "model_unavailable", "{category}");
+        assert!(!contains(result.available_categories(), category));
     }
+    let resolved = expect_resolved(resolve("unspecified-low", json!({}), &models));
+    assert_eq!(
+        spec_triple(&resolved),
+        ("opencode", "gpt-5.6-sol", Some("medium"))
+    );
 }
 
 #[test]
