@@ -23,7 +23,8 @@ use crate::device::{
 };
 use crate::exit::{RemoteExit, UsageError};
 use crate::render::{
-    control_lines, device_lines, device_name, session_lines, status_lines, wake_lines,
+    control_lines, device_lines, device_name, person_next_action, session_lines, status_lines,
+    wake_lines,
 };
 use crate::usage::{is_help_flag, is_verb, remote_usage, verb_usage};
 
@@ -132,7 +133,7 @@ pub fn report_failure(ctx: &RemoteContext, error: &LocalApiError, json: bool) ->
     }
     ctx.err(&format!("mhc remote: {}", error.reason));
     if let Some(action) = &error.action {
-        ctx.err(action);
+        ctx.err(&person_next_action(action));
     }
     match error.code.as_str() {
         "unsupported" | "service_disabled" | "signed_out" | "host_not_answering" => {
