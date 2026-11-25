@@ -246,7 +246,7 @@ mod unix_tests {
             .expect("live status");
         assert_eq!(
             outcome,
-            DeviceServiceStatus::Status(Status {
+            DeviceServiceStatus::Status(Box::new(Status {
                 state: "signed_out".into(),
                 since_ms: 42,
                 detail: None,
@@ -254,7 +254,7 @@ mod unix_tests {
                 origin_configured: false,
                 enabled: true,
                 policy: None,
-            })
+            }))
         );
         owner.await.expect("owner");
 

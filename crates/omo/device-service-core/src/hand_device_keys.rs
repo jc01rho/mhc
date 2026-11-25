@@ -76,7 +76,7 @@ impl CancelController {
 /// Result of reading the local device service's status without starting or modifying it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeviceServiceStatus {
-    Status(Status),
+    Status(Box<Status>),
     NotRunning,
     NoAnswer,
 }
@@ -134,6 +134,7 @@ async fn wait_signal(signal: &mut Option<CancelSignal>) {
 
 fn status_of(value: Value) -> Result<DeviceServiceStatus, LocalApiError> {
     serde_json::from_value::<Status>(value)
+        .map(Box::new)
         .map(DeviceServiceStatus::Status)
         .map_err(|error| {
             LocalApiError::protocol_violation(format!("invalid status payload: {error}"))
