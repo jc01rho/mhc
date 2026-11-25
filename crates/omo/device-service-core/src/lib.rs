@@ -13,11 +13,16 @@
 
 pub mod cold_wake;
 pub mod engine_endpoint;
+pub mod hand_device_keys;
 pub mod local_api;
 pub mod release;
 pub mod state_dir;
 
 pub use engine_endpoint::{
     ENDPOINT_PRIMARY_MIN_SERVICE_VERSION, EngineEndpoints, engine_endpoints_of,
+};
+pub use hand_device_keys::{
+    CancelController, CancelSignal, DeviceServiceStatus, StatusClient,
+    device_service_endpoint_path, read_device_service_status, read_device_service_status_with,
 };
 pub use state_dir::{DEVICE_SERVICE_STATE_DIR_ENV, device_service_state_dir};
