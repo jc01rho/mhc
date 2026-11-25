@@ -102,7 +102,10 @@ mod tests {
                 .expect("view")
                 .expect("delivery exists");
             assert_eq!(view.row.state, DeliveryState::Refused);
-            assert_eq!(view.row.refusal_reason, Some(RefusalReason::TargetClosed));
+            assert_eq!(
+                view.row.reason.as_deref(),
+                Some(RefusalReason::TargetClosed.as_str())
+            );
         }
     }
 
@@ -121,12 +124,8 @@ mod tests {
             .claim(&ClaimRequest {
                 now: 1_500,
                 delivery_id: "d-raced".into(),
-                target_durable_id: "t-race".into(),
-                effective_lane: EffectiveLane::FollowUp,
-                expected_turn_id: None,
-                claimant_incarnation: "inc-1".into(),
-                claimant_pid: me.pid,
-                claimant_start_time: me.start_time,
+                self_identity: me,
+                lane: EffectiveLane::FollowUp,
             })
             .expect("claim");
         assert!(matches!(claimed, ClaimOutcome::Claimed { .. }));

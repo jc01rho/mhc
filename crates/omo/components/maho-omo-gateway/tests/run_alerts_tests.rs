@@ -467,7 +467,11 @@ impl SeatHarness {
     fn shutdown(&self) {
         self.dispatch_event(
             EventKind::SessionShutdown,
-            ExtensionEvent::SessionShutdown(SessionShutdownEvent::default()),
+            ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                reason: SessionReason::Quit,
+                target_session_file: None,
+                signal: None,
+            }),
             SEAT,
         );
     }

@@ -110,12 +110,12 @@ mod tests {
     const GIB: u64 = 1024 * 1024 * 1024;
     const MIB: u64 = 1024 * 1024;
 
-    fn files(entries: &[(&str, String)]) -> impl Fn(&str) -> Option<String> {
+    fn files(entries: &[(&str, String)]) -> Box<dyn Fn(&str) -> Option<String>> {
         let map: BTreeMap<String, String> = entries
             .iter()
             .map(|(k, v)| ((*k).to_owned(), v.clone()))
             .collect();
-        move |path: &str| map.get(path).cloned()
+        Box::new(move |path: &str| map.get(path).cloned())
     }
 
     fn meminfo_text(available_kb: u64, total_kb: u64) -> String {
