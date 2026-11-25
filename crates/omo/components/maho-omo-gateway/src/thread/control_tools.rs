@@ -15,12 +15,14 @@ use super::contracts_state::ThreadState;
 use super::control::locate::{LocatedControl, ThreadCall, book_of, locate_control};
 use super::control::operations::{
     archive_not_live, archive_on, close_not_live, close_thread, error_json, interrupt_thread,
-    not_live, set_model_on, set_thinking_level_on,
+    not_live, ok_json, set_model_on, set_thinking_level_on,
 };
 use super::control::port::{ControlError, ControlResult};
 use super::control::rename::rename_thread;
 use super::errors::thread_tool_failure;
-use super::read_ops::{list_threads, read_thread, scan_listed_sessions};
+use super::read_ops::{
+    ScannedSessions, list_threads, read_thread, scan_listed_sessions, with_backlog,
+};
 use super::reader::THREAD_READ_MAX_BYTES;
 use super::store_ops::rfc3339;
 use super::tools::{ThreadTool, ThreadToolsOptions};
@@ -154,13 +156,17 @@ fn list_body(options: Arc<ThreadToolsOptions>, args: Value) -> BoxFuture<Value> 
             Ok(call) => call,
             Err(result) => return result,
         };
-        let (scanned, truncated) = match &call.sessions_directory {
+        let scanned = match &call.sessions_directory {
             Some(directory) => {
                 scan_listed_sessions(directory, all_scope, &call.caller_workspace_root)
             }
-            None => (Vec::new(), false),
+            None => ScannedSessions {
+                sessions: Vec::new(),
+                unread: Vec::new(),
+            },
         };
-        list_threads(&call, &scanned, truncated, all_scope, states.as_deref())
+        let listed = list_threads(&call, &scanned, all_scope, states.as_deref());
+        ok_json(&with_backlog(options.store.as_ref(), listed))
     })
 }
 

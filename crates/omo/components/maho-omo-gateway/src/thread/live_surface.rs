@@ -680,18 +680,25 @@ async fn list_endpoint(
             };
         }
     };
+    let protocol = transport
+        .request(
+            &endpoint.socket,
+            serde_json::json!({ "type": "get_protocol_info", "observe": true }),
+            None,
+        )
+        .await
+        .and_then(|frame| data_record(&frame, "get_protocol_info"))
+        .ok()
+        .map(Value::Object);
+    let engine_version = protocol.as_ref().and_then(|info| {
+        ["engineVersion", "serverVersion"]
+            .iter()
+            .filter_map(|key| info.get(*key).and_then(Value::as_str))
+            .find(|version| !version.is_empty())
+            .map(str::to_owned)
+    });
     let controls = if kind == GatewayEndpointKind::Tui {
-        let info = transport
-            .request(
-                &endpoint.socket,
-                serde_json::json!({ "type": "get_protocol_info", "observe": true }),
-                None,
-            )
-            .await
-            .and_then(|frame| data_record(&frame, "get_protocol_info"))
-            .ok()
-            .map(Value::Object);
-        accepted_controls(kind, Some(&tui_commands_from(info.as_ref())))
+        accepted_controls(kind, Some(&tui_commands_from(protocol.as_ref())))
     } else {
         accepted_controls(kind, None)
     };
@@ -702,6 +709,10 @@ async fn list_endpoint(
             rows.iter()
                 .filter_map(|row| {
                     ThreadHostSession::from_listing(row, &endpoint.socket, kind, &controls)
+                })
+                .map(|mut session| {
+                    session.engine_version = engine_version.clone();
+                    session
                 })
                 .collect()
         })
