@@ -5,7 +5,7 @@
 //! compacting session.
 
 use super::adapter::RuntimePhase;
-use super::types::GatewayDeliveryMode;
+use super::types::{EffectiveLane, GatewayDeliveryMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetState {
@@ -45,6 +45,19 @@ impl RefusalKind {
             Self::NotSteerable => "not_steerable",
             Self::TurnConflict => "turn_conflict",
         }
+    }
+}
+
+/// `effectiveLaneOf`: the lane an admitted delivery takes (omo#14333). An idle session's followUp admission starts its
+/// turn, so it is `start`, never `follow_up`.
+pub fn effective_lane_of(deliver_as: GatewayDeliveryMode, expect: Expect) -> EffectiveLane {
+    if deliver_as == GatewayDeliveryMode::Steer {
+        return EffectiveLane::Steer;
+    }
+    if expect == Expect::Started {
+        EffectiveLane::Start
+    } else {
+        EffectiveLane::FollowUp
     }
 }
 
@@ -285,6 +298,39 @@ mod tests {
                 expect: Expect::Queued
             }
         );
+    }
+
+    #[test]
+    fn an_admitted_delivery_names_the_lane_it_took_and_an_idle_start_is_start() {
+        let cases = [
+            (RuntimePhase::Idle, GatewayDeliveryMode::Auto, "start"),
+            (RuntimePhase::Idle, GatewayDeliveryMode::FollowUp, "start"),
+            (RuntimePhase::MidTurn, GatewayDeliveryMode::Auto, "steer"),
+            (
+                RuntimePhase::MidTurn,
+                GatewayDeliveryMode::FollowUp,
+                "follow_up",
+            ),
+            (
+                RuntimePhase::WaitingQuestion,
+                GatewayDeliveryMode::Auto,
+                "follow_up",
+            ),
+        ];
+        for (phase, mode, lane) in cases {
+            let DeliveryDecision::Admit {
+                deliver_as, expect, ..
+            } = decide_delivery(TargetState::Phase(phase), mode, None, Some(3))
+            else {
+                panic!("{phase:?} x {} is admitted", mode.as_str());
+            };
+            assert_eq!(
+                effective_lane_of(deliver_as, expect).as_str(),
+                lane,
+                "{phase:?} x {}",
+                mode.as_str()
+            );
+        }
     }
 
     #[test]

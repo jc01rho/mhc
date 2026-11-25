@@ -65,6 +65,7 @@ mod tests {
                 args_hash: delivery_id.into(),
             },
             endpoint_kind: None,
+            collapse_key: None,
         }
     }
 

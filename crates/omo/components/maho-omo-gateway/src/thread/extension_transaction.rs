@@ -244,11 +244,16 @@ pub fn extension_transaction<'a>(
                             )),
                         },
                         endpoint_kind: None,
+                        collapse_key: None,
                     };
                     let outcome = super::store_ops::enqueue(ctx, &enqueue_request)
                         .map_err(|error| error.message())?;
                     match outcome {
                         super::types::EnqueueOutcome::Inserted {
+                            row,
+                            queue_position,
+                        }
+                        | super::types::EnqueueOutcome::Collapsed {
                             row,
                             queue_position,
                         } => Ok(serde_json::to_value(super::result::result_from_row(

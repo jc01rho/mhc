@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 use super::adapter::{
     Admission, DrainWakeEvent, GatewayAdmissionKind, SessionRuntimePort, WakeReason,
 };
-use super::decision::{DeliveryDecision, RefusalKind, TargetState, decide_delivery};
+use super::decision::{
+    DeliveryDecision, RefusalKind, TargetState, decide_delivery, effective_lane_of,
+};
 use super::provenance::{delivery_provenance_line, delivery_sender, render_delivery_text};
 use super::store_api::GatewayStoreApi;
 use super::types::{
@@ -192,12 +194,16 @@ impl InboxDrain {
                 row.expected_turn_id,
                 Some(gate.turn_epoch),
             );
-            let (deliver_as, expected_turn_id) = match decision {
+            let (deliver_as, expected_turn_id, lane) = match decision {
                 DeliveryDecision::Admit {
                     deliver_as,
                     expected_turn_id,
-                    ..
-                } => (deliver_as, expected_turn_id),
+                    expect,
+                } => (
+                    deliver_as,
+                    expected_turn_id,
+                    effective_lane_of(deliver_as, expect),
+                ),
                 DeliveryDecision::Refuse { reason } => {
                     let refusal = if reason == RefusalKind::NotSteerable {
                         RefusalReason::NotSteerable
@@ -214,12 +220,11 @@ impl InboxDrain {
                     });
                     continue;
                 }
-                DeliveryDecision::QueuedOffline => (GatewayDeliveryMode::FollowUp, None),
-            };
-            let lane = if deliver_as == GatewayDeliveryMode::Steer {
-                super::types::EffectiveLane::Steer
-            } else {
-                super::types::EffectiveLane::FollowUp
+                DeliveryDecision::QueuedOffline => (
+                    GatewayDeliveryMode::FollowUp,
+                    None,
+                    super::types::EffectiveLane::FollowUp,
+                ),
             };
             let claimed = self.options.store.claim(&super::types::ClaimRequest {
                 now: self.now(),
@@ -383,6 +388,7 @@ mod tests {
             claimed_at: None,
             attempt: 0,
             admission_kind: None,
+            wait_kind: None,
             turn_epoch: None,
             root_id: "root".into(),
             hop: 1,
@@ -392,6 +398,10 @@ mod tests {
             binding_id: None,
             binding_revision: None,
             actor_user_id: None,
+            ledger_id: None,
+            verbatim_text: None,
+            verbatim_display_text: None,
+            collapse_key: None,
         }
     }
 

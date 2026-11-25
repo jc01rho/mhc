@@ -89,21 +89,40 @@ fn delivery_result(result: GatewayDeliveryResult, link: String) -> Value {
             effective_mode,
             endpoint_kind: _,
             deduplicated,
-        } => ok_result(json!({
-            "thread": thread_id,
-            "link": link,
-            "delivery": delivery,
-            "message_seq": message_seq,
-            "deduplicated": deduplicated,
-            "delivery_id": delivery_id,
-            "effective_mode": effective_mode,
-        })),
+            collapsed,
+        } => {
+            let mut result = json!({
+                "thread": thread_id,
+                "link": link,
+                "delivery": delivery,
+                "message_seq": message_seq,
+                "deduplicated": deduplicated,
+                "delivery_id": delivery_id,
+                "effective_mode": effective_mode,
+            });
+            // A collapse-key repeat the target already held an earlier message for: this text was not delivered
+            // (omo#14431).
+            if collapsed && let Some(object) = result.as_object_mut() {
+                object.insert("collapsed".into(), Value::Bool(true));
+            }
+            ok_result(result)
+        }
         GatewayDeliveryResult::Error { error } => error_result(error),
     }
 }
 
 fn thread_link(thread_id: &str, title: &str) -> String {
     super::contracts_results::thread_link(thread_id, title)
+}
+
+/// `CollapseKey` (omo#14428, #14431): the caller-chosen key a repeating message is sent under.
+fn collapse_key_parameter() -> Value {
+    json!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Caller-chosen key for a repeating message (an alert re-sent each minute): a send replaces this sender's earlier message with the same key that the target has not taken yet, and is answered deduplicated and collapsed: true with the earlier delivery_id when the target already holds that one (this text is then not delivered), so one key never leaves more than one undelivered message. Reaches sessions on this device only.",
+    })
 }
 
 async fn deliver_thread_send(
@@ -156,6 +175,10 @@ async fn deliver_thread_send(
             .map(str::to_owned)
             .unwrap_or_else(|| call_id.to_owned()),
     );
+    request.collapse_key = args
+        .get("collapse_key")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let result = engine.deliver(request).await;
     delivery_result(result, thread_link(thread, thread))
 }
@@ -199,22 +222,31 @@ pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> 
         ),
     ] {
         let options = options.clone();
+        let mut parameters = json!({
+            "type": "object",
+            "properties": {
+                "thread": { "type": "string", "minLength": 1 },
+                "message": { "type": "string", "minLength": 1 },
+                "delivery": { "type": "string", "enum": ["auto", "steer", "follow_up"] },
+                "expected_turn_id": { "type": "integer" },
+                "all_scope": { "type": "boolean" },
+                "idempotency_key": { "type": "string" },
+            },
+            "required": ["thread", "message"],
+            "additionalProperties": false,
+        });
+        // omo#14428: only thread_send takes a collapse key.
+        if name == "thread_send"
+            && let Some(properties) = parameters
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+        {
+            properties.insert("collapse_key".into(), collapse_key_parameter());
+        }
         tools.push(ThreadTool {
             name: name.to_owned(),
             description: description.to_owned(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "thread": { "type": "string", "minLength": 1 },
-                    "message": { "type": "string", "minLength": 1 },
-                    "delivery": { "type": "string", "enum": ["auto", "steer", "follow_up"] },
-                    "expected_turn_id": { "type": "integer" },
-                    "all_scope": { "type": "boolean" },
-                    "idempotency_key": { "type": "string" },
-                },
-                "required": ["thread", "message"],
-                "additionalProperties": false,
-            }),
+            parameters,
             execute: Arc::new(move |call_id: &str, args: Value| {
                 let options = options.clone();
                 let call_id = call_id.to_owned();

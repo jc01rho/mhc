@@ -30,7 +30,10 @@ use super::constants::{
 };
 use super::errors::pair_loop_guard_message;
 use super::provenance_record::is_provenance;
-use super::schema::{GATEWAY_MIGRATIONS, GATEWAY_NEEDS_FK_OFF, GatewaySchemaVersionError};
+use super::schema::{
+    GATEWAY_MIGRATIONS, GATEWAY_READER_FLOOR_KEY, GatewaySchemaVersionError, gateway_reader_floor,
+    gateway_table_rebuild,
+};
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, DeliveryState, DeliveryTransition, EffectiveLane,
     EnqueueOutcome, EnqueueRequest, GatewayStoreConfig, GatewayStoreEvent, GatewayStoreStats,
@@ -54,6 +57,8 @@ pub enum StoreError {
     LockWait(String),
     #[error("{0}")]
     Schema(String),
+    /// A migration that would leave the store inconsistent or that this build must not run; the store stays where it
+    /// was.
     #[error("{0}")]
     Migration(String),
     #[error("{0}")]
@@ -498,6 +503,7 @@ const DELIVERY_COLUMNS: &[&str] = &[
     "claimed_at",
     "attempt",
     "admission_kind",
+    "wait_kind",
     "turn_epoch",
     "root_id",
     "hop",
@@ -507,6 +513,10 @@ const DELIVERY_COLUMNS: &[&str] = &[
     "binding_id",
     "binding_revision",
     "actor_user_id",
+    "ledger_id",
+    "verbatim_text",
+    "verbatim_display_text",
+    "collapse_key",
 ];
 
 pub const OPEN_STATES: &str = "('queued', 'admitting', 'admitted')";
@@ -538,13 +548,8 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
             "mode_requested",
         ))
         .unwrap_or(super::types::GatewayDeliveryMode::Auto),
-        mode_effective: row_opt_str(record, "mode_effective").and_then(|lane| {
-            match lane.as_str() {
-                "steer" => Some(EffectiveLane::Steer),
-                "follow_up" => Some(EffectiveLane::FollowUp),
-                _ => None,
-            }
-        }),
+        mode_effective: row_opt_str(record, "mode_effective")
+            .and_then(|lane| EffectiveLane::parse(&lane)),
         expected_turn_id: row_opt_i64(record, "expected_turn_id"),
         state: DeliveryState::parse(&row_str(record, "state")).unwrap_or(DeliveryState::Queued),
         reason: row_opt_str(record, "reason"),
@@ -553,6 +558,7 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
         claimed_at: row_opt_i64(record, "claimed_at"),
         attempt: row_i64(record, "attempt"),
         admission_kind: row_opt_str(record, "admission_kind"),
+        wait_kind: row_opt_str(record, "wait_kind").filter(|kind| kind == "approval"),
         turn_epoch: row_opt_i64(record, "turn_epoch"),
         root_id: row_str(record, "root_id"),
         hop: row_i64(record, "hop"),
@@ -562,6 +568,10 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
         binding_id: row_opt_str(record, "binding_id"),
         binding_revision: row_opt_i64(record, "binding_revision"),
         actor_user_id: row_opt_str(record, "actor_user_id"),
+        ledger_id: row_opt_str(record, "ledger_id"),
+        verbatim_text: row_opt_str(record, "verbatim_text"),
+        verbatim_display_text: row_opt_str(record, "verbatim_display_text"),
+        collapse_key: row_opt_str(record, "collapse_key"),
     }
 }
 
@@ -661,6 +671,7 @@ fn insert_delivery(ctx: &StoreContext, row: &DeliveryRow) -> Result<(), StoreErr
             v_opt_i64(row.claimed_at),
             v_i64(row.attempt),
             v_opt_str(row.admission_kind.clone()),
+            v_opt_str(row.wait_kind.clone()),
             v_opt_i64(row.turn_epoch),
             v_str(&row.root_id),
             v_i64(row.hop),
@@ -670,6 +681,10 @@ fn insert_delivery(ctx: &StoreContext, row: &DeliveryRow) -> Result<(), StoreErr
             v_opt_str(row.binding_id.clone()),
             v_opt_i64(row.binding_revision),
             v_opt_str(row.actor_user_id.clone()),
+            v_opt_str(row.ledger_id.clone()),
+            v_opt_str(row.verbatim_text.clone()),
+            v_opt_str(row.verbatim_display_text.clone()),
+            v_opt_str(row.collapse_key.clone()),
         ],
     )?;
     Ok(())
@@ -703,19 +718,50 @@ pub fn hash_args(value: &Value) -> String {
     args_hash(value)
 }
 
+/// The reader floor the binary that migrated the store recorded with its version (omo#14382). Fails closed: a store
+/// without `gateway_meta`, or a value that is not a plain positive integer ("", " 14", "-1", "1e1", "14.0"), has none.
+fn stored_reader_floor(ctx: &StoreContext) -> Result<Option<i64>, StoreError> {
+    let tables = ctx
+        .one(
+            "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'gateway_meta'",
+            &[],
+        )?
+        .as_ref()
+        .map(|row| row_i64(row, "n"))
+        .unwrap_or(0);
+    if tables == 0 {
+        return Ok(None);
+    }
+    let found = ctx.one(
+        "SELECT value FROM gateway_meta WHERE key = ?",
+        &[v_str(GATEWAY_READER_FLOOR_KEY)],
+    )?;
+    Ok(found.and_then(|row| row.get("value").and_then(reader_floor_value)))
+}
+
+fn reader_floor_value(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number.as_i64().filter(|floor| *floor > 0),
+        Value::String(text) => {
+            let plain = text.bytes().next().is_some_and(|first| first != b'0')
+                && text.bytes().all(|byte| byte.is_ascii_digit());
+            if plain { text.parse().ok() } else { None }
+        }
+        _ => None,
+    }
+}
+
+/// The store's schema version. A store newer than this binary stays usable when the binary that migrated it recorded
+/// a reader floor this binary meets (omo#14382); otherwise, or with no floor recorded, it is refused typed.
 pub fn schema_version(ctx: &StoreContext) -> Result<i64, StoreError> {
     let version = ctx
         .one("SELECT user_version FROM pragma_user_version()", &[])?
         .as_ref()
         .map(|row| row_i64(row, "user_version"))
         .unwrap_or(0);
-    if version > GATEWAY_MIGRATIONS.len() as i64 {
-        return Err(GatewaySchemaVersionError::new(
-            version,
-            GATEWAY_MIGRATIONS.len() as i64,
-            "Gateway",
-        )
-        .into());
+    let supported = GATEWAY_MIGRATIONS.len() as i64;
+    if version > supported && stored_reader_floor(ctx)?.is_none_or(|floor| floor > supported) {
+        return Err(GatewaySchemaVersionError::new(version, supported, "Gateway").into());
     }
     Ok(version)
 }
@@ -749,6 +795,36 @@ fn source_build_migration_refusal(
     ))
 }
 
+fn write_reader_floor(ctx: &StoreContext, version: i64) -> Result<(), StoreError> {
+    ctx.run(
+        "INSERT INTO gateway_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        &[
+            v_str(GATEWAY_READER_FLOOR_KEY),
+            v_str(gateway_reader_floor(version).to_string()),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Records this binary's reader floor on a store at exactly its schema that lacks it (one a binary from before the floor
+/// migrated); a store already carrying it takes no write lock.
+fn record_reader_floor(ctx: &StoreContext) -> Result<(), StoreError> {
+    let supported = GATEWAY_MIGRATIONS.len() as i64;
+    let floor = gateway_reader_floor(supported);
+    let missing = || -> Result<bool, StoreError> {
+        Ok(schema_version(ctx)? == supported && stored_reader_floor(ctx)? != Some(floor))
+    };
+    if !missing()? {
+        return Ok(());
+    }
+    transaction(ctx, "migrate", || {
+        if missing()? {
+            write_reader_floor(ctx, supported)?;
+        }
+        Ok(())
+    })
+}
+
 /// Applies pending migrations; a current store takes no write lock.
 pub fn migrate(ctx: &StoreContext) -> Result<(), StoreError> {
     migrate_guarded(ctx, &process_env(), &SystemPlatformFacts)
@@ -768,41 +844,51 @@ pub fn migrate_guarded(
     loop {
         let version = schema_version(ctx)?;
         if version >= GATEWAY_MIGRATIONS.len() as i64 {
-            return Ok(());
+            return record_reader_floor(ctx);
         }
-        let needs_foreign_keys_off = GATEWAY_NEEDS_FK_OFF.contains(&(version as usize));
-        if needs_foreign_keys_off {
+        // A CHECK-widening rebuild (v7 `bindings`, v15 `deliveries`) must run with foreign_keys OFF, which SQLite only
+        // honors outside a transaction: a table drop would otherwise fire foreign-key actions from extension tables
+        // referencing the rebuilt table. The pragma is restored to its prior value afterwards.
+        let rebuilt = gateway_table_rebuild(version as usize);
+        let mut prior_foreign_keys = 1;
+        if rebuilt.is_some() {
+            prior_foreign_keys = ctx
+                .one("SELECT foreign_keys FROM pragma_foreign_keys", &[])?
+                .as_ref()
+                .map(|row| row_i64(row, "foreign_keys"))
+                .unwrap_or(1);
             ctx.exec("PRAGMA foreign_keys = OFF")?;
         }
         let applied = transaction(ctx, "migrate", || {
             let current = schema_version(ctx)?;
             if current != version {
-                return Ok(false);
+                return Ok(());
             }
             for statement in GATEWAY_MIGRATIONS[current as usize] {
                 ctx.exec(statement)?;
             }
-            if needs_foreign_keys_off {
+            if let Some(table) = rebuilt {
                 let violations = ctx.all("SELECT parent FROM pragma_foreign_key_check", &[])?;
-                if violations
-                    .iter()
-                    .any(|row| row_str(row, "parent") == "bindings")
-                {
-                    return Err(StoreError::Message(format!(
-                        "gateway schema {} would leave a foreign-key violation referencing bindings; staying at v{current}",
+                if violations.iter().any(|row| row_str(row, "parent") == table) {
+                    return Err(StoreError::Migration(format!(
+                        "gateway schema {} would leave a foreign-key violation referencing {table}; staying at v{current}",
                         current + 1
                     )));
                 }
             }
             ctx.exec(&format!("PRAGMA user_version = {}", current + 1))?;
-            Ok(true)
+            // The floor commits with the version it belongs to, so no reader ever sees a raised version with a stale
+            // floor.
+            write_reader_floor(ctx, current + 1)
         });
-        if needs_foreign_keys_off {
-            ctx.exec("PRAGMA foreign_keys = ON")?;
+        if rebuilt.is_some() {
+            ctx.exec(if prior_foreign_keys == 0 {
+                "PRAGMA foreign_keys = OFF"
+            } else {
+                "PRAGMA foreign_keys = ON"
+            })?;
         }
-        if !applied? {
-            return Ok(());
-        }
+        applied?;
     }
 }
 
@@ -1267,13 +1353,30 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 return Ok(refusal);
             }
         };
-        // Expired queued rows of this target are refused first, so the cap never counts them (omo#14466).
+        // Expired queued rows of this target are refused first, so neither a collapse nor the cap counts them
+        // (omo#14466).
         let expired = refuse_expired_queued(
             ctx,
             request.now,
             RETENTION_SWEEP_BATCH,
             &request.target_durable_id,
         )?;
+        let collapse = collapse_earlier(ctx, request)?;
+        if let Some(absorbing) = collapse.absorbing {
+            // The absorbed send keeps its own receipt, which the engine completes: a retry under its key replays
+            // this answer.
+            insert_prepared_receipt(ctx, request, &absorbing.delivery_id)?;
+            let position = queue_position(ctx, &absorbing)?;
+            ctx.exec(commit_sql)?;
+            committed = true;
+            for gone in &expired {
+                unlink_marker(ctx, &gone.target_durable_id, &gone.delivery_id);
+            }
+            return Ok(EnqueueOutcome::Collapsed {
+                row: Box::new(absorbing),
+                queue_position: position,
+            });
+        }
         let bytes = request.body.len() as i64;
         if let Some(full) = backlog_refusal(
             ctx,
@@ -1336,6 +1439,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             claimed_at: None,
             attempt: 0,
             admission_kind: None,
+            wait_kind: None,
             turn_epoch: None,
             root_id: placement.root_id.clone(),
             hop: placement.hop,
@@ -1354,21 +1458,13 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 .external()
                 .and_then(|origin| origin.author.as_ref())
                 .and_then(|author| author.user_id.clone()),
+            ledger_id: None,
+            verbatim_text: None,
+            verbatim_display_text: None,
+            collapse_key: request.collapse_key.clone(),
         };
         insert_delivery(ctx, &row)?;
-        ctx.run(
-            "INSERT INTO receipts (principal, operation, idempotency_key, args_hash, status, delivery_id, owner_instance, created_at, updated_at, expires_at) VALUES (?, 'deliver', ?, ?, 'prepared', ?, ?, ?, ?, ?)",
-            &[
-                v_str(&request.sender_principal),
-                v_str(&request.receipt.idempotency_key),
-                v_str(&request.receipt.args_hash),
-                v_str(&row.delivery_id),
-                v_str(&ctx.config.instance_id),
-                v_i64(request.now),
-                v_i64(request.now),
-                v_i64(request.now + GATEWAY_RECEIPT_RETENTION_MS),
-            ],
-        )?;
+        insert_prepared_receipt(ctx, request, &row.delivery_id)?;
         marker = Some(create_marker(
             ctx,
             &row.target_durable_id,
@@ -1378,10 +1474,13 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
         let position = queue_position(ctx, &row)?;
         ctx.exec(commit_sql)?;
         committed = true;
-        // The markers of rows this enqueue refused go only once those refusals committed: a rolled-back enqueue
-        // leaves every queued row its wake.
+        // The markers of rows this enqueue refused (expired, superseded) go only once those refusals committed: a
+        // rolled-back enqueue leaves every queued row its wake.
         for gone in &expired {
             unlink_marker(ctx, &gone.target_durable_id, &gone.delivery_id);
+        }
+        for superseded in &collapse.superseded {
+            unlink_marker(ctx, &request.target_durable_id, superseded);
         }
         Ok(EnqueueOutcome::Inserted {
             row: Box::new(row),
@@ -1395,6 +1494,97 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
         }
     }
     outcome
+}
+
+/// What a collapse key did to the sender's earlier undelivered deliveries under it (omo#14428).
+struct Collapse {
+    /// The earlier delivery the session's runtime already took: it absorbs this send.
+    absorbing: Option<DeliveryRow>,
+    /// The earlier deliveries still waiting in the gateway, refused `superseded`; their markers go once this send's
+    /// transaction commits.
+    superseded: Vec<String>,
+}
+
+/// A delivery under a collapse key replaces its sender's earlier undelivered one under that key (omo#14428, #14431): a
+/// row still waiting in the gateway is refused `superseded` and its receipt replays that refusal; a row the session's
+/// runtime already took absorbs the repeat (the runtime cannot give it back), so one key never leaves more than one
+/// undelivered message.
+fn collapse_earlier(ctx: &StoreContext, request: &EnqueueRequest) -> Result<Collapse, StoreError> {
+    let Some(collapse_key) = &request.collapse_key else {
+        return Ok(Collapse {
+            absorbing: None,
+            superseded: Vec::new(),
+        });
+    };
+    let earlier = select_rows(
+        ctx,
+        &format!(
+            "target_durable_id = ? AND sender = ? AND collapse_key = ? AND state IN {OPEN_STATES}"
+        ),
+        &[
+            v_str(&request.target_durable_id),
+            v_str(&request.sender_principal),
+            v_str(collapse_key),
+        ],
+        Some("seq"),
+    )?;
+    if let Some(taken) = earlier
+        .iter()
+        .find(|row| row.state != DeliveryState::Queued)
+    {
+        return Ok(Collapse {
+            absorbing: Some(taken.clone()),
+            superseded: Vec::new(),
+        });
+    }
+    for row in &earlier {
+        transition(
+            ctx,
+            row,
+            DeliveryState::Refused,
+            request.now,
+            Some(RefusalReason::Superseded),
+        )?;
+        // A retry of the superseded send replays its refusal, not the queued answer it got when it was sent.
+        if let Some(refused_row) = select_row(ctx, &row.delivery_id)? {
+            let result = super::result::result_from_row(&refused_row, 0, None, true, false);
+            let result_value = serde_json::to_value(&result).unwrap_or(Value::Null);
+            ctx.run(
+                "UPDATE receipts SET status = 'completed', result = ?, updated_at = ? WHERE operation = 'deliver' AND delivery_id = ?",
+                &[
+                    v_str(result_value.to_string()),
+                    v_i64(request.now),
+                    v_str(&row.delivery_id),
+                ],
+            )?;
+        }
+    }
+    Ok(Collapse {
+        absorbing: None,
+        superseded: earlier.into_iter().map(|row| row.delivery_id).collect(),
+    })
+}
+
+/// The sender's delivery receipt, prepared: the engine completes it with the answer it reads back.
+fn insert_prepared_receipt(
+    ctx: &StoreContext,
+    request: &EnqueueRequest,
+    delivery_id: &str,
+) -> Result<(), StoreError> {
+    ctx.run(
+        "INSERT INTO receipts (principal, operation, idempotency_key, args_hash, status, delivery_id, owner_instance, created_at, updated_at, expires_at) VALUES (?, 'deliver', ?, ?, 'prepared', ?, ?, ?, ?, ?)",
+        &[
+            v_str(&request.sender_principal),
+            v_str(&request.receipt.idempotency_key),
+            v_str(&request.receipt.args_hash),
+            v_str(delivery_id),
+            v_str(&ctx.config.instance_id),
+            v_i64(request.now),
+            v_i64(request.now),
+            v_i64(request.now + GATEWAY_RECEIPT_RETENTION_MS),
+        ],
+    )?;
+    Ok(())
 }
 
 fn delete_expired_receipt(
@@ -1418,7 +1608,7 @@ pub(crate) fn claim_fingerprint(row: &DeliveryRow) -> String {
     format!("{admitted}#{}", row.attempt)
 }
 
-const CLEARED_CLAIM: &str = "admitted_by = NULL, claimed_at = NULL, mode_effective = NULL, admission_kind = NULL, turn_epoch = NULL";
+const CLEARED_CLAIM: &str = "admitted_by = NULL, claimed_at = NULL, mode_effective = NULL, admission_kind = NULL, wait_kind = NULL, turn_epoch = NULL";
 
 fn transition(
     ctx: &StoreContext,
@@ -1618,7 +1808,9 @@ pub struct ExpiredQueued {
 
 /// Settles `target`'s queued rows past their lifetime as `refused`/`expired`, at most `limit` of them, so a target
 /// that stopped taking its queue frees its slots as its rows expire instead of answering `queue_full` until it runs
-/// again. Answers what it refused; the caller unlinks their inbox markers once its transaction commits.
+/// again. A row taken in from another device (`ledger_id` set) is left to the target's `reconcile`, which first checks
+/// whether the same delivery already reached the session. Answers what it refused; the caller unlinks their inbox
+/// markers once its transaction commits.
 pub fn refuse_expired_queued(
     ctx: &StoreContext,
     now: i64,
@@ -1627,7 +1819,7 @@ pub fn refuse_expired_queued(
 ) -> Result<Vec<ExpiredQueued>, StoreError> {
     let expired: Vec<ExpiredQueued> = ctx
         .all(
-            "SELECT delivery_id, target_durable_id FROM deliveries WHERE state = 'queued' AND expires_at <= ? AND target_durable_id = ? LIMIT ?",
+            "SELECT delivery_id, target_durable_id FROM deliveries WHERE state = 'queued' AND ledger_id IS NULL AND expires_at <= ? AND target_durable_id = ? LIMIT ?",
             &[v_i64(now), v_str(target), v_i64(limit)],
         )?
         .iter()
@@ -1902,6 +2094,7 @@ pub fn recover_delivery(
                 args_hash: args_hash.to_owned(),
             },
             endpoint_kind: None,
+            collapse_key: None,
         };
         Ok(Some(classify_receipt(ctx, &request, &receipt)?))
     })
@@ -2064,10 +2257,11 @@ mod tests {
             .expect("second connection")
     }
 
+    /// A newer binary's migration this one cannot read: it records no reader floor this binary meets (omo#14382).
     fn migrate_past_this_binary(connection: &Connection) {
         connection
             .execute_batch(&format!(
-                "PRAGMA user_version = {}",
+                "DELETE FROM gateway_meta WHERE key = 'reader_floor'; PRAGMA user_version = {}",
                 GATEWAY_MIGRATIONS.len() + 1
             ))
             .expect("a newer binary migrates the store");

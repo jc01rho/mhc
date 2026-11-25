@@ -220,6 +220,7 @@ mod tests {
             claimed_at: None,
             attempt: 0,
             admission_kind: None,
+            wait_kind: None,
             turn_epoch: None,
             root_id: "root-1".into(),
             hop: 1,
@@ -229,7 +230,22 @@ mod tests {
             binding_id: None,
             binding_revision: None,
             actor_user_id: None,
+            ledger_id: None,
+            verbatim_text: None,
+            verbatim_display_text: None,
+            collapse_key: None,
         }
+    }
+
+    #[test]
+    fn the_header_names_the_lane_the_delivery_took_and_an_idle_start_is_start() {
+        let mut row = delivery();
+        row.mode_effective = Some(crate::thread::types::EffectiveLane::Start);
+        let text = render_delivery_text(&row);
+        assert!(
+            first_line(&text).contains(" requested=auto effective=start "),
+            "{text}"
+        );
     }
 
     fn first_line(text: &str) -> &str {
