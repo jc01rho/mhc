@@ -177,19 +177,19 @@ pub fn read_process_start_identity(pid: u32) -> Option<String> {
     }
     #[cfg(target_os = "linux")]
     {
-        return parse_linux_stat_start_identity(&linux_stat(pid)?);
+        parse_linux_stat_start_identity(&linux_stat(pid)?)
     }
     #[cfg(target_os = "macos")]
     {
         let info =
             darwin::pid_info::<{ darwin::PROC_BSDINFO_SIZE }>(pid, darwin::PROC_PIDTBSDINFO)?;
         let seconds = darwin::read_le_u64(&info, darwin::START_TVSEC_OFFSET)?;
-        return (seconds > 0).then(|| format!("proc-start-epoch:{seconds}"));
+        (seconds > 0).then(|| format!("proc-start-epoch:{seconds}"))
     }
     #[cfg(target_os = "windows")]
     {
         let times = win32::process_times(pid)?;
-        return (times.creation > 0).then(|| format!("win32-creation-filetime:{}", times.creation));
+        (times.creation > 0).then(|| format!("win32-creation-filetime:{}", times.creation))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
@@ -204,7 +204,7 @@ pub fn read_process_cpu_seconds(pid: u32) -> Option<f64> {
     }
     #[cfg(target_os = "linux")]
     {
-        return parse_linux_stat_cpu_seconds(&linux_stat(pid)?);
+        parse_linux_stat_cpu_seconds(&linux_stat(pid)?)
     }
     #[cfg(target_os = "macos")]
     {
@@ -213,12 +213,12 @@ pub fn read_process_cpu_seconds(pid: u32) -> Option<f64> {
         let timebase = darwin::timebase()?;
         let user = darwin::read_le_u64(&info, darwin::TOTAL_USER_OFFSET)?;
         let system = darwin::read_le_u64(&info, darwin::TOTAL_SYSTEM_OFFSET)?;
-        return scale_mach_ticks(user.saturating_add(system), timebase.numer, timebase.denom);
+        scale_mach_ticks(user.saturating_add(system), timebase.numer, timebase.denom)
     }
     #[cfg(target_os = "windows")]
     {
         let times = win32::process_times(pid)?;
-        return Some((times.kernel.saturating_add(times.user) as f64) / 1e7);
+        Some((times.kernel.saturating_add(times.user) as f64) / 1e7)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn proc_stat_cpu_ticks_survive_a_command_name_with_spaces_and_parens() {
-        let stat = "42 (a (b) c) S 1 2 3 4 5 6 7 8 9 10 11 125 75 14 15 16 17 18 19 777 21";
+        let stat = "42 (a (b) c) S 1 2 3 4 5 6 7 8 9 10 125 75 13 14 15 16 17 18 777 20";
         assert_eq!(parse_linux_stat_cpu_seconds(stat), Some(2.0));
         assert_eq!(
             parse_linux_stat_start_identity(stat).as_deref(),
