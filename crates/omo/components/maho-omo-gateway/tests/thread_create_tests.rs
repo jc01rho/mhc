@@ -975,6 +975,9 @@ fn the_schema_refusal_names_both_versions_and_the_name_check_names_the_thread_it
         status: ThreadStatus::Live,
         updated_at: None,
         session_ids: Vec::new(),
+        device: None,
+        aliases: Vec::new(),
+        row: None,
     };
     assert!(check_name_conflict(&[entry.clone()], "another").is_ok());
     let conflict = check_name_conflict(&[entry], "fix the build").expect_err("conflict");

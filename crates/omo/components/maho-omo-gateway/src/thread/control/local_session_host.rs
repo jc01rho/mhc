@@ -38,6 +38,9 @@ pub fn workspace_note(
         status: thread.status,
         updated_at: thread.updated_at.clone(),
         session_ids: Vec::new(),
+        device: None,
+        aliases: Vec::new(),
+        row: None,
     };
     if !workspace_entries(&[entry], caller_workspace_root).is_empty() {
         return Vec::new();

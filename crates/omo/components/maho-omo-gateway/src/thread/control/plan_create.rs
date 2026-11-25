@@ -8,11 +8,10 @@
 
 use std::path::Path;
 
+use maho_thread_address_core::{HERE, ParsedAddress, parse_address};
 use serde_json::{Value, json};
 
-use crate::thread::address::{
-    ResolveContext, ResolveOptions as AddressResolveOptions, resolve_address,
-};
+use crate::thread::address::{ResolveContext, ResolveOptions as AddressResolveOptions, ladder};
 use crate::thread::address_book::{AddressEntry, DiskSession, find_disk_sessions};
 use crate::thread::addressing::{
     ResolveOptions, ThreadAddressEntry, resolve_target, to_thread_address_entries,
@@ -131,33 +130,41 @@ fn send_address_book(call: &ThreadCall, address: &str, all_scope: bool) -> Vec<A
 }
 
 /// An existing thread this device is asked to open: live in the view, a session file the address book names, or neither.
-/// Resolved among this device's book only (no account): placement already chose this device.
+/// Resolved among this device's book only (no account): placement already chose this device. This runs the resolver's
+/// exact ladder the way `resolve_address` does without an account: a `here/<thread>` address asks this device's book for
+/// the thread part alone. `resolve_address` itself is async and its future is not `Send` (`LocalBookFor` is a bare
+/// `&dyn Fn`), so a tool body that has to be `Send` cannot await it yet.
 pub async fn existing_here(call: &ThreadCall, address: &str, caller_id: &str) -> LocalExisting {
-    let local_for = |part: &str| -> Vec<ThreadAddressEntry> {
+    let book_for = |part: &str| -> Vec<ThreadAddressEntry> {
         to_thread_address_entries(&send_address_book(call, part, true))
     };
-    let local = local_for(address);
+    let text = match parse_address(address) {
+        ParsedAddress::Device { device, thread, .. } if device == HERE => thread,
+        _ => address.to_owned(),
+    };
+    let local = book_for(&text);
     let context = ResolveContext {
+        remote: None,
         caller_workspace_root: &call.caller_workspace_root,
         local: &local,
-        local_for: Some(&local_for),
+        local_for: None,
         caller_id,
     };
     let options = AddressResolveOptions {
         all_scope: true,
         ..AddressResolveOptions::default()
     };
-    let resolved = match resolve_address(&context, address, &options) {
-        Ok(resolved) => resolved,
+    let resolved = match ladder(&context, &local, &text, &options) {
+        Ok((entry, _)) => entry,
         Err(refusal) => return LocalExisting::Error(refusal),
     };
-    if let Some(session) = call.view.target_session(&resolved.thread) {
+    if let Some(session) = call.view.target_session(&resolved.thread_id) {
         return LocalExisting::Live(Box::new(session_summary(session, &call.now)));
     }
-    let book = send_address_book(call, &resolved.thread, true);
+    let book = send_address_book(call, &resolved.thread_id, true);
     let found = book
         .iter()
-        .find(|candidate| candidate.thread_id == resolved.thread)
+        .find(|candidate| candidate.thread_id == resolved.thread_id)
         .and_then(|entry| {
             entry
                 .session_path
