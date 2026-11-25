@@ -92,7 +92,7 @@ fn bun_check_is_a_typecheck_and_bun_run_check_stays_a_script_lookup() {
 fn the_remote_command_of_ssh_is_parsed() {
     assert_eq!(
         invoked_kinds(
-            "ssh -o BatchMode=yes -p 22 mengmota 'cd w && bun test x'",
+            "ssh -o BatchMode=yes -p 22 studio-mac 'cd w && bun test x'",
             0
         ),
         vec![InvokedKind::Test]
