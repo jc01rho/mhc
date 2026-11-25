@@ -40,6 +40,7 @@ pub mod reader;
 pub mod relay;
 pub mod remote;
 pub mod result;
+pub mod run_alerts;
 pub mod schema;
 pub mod sdk;
 pub mod session_args_schema;

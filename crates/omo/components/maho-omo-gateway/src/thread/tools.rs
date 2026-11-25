@@ -4,6 +4,7 @@
 //! session op's tool is its own namespace (`ext_<extension>_<toolName>`).
 
 pub type ExecuteCallback = Arc<dyn Fn(&str, Value) -> BoxFuture<Value> + Send + Sync>;
+pub type ThreadSendAs = Arc<dyn Fn(String, Value) -> BoxFuture<Value> + Send + Sync>;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -105,6 +106,83 @@ fn thread_link(thread_id: &str, title: &str) -> String {
     super::contracts_results::thread_link(thread_id, title)
 }
 
+async fn deliver_thread_send(
+    options: &ThreadToolsOptions,
+    caller_id: String,
+    caller_name: Option<String>,
+    call_id: &str,
+    args: Value,
+) -> Value {
+    let Some(thread) = args.get("thread").and_then(Value::as_str) else {
+        return invalid_arguments("thread must be a non-empty string");
+    };
+    let Some(message) = args.get("message").and_then(Value::as_str) else {
+        return invalid_arguments("message must be a non-empty string");
+    };
+    let mode = match args.get("delivery").and_then(Value::as_str) {
+        Some(mode) => match GatewayDeliveryMode::parse(mode) {
+            Some(mode) => Some(mode),
+            None => {
+                return invalid_arguments("delivery must be auto, steer or follow_up");
+            }
+        },
+        None => None,
+    };
+    let sender = GatewaySender::Session {
+        durable_id: caller_id,
+        name: caller_name,
+        turn_id: None,
+        cause_delivery_id: None,
+    };
+    let provenance = (options.caller_provenance)();
+    let provenance = Arc::new(provenance);
+    let engine = GatewayEngine::new(super::engine::GatewayEngineOptions {
+        sender_provenance: Some(Arc::new(move || (*provenance).clone())),
+        store: options.store.clone(),
+        endpoints: options.engine.options().endpoints.clone(),
+        resolve: options.engine.options().resolve.clone(),
+        now: options.engine.options().now.clone(),
+    });
+    let mut request = GatewayDeliverRequest::new(sender, thread, message);
+    request.mode = mode;
+    request.expected_turn_id = args.get("expected_turn_id").and_then(Value::as_i64);
+    request.all_scope = args
+        .get("all_scope")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    request.idempotency_key = Some(
+        args.get("idempotency_key")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| call_id.to_owned()),
+    );
+    let result = engine.deliver(request).await;
+    delivery_result(result, thread_link(thread, thread))
+}
+
+pub fn create_thread_send_as(options: Arc<ThreadToolsOptions>) -> ThreadSendAs {
+    Arc::new(move |caller_id: String, args: Value| {
+        let options = options.clone();
+        Box::pin(async move {
+            let key = args
+                .get("idempotency_key")
+                .and_then(Value::as_str)
+                .unwrap_or(&caller_id);
+            let call_id = format!("send-as:{key}");
+            let caller_name = if caller_id == (options.caller_session_id)() {
+                options.caller_name.as_ref().and_then(|name| name())
+            } else {
+                None
+            };
+            let mut forwarded = args;
+            if let Some(obj) = forwarded.as_object_mut() {
+                obj.insert("idempotency_key".into(), Value::String(call_id.clone()));
+            }
+            deliver_thread_send(&options, caller_id, caller_name, &call_id, forwarded).await
+        })
+    })
+}
+
 /// Every thread tool this component owns. `thread_list` and `thread_read` read the address book and a
 /// transcript; they are registered by the component that owns those modules.
 pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> {
@@ -121,7 +199,6 @@ pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> 
         ),
     ] {
         let options = options.clone();
-        let tool_name = name.to_owned();
         tools.push(ThreadTool {
             name: name.to_owned(),
             description: description.to_owned(),
@@ -132,56 +209,19 @@ pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> 
                     "message": { "type": "string", "minLength": 1 },
                     "delivery": { "type": "string", "enum": ["auto", "steer", "follow_up"] },
                     "expected_turn_id": { "type": "integer" },
+                    "all_scope": { "type": "boolean" },
+                    "idempotency_key": { "type": "string" },
                 },
                 "required": ["thread", "message"],
                 "additionalProperties": false,
             }),
             execute: Arc::new(move |call_id: &str, args: Value| {
                 let options = options.clone();
-                let tool_name = tool_name.clone();
                 let call_id = call_id.to_owned();
                 Box::pin(async move {
-                    let Some(thread) = args.get("thread").and_then(Value::as_str) else {
-                        return invalid_arguments("thread must be a non-empty string");
-                    };
-                    let Some(message) = args.get("message").and_then(Value::as_str) else {
-                        return invalid_arguments("message must be a non-empty string");
-                    };
-                    let mode = match args.get("delivery").and_then(Value::as_str) {
-                        Some(mode) => match GatewayDeliveryMode::parse(mode) {
-                            Some(mode) => Some(mode),
-                            None => {
-                                return invalid_arguments(
-                                    "delivery must be auto, steer or follow_up",
-                                );
-                            }
-                        },
-                        None => None,
-                    };
-                    let sender = GatewaySender::Session {
-                        durable_id: (options.caller_session_id)(),
-                        name: options.caller_name.as_ref().and_then(|name| name()),
-                        turn_id: None,
-                        cause_delivery_id: None,
-                    };
-                    // Forged provenance arguments never reach the envelope: the sender runtime's own
-                    // context is the only source.
-                    let provenance = (options.caller_provenance)();
-                    let provenance = Arc::new(provenance);
-                    let engine = GatewayEngine::new(super::engine::GatewayEngineOptions {
-                        sender_provenance: Some(Arc::new(move || (*provenance).clone())),
-                        store: options.store.clone(),
-                        endpoints: options.engine.options().endpoints.clone(),
-                        resolve: options.engine.options().resolve.clone(),
-                        now: options.engine.options().now.clone(),
-                    });
-                    let mut request = GatewayDeliverRequest::new(sender, thread, message);
-                    request.mode = mode;
-                    request.expected_turn_id = args.get("expected_turn_id").and_then(Value::as_i64);
-                    request.idempotency_key = Some(call_id.clone());
-                    let result = engine.deliver(request).await;
-                    let _ = &tool_name;
-                    delivery_result(result, thread_link(thread, thread))
+                    let caller_id = (options.caller_session_id)();
+                    let caller_name = options.caller_name.as_ref().and_then(|name| name());
+                    deliver_thread_send(&options, caller_id, caller_name, &call_id, args).await
                 })
             }),
         });

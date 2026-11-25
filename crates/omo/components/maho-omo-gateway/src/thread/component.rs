@@ -17,7 +17,10 @@ use super::drain::{InboxDrain, InboxDrainOptions};
 use super::engine::{GatewayEngine, GatewayEngineOptions, GatewayResolve};
 use super::relay::{GatewayRelay, GatewayRelayOptions};
 use super::store_api::GatewayStoreApi;
-use super::tools::{ThreadTool, ThreadToolsOptions, build_extension_tools, create_thread_tools};
+use super::tools::{
+    ThreadSendAs, ThreadTool, ThreadToolsOptions, build_extension_tools, create_thread_send_as,
+    create_thread_tools,
+};
 
 pub struct GatewayThreadComponentOptions {
     pub store: Arc<dyn GatewayStoreApi>,
@@ -47,6 +50,8 @@ pub struct GatewayThreadComponent {
     pub relay: GatewayRelay,
     pub drain: Arc<InboxDrain>,
     pub tools: Vec<ThreadTool>,
+    pub send_as: ThreadSendAs,
+    pub alerts: Arc<super::run_alerts::RunAlerts>,
     pub durable_id: String,
     registration: Arc<std::sync::Mutex<super::tools::ExtensionToolRegistration>>,
     log: NotifyCallback,
@@ -54,6 +59,13 @@ pub struct GatewayThreadComponent {
 
 pub fn create_gateway_thread_component(
     options: Arc<GatewayThreadComponentOptions>,
+) -> GatewayThreadComponent {
+    create_gateway_thread_component_with_alerts(options, None)
+}
+
+pub fn create_gateway_thread_component_with_alerts(
+    options: Arc<GatewayThreadComponentOptions>,
+    operator_alerts: Option<super::run_alerts::OperatorAlertsTestSeams>,
 ) -> GatewayThreadComponent {
     let engine = GatewayEngine::new(GatewayEngineOptions {
         sender_provenance: Some(options.caller_provenance.clone()),
@@ -79,7 +91,7 @@ pub fn create_gateway_thread_component(
         notify: options.notify.clone(),
         on_admitted: None,
     }));
-    let tools = create_thread_tools(Arc::new(ThreadToolsOptions {
+    let tool_options = Arc::new(ThreadToolsOptions {
         store: options.store.clone(),
         engine: engine.clone(),
         relay: relay.clone(),
@@ -90,7 +102,53 @@ pub fn create_gateway_thread_component(
         caller_workspace_root: options.caller_workspace_root.clone(),
         sessions_directory: options.sessions_directory.clone(),
         remote: options.remote.clone(),
-    }));
+    });
+    let tools = create_thread_tools(tool_options.clone());
+    let send_as = create_thread_send_as(tool_options);
+    let seams = operator_alerts.unwrap_or_default();
+    let alert_env = seams.env.unwrap_or_else(omo_config_core::process_env);
+    let settings_env = alert_env.clone();
+    let settings: super::run_alerts::SettingsProvider =
+        Arc::new(move || super::run_alerts::load_user_error_streak_settings(&settings_env));
+    let store_for_clock = options.store.clone();
+    let now = seams
+        .now
+        .unwrap_or_else(|| Arc::new(move || store_for_clock.now()));
+    let caller_name = options.caller_name.clone();
+    let session_name: super::run_alerts::SessionNameProvider =
+        Arc::new(move || caller_name.as_ref().and_then(|name| name()));
+    let device = seams
+        .device
+        .unwrap_or_else(|| Arc::new(|| Box::pin(async { None })));
+    let default_log = options.log.clone();
+    let default_warn = options.log.clone();
+    let log = seams
+        .log
+        .unwrap_or_else(|| super::run_alerts::RunAlertsLogger {
+            info: Arc::new(move |line| {
+                if let Some(cb) = &default_log {
+                    cb(line);
+                }
+            }),
+            warn: Arc::new(move |line| {
+                if let Some(cb) = &default_warn {
+                    cb(line);
+                } else {
+                    maho_ext_api::diagnostic(line);
+                }
+            }),
+        });
+    let alerts = super::run_alerts::create_run_alerts(super::run_alerts::RunAlertsOptions {
+        settings,
+        env: alert_env,
+        now,
+        send_as: send_as.clone(),
+        session_name,
+        device,
+        fetch: seams.fetch,
+        delay: seams.delay,
+        log,
+    });
     if let Some(log) = options.log.clone() {
         options.store.on_after_commit_error(Arc::new(move |extension, error| log(&format!("thread gateway: extension {extension} committed, but an after-commit effect (its wake hint) failed: {error}"))));
     }
@@ -102,6 +160,8 @@ pub fn create_gateway_thread_component(
         relay,
         drain,
         tools,
+        send_as,
+        alerts,
         durable_id: options.durable_id.clone(),
     }
 }
@@ -213,6 +273,58 @@ impl GatewayThreadComponent {
                                 })
                             }),
                         ))?;
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let alerts_end = self.alerts.clone();
+        api.on(
+            EventKind::AgentEnd,
+            Arc::new(move |event, ctx| {
+                let alerts = alerts_end.clone();
+                let durable_id = ctx.session_manager.session_id().to_owned();
+                let facts = match event {
+                    ExtensionEvent::AgentEnd {
+                        messages, aborted, ..
+                    } => Some(super::run_alerts::agent_end_facts_from_messages(
+                        *aborted, messages,
+                    )),
+                    _ => None,
+                };
+                Box::pin(async move {
+                    if !durable_id.is_empty()
+                        && let Some(facts) = facts
+                    {
+                        alerts.agent_end(&durable_id, &facts);
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let alerts_settled = self.alerts.clone();
+        api.on(
+            EventKind::AgentSettled,
+            Arc::new(move |_, ctx| {
+                let alerts = alerts_settled.clone();
+                let durable_id = ctx.session_manager.session_id().to_owned();
+                Box::pin(async move {
+                    if !durable_id.is_empty() {
+                        alerts.settled(&durable_id);
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let alerts_shutdown = self.alerts.clone();
+        api.on(
+            EventKind::SessionShutdown,
+            Arc::new(move |_, ctx| {
+                let alerts = alerts_shutdown.clone();
+                let durable_id = ctx.session_manager.session_id().to_owned();
+                Box::pin(async move {
+                    if !durable_id.is_empty() {
+                        alerts.ended(&durable_id);
                     }
                     Ok(EventResult::None)
                 })

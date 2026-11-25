@@ -9,6 +9,8 @@ mod prompt_tests;
 mod remote_thread_tests;
 #[path = "rules_block_tests.rs"]
 mod rules_block_tests;
+#[path = "run_alerts_tests.rs"]
+mod run_alerts_tests;
 #[path = "store_extension_tests.rs"]
 mod store_extension_tests;
 #[path = "thread_control_tests.rs"]

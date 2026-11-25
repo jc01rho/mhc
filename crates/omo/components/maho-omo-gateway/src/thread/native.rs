@@ -5,18 +5,25 @@ use super::component::{GatewayThreadComponentOptions, create_gateway_thread_comp
 use super::engine::GatewayResolution;
 use super::store::{GatewayStoreOptions, create_gateway_store};
 use super::types::{AdmissionLedger, Provenance};
-use maho_ext_api::{EventKind, EventResult, Extension, ExtensionApi, ToolDefinition, ToolResult};
-use std::sync::Arc;
+use maho_ext_api::{
+    EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, ToolDefinition, ToolResult,
+};
+use std::sync::{Arc, Mutex};
+
+type ActiveAlerts = Arc<Mutex<Option<Arc<super::run_alerts::RunAlerts>>>>;
 
 pub struct NativeThreadComponent;
 
 impl Extension for NativeThreadComponent {
     fn register(&self, api: &mut ExtensionApi) {
         let runtime = api.runtime.clone();
+        let active_alerts: ActiveAlerts = Arc::default();
+        let start_alerts = active_alerts.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, ctx| {
                 let runtime = runtime.clone();
+                let start_alerts = start_alerts.clone();
                 Box::pin(async move {
                     let store = create_gateway_store(GatewayStoreOptions::new(
                         ctx.agent_dir.to_string_lossy(),
@@ -72,6 +79,10 @@ impl Extension for NativeThreadComponent {
                             sessions_directory: Some(ctx.agent_dir.join("sessions")),
                             remote: None,
                         }));
+                    *start_alerts
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(component.alerts.clone());
                     let mut session_api = ExtensionApi::new(
                         maho_ext_api::LoadedExtension::new(
                             "thread",
@@ -117,6 +128,71 @@ impl Extension for NativeThreadComponent {
                                 })
                             }),
                         ))?;
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let end_alerts = active_alerts.clone();
+        api.on(
+            EventKind::AgentEnd,
+            Arc::new(move |event, ctx| {
+                let alerts = end_alerts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let durable_id = ctx.session_manager.session_id().to_owned();
+                let facts = match event {
+                    ExtensionEvent::AgentEnd {
+                        messages, aborted, ..
+                    } => Some(super::run_alerts::agent_end_facts_from_messages(
+                        *aborted, messages,
+                    )),
+                    _ => None,
+                };
+                Box::pin(async move {
+                    if !durable_id.is_empty()
+                        && let (Some(alerts), Some(facts)) = (alerts, facts)
+                    {
+                        alerts.agent_end(&durable_id, &facts);
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let settled_alerts = active_alerts.clone();
+        api.on(
+            EventKind::AgentSettled,
+            Arc::new(move |_, ctx| {
+                let alerts = settled_alerts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let durable_id = ctx.session_manager.session_id().to_owned();
+                Box::pin(async move {
+                    if !durable_id.is_empty()
+                        && let Some(alerts) = alerts
+                    {
+                        alerts.settled(&durable_id);
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let shutdown_alerts = active_alerts;
+        api.on(
+            EventKind::SessionShutdown,
+            Arc::new(move |_, ctx| {
+                let alerts = shutdown_alerts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let durable_id = ctx.session_manager.session_id().to_owned();
+                Box::pin(async move {
+                    if !durable_id.is_empty()
+                        && let Some(alerts) = alerts
+                    {
+                        alerts.ended(&durable_id);
                     }
                     Ok(EventResult::None)
                 })
