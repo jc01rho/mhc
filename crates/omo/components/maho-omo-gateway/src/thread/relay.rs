@@ -481,6 +481,8 @@ impl GatewayRelay {
                     return replayed;
                 }
             }
+            // Only a connector delivers inbound, so these refusals name its next step, not the session-facing
+            // defaults.
             if binding.status != super::store_relay_ops::BindingStatus::Active {
                 return GatewayDeliveryResult::Error {
                     error: *failure(
@@ -489,7 +491,9 @@ impl GatewayRelay {
                         Some(
                             serde_json::json!({ "binding_id": binding.binding_id, "status": binding.status.as_str() }),
                         ),
-                        None,
+                        Some(
+                            "The binding is closed: deliver the message through the binding the gateway keeps for this chat now.",
+                        ),
                     ),
                 };
             }
@@ -499,7 +503,9 @@ impl GatewayRelay {
                         "unsupported",
                         "The binding carries no inbound direction.",
                         Some(serde_json::json!({ "binding_id": binding.binding_id })),
-                        None,
+                        Some(
+                            "This binding takes no inbound messages: deliver through a binding with an inbound direction, such as the one the gateway keeps for this chat.",
+                        ),
                     ),
                 };
             }
