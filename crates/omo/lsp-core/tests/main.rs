@@ -5,6 +5,9 @@
 pub mod client_diagnostics_concurrency;
 #[path = "client_diagnostics_freshness.rs"]
 pub mod client_diagnostics_freshness;
+#[cfg(unix)]
+#[path = "directory_diagnostics_mixed_typescript.rs"]
+pub mod directory_diagnostics_mixed_typescript;
 #[path = "formatting_latest.rs"]
 pub mod formatting_latest;
 #[path = "lifecycle_latest.rs"]
@@ -15,6 +18,9 @@ pub mod post_edit_not_installed;
 pub mod server_installation_latest;
 #[path = "server_resolution_local_binary.rs"]
 pub mod server_resolution_local_binary;
+#[cfg(unix)]
+#[path = "server_resolution_typescript_native.rs"]
+pub mod server_resolution_typescript_native;
 #[path = "typescript_server_defaults.rs"]
 pub mod typescript_server_defaults;
 #[path = "workspace_apply_edit.rs"]

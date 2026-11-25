@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[cfg(unix)]
+pub mod typescript_projects;
+
 use lsp_core::Diagnostic;
 use lsp_core::LspClient;
 use lsp_core::LspClientOptions;
