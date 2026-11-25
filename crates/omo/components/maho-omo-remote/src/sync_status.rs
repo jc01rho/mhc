@@ -81,45 +81,47 @@ pub struct SyncStatusReport {
 impl SyncStatusReport {
     /// The report as one JSON object, in the upstream field order.
     pub fn to_json(&self) -> Value {
+        let device = match &self.device {
+            Section::Ok(device) => json!({
+                "ok": true,
+                "joined": device.joined,
+                "switch": if device.switch_on { "on" } else { "off" },
+            }),
+            Section::Failed(reason) => json!({ "ok": false, "reason": reason }),
+        };
+        let devices = match &self.devices {
+            Section::Ok(list) => json!({
+                "ok": true,
+                "list": list.iter().map(device_json).collect::<Vec<_>>(),
+            }),
+            Section::Failed(reason) => json!({ "ok": false, "reason": reason }),
+        };
+        let pending = match &self.pending {
+            Section::Ok(list) => json!({
+                "ok": true,
+                "list": list
+                    .iter()
+                    .map(|row| json!({
+                        "id": row.id,
+                        "expiresAt": row.expires_at,
+                        "answered": row.answered,
+                    }))
+                    .collect::<Vec<_>>(),
+            }),
+            Section::Failed(reason) => json!({ "ok": false, "reason": reason }),
+        };
+        let engine = match &self.engine {
+            EngineSyncRead::NoEngine => json!({ "kind": "no_engine" }),
+            EngineSyncRead::Running => json!({ "kind": "running" }),
+            EngineSyncRead::Unreadable(reason) => json!({ "kind": "unreadable", "reason": reason }),
+        };
         json!({
             "account": self.account,
             "deviceId": self.device_id,
-            "device": match &self.device {
-                Section::Ok(device) => json!({
-                    "ok": true,
-                    "joined": device.joined,
-                    "switch": if device.switch_on { "on" } else { "off" },
-                }),
-                Section::Failed(reason) => json!({ "ok": false, "reason": reason }),
-            },
-            "devices": match &self.devices {
-                Section::Ok(list) => json!({
-                    "ok": true,
-                    "list": list.iter().map(device_json).collect::<Vec<_>>(),
-                }),
-                Section::Failed(reason) => json!({ "ok": false, "reason": reason }),
-            },
-            "pending": match &self.pending {
-                Section::Ok(list) => json!({
-                    "ok": true,
-                    "list": list
-                        .iter()
-                        .map(|row| json!({
-                            "id": row.id,
-                            "expiresAt": row.expires_at,
-                            "answered": row.answered,
-                        }))
-                        .collect::<Vec<_>>(),
-                }),
-                Section::Failed(reason) => json!({ "ok": false, "reason": reason }),
-            },
-            "engine": match &self.engine {
-                EngineSyncRead::NoEngine => json!({ "kind": "no_engine" }),
-                EngineSyncRead::Running => json!({ "kind": "running" }),
-                EngineSyncRead::Unreadable(reason) => {
-                    json!({ "kind": "unreadable", "reason": reason })
-                }
-            },
+            "device": device,
+            "devices": devices,
+            "pending": pending,
+            "engine": engine,
         })
     }
 
