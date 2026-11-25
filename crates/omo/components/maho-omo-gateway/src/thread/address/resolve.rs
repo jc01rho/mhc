@@ -1,61 +1,417 @@
 //! The one resolver (design sections 2-5): `self`, a bare address, or `<device>/<thread>`.
 //!
-//! Upstream counterpart: `resolve.ts` (#14305). In mhc's no-account runtime (`ctx.remote === undefined` upstream),
-//! a pinned reply answers `remote_unavailable`, `here/<thread>` asks this device's book (calling `local_for` with
-//! the thread part when provided, #14305 review M2), and any other `<device>/<thread>` resolves as the whole text
-//! against this device's book (a thread name on this device may contain `/`).
+//! Upstream counterpart: `resolve.ts` (#14305). Over this device's book and the account (`ResolveContext.remote`), read
+//! at most once. A device reading is taken only when the first part names a device; when it misses there, or names no
+//! device, the whole text is resolved as a bare address (a thread name may contain `/`), and the device's refusal answers
+//! only when that also misses. Both readings resolving to different threads is ambiguous. Without a remote surface
+//! (`ctx.remote === undefined` upstream) a pinned reply answers `remote_unavailable`, `here/<thread>` asks this device's
+//! book (calling `local_for` with the thread part when provided, #14305 review M2), and any other `<device>/<thread>`
+//! resolves as the whole text against this device's book.
 
 use maho_thread_address_core::{
-    HERE, NotAskedReason, ParsedAddress, SilentDevice, SilentReason, device_not_asked,
-    devices_silent, no_thread_on_device, parse_address,
+    HERE, ParsedAddress, ResolveDeviceOptions, SilentDevice, SilentReason, devices_silent,
+    format_address, id_shaped, no_device, no_thread_on_device, parse_address,
 };
+use std::sync::Arc;
 
-use super::bare::resolve_bare;
-use super::refusals::{ThreadRefusal, tool_refusal};
+use serde_json::{Value, json};
+
+use crate::thread::addressing::{ThreadAddressEntry, candidate_thread};
+use crate::thread::remote::address_book::relay_address_entry;
+use crate::thread::remote::ports::RemoteThreadSurface;
+
+use super::account::{
+    Account, AccountAttempt, AccountRead, AccountReads, Reads, account_devices, read_account,
+    read_roster,
+};
+use super::bare::{BareResolved, device_name_of, resolve_bare};
+use super::device::{AccountDevice, AccountDevices, device_rows, resolve_account_device};
+use super::on_device::resolve_on_device;
+use super::probe::pinned;
+use super::refusals::{ThreadRefusal, refusal, tool_refusal, with_addresses};
 use super::types::{Found, ResolveContext, ResolveOptions, Resolved, ResolvedWhere};
+use maho_thread_address_core::{DeviceListing, DeviceRef};
 
-fn finish(hit: Found) -> Resolved {
-    let thread = hit.entry.thread_id.clone();
-    Resolved {
-        address: thread.clone(),
-        thread,
-        device: None,
-        where_: ResolvedWhere::Here {
-            entry: hit.entry.clone(),
+fn ref_of(row: Option<&AccountDevice>, id: &str, here: Option<&str>) -> DeviceRef {
+    DeviceRef {
+        id: id.to_owned(),
+        name: row.map_or_else(|| id.to_owned(), |row| row.label.clone()),
+        online: row.is_none_or(|row| row.online),
+        here: Some(id) == here,
+        listing: match row {
+            Some(row) if !row.online => DeviceListing::Offline,
+            _ => DeviceListing::Listed,
         },
-        entry: hit.entry,
-        resolution: hit.resolution,
-        all_scope: hit.all_scope,
     }
 }
 
+/// The devices the online check reads: the account's roster when this resolution read one, else one device list.
+async fn roster_for(
+    remote: &RemoteThreadSurface,
+    account: Option<&Account>,
+    device: &str,
+) -> Result<Vec<AccountDevice>, ThreadRefusal> {
+    if let Some(roster) = account.and_then(|read| read.roster.clone()) {
+        return Ok(roster);
+    }
+    match account_devices(&remote.client).await {
+        Ok(read) => Ok(read.devices),
+        Err(message) => Err(refusal(
+            "host_unavailable",
+            "This device's device service could not list the account's devices.",
+            "Retry when the device service is reachable.",
+            Some(json!({ "device": device, "reason": message })),
+        )),
+    }
+}
+
+async fn finish(
+    ctx: &ResolveContext<'_>,
+    hit: Result<Found, ThreadRefusal>,
+    account: Option<&Account>,
+    opts: &ResolveOptions<'_>,
+) -> Result<Resolved, ThreadRefusal> {
+    let hit = hit?;
+    let (Some(row), Some(remote)) = (hit.entry.row.clone(), ctx.remote) else {
+        let here = account.and_then(|read| read.here.as_deref());
+        let self_row = account.and_then(|read| {
+            read.devices
+                .iter()
+                .find(|device| Some(device.device.as_str()) == here)
+        });
+        let device = here.map(|id| ref_of(self_row, id, Some(id)));
+        let thread = hit.entry.thread_id.clone();
+        let address = match &device {
+            None => thread.clone(),
+            Some(device) => format_address(&device.id, &thread),
+        };
+        return Ok(Resolved {
+            thread,
+            address,
+            device,
+            where_: ResolvedWhere::Here {
+                entry: hit.entry.clone(),
+            },
+            entry: hit.entry,
+            resolution: hit.resolution,
+            all_scope: hit.all_scope,
+        });
+    };
+    let roster: Option<Vec<AccountDevice>> = if opts.need_online || account.is_none() {
+        Some(roster_for(remote, account, &row.device).await?)
+    } else {
+        account.and_then(|read| read.roster.clone())
+    };
+    let listed = roster
+        .as_ref()
+        .and_then(|devices| devices.iter().find(|device| device.device == row.device))
+        .cloned();
+    if opts.need_online {
+        let Some(listed) = &listed else {
+            let known = device_rows(roster.as_deref().unwrap_or(&[]));
+            return Err(tool_refusal(&no_device(&row.device, &known), None, None));
+        };
+        let only = AccountDevices {
+            here: account.and_then(|read| read.here.clone()),
+            devices: vec![listed.clone()],
+            listing_of: None,
+        };
+        resolve_account_device(
+            &only,
+            &row.device,
+            ResolveDeviceOptions {
+                online: true,
+                exact_id: false,
+            },
+        )?;
+    }
+    let mut device = ref_of(
+        listed.as_ref(),
+        &row.device,
+        account.and_then(|read| read.here.as_deref()),
+    );
+    if let Some(read) = account {
+        device.listing = read.listing_of(&row.device);
+    }
+    let thread = hit.entry.thread_id.clone();
+    let key = if thread.is_empty() {
+        row.session_id.clone()
+    } else {
+        thread.clone()
+    };
+    Ok(Resolved {
+        address: format_address(&row.device, &key),
+        thread,
+        device: Some(device),
+        where_: ResolvedWhere::Device { row },
+        entry: hit.entry,
+        resolution: hit.resolution,
+        all_scope: hit.all_scope,
+    })
+}
+
+fn candidate_json(entry: &ThreadAddressEntry, device: &str) -> Value {
+    json!({
+        "thread": candidate_thread(entry),
+        "name": entry.name,
+        "cwd": entry.cwd,
+        "preview": "",
+        "updatedAt": entry.updated_at,
+        "state": entry.status.as_str(),
+        "device": device,
+    })
+}
+
+fn ambiguous(text: &str, readings: &[Found], account: &Account) -> ThreadRefusal {
+    let candidates: Vec<Value> = readings
+        .iter()
+        .map(|reading| {
+            let device = reading
+                .entry
+                .row
+                .as_ref()
+                .map_or("here", |row| row.device.as_str());
+            candidate_json(&reading.entry, device)
+        })
+        .collect();
+    let failure = refusal(
+        "ambiguous_target",
+        format!(
+            "\"{text}\" names a thread on a device and a thread named \"{text}\"; none was picked."
+        ),
+        "Pass the exact thread value of the intended thread from candidates.",
+        Some(json!({ "candidates": candidates })),
+    );
+    with_addresses(
+        *failure,
+        account.here.as_deref(),
+        device_name_of(Some(account)),
+    )
+}
+
+/// #14048 (`unique_holder`): the refusal when more than one device lists the resolved thread id, this device's book
+/// included, one candidate per device; `None` when one device does. Read from the resolution's own account read.
+async fn other_holder(
+    ctx: &ResolveContext<'_>,
+    hit: &Found,
+    reads: &mut Reads<'_>,
+) -> Option<ThreadRefusal> {
+    let account = match reads.account().await {
+        AccountAttempt::None => return None,
+        AccountAttempt::Unavailable(unavailable) => return Some(unavailable),
+        AccountAttempt::Failed(message) => {
+            return Some(refusal(
+                "host_unavailable",
+                "The account's session listing could not be read to confirm the session's device.",
+                "Retry when the device service is reachable.",
+                Some(json!({ "reason": message })),
+            ));
+        }
+        AccountAttempt::Account(account) => account,
+    };
+    let thread = hit.entry.thread_id.as_str();
+    let mut by_device: Vec<(String, ThreadAddressEntry)> = Vec::new();
+    let local = ctx.local.iter().filter(|entry| entry.thread_id == thread);
+    let remote_rows = account
+        .rows
+        .iter()
+        .filter(|row| {
+            Some(row.device.as_str()) != account.here.as_deref()
+                && row.durable_id.as_deref().unwrap_or_default() == thread
+        })
+        .map(|row| relay_address_entry(row, &[]));
+    let entries: Vec<ThreadAddressEntry> = local.cloned().chain(remote_rows).collect();
+    for entry in entries {
+        let device = entry
+            .row
+            .as_ref()
+            .map_or_else(|| "here".to_owned(), |row| row.device.clone());
+        match by_device.iter().position(|(known, _)| *known == device) {
+            Some(position) => by_device[position].1 = entry,
+            None => by_device.push((device, entry)),
+        }
+    }
+    if by_device.len() <= 1 {
+        return None;
+    }
+    let candidates: Vec<Value> = by_device
+        .iter()
+        .map(|(device, entry)| {
+            let mut candidate = candidate_json(entry, device);
+            candidate["thread"] = Value::String(thread.to_owned());
+            candidate
+        })
+        .collect();
+    let failure = refusal(
+        "ambiguous_target",
+        format!(
+            "Session {thread} is listed on more than one device and nothing names which one sent it; none was picked."
+        ),
+        "Address the session on one device with <device>/<session id>.",
+        Some(json!({ "candidates": candidates })),
+    );
+    Some(with_addresses(
+        *failure,
+        account.here.as_deref(),
+        device_name_of(Some(&*account)),
+    ))
+}
+
+async fn bare(
+    book: &ResolveContext<'_>,
+    address: &str,
+    opts: &ResolveOptions<'_>,
+    reads: &mut Reads<'_>,
+) -> Result<Resolved, ThreadRefusal> {
+    let BareResolved { result, account } = resolve_bare(book, address, opts, reads).await;
+    let held = match &result {
+        Ok(found) if opts.unique_holder => other_holder(book, found, reads).await,
+        _ => None,
+    };
+    let result = match held {
+        Some(refused) => Err(refused),
+        None => result,
+    };
+    finish(book, result, account.as_deref(), opts).await
+}
+
+enum OneRead {
+    Account(Arc<Account>),
+    None,
+    Refused(ThreadRefusal),
+}
+
+/// The resolution without an account answer for `<device>/<thread>`: this device's book for `here`, else the whole text.
+async fn without_account(
+    ctx: &ResolveContext<'_>,
+    text: &str,
+    device: &str,
+    thread: &str,
+    opts: &ResolveOptions<'_>,
+    reads: &mut Reads<'_>,
+) -> Result<Resolved, ThreadRefusal> {
+    if device != HERE {
+        return bare(ctx, text, opts, reads).await;
+    }
+    let owned = ctx.local_for.map(|local_for| local_for(thread));
+    let local: &[ThreadAddressEntry] = owned.as_deref().unwrap_or(ctx.local);
+    let book = ResolveContext { local, ..*ctx };
+    bare(&book, thread, opts, reads).await
+}
+
 /// Resolves `text` (`self`, a bare address, or `<device>/<thread>`) against `ctx`.
-pub fn resolve_address(
+pub async fn resolve_address(
     ctx: &ResolveContext<'_>,
     text: &str,
     opts: &ResolveOptions<'_>,
 ) -> Result<Resolved, ThreadRefusal> {
-    if let Some(pin) = opts.pin {
-        let core = device_not_asked(NotAskedReason::Remote, pin.thread, pin.device, pin.device);
-        return Err(tool_refusal(&core, None, None));
+    let mut reads = Reads::new(ctx.remote);
+    if let Some(pin) = &opts.pin {
+        let found = pinned(ctx.remote, pin, &mut reads.status, None).await;
+        return finish(ctx, found, None, opts).await;
     }
-    match parse_address(text) {
-        ParsedAddress::SelfThread => resolve_bare(ctx, "self", opts).map(finish),
-        ParsedAddress::Bare { .. } => resolve_bare(ctx, text, opts).map(finish),
-        ParsedAddress::Device { device, thread, .. } => {
-            if device == HERE {
-                if let Some(local_for) = ctx.local_for {
-                    let owned = local_for(&thread);
-                    let sub = ResolveContext {
-                        local: &owned,
-                        ..*ctx
-                    };
-                    resolve_bare(&sub, &thread, opts).map(finish)
-                } else {
-                    resolve_bare(ctx, &thread, opts).map(finish)
-                }
-            } else {
-                resolve_bare(ctx, text, opts).map(finish)
+    let (device_part, thread_part) = match parse_address(text) {
+        ParsedAddress::SelfThread => return bare(ctx, "self", opts, &mut reads).await,
+        ParsedAddress::Bare { .. } => return bare(ctx, text, opts, &mut reads).await,
+        ParsedAddress::Device { device, thread, .. } => (device, thread),
+    };
+    let roster_read = match ctx.remote {
+        None => None,
+        Some(remote) => {
+            let ready = reads.status.ready().await;
+            Some(read_roster(remote, ready).await)
+        }
+    };
+    let (Some(remote), Some(AccountRead::Account(roster_account))) = (ctx.remote, roster_read)
+    else {
+        return without_account(ctx, text, &device_part, &thread_part, opts, &mut reads).await;
+    };
+    let roster = AccountDevices {
+        here: roster_account.here.clone(),
+        devices: roster_account.devices.clone(),
+        listing_of: None,
+    };
+    let device = match resolve_account_device(
+        &roster,
+        &device_part,
+        ResolveDeviceOptions {
+            online: opts.need_online,
+            exact_id: false,
+        },
+    ) {
+        Ok(device) => device,
+        Err(device_refusal) => {
+            let whole = resolve_bare(ctx, text, opts, &mut reads).await;
+            return match whole.result {
+                Ok(found) => finish(ctx, Ok(found), whole.account.as_deref(), opts).await,
+                Err(_) => Err(device_refusal),
+            };
+        }
+    };
+    let one = if device.here {
+        OneRead::Account(Arc::clone(&roster_account))
+    } else {
+        let ready = reads.status.ready().await;
+        let given = AccountReads {
+            ready: Some(ready),
+            roster: Some(roster_account.roster.clone()),
+            device: Some(device.id.clone()),
+        };
+        match read_account(remote, given).await {
+            Ok(AccountRead::Account(account)) => OneRead::Account(account),
+            Ok(AccountRead::None) => OneRead::None,
+            Ok(AccountRead::Unavailable(unavailable)) => OneRead::Refused(unavailable),
+            Err(message) => OneRead::Refused(refusal(
+                "host_unavailable",
+                "The account's session listing could not be reached.",
+                "Retry when the device service is reachable.",
+                Some(json!({ "reason": message })),
+            )),
+        }
+    };
+    let one = match one {
+        OneRead::Account(account) => account,
+        OneRead::None => return bare(ctx, text, opts, &mut reads).await,
+        OneRead::Refused(refused) => return Err(refused),
+    };
+    let mut device = device;
+    device.listing = one.listing_of(&device.id);
+    let one: &Account = &one;
+    let on_device = resolve_on_device(
+        ctx,
+        remote,
+        one,
+        &device,
+        &thread_part,
+        opts,
+        &mut reads.status,
+    )
+    .await;
+    match on_device {
+        Ok(found) => {
+            if id_shaped(&thread_part) {
+                return finish(ctx, Ok(found), Some(one), opts).await;
+            }
+            let book = ResolveContext {
+                remote: None,
+                ..*ctx
+            };
+            let here = resolve_bare(&book, text, opts, &mut reads).await;
+            if let Ok(local) = &here.result
+                && local.entry.thread_id != found.entry.thread_id
+            {
+                return Err(ambiguous(text, &[found, local.clone()], one));
+            }
+            finish(ctx, Ok(found), Some(one), opts).await
+        }
+        Err(refused) => {
+            if id_shaped(&thread_part) {
+                return Err(refused);
+            }
+            let whole = resolve_bare(ctx, text, opts, &mut reads).await;
+            match whole.result {
+                Ok(found) => finish(ctx, Ok(found), whole.account.as_deref(), opts).await,
+                Err(_) => Err(refused),
             }
         }
     }
@@ -82,20 +438,21 @@ pub fn thread_missing_on_device(thread: &str, device_id: &str, device_name: &str
 
 #[cfg(test)]
 mod tests {
-    use maho_thread_address_core::{
-        DeviceListing, NotAskedReason, ResolveDeviceOptions, SilentDevice, SilentReason,
-        device_not_asked,
-    };
-    use serde_json::json;
+    use maho_thread_address_core::{NotAskedReason, device_not_asked};
 
     use super::*;
-    use crate::thread::address::device::{AccountDevice, AccountDevices, resolve_account_device};
-    use crate::thread::address::refusals::with_addresses;
     use crate::thread::address::types::{Pin, Resolution};
-    use crate::thread::addressing::ThreadAddressEntry;
     use crate::thread::contracts_results::ThreadStatus;
     use crate::thread::errors::thread_tool_failure;
     use crate::thread::store_extension_session_ops::UNKNOWN_CALLER;
+
+    fn resolve_sync(
+        ctx: &ResolveContext<'_>,
+        text: &str,
+        opts: &ResolveOptions<'_>,
+    ) -> Result<Resolved, ThreadRefusal> {
+        futures::executor::block_on(resolve_address(ctx, text, opts))
+    }
 
     const HERE_LIVE: &str = "0aa00001-0000-4000-8000-000000000001";
     const HERE_ENDED: &str = "0aa00002-0000-4000-8000-000000000002";
@@ -111,6 +468,9 @@ mod tests {
             status: ThreadStatus::Live,
             updated_at: None,
             session_ids: route.into_iter().map(str::to_owned).collect(),
+            device: None,
+            aliases: Vec::new(),
+            row: None,
         }
     }
 
@@ -126,6 +486,7 @@ mod tests {
     fn every_local_input_form_resolves_to_the_same_thread() {
         let book = local_book();
         let ctx = ResolveContext {
+            remote: None,
             caller_workspace_root: "/work/a",
             local: &book,
             local_for: None,
@@ -148,7 +509,7 @@ mod tests {
             ("fix/login", HERE_SLASH, Resolution::Name),
         ];
         for (text, expected_thread, expected_res) in cases {
-            let resolved = resolve_address(&ctx, text, &opts).expect(text);
+            let resolved = resolve_sync(&ctx, text, &opts).expect(text);
             assert_eq!(resolved.thread, expected_thread, "{text}");
             assert_eq!(resolved.address, expected_thread, "{text}");
             assert_eq!(resolved.resolution, expected_res, "{text}");
@@ -172,12 +533,13 @@ mod tests {
             }
         };
         let ctx = ResolveContext {
+            remote: None,
             caller_workspace_root: "/work/a",
             local: &visible,
             local_for: Some(&local_for),
             caller_id: HERE_LIVE,
         };
-        let hit = resolve_address(
+        let hit = resolve_sync(
             &ctx,
             &format!("here/{HERE_ENDED}"),
             &ResolveOptions::default(),
@@ -193,6 +555,7 @@ mod tests {
         book.push(entry(HERE_SHARED_1, "shared", None, "/work/a"));
         book.push(entry(HERE_SHARED_2, "shared", None, "/work/a"));
         let ctx = ResolveContext {
+            remote: None,
             caller_workspace_root: "/work/a",
             local: &book,
             local_for: None,
@@ -200,17 +563,17 @@ mod tests {
         };
         let opts = ResolveOptions::default();
 
-        let empty = resolve_address(&ctx, "", &opts).expect_err("empty");
+        let empty = resolve_sync(&ctx, "", &opts).expect_err("empty");
         assert_eq!(empty.code.as_str(), "invalid_arguments");
 
-        let ctrl = resolve_address(&ctx, "a\u{0001}b", &opts).expect_err("control");
+        let ctrl = resolve_sync(&ctx, "a\u{0001}b", &opts).expect_err("control");
         assert_eq!(ctrl.code.as_str(), "invalid_arguments");
 
-        let missing = resolve_address(&ctx, "no thread is named so", &opts).expect_err("missing");
+        let missing = resolve_sync(&ctx, "no thread is named so", &opts).expect_err("missing");
         assert_eq!(missing.code.as_str(), "not_found");
         assert_eq!(missing.details, Some(json!({ "kind": "thread" })));
 
-        let shared = resolve_address(&ctx, "shared", &opts).expect_err("shared");
+        let shared = resolve_sync(&ctx, "shared", &opts).expect_err("shared");
         assert_eq!(shared.code.as_str(), "ambiguous_target");
         assert_eq!(
             shared.details.as_ref().and_then(|d| d.get("kind")),
@@ -221,17 +584,19 @@ mod tests {
             caller_id: UNKNOWN_CALLER,
             ..ctx
         };
-        let self_err = resolve_address(&unknown_caller, "self", &opts).expect_err("unknown caller");
+        let self_err = resolve_sync(&unknown_caller, "self", &opts).expect_err("unknown caller");
         assert_eq!(self_err.code.as_str(), "caller_context_missing");
 
         let other_ws = ResolveContext {
+            remote: None,
             caller_workspace_root: "/work/other",
             ..ctx
         };
-        let denied = resolve_address(&other_ws, "alpha", &opts).expect_err("scope denied");
+        let denied = resolve_sync(&other_ws, "alpha", &opts).expect_err("scope denied");
         assert_eq!(denied.code.as_str(), "scope_denied");
 
         let no_root = ResolveContext {
+            remote: None,
             caller_workspace_root: "   ",
             ..ctx
         };
@@ -239,7 +604,7 @@ mod tests {
             fuzzy: true,
             ..opts
         };
-        let fuzzy_err = resolve_address(&no_root, "alpha", &fuzzy_opts).expect_err("fuzzy no root");
+        let fuzzy_err = resolve_sync(&no_root, "alpha", &fuzzy_opts).expect_err("fuzzy no root");
         assert_eq!(fuzzy_err.code.as_str(), "caller_context_missing");
 
         let pinned_opts = ResolveOptions {
@@ -249,7 +614,7 @@ mod tests {
             }),
             ..opts
         };
-        let pin_err = resolve_address(&ctx, "0bb00001-0000-4000-8000-000000000001", &pinned_opts)
+        let pin_err = resolve_sync(&ctx, "0bb00001-0000-4000-8000-000000000001", &pinned_opts)
             .expect_err("pin without remote");
         assert_eq!(pin_err.code.as_str(), "host_unavailable");
         assert_eq!(

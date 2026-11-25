@@ -1,14 +1,17 @@
 //! The address module's input and output shapes.
 //!
-//! Upstream counterpart: `types.ts`. Upstream's `ResolveContext` carries the account surface (`remote`) and upstream's
-//! `Resolved.where` can name another device's listing row; mhc has neither, so this file describes the no-account
-//! resolution only.
+//! Upstream counterpart: `types.ts`. `ResolveContext.remote` is the account surface; without it a resolution reads
+//! this device's book alone, and `Resolved.where_` can name another device's listing row once the account was read.
+
+use std::sync::Arc;
 
 use maho_thread_address_core::DeviceRef;
 
 use crate::thread::addressing::ThreadAddressEntry;
+use crate::thread::remote::ports::{RemoteSessionRow, RemoteThreadSurface};
 
-/// What one resolution reads: this device's book, the book asked for one address part, and the caller's identity.
+/// What one resolution reads: the account (absent: this device only), this device's book, the book asked for one
+/// address part, and the caller's identity.
 ///
 /// `local_for` is upstream's `ResolveContext.localFor`: once a device part names this device, the thread part is asked
 /// of this device's book on its own, so a send address book that only surfaces a session file for the text it is asked
@@ -18,6 +21,7 @@ pub type LocalBookFor<'a> = &'a dyn Fn(&str) -> Vec<ThreadAddressEntry>;
 
 #[derive(Clone, Copy)]
 pub struct ResolveContext<'a> {
+    pub remote: Option<&'a RemoteThreadSurface>,
     pub caller_workspace_root: &'a str,
     pub local: &'a [ThreadAddressEntry],
     pub local_for: Option<LocalBookFor<'a>>,
@@ -44,12 +48,12 @@ pub struct ResolveOptions<'a> {
     pub id_prefix: bool,
     /// Leave this thread id out of the prefix candidates (a send never targets its own caller by prefix).
     pub exclude_from_prefix: Option<&'a str>,
-    /// Ask each reachable device for a thread id nothing lists. mhc makes no probe, so this changes nothing yet.
+    /// Ask each reachable device for a thread id nothing lists (one probe per device).
     pub probe: bool,
     /// An approved reply resolves only `thread` on `device`.
     pub pin: Option<Pin<'a>>,
-    /// The resolved thread must be listed by one device only. Without an account read there is one book, so this
-    /// answers the resolution unchanged.
+    /// #14048: the resolved thread must be listed by one device only (this device's book included); a sender whose
+    /// delivery names no device cannot be told from a copy of its id elsewhere, so two holders are ambiguous_target.
     pub unique_holder: bool,
     /// `need: "online"`: a thread on a device that is offline is `device_offline`, nothing is queued.
     pub need_online: bool,
@@ -96,11 +100,11 @@ impl Resolution {
     }
 }
 
-/// Where the resolved thread runs. Upstream also names another device's listing row; without an account every hit is
-/// on this device.
+/// Where the resolved thread runs: in this device's book, or as another device's listing row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedWhere {
     Here { entry: ThreadAddressEntry },
+    Device { row: Arc<RemoteSessionRow> },
 }
 
 /// A ladder hit before it becomes a `Resolved` value.
@@ -108,7 +112,7 @@ pub enum ResolvedWhere {
 pub struct Found {
     pub entry: ThreadAddressEntry,
     pub resolution: Resolution,
-    /// `Some(true)` once the hit came through the account; here it is the caller's own `all_scope`.
+    /// `Some(true)` once the hit came through the account (an alias, another device); else the caller's own `all_scope`.
     pub all_scope: Option<bool>,
 }
 
@@ -117,7 +121,8 @@ pub struct Found {
 pub struct Resolved {
     /// The thread id, or the empty string for a session that publishes none (see `address`).
     pub thread: String,
-    /// `<device id>/<thread id>`: accepted by every tool. With no account it is the thread id alone.
+    /// `<device id>/<thread id>` (or `<device id>/<listing key>`): accepted by every tool. With no account read it is the
+    /// thread id alone.
     pub address: String,
     /// `None`: this device, with no account read.
     pub device: Option<DeviceRef>,

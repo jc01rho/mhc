@@ -27,6 +27,7 @@ fn named(
     } else {
         match resolution {
             TargetResolution::Id => Resolution::Id,
+            TargetResolution::Alias => Resolution::Alias,
             TargetResolution::Name => Resolution::Name,
             TargetResolution::IdPrefix => Resolution::IdPrefix,
         }

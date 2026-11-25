@@ -3,8 +3,11 @@
 //! session on another of the account's devices, reached through this device's device service over
 //! the local API.
 
+pub mod address_book;
 pub mod device_service;
 pub mod outcome;
+pub mod ports;
+pub mod remote_ops;
 
 use std::sync::Arc;
 
