@@ -57,9 +57,10 @@ mod tests {
         let item = read_item(&message, 0);
         assert_eq!(item.seq, 1);
         assert_eq!(item.role, "assistant");
+        let parsed: Value = serde_json::from_str(&item.content).expect("json");
         assert_eq!(
-            item.content,
-            r#"[{"text":"429 rate limit from provider","type":"error"}]"#
+            parsed,
+            json!([{ "type": "error", "text": "429 rate limit from provider" }])
         );
         assert!(!item.content.contains("stopReason"));
     }
@@ -90,7 +91,8 @@ mod tests {
         });
         let item = read_item(&message, 0);
         assert_eq!(item.role, "tool");
-        assert_eq!(item.content, r#"[{"text":"ok","type":"text"}]"#);
+        let parsed: Value = serde_json::from_str(&item.content).expect("json");
+        assert_eq!(parsed, json!([{ "type": "text", "text": "ok" }]));
         let stops = json!({
             "role": "assistant",
             "content": "done",
