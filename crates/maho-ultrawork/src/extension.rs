@@ -6,19 +6,36 @@ use maho_ext_api::{
     ExtensionEvent, ExtensionHandler, ExtensionHandlerOptions, FlagType, FlagValue,
     InputEventResult, SessionCompactEvent, ToolContent, ToolResultEventResult,
 };
+use std::path::Path;
 use std::sync::Arc;
 
 /// Runtime flag that turns the whole engine off.
 pub const DISABLE_FLAG: &str = "ultrawork-disabled";
 
+/// Predicate consulted when an input carries a visible ultrawork keyword: returns `true` when the
+/// effective `keyword_detector` settings turn `ultrawork` off.
+pub type KeywordDisabledFn = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+
 #[derive(Default, Clone)]
 pub struct UltraworkExtension {
     engine: Engine,
+    keyword_disabled: Option<KeywordDisabledFn>,
 }
 
 impl UltraworkExtension {
     pub fn new(engine: Engine) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            keyword_disabled: None,
+        }
+    }
+
+    pub fn with_keyword_disabled(
+        mut self,
+        keyword_disabled: impl Fn(&Path) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.keyword_disabled = Some(Arc::new(keyword_disabled));
+        self
     }
 
     pub fn engine(&self) -> &Engine {
@@ -48,9 +65,13 @@ impl Extension for UltraworkExtension {
         });
 
         let (engine, off) = (self.engine.clone(), Arc::clone(&disabled));
+        let keyword_disabled = self.keyword_disabled.clone();
+        let api_cwd = api.cwd.clone();
         let session_role = api.profile.session_context.get("role").cloned();
         let on_input: ExtensionHandler = Arc::new(move |event, ctx| {
             let (engine, off) = (engine.clone(), Arc::clone(&off));
+            let keyword_disabled = keyword_disabled.clone();
+            let api_cwd = api_cwd.clone();
             let session_role = session_role
                 .clone()
                 .filter(|role| !role.is_empty())
@@ -68,6 +89,18 @@ impl Extension for UltraworkExtension {
                 };
                 if off() {
                     return Ok(EventResult::Input(InputEventResult::Continue));
+                }
+                if let Some(check) = &keyword_disabled {
+                    let cwd = if !ctx.cwd.as_os_str().is_empty() && ctx.cwd != Path::new("/tmp") {
+                        ctx.cwd.as_path()
+                    } else if !api_cwd.as_os_str().is_empty() {
+                        api_cwd.as_path()
+                    } else {
+                        ctx.cwd.as_path()
+                    };
+                    if crate::has_visible_keyword(&input.text) && check(cwd) {
+                        return Ok(EventResult::Input(InputEventResult::Continue));
+                    }
                 }
                 let session = session_of(ctx);
                 let outcome = engine.on_input_with_session_role(
