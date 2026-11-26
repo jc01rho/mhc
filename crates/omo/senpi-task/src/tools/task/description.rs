@@ -101,7 +101,7 @@ Each spawn MUST provide EITHER category OR subagent_type after inheritance. DO N
 
 Blank provider padding is normalized automatically; do not add filler values.
 load_skills prepends named skills. run_in_background=true returns task ids for parallel work; false waits for results.
-name is an optional stable handle. model is an explicit override for a custom agent named by subagent_type ONLY; a builtin agent (explore, librarian, plan-consultant, plan-reviewer, the reviewer agents) refuses it with agent_with_model because it runs on its designated chain (agents.<name>.models in omo.json).
+name is an optional stable handle. model is an explicit override for subagent_type spawns ONLY.
 NEVER combine model with category: a category-routed task always takes its model from omo.json (categories.<name>.models), so passing both fails with invalid_arguments.
 task_send continues an existing child; task always spawns.
 Prompts MUST be in English.

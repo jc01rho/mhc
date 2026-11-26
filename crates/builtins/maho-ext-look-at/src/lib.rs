@@ -7,3 +7,4 @@ pub mod prompts;
 pub mod render;
 pub mod runner;
 pub mod settings;
+pub mod tool_result_images;

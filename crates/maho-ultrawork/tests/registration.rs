@@ -136,3 +136,66 @@ fn keyword_disabled_predicate_turns_off_arming_for_matching_cwd() {
     }
     assert!(maho_ultrawork::snapshot("registration-allowed").armed);
 }
+
+#[test]
+fn model_contract_selects_the_delivered_contract_per_model() {
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("ultrawork", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    UltraworkExtension::default()
+        .with_model_contract(|model| model.starts_with("gpt-").then_some("GPT CONTRACT"))
+        .register(&mut api);
+    let handlers = &api.registered.handlers;
+    for (session, model, expected) in [
+        ("registration-gpt", "gpt-6.2", "GPT CONTRACT"),
+        (
+            "registration-claude",
+            "claude-opus-5",
+            maho_ultrawork::CORE_CONTRACT,
+        ),
+    ] {
+        let mut ctx: ExtensionContext = stub::context(session);
+        ctx.model = Some(
+            serde_json::from_value(serde_json::json!({"id":model,"name":model,"provider":"p","api":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":4096,"maxTokens":1024}))
+                .expect("model"),
+        );
+        let mut input = ExtensionEvent::Input(InputEvent {
+            input_id: format!("{session}-input"),
+            text: "ulw go".into(),
+            images: None,
+            source: InputSource::Interactive,
+            streaming_behavior: None,
+        });
+        for handler in &handlers[&EventKind::Input] {
+            run(handler(&mut input, &ctx)).expect("input handler");
+        }
+        let mut start = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
+            prompt: "ulw go".into(),
+            trigger: "prompt".into(),
+            preview: false,
+            images: None,
+            system_prompt: String::new(),
+            system_prompt_options: BuildSystemPromptOptions::default(),
+        });
+        let mut delivered = None;
+        for handler in &handlers[&EventKind::BeforeAgentStart] {
+            if let EventResult::BeforeAgentStart(result) =
+                run(handler(&mut start, &ctx)).expect("start handler")
+            {
+                delivered = result.message;
+            }
+        }
+        let message = delivered.expect("directive");
+        let maho_ext_api::ToolContent::Text { text, .. } = &message.content[0] else {
+            panic!("directive is text");
+        };
+        assert_eq!(
+            text,
+            &format!("<omo-ultrawork-directive>\n{expected}\n</omo-ultrawork-directive>"),
+            "{model}"
+        );
+    }
+}

@@ -525,10 +525,10 @@ fn given_custom_subagent_type_with_model_when_validated_then_resolves_to_a_subag
     );
 }
 
-// validateTaskTarget builtin agent+model refusal
+// omo #14367 (agent_with_model) is not ported: the OmOMeow fleet passes a model to builtin agents.
 
 #[test]
-fn given_builtin_agent_with_model_when_validated_then_returns_agent_with_model_error() {
+fn given_builtin_agent_with_model_when_validated_then_resolves_to_a_subagent_selection() {
     for name in [
         "explore",
         "librarian",
@@ -539,10 +539,11 @@ fn given_builtin_agent_with_model_when_validated_then_returns_agent_with_model_e
         "omo-native-gate-reviewer",
         "omo-senpi-code-reviewer",
     ] {
-        let error = target_error_of(target(None, Some(name), Some("anthropic/claude-opus-5-5")));
-        assert_eq!(error.code, TaskTargetErrorCode::AgentWithModel, "{name}");
-        assert!(error.message.contains("agent_with_model"), "{name}");
-        assert!(error.message.contains("omo.json"), "{name}");
+        assert_eq!(
+            target(None, Some(name), Some("anthropic/claude-opus-5-5")),
+            TaskTargetSelection::SubagentType(name.to_string()),
+            "{name}"
+        );
     }
 }
 
@@ -555,7 +556,7 @@ fn given_builtin_agent_without_model_when_validated_then_resolves_to_a_subagent_
 }
 
 #[test]
-fn given_a_batch_whose_second_item_names_explore_with_a_model_when_resolved_then_fails_as_item_target()
+fn given_a_batch_whose_second_item_names_explore_with_a_model_when_resolved_then_both_items_resolve()
  {
     let params = SpawnParamsInput {
         tasks: Some(vec![
@@ -572,11 +573,7 @@ fn given_a_batch_whose_second_item_names_explore_with_a_model_when_resolved_then
         ..SpawnParamsInput::default()
     };
 
-    let ResolveSpawnItemsError::ItemTarget { index, message } = resolve_err(&params) else {
-        panic!("expected item_target error");
-    };
-    assert_eq!(index, 1);
-    assert!(message.contains("agent_with_model"));
+    assert_eq!(resolve_ok(&params).len(), 2);
 }
 
 // resolveSpawnItems category+model exclusivity

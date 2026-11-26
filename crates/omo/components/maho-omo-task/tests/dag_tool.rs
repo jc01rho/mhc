@@ -713,7 +713,7 @@ fn subagent_type_and_model_accepted() {
 }
 
 #[test]
-fn builtin_agent_with_model_rejected() {
+fn builtin_agent_with_model_is_accepted() {
     let f = fixture();
     let conflicted = DefinitionInput {
         key: "release-plan".into(),
@@ -750,10 +750,10 @@ fn builtin_agent_with_model_rejected() {
     )
     .unwrap();
     let details = result.details.unwrap();
-    assert_eq!(details["kind"], "error");
-    assert_eq!(details["error"]["code"], "invalid_definition");
-    assert_eq!(details["error"]["nodes"][0]["code"], "agent_with_model");
-    assert_eq!(f.run_file_count(), 0);
+    assert_eq!(details["kind"], "started", "{details}");
+    let node = &details["snapshot"]["nodes"][0];
+    assert_eq!(node["route"]["agent"], "explore");
+    assert_eq!(node["route"]["model"], "anthropic/claude-opus-4");
 }
 
 #[test]

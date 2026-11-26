@@ -59,13 +59,13 @@ pub fn todo_advisory() -> &'static str {
     TODO_ADVISORY
 }
 
-pub fn wrapped_contract() -> String {
-    format!("{DIRECTIVE_OPEN_TAG}\n{CORE_CONTRACT}\n{DIRECTIVE_CLOSE_TAG}")
+pub fn wrapped_contract(contract: &str) -> String {
+    format!("{DIRECTIVE_OPEN_TAG}\n{contract}\n{DIRECTIVE_CLOSE_TAG}")
 }
 
 /// Hidden custom message that carries the full contract (plus the mass block when asked).
-pub fn directive_message(revision: u64, mass: bool) -> CustomMessage {
-    let mut content = vec![ToolContent::text(wrapped_contract())];
+pub fn directive_message(revision: u64, mass: bool, contract: &str) -> CustomMessage {
+    let mut content = vec![ToolContent::text(wrapped_contract(contract))];
     if mass {
         content.push(ToolContent::text(MASS_BLOCK));
     }
@@ -92,9 +92,9 @@ pub fn reminder_message(mass: bool) -> CustomMessage {
 }
 
 /// The same texts as plain prompt text, for inputs that cannot carry a custom message.
-pub fn inline_block(full: bool, mass: bool) -> String {
+pub fn inline_block(full: bool, mass: bool, contract: &str) -> String {
     let mut out = if full {
-        wrapped_contract()
+        wrapped_contract(contract)
     } else {
         REMINDER.to_owned()
     };

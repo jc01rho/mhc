@@ -8,9 +8,10 @@ mhc counterpart: `crates/omo/senpi-task` (`dag`, `category`, `manager`, `tools/t
 
 | verdict | rows |
 |---|---:|
-| port | 5 |
+| port | 4 |
 | ported | 1 |
 | n/a | 6 |
+| excluded | 1 |
 | gap | 0 |
 | total | 12 |
 
@@ -19,7 +20,7 @@ mhc counterpart: `crates/omo/senpi-task` (`dag`, `category`, `manager`, `tools/t
 | omo PR | verdict | mhc location or reason |
 |---|---|---|
 | #14427 (b9c468be2f, f9b841f85d, 7ca726e3f2) | port | `crates/omo/senpi-task/src/category/builtins.rs` (`BuiltinCategoryDefinition::exact_models`, `GPT_ASTRA_GATE_MODELS`, `DEEP_LOW_GATE_MODELS`, `exact_served_rungs`, private `is_exact_model_category`), `fallback_chains.rs` (single-rung `ultrabrain`, `deep-low`, `deep-high`), `resolver.rs` (`exact_rungs`, exact `builtin_default_model`, `fallback_entry` restoration). Tests: `category_tests.rs`, `chains_tests.rs`, `gating_tests.rs`, `openai_categories_tests.rs`, `coverage_tests.rs`, `tools/task/gated_categories_tests.rs`. |
-| #14367 (dc314011c1, 320fee78d2) | port | `crates/omo/senpi-task/src/tools/task/validation.rs` (`TaskTargetErrorCode::AgentWithModel`, `validate_task_target` checking `canonical_agent_name` against `curated_readonly_agent_names` and `ulw_reviewer_agent_names`, updated `CATEGORY_WITH_MODEL_MESSAGE`), `description.rs`, `params.rs`; `crates/omo/components/maho-omo-task/tests/golden/{workflow,dag}-schema.json`. Tests: `validation_tests.rs`, `execute_spawn_validation_tests.rs`, `maho-omo-task/tests/{dag_tool,adapters}.rs`. |
+| #14367 (dc314011c1, 320fee78d2) | excluded | Not ported, by decision of the mhc fork: the OmOMeow fleet passes a call-site `model` to builtin agents (`explore`, `librarian`, `plan-*`, the reviewer agents), so the `agent_with_model` refusal is kept out. The earlier port in #78 was reverted: `crates/omo/senpi-task/src/tools/task/validation.rs` has no `AgentWithModel`, and `description.rs`, `params.rs` and `crates/omo/components/maho-omo-task/tests/golden/{workflow,dag}-schema.json` keep the pre-#14367 wording. Regression tests: `validation_tests.rs` (`given_builtin_agent_with_model_when_validated_then_resolves_to_a_subagent_selection`), `execute_spawn_validation_tests.rs`, `maho-omo-task/tests/dag_tool.rs` (`builtin_agent_with_model_is_accepted`). Re-check this row on every omo sync. |
 | #14291 (e35927e759) | ported | `crates/omo/senpi-task/src/tools/task/description.rs` (`build_task_tool_description` already places rules before category catalogue) and `description_mcp_cap_tests.rs`. |
 | #14292 review (6a73675a8d, test) | port | `crates/omo/senpi-task/src/tools/task/description_mcp_cap_tests.rs` (`given_many_agents_and_a_long_custom_category_when_built_then_only_the_category_catalogue_lies_past_the_cap`). |
 | #14292 review (6a73675a8d, EQ goldens) | n/a | TS `fused-equivalence-golden` darwin-arm64/linux-x64 E21-E24 JSON fixtures only. |

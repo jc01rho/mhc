@@ -16,10 +16,14 @@ pub const DISABLE_FLAG: &str = "ultrawork-disabled";
 /// effective `keyword_detector` settings turn `ultrawork` off.
 pub type KeywordDisabledFn = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 
+/// Picks the contract text for the session's model id; `None` keeps the core contract.
+pub type ModelContractFn = Arc<dyn Fn(&str) -> Option<&'static str> + Send + Sync>;
+
 #[derive(Default, Clone)]
 pub struct UltraworkExtension {
     engine: Engine,
     keyword_disabled: Option<KeywordDisabledFn>,
+    model_contract: Option<ModelContractFn>,
 }
 
 impl UltraworkExtension {
@@ -27,6 +31,7 @@ impl UltraworkExtension {
         Self {
             engine,
             keyword_disabled: None,
+            model_contract: None,
         }
     }
 
@@ -38,6 +43,14 @@ impl UltraworkExtension {
         self
     }
 
+    pub fn with_model_contract(
+        mut self,
+        model_contract: impl Fn(&str) -> Option<&'static str> + Send + Sync + 'static,
+    ) -> Self {
+        self.model_contract = Some(Arc::new(model_contract));
+        self
+    }
+
     pub fn engine(&self) -> &Engine {
         &self.engine
     }
@@ -45,6 +58,14 @@ impl UltraworkExtension {
 
 fn session_of(ctx: &ExtensionContext) -> String {
     ctx.session_manager.session_id().to_owned()
+}
+
+/// Selected at delivery, so a model switch before the turn starts gets its own contract.
+fn contract_for(model_contract: Option<&ModelContractFn>, ctx: &ExtensionContext) -> &'static str {
+    model_contract
+        .zip(ctx.model.as_ref())
+        .and_then(|(select, model)| select(&model.id))
+        .unwrap_or(crate::CORE_CONTRACT)
 }
 
 impl Extension for UltraworkExtension {
@@ -66,11 +87,13 @@ impl Extension for UltraworkExtension {
 
         let (engine, off) = (self.engine.clone(), Arc::clone(&disabled));
         let keyword_disabled = self.keyword_disabled.clone();
+        let model_contract = self.model_contract.clone();
         let api_cwd = api.cwd.clone();
         let session_role = api.profile.session_context.get("role").cloned();
         let on_input: ExtensionHandler = Arc::new(move |event, ctx| {
             let (engine, off) = (engine.clone(), Arc::clone(&off));
             let keyword_disabled = keyword_disabled.clone();
+            let model_contract = model_contract.clone();
             let api_cwd = api_cwd.clone();
             let session_role = session_role
                 .clone()
@@ -103,7 +126,7 @@ impl Extension for UltraworkExtension {
                     }
                 }
                 let session = session_of(ctx);
-                let outcome = engine.on_input_with_session_role(
+                let outcome = engine.on_input_with_contract(
                     InputRequest {
                         session: &session,
                         text: &input.text,
@@ -112,6 +135,7 @@ impl Extension for UltraworkExtension {
                     },
                     false,
                     session_role.as_deref(),
+                    contract_for(model_contract.as_ref(), ctx),
                 );
                 Ok(EventResult::Input(match outcome.transformed_text {
                     Some(text) => InputEventResult::Transform {
@@ -124,16 +148,20 @@ impl Extension for UltraworkExtension {
         });
         api.on(EventKind::Input, on_input);
 
-        let engine = self.engine.clone();
+        let (engine, model_contract) = (self.engine.clone(), self.model_contract.clone());
         let on_turn: ExtensionHandler = Arc::new(move |event, ctx| {
-            let engine = engine.clone();
+            let (engine, model_contract) = (engine.clone(), model_contract.clone());
             Box::pin(async move {
                 let start = match event {
                     ExtensionEvent::BeforeAgentStart(typed) => typed,
                     _ => return Ok(EventResult::None),
                 };
                 Ok(
-                    match engine.on_turn_start(&session_of(ctx), start.preview) {
+                    match engine.on_turn_start_with_contract(
+                        &session_of(ctx),
+                        start.preview,
+                        contract_for(model_contract.as_ref(), ctx),
+                    ) {
                         Some(message) => {
                             EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
                                 message: Some(message),

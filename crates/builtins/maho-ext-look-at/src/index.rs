@@ -48,6 +48,7 @@ impl maho_ext_api::Extension for LookAtExtension {
             .commit_registration()
             .unwrap_or_else(|error| std::panic::panic_any(error));
         register_activation_hooks(api, store.clone());
+        register_tool_result_describer(api, self.runner.clone(), store.clone());
         let runtime = api.runtime.clone();
         let command_store = store.clone();
         crate::commands::register_look_at_command(
@@ -94,6 +95,118 @@ pub fn register_activation_hooks(
             }),
         );
     }
+}
+/// senpi#7260: the image a tool returns to a model without image input is described by the vision
+/// model before the result is stored, so the transcript holds the description and no later request
+/// describes it again. An image that could not be described stays and gets the transport placeholder.
+pub fn register_tool_result_describer(
+    api: &mut maho_ext_api::ExtensionApi,
+    runner: crate::runner::VisionModelRunner,
+    store: std::sync::Arc<std::sync::Mutex<crate::settings::LookAtStore>>,
+) {
+    let runtime = api.runtime.clone();
+    api.on(
+        maho_ext_api::EventKind::ToolResult,
+        std::sync::Arc::new(move |event, ctx| {
+            let (runtime, runner, store) = (runtime.clone(), runner.clone(), store.clone());
+            Box::pin(async move {
+                let maho_ext_api::ExtensionEvent::ToolResult(result) = event else {
+                    return Ok(maho_ext_api::EventResult::None);
+                };
+                if !describes_images_for(&runtime, ctx)? {
+                    return Ok(maho_ext_api::EventResult::None);
+                }
+                let store = store
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let (runner, store) = (&runner, &store);
+                let described = crate::tool_result_images::describe_tool_result_images(
+                    &result.content,
+                    "look_at",
+                    |mime_type, data| {
+                        let args = crate::arguments::normalize_look_at_args(
+                            crate::arguments::LookAtArgs {
+                                image_data_list: Some(vec![format!(
+                                    "data:{mime_type};base64,{data}"
+                                )]),
+                                goal: crate::prompts::TOOL_IMAGE_DESCRIPTION_GOAL.into(),
+                                ..Default::default()
+                            },
+                            None,
+                        );
+                        async move {
+                            if let Some(update) = &ctx.update_tool_hook_status {
+                                update("look_at: describing image");
+                            }
+                            // The host drops this handler with the turn (tool_hook_wait), which ends the request.
+                            runner(&args, ctx, store, None)
+                                .await
+                                .map(|run| crate::tool_result_images::ImageDescription {
+                                    model: run.model,
+                                    text: run.text,
+                                })
+                                .map_err(|error| error.message)
+                        }
+                    },
+                )
+                .await;
+                if !described.failures.is_empty()
+                    && !ctx
+                        .signal
+                        .as_ref()
+                        .is_some_and(|signal| signal.is_aborted())
+                {
+                    let mut reasons: Vec<&str> = Vec::new();
+                    for reason in &described.failures {
+                        if !reasons.contains(&reason.as_str()) {
+                            reasons.push(reason);
+                        }
+                    }
+                    ctx.ui.notify(
+                        &format!(
+                            "look_at could not describe an image from {}: {}",
+                            result.tool_name,
+                            reasons.join("; ")
+                        ),
+                        maho_ext_api::NotificationType::Warning,
+                    );
+                }
+                Ok(match described.content {
+                    Some(content) => {
+                        maho_ext_api::EventResult::ToolResult(maho_ext_api::ToolResultEventResult {
+                            content: Some(content),
+                            ..Default::default()
+                        })
+                    }
+                    None => maho_ext_api::EventResult::None,
+                })
+            })
+        }),
+    );
+}
+/// look_at is offered only while the model has no image input and a vision model is available; with
+/// images blocked the transport replaces them itself and look_at refuses every input.
+fn describes_images_for(
+    runtime: &maho_ext_api::ExtensionRuntime,
+    ctx: &maho_ext_api::ExtensionContext,
+) -> Result<bool, maho_ext_api::ExtensionFailure> {
+    if ctx
+        .model
+        .as_ref()
+        .is_none_or(|model| model.input.contains(&InputModality::Image))
+    {
+        return Ok(false);
+    }
+    if !runtime
+        .session_actions()?
+        .get_active_tools()?
+        .iter()
+        .any(|name| name == "look_at")
+    {
+        return Ok(false);
+    }
+    Ok(!ctx.get_image_settings()?.block_images)
 }
 pub fn sync_tool_activation(
     runtime: &maho_ext_api::ExtensionRuntime,

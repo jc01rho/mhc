@@ -75,7 +75,9 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   `omo-ultrawork:directive` message (XML wrapper `<omo-ultrawork-directive>`), answers re-mentions
   with a short notice, re-arms after compaction or a contract revision change, adds the mass block
   and the todo sizing reminder, and is turned off by the `ultrawork-disabled` flag. The default
-  (`omo`) build mounts the same crate in its component list.
+  (`omo`) build mounts the same crate in its component list and gives GPT-family and DeepSeek Flash
+  models the SUL GPT ultrawork prompt from `crates/omo/maho-omo`; the MIT profile keeps the core
+  contract for every model.
 - `<builtin:task>` (`maho-task`, task model ported from MIT oh-my-pi @ f59bbac): subagent
   delegation tools `task` (one task or a `tasks` batch with a shared `context`; `agent`,
   `category`, `model`, `name`, `background`), `task_output` (result or status, optional bounded
