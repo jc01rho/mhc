@@ -15,7 +15,8 @@ use tempfile::TempDir;
 use crate::dag::store::{
     DagEventPage, DagEventReadOptions, DagFileStore, DagFs, DagKeyRecord, DagNowFn,
     DagSettingsOverrides, DagStoreConfig, DagStoreError, DagStoreOptions, DagStorePaths,
-    DagStoreTaskConfig, IsProcessAliveFn, RealDagFs, create_dag_file_store, resolve_dag_state_dir,
+    DagStoreTaskConfig, IsProcessAliveFn, LOCK_WAIT_TIMEOUT_MS, RealDagFs, create_dag_file_store,
+    resolve_dag_state_dir,
 };
 
 #[test]
@@ -100,7 +101,8 @@ fn alive_fn(alive: impl Fn(i64) -> bool + Send + Sync + 'static) -> Option<IsPro
 
 fn stepping_clock() -> Option<DagNowFn> {
     let clock = Arc::new(AtomicI64::new(0));
-    Some(Arc::new(move || clock.fetch_add(1_001, SeqCst) + 1_001))
+    let step = LOCK_WAIT_TIMEOUT_MS + 1;
+    Some(Arc::new(move || clock.fetch_add(step, SeqCst) + step))
 }
 
 fn temp_project() -> TempDir {
@@ -266,6 +268,45 @@ fn assert_journal_corrupt(error: DagStoreError, run_id: &str) {
         }
         other => panic!("expected DagJournalCorruptError, got {other:?}"),
     }
+}
+
+#[test]
+fn given_a_live_holder_that_releases_after_over_a_second_when_acquiring_then_the_wait_outlasts_it()
+{
+    // given
+    let project = temp_project();
+    let canonical = run_lock_path(project.path());
+    let holder_pid = 404;
+    let checks = Arc::new(AtomicUsize::new(0));
+    let clock = Arc::new(AtomicI64::new(0));
+    let store = open(
+        project.path(),
+        DagStoreOptions {
+            // Every clock read jumps past the former one-second wait window.
+            now: Some(Arc::new(move || clock.fetch_add(1_001, SeqCst) + 1_001)),
+            is_process_alive: alive_fn({
+                let canonical = canonical.clone();
+                move |pid| {
+                    if checks.fetch_add(1, SeqCst) == 2 {
+                        fs::remove_file(&canonical).expect("holder releases");
+                    }
+                    pid == holder_pid
+                }
+            }),
+            ..DagStoreOptions::default()
+        },
+    );
+    fs::write(&canonical, r#"{"hostPid":404,"owner":"live"}"#).expect("seed");
+    let mut entered = false;
+
+    // when
+    let acquire = store.with_run_lock(RUN_ID, || {
+        entered = true;
+    });
+
+    // then
+    acquire.expect("lock acquired once the live holder released");
+    assert!(entered);
 }
 
 fn timeout_message(path: &Path) -> String {

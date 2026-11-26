@@ -24,7 +24,10 @@ use crate::dag::types::{
 };
 
 const LOCK_RETRY_MS: u64 = 10;
-const LOCK_WAIT_TIMEOUT_MS: i64 = 1_000;
+const LOCK_RETRY_MAX_MS: u64 = 100;
+/// How long a live holder may keep the same lock before a contender gives up. Busy machines hold
+/// the run lock past a second, so this stays generous (omo v5.1.76).
+pub(crate) const LOCK_WAIT_TIMEOUT_MS: i64 = 30_000;
 const WINDOWS_CLEANUP_RETRIES: usize = 8;
 const WINDOWS_CLEANUP_RETRY_MS: u64 = 5;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
@@ -1021,6 +1024,7 @@ impl DagFileStore {
         let mut stalled_since = (self.now)();
         let mut stalled_behind: Option<LockHolder> = None;
         let mut observed_holder_changed = false;
+        let mut retry_ms = LOCK_RETRY_MS;
         let acquired = loop {
             let content = self.lock_content(run_id);
             if self.try_create_lock(path, &content)? {
@@ -1054,7 +1058,8 @@ impl DagFileStore {
                     path.display()
                 )));
             }
-            std::thread::sleep(Duration::from_millis(LOCK_RETRY_MS));
+            std::thread::sleep(Duration::from_millis(retry_ms));
+            retry_ms = (retry_ms * 2).min(LOCK_RETRY_MAX_MS);
         };
         let result = operation();
         self.remove_observed_lock(path, Some(&acquired), |_| true)?;
