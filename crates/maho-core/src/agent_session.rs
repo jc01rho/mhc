@@ -5877,6 +5877,42 @@ impl AgentSession {
         Ok(result.should_continue == Some(true))
     }
 
+    /// Records the repository this session runs in, once: the session-move import compares it with the target
+    /// checkout and refuses a bundle that carries none, so a session that never recorded it could not move at all
+    /// (`move_repository_mismatch`). A startup-bookkeeping entry keeps a conversation-free file from surviving
+    /// because of it. A directory outside any repository records nothing, as before.
+    async fn record_repository_identity(&self) {
+        let recorded = self.with_session_manager(|manager| {
+            let mut found = false;
+            manager.for_each_entry(
+                &|entry| entry["customType"] == "repository-identity",
+                &mut |entry| {
+                    found |= crate::session_move::bundle::parse_repository_identity(&entry["data"])
+                        .is_some();
+                },
+            );
+            found
+        });
+        if recorded {
+            return;
+        }
+        let Some(identity) =
+            crate::repository_identity::read_repository_identity(&self.cwd()).await
+        else {
+            return;
+        };
+        self.with_session_manager_mut(|manager| {
+            manager.append_custom_marked(
+                "repository-identity",
+                Some(serde_json::json!({
+                    "rootCommits": identity.root_commits,
+                    "originUrl": identity.origin_url,
+                })),
+                true,
+            );
+        });
+    }
+
     async fn dispatch_extension_event(&self, event: maho_ext_api::ExtensionEvent) {
         let Some(mut runner) = self.extension_runner_for(event.kind()).await else {
             return;
@@ -12579,6 +12615,7 @@ impl AgentSession {
         }
         self.rebuild_session_context()?;
         self.renew_extension_runtime(reason).await?;
+        self.record_repository_identity().await;
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(
             maho_ext_api::SessionStartEvent {
                 sizes_only: false,
@@ -19144,6 +19181,7 @@ impl AgentSession {
         } else {
             maho_ext_api::SessionReason::Startup
         };
+        self.record_repository_identity().await;
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(event))
             .await;
         if let Some(file) = self
