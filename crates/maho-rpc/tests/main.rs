@@ -89,6 +89,8 @@ mod session_idle_timer;
 mod session_state_wire;
 #[path = "session_writer_drain.rs"]
 mod session_writer_drain;
+#[path = "set_model_scope.rs"]
+mod set_model_scope;
 #[path = "socket_actor.rs"]
 mod socket_actor;
 #[path = "socket_client_edge_cases.rs"]

@@ -244,8 +244,9 @@ impl EffectSession for AgentEffectSession {
         let missing = format!("Model not found: {provider}/{model_id}");
         Box::pin(async move {
             let model = model.ok_or(SetModelError::Other(missing))?;
+            // Session-scoped: an RPC switch never rewrites the machine-wide default model.
             self.session
-                .set_model(model)
+                .set_session_model(model)
                 .await
                 .map(|change| change.and_then(|change| change.system_prompt_name))
                 .map_err(SetModelError::Other)

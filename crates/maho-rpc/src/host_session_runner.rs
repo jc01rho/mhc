@@ -404,7 +404,7 @@ async fn act(
             )
         }
         HostSessionAction::Model { model, .. } => {
-            // set_model also persists the GLOBAL default. Smaller contexts may defer the switch.
+            // set_model is session-scoped (it does not persist the GLOBAL default). Smaller contexts may defer the switch.
             client.set_model(&model.provider, &model.id).await?;
             let state = client.get_state().await?;
             let current = match state.get("model").filter(|model| model.is_object()) {

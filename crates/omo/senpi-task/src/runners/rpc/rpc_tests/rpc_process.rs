@@ -446,6 +446,39 @@ fn an_unreadable_cpu_reading_still_hits_the_startup_outer_bound() {
 }
 
 #[test]
+fn a_slow_chain_exchange_that_keeps_burning_cpu_outlasts_the_chain_deadline() {
+    let child = Arc::new(
+        crate::runners::rpc::process::RpcChildProcess::spawn_command(
+            super::fake_child::fake_command(
+                "rpc",
+                &std::collections::BTreeMap::from([
+                    ("FAKE_FALLBACK".into(), "supported".into()),
+                    ("FAKE_CHAIN_BUSY_MS".into(), "1500".into()),
+                ]),
+                true,
+            ),
+        ),
+    );
+    let _guard = ChildGuard(Arc::clone(&child));
+    let spawned = Arc::clone(&child);
+    let runner = RpcProcessRunner::new(RpcProcessRunnerOptions {
+        fallback_chain_deadline_ms: Some(500),
+        spawn_child: Some(Arc::new(move |_| Arc::clone(&spawned))),
+        build_spawn: Some(Arc::new(|_| RpcSpawnDescriptor::default())),
+        model_admission: Some(Arc::new(|_| Ok(()))),
+        designated_chain_only: true,
+        ..RpcProcessRunnerOptions::default()
+    });
+    let handle = runner
+        .start(&startup_bound_spec("st_slow_chain"))
+        .expect("a busy engine still takes its chain");
+    assert_eq!(
+        handle.wait_for_outcome(),
+        RunnerOutcome::completed("answer")
+    );
+}
+
+#[test]
 fn a_cold_start_that_outlasts_the_chain_deadline_still_takes_its_chain() {
     let child = Arc::new(
         crate::runners::rpc::process::RpcChildProcess::spawn_command(

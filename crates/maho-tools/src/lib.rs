@@ -18,6 +18,7 @@ pub mod grep;
 pub mod index;
 pub mod json_usize;
 pub mod kernel_process_identity;
+pub mod kill_guard;
 pub mod ls;
 pub mod managed_tools;
 pub mod model_only_text;
