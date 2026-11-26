@@ -51,6 +51,8 @@ mod sdk_tool_selection;
 mod sdk_tool_updates;
 #[path = "session_qa.rs"]
 mod session_qa;
+#[path = "session_repository_identity.rs"]
+mod session_repository_identity;
 #[path = "session_states.rs"]
 mod session_states;
 #[path = "tool_barrier_read_only.rs"]
