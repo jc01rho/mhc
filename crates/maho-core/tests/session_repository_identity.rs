@@ -95,17 +95,10 @@ async fn resuming_a_session_that_already_recorded_its_identity_does_not_duplicat
     let session_dir = dir.path().join("sessions");
     std::fs::create_dir_all(&session_dir).expect("sessions dir");
     let first = session_starting_in(dir.path(), &session_dir, &file).await;
+    let first_file = first.session_file().expect("session file").to_owned();
     first.dispose().await;
     assert_eq!(identity_entries_of(&session_dir).len(), 1);
     let cwd = dir.path().to_string_lossy().into_owned();
-    let first_file = std::fs::read_dir(&session_dir)
-        .expect("sessions dir")
-        .next()
-        .expect("one session file")
-        .expect("dir entry")
-        .path()
-        .to_string_lossy()
-        .into_owned();
     let second = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(cwd.clone()),
         agent_dir: Some(dir.path().join(".agent").to_string_lossy().into_owned()),
