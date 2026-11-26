@@ -176,8 +176,7 @@ fn given_category_with_model_when_executed_then_it_returns_the_exclusivity_error
 }
 
 #[test]
-fn given_builtin_agent_with_model_when_executed_then_it_returns_agent_with_model_without_spawning()
-{
+fn given_builtin_agent_with_model_when_executed_then_it_spawns_on_that_model() {
     let harness = default_manager();
     let tool = TaskToolDeps::default();
     let deps = make_deps(&harness.manager, &tool);
@@ -186,13 +185,16 @@ fn given_builtin_agent_with_model_when_executed_then_it_returns_agent_with_model
     let input = SpawnParamsInput {
         subagent_type: Some("explore".to_string()),
         model: Some("anthropic/claude-opus-5-5".to_string()),
+        run_in_background: Some(true),
         ..params("p")
     };
     let result = execute
         .execute("c", &input, None, None, &ctx())
         .expect("execute");
 
-    assert!(harness.manager.list(&ListScope::All).is_empty());
-    assert_eq!(result.details.status, "invalid_arguments");
-    assert!(first_text(&result).contains("agent_with_model"));
+    let record = harness
+        .manager
+        .get(&result.details.task_id)
+        .unwrap_or_else(|| panic!("spawned record: {}", first_text(&result)));
+    assert_eq!(record.model, "anthropic/claude-opus-5-5");
 }

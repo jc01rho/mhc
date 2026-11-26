@@ -1,6 +1,5 @@
 //! `tools/task/validation.ts`: category XOR subagent_type target selection and batch shape.
 
-use crate::agents::{canonical_agent_name, curated_readonly_agent_names, ulw_reviewer_agent_names};
 use crate::state::IsolationMergeMode;
 use crate::tools::task::types::{ResolvedSpawnItem, SpawnTarget};
 
@@ -9,7 +8,6 @@ pub enum TaskTargetErrorCode {
     BothTargets,
     NoTarget,
     CategoryWithModel,
-    AgentWithModel,
 }
 
 impl TaskTargetErrorCode {
@@ -18,7 +16,6 @@ impl TaskTargetErrorCode {
             Self::BothTargets => "both_targets",
             Self::NoTarget => "no_target",
             Self::CategoryWithModel => "category_with_model",
-            Self::AgentWithModel => "agent_with_model",
         }
     }
 }
@@ -145,13 +142,7 @@ impl ResolveSpawnItemsError {
 pub const BOTH_TARGETS_MESSAGE: &str =
     "Provide EITHER category OR subagent_type, not both. Remove one and retry.";
 
-pub const CATEGORY_WITH_MODEL_MESSAGE: &str = "Provide EITHER category OR model, never both. A category-routed task always takes its model from the omo.json category config; a call-site model override would silently bypass that routing. Remove model and retry, or configure categories.<name>.model or categories.<name>.models in omo.json.";
-
-fn agent_with_model_message(agent: &str) -> String {
-    format!(
-        "agent_with_model: \"{agent}\" is a builtin agent that runs on its designated model chain; a call-site model would replace that chain. Change it with agents.{agent}.model or agents.{agent}.models in omo.json. Remove model and retry."
-    )
-}
+pub const CATEGORY_WITH_MODEL_MESSAGE: &str = "Provide EITHER category OR model, never both. A category-routed task always takes its model from the omo.json category config; a call-site model override would silently bypass that routing. Remove model and retry, or use subagent_type for an explicit-model spawn, or configure categories.<name>.models in omo.json.";
 
 pub const NO_TARGET_MESSAGE: &str = "You MUST provide EITHER category OR subagent_type. Omitting BOTH will FAIL. Example: task(category=\"quick\", prompt=\"...\") or task(subagent_type=\"plan-reviewer\", prompt=\"...\").";
 
@@ -187,22 +178,7 @@ pub fn validate_task_target(params: TargetInput<'_>) -> TaskTargetSelection {
         (Some(category), None) => {
             TaskTargetSelection::Category(omo_config_core::canonical_category_name(category.trim()))
         }
-        // Builtin agents run on their designated model chain; custom omo.json agents keep the
-        // explicit-model spawn (#14367).
-        (None, Some(subagent)) => {
-            if present(params.model).is_some() {
-                let agent = canonical_agent_name(subagent.trim());
-                if curated_readonly_agent_names().contains(agent.as_str())
-                    || ulw_reviewer_agent_names().contains(agent.as_str())
-                {
-                    return target_error(
-                        TaskTargetErrorCode::AgentWithModel,
-                        &agent_with_model_message(&agent),
-                    );
-                }
-            }
-            TaskTargetSelection::SubagentType(subagent.trim().to_string())
-        }
+        (None, Some(subagent)) => TaskTargetSelection::SubagentType(subagent.trim().to_string()),
         (None, None) => target_error(TaskTargetErrorCode::NoTarget, NO_TARGET_MESSAGE),
     }
 }
