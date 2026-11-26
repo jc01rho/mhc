@@ -919,9 +919,17 @@ fn thread_create_for_live_remote_thread_sends_prompt_without_opening_and_support
         },
     ]);
 
+    let local = local_session(LOCAL_ID, &cwd_str);
     let view = ThreadHostView {
-        sessions: vec![local_session(LOCAL_ID, &cwd_str)],
-        hosts: Vec::new(),
+        hosts: vec![AddressBookHost {
+            socket: local.socket.clone(),
+            list_sessions: Some(HostListSessions::ok(vec![local.host_session()])),
+            endpoint_kind: Some(GatewayEndpointKind::RpcHost),
+            alive: Some(true),
+            reason: None,
+            legacy: false,
+        }],
+        sessions: vec![local],
         disk: Vec::new(),
     };
     let component = make_component(&dir, None, view.clone(), cwd_str.clone(), remote.clone());
@@ -992,13 +1000,9 @@ fn thread_create_for_live_remote_thread_sends_prompt_without_opening_and_support
     let book = book_of(&view, &[], &now);
     let call = ThreadCall {
         host: Arc::new(StubHost {
-            view: Mutex::new(view),
+            view: Mutex::new(view.clone()),
         }),
-        view: ThreadHostView {
-            sessions: vec![local_session(LOCAL_ID, &cwd_str)],
-            hosts: Vec::new(),
-            disk: Vec::new(),
-        },
+        view,
         book,
         caller_id: LOCAL_ID.to_owned(),
         caller_workspace_root: cwd_str,
