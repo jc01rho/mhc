@@ -451,6 +451,11 @@ pub fn create_shell_tool_definition(
         Box::pin(async move {
             let started_at = Instant::now();
             let input: BashToolInput = serde_json::from_value(call.params)?;
+            if !server_pinned
+                && let Some(refusal) = crate::kill_guard::refuse_engine_kill(&input.command)
+            {
+                return Err(ToolError::Message(refusal));
+            }
             let command = match options.command_prefix.as_deref().filter(|p| !p.is_empty()) {
                 Some(prefix) => format!("{prefix}\n{}", input.command),
                 None => input.command,
