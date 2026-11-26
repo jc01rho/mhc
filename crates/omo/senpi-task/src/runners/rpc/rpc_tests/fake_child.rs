@@ -169,6 +169,11 @@ fn handle_command(command: &Value) {
             _ => respond(kind, &id, Some(json!({"data":{"capabilities":[]}}))),
         },
         "set_retry_fallback" => {
+            if let Ok(raw) = std::env::var("FAKE_CHAIN_BUSY_MS")
+                && let Ok(ms) = raw.parse::<u64>()
+            {
+                burn_cpu(ms);
+            }
             if std::env::var("FAKE_FALLBACK").as_deref() == Ok("refused") {
                 emit(
                     &json!({"type":"response","id":id,"command":kind,"success":false,"error":"refused"}),
@@ -238,20 +243,23 @@ fn handle_session_command(command: &Value) {
     }
 }
 
+fn burn_cpu(ms: u64) {
+    let until = Instant::now() + Duration::from_millis(ms);
+    let mut acc = 1_u64;
+    while Instant::now() < until {
+        for step in 1..10_000_u64 {
+            acc = std::hint::black_box(acc.wrapping_mul(6364136223846793005).wrapping_add(step));
+        }
+    }
+    std::hint::black_box(acc);
+}
+
 fn run_rpc(session_mode: bool) {
     if let Ok(raw) = std::env::var("FAKE_BOOT_BUSY_MS")
         && let Ok(ms) = raw.parse::<u64>()
         && ms > 0
     {
-        let until = Instant::now() + Duration::from_millis(ms);
-        let mut acc = 1_u64;
-        while Instant::now() < until {
-            for step in 1..10_000_u64 {
-                acc =
-                    std::hint::black_box(acc.wrapping_mul(6364136223846793005).wrapping_add(step));
-            }
-        }
-        std::hint::black_box(acc);
+        burn_cpu(ms);
     }
     let ignore_term = std::env::var("FAKE_IGNORE_TERM").as_deref() == Ok("1");
     let emit_malformed = std::env::var("FAKE_EMIT_MALFORMED").as_deref() == Ok("1");

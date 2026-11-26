@@ -31,6 +31,8 @@ const DEFAULT_STARTUP_STALL_MS: u64 = 10_000;
 const DEFAULT_STARTUP_CPU_CAP_S: f64 = 120.0;
 const DEFAULT_STARTUP_OUTER_BOUND_MS: u64 = 10 * 60_000;
 const STARTUP_SAMPLE_MS: u64 = 250;
+/// The bound on a `set_retry_fallback` exchange that keeps making CPU progress.
+const CHAIN_EXCHANGE_OUTER_CAP_MS: u64 = 120_000;
 const STARTUP_PROGRESS_EPSILON_S: f64 = 0.02;
 
 pub type SpawnChild = Arc<dyn Fn(&RpcSpawnDescriptor) -> Arc<RpcChildProcess> + Send + Sync>;
@@ -200,8 +202,6 @@ impl RpcProcessRunner {
                     &self.startup_bounds,
                 ) {
                     Ok(Ok(response)) => {
-                        let deadline = std::time::Instant::now()
-                            + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
                         let supported = response["success"] == true
                             && response["command"] == "get_protocol_info"
                             && response["data"]["capabilities"]
@@ -219,14 +219,21 @@ impl RpcProcessRunner {
                                     None,
                                 );
                             }
-                        } else if let Err(error) = protocol
-                            .request(json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}}))
-                            .and_then(|pending| pending.wait_until(deadline))
-                        {
-                            utils::logger::log(
-                                "senpi-task child fallback configuration unavailable; retaining manager fallback",
-                                Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
-                            );
+                        } else {
+                            let unavailable = match self.exchange_chain(
+                                &protocol,
+                                json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}}),
+                            ) {
+                                Some(Ok(_)) => None,
+                                Some(Err(error)) => Some(error.to_string()),
+                                None => Some(self.chain_silence()),
+                            };
+                            if let Some(error) = unavailable {
+                                utils::logger::log(
+                                    "senpi-task child fallback configuration unavailable; retaining manager fallback",
+                                    Some(&json!({"taskId":spec.task_id,"error":error})),
+                                );
+                            }
                         }
                     }
                     Ok(Err(error)) => utils::logger::log(
@@ -390,38 +397,67 @@ impl RpcProcessRunner {
                 &fallbacks,
             ));
         }
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
-        if std::time::Instant::now() >= deadline {
-            return Some(unanswered_refusal(
-                Reason::Refused,
-                "deadline passed".to_string(),
-                handle,
-                spec,
-                model,
-                &fallbacks,
-            ));
-        }
-        let outcome = protocol
-            .request(json!({"type":"set_retry_fallback","retryFallback":profile}))
-            .and_then(|pending| pending.wait_until(deadline));
-        let (reason, detail) = match outcome {
-            Ok(response) if response["success"] == true => return None,
-            Ok(response) => (Reason::Refused, format!("refused: {}", response["error"])),
-            Err(error) => {
-                if std::time::Instant::now() >= deadline {
-                    (
-                        Reason::Timeout,
-                        format!("no answer within {} ms", self.fallback_chain_deadline_ms),
-                    )
-                } else {
-                    (Reason::Refused, format!("refused: {error}"))
-                }
-            }
+        let (reason, detail) = match self.exchange_chain(
+            protocol,
+            json!({"type":"set_retry_fallback","retryFallback":profile}),
+        ) {
+            Some(Ok(response)) if response["success"] == true => return None,
+            Some(Ok(response)) => (Reason::Refused, format!("refused: {}", response["error"])),
+            Some(Err(error)) => (Reason::Refused, format!("refused: {error}")),
+            None => (Reason::Timeout, self.chain_silence()),
         };
         Some(unanswered_refusal(
             reason, detail, handle, spec, model, &fallbacks,
         ))
+    }
+
+    /// Sends a `set_retry_fallback` command and waits for its answer. `fallback_chain_deadline_ms`
+    /// is how long the engine may stay silent without its CPU advancing; a busy engine on a slow box
+    /// keeps the wait going up to [`CHAIN_EXCHANGE_OUTER_CAP_MS`]. `None` means the engine stalled.
+    fn exchange_chain(
+        &self,
+        protocol: &RpcProtocolClient,
+        command: serde_json::Value,
+    ) -> Option<Result<serde_json::Value, crate::runners::rpc::protocol_client::RpcClientError>>
+    {
+        let pending = match protocol.request(command) {
+            Ok(pending) => pending,
+            Err(error) => return Some(Err(error)),
+        };
+        let pid = protocol.pid();
+        let window = std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
+        let cap = window.max(std::time::Duration::from_millis(
+            CHAIN_EXCHANGE_OUTER_CAP_MS,
+        ));
+        let sample = std::time::Duration::from_millis(STARTUP_SAMPLE_MS);
+        let started = std::time::Instant::now();
+        let mut last_cpu = -1.0_f64;
+        let mut last_advance = started;
+        loop {
+            let waited = started.elapsed();
+            let silent = last_advance.elapsed();
+            if waited >= cap || silent >= window {
+                return None;
+            }
+            let step = sample.min(cap - waited).min(window - silent);
+            if let Some(answer) = pending.try_wait_timeout(step) {
+                return Some(answer);
+            }
+            if let Some(pid) = pid
+                && let Some(cpu) = (self.startup_bounds.read_cpu_seconds)(pid)
+                && cpu >= last_cpu + STARTUP_PROGRESS_EPSILON_S
+            {
+                last_cpu = cpu;
+                last_advance = std::time::Instant::now();
+            }
+        }
+    }
+
+    fn chain_silence(&self) -> String {
+        format!(
+            "no answer within {} ms without CPU progress",
+            self.fallback_chain_deadline_ms
+        )
     }
 }
 
