@@ -5882,7 +5882,7 @@ impl AgentSession {
     /// (`move_repository_mismatch`). A startup-bookkeeping entry keeps a conversation-free file from surviving
     /// because of it. A directory outside any repository records nothing, as before.
     async fn record_repository_identity(&self) {
-        let recorded = self.with_session_manager(|manager| {
+        fn has_recorded_identity(manager: &SessionManager) -> bool {
             let mut found = false;
             manager.for_each_entry(
                 &|entry| entry["customType"] == "repository-identity",
@@ -5892,16 +5892,28 @@ impl AgentSession {
                 },
             );
             found
+        }
+        let (session_id, cwd, recorded) = self.with_session_manager(|manager| {
+            (
+                manager.session_id().to_owned(),
+                manager.cwd().to_owned(),
+                has_recorded_identity(manager),
+            )
         });
-        if recorded {
+        if recorded || cwd.is_empty() {
             return;
         }
-        let Some(identity) =
-            crate::repository_identity::read_repository_identity(&self.cwd()).await
+        let Some(identity) = crate::repository_identity::read_repository_identity(&cwd).await
         else {
             return;
         };
         self.with_session_manager_mut(|manager| {
+            if manager.session_id() != session_id
+                || manager.cwd() != cwd
+                || has_recorded_identity(manager)
+            {
+                return;
+            }
             manager.append_custom_marked(
                 "repository-identity",
                 Some(serde_json::json!({
