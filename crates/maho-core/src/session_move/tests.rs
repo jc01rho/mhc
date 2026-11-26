@@ -94,6 +94,68 @@ impl Fixture {
         .await
     }
 }
+async fn export_of_session_in(cwd: &Path) -> MoveManifest {
+    let root = tempfile::tempdir().expect("tempdir");
+    let session = root.path().join("sender/session.jsonl");
+    std::fs::create_dir_all(session.parent().expect("parent")).expect("sender dir");
+    std::fs::write(
+        &session,
+        format!(
+            "{}\n",
+            json!({"type":"session","id":"s1","cwd":cwd.to_string_lossy()})
+        ),
+    )
+    .expect("session");
+    export::export_session_for_move(export::ExportSessionForMoveOptions {
+        session_file: &session,
+        move_id: "m1",
+        target: "receiver",
+        dropped_user_messages: &[],
+        bundle_dir: &root.path().join("bundle"),
+        extension_state_dir: None,
+        resolve_extension_state: None,
+        guard: None,
+        locked_guard: None,
+    })
+    .await
+    .expect("export")
+}
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+// 2026-11-26: a session that never recorded its repository (every session mhc starts) was refused by the import as
+// move_repository_mismatch even when the target held the same repository, so no lane could be moved.
+#[tokio::test]
+async fn export_reads_the_repository_from_the_checkout_when_the_session_recorded_none() {
+    let repo = tempfile::tempdir().expect("tempdir");
+    git(repo.path(), &["init", "-q"]);
+    git(
+        repo.path(),
+        &["commit", "-q", "--allow-empty", "-m", "root"],
+    );
+    let root = git(repo.path(), &["rev-list", "--max-parents=0", "HEAD"]);
+    let manifest = export_of_session_in(repo.path()).await;
+    assert_eq!(
+        manifest.repository,
+        Some(RepositoryIdentity {
+            root_commits: vec![root],
+            origin_url: None,
+        })
+    );
+}
+#[tokio::test]
+async fn export_of_a_session_outside_any_repository_still_carries_no_identity() {
+    let plain = tempfile::tempdir().expect("tempdir");
+    assert_eq!(export_of_session_in(plain.path()).await.repository, None);
+}
 #[tokio::test]
 async fn import_fault_boundaries_reconcile_from_file_and_never_land_twice() {
     for boundary in [

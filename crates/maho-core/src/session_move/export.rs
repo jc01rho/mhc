@@ -99,6 +99,24 @@ async fn write_move_bundle(
     )
     .await?;
     let state_files = copy_extension_state(state.as_deref(), &staging).await?;
+    let source_cwd: String = entries
+        .first()
+        .and_then(|e| e["cwd"].as_str())
+        .unwrap_or_default()
+        .into();
+    let recorded = entries
+        .iter()
+        .filter(|e| e["customType"] == "repository-identity")
+        .filter_map(|e| parse_repository_identity(&e["data"]))
+        .next_back();
+    // A session never records its repository when it starts, and the import refuses a bundle without one, so a
+    // session that ran in a git checkout could not move at all (move_repository_mismatch). Read it from the
+    // checkout the session ran in instead; a directory that is not a repository still carries none.
+    let repository = match recorded {
+        Some(identity) => Some(identity),
+        None if source_cwd.is_empty() => None,
+        None => crate::repository_identity::read_repository_identity(&source_cwd).await,
+    };
     let manifest = MoveManifest {
         format: MOVE_BUNDLE_FORMAT,
         move_id,
@@ -109,16 +127,8 @@ async fn write_move_bundle(
             .ok_or("missing session filename")?
             .to_string_lossy()
             .into_owned(),
-        source_cwd: entries
-            .first()
-            .and_then(|e| e["cwd"].as_str())
-            .unwrap_or_default()
-            .into(),
-        repository: entries
-            .iter()
-            .filter(|e| e["customType"] == "repository-identity")
-            .filter_map(|e| parse_repository_identity(&e["data"]))
-            .next_back(),
+        source_cwd,
+        repository,
         session: BundleFile {
             path: SESSION_BUNDLE_PATH.into(),
             sha256: sha256_file_async(&staging.join(SESSION_BUNDLE_PATH))
