@@ -56,6 +56,7 @@ For visual web or document interfaces, changes must be captured and inspected ac
 - **Paired Viewport Captures**: Capture rendered screenshots after each visual change at both a narrow mobile width (390px, representative of modern smartphones) and a wide desktop width (1440px or 1920px).
 - **Responsive Inspection**: Confirm that content reflows cleanly without horizontal scrolling at mobile widths, text does not truncate awkwardly, navigation menus collapse appropriately, and wide layouts utilize space effectively.
 - **Before and After Comparison**: For modifications to existing visual surfaces, capture reference screenshots before editing and compare them side by side with post-edit captures.
+- **Scripted Play-Through**: For a UI deliverable, script a play-through that walks the product to several places and states and captures each one, rather than a single screenshot of the first screen. After each feature, re-run the play-through and look at every shot. For 3D or spatial work (a modeling tool, a game scene, CAD), the play-through covers several angles, each compared with the reference or the stated intent.
 
 ---
 

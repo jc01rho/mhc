@@ -178,21 +178,39 @@ pub fn load_keyword_detector_settings(
     serde_json::from_value(value.clone()).ok()
 }
 
+/// Upstream `SENPI_GPT_ULTRAWORK_DIRECTIVE` (`skills/ultrawork/references/gpt.md` at v5.1.83, #14441).
+pub const GPT_ULTRAWORK_CONTRACT: &str = include_str!("ultrawork_gpt.md");
+
+/// Upstream `ultraworkVariantFor` (`components/ultrawork/directive-variants.ts`, #14441/#14442): GPT
+/// models, and DeepSeek Flash whose core reacts to conflicting instructions the same way, get the GPT
+/// prompt; every other model keeps the core contract.
+pub fn ultrawork_contract_for_model(model_id: &str) -> Option<&'static str> {
+    let name = model_id
+        .rsplit('/')
+        .next()
+        .unwrap_or(model_id)
+        .to_lowercase();
+    (name.contains("gpt") || (name.contains("deepseek") && name.contains("flash")))
+        .then_some(GPT_ULTRAWORK_CONTRACT)
+}
+
 /// Builds an [`maho_ultrawork::UltraworkExtension`] that caches one `keyword_detector` lookup per
 /// `cwd` across the component's registration lifetime.
 pub fn ultrawork_extension_for(
     env: BTreeMap<String, String>,
 ) -> maho_ultrawork::UltraworkExtension {
     let cache: std::sync::Arc<std::sync::Mutex<KeywordDetectorCache>> = std::sync::Arc::default();
-    maho_ultrawork::UltraworkExtension::default().with_keyword_disabled(move |cwd| {
-        let mut guard = cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let settings = guard
-            .entry(cwd.to_path_buf())
-            .or_insert_with(|| load_keyword_detector_settings(cwd, Some(&env)));
-        is_ultrawork_keyword_disabled(settings.as_ref())
-    })
+    maho_ultrawork::UltraworkExtension::default()
+        .with_keyword_disabled(move |cwd| {
+            let mut guard = cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let settings = guard
+                .entry(cwd.to_path_buf())
+                .or_insert_with(|| load_keyword_detector_settings(cwd, Some(&env)));
+            is_ultrawork_keyword_disabled(settings.as_ref())
+        })
+        .with_model_contract(ultrawork_contract_for_model)
 }
 
 /// Upstream `createOmoSenpiComponents(taskComponent)` with the selected latest additions.
@@ -646,5 +664,30 @@ mod tests {
                 .iter()
                 .all(|d| d.kind != omo_config_core::DIAGNOSTIC_UNKNOWN_KEYS)
         );
+    }
+
+    #[test]
+    fn gpt_family_and_deepseek_flash_get_the_gpt_ultrawork_contract() {
+        for model in [
+            "gpt-6.2",
+            "openai/gpt-5.5-codex",
+            "GPT-6-astra-fast",
+            "deepseek/deepseek-v4.1-flash",
+            "DeepSeek-V4-Flash",
+        ] {
+            assert_eq!(
+                ultrawork_contract_for_model(model),
+                Some(GPT_ULTRAWORK_CONTRACT),
+                "{model}"
+            );
+        }
+        for model in [
+            "claude-opus-4-6",
+            "deepseek-v4-pro",
+            "gemini-3-flash",
+            "openrouter/gpt-pro/kimi-k2",
+        ] {
+            assert_eq!(ultrawork_contract_for_model(model), None, "{model}");
+        }
     }
 }

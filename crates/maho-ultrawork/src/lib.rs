@@ -18,7 +18,7 @@ pub use classify::{
     classify_with_session_role, has_visible_keyword, visible_keyword_spans,
 };
 pub use engine::{Engine, InputOutcome, InputRequest, TodoResultView};
-pub use extension::{DISABLE_FLAG, KeywordDisabledFn, UltraworkExtension};
+pub use extension::{DISABLE_FLAG, KeywordDisabledFn, ModelContractFn, UltraworkExtension};
 pub use state::{SessionArming, Sessions};
 pub use texts::{CORE_CONTRACT, DIRECTIVE_MESSAGE_TYPE, REMINDER_MESSAGE_TYPE, mass_block};
 

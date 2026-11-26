@@ -34,7 +34,7 @@
   - `assets/omo-latest/skills/ultrawork/` (shipped copy checked against `contract/`).
 - **Inputs strictly excluded**: no `crates/omo/**`, no `/home/indo/code/oh-my-openagent`, no `~/.bun/install/cache/omo-ai*`, no `.omo/**`, no git history outside this export. This session never read or had access to any SUL source for the ultrawork engine.
 - **Authored in fresh prose/code**: all of `src/**`, `build.rs`, and `tests/**`, including the re-mention notice, the mass block and the todo advisory texts.
-- **Not built (by design)**: no context-transform handler, because there is a single contract variant for all models.
+- **Not built (by design)**: no context-transform handler. The engine ships one contract (`contract/core.md`); a host may pass another contract text per model id through `UltraworkExtension::with_model_contract`, chosen when the directive is delivered. The default (`omo`) build passes the GPT-family prompt from the SUL crate `crates/omo/maho-omo` (`ultrawork_gpt.md`); no SUL text lives in this crate.
 
 - **Deviations and notes (fix round 1)**:
   - The mass block is about 1.4 KB (1,411 bytes) (spec section 5.2 says about 1.5 KB); its content follows spec section 5.3 wave by wave. The test accepts 1,300-1,700 bytes.
