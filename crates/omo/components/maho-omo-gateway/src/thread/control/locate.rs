@@ -8,19 +8,26 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use maho_thread_address_core::row_key;
+
 use crate::thread::adapter::BoxFuture;
+use crate::thread::address::{
+    ResolveContext, ResolveOptions as AddressResolveOptions, ResolvedWhere, resolve_address,
+};
 use crate::thread::address_book::{
-    AddressEntry, DiskSession, assemble_address_book, find_disk_sessions, thread_title,
+    AddressEntry, DiskSession, assemble_address_book, find_disk_sessions,
 };
 use crate::thread::addressing::{
-    ResolveOptions, resolve_self, resolve_target, to_thread_address_entries, workspace_directories,
-    workspace_entries,
+    ResolveOptions, ThreadAddressEntry, resolve_target, to_thread_address_entries,
+    workspace_directories, workspace_entries,
 };
-use crate::thread::errors::ThreadToolFailure;
+use crate::thread::errors::{ThreadToolFailure, thread_tool_failure};
 use crate::thread::host_view::{ThreadHost, ThreadHostView};
+use crate::thread::remote::ports::{RemoteThreadSurface, escape_for_display, keyed};
 
 use super::local_control::LocalControl;
 use super::port::SessionControl;
+use super::relay_control::create_relay_control;
 
 /// What an address names for a control tool.
 pub enum LocatedControl {
@@ -47,7 +54,11 @@ pub trait RemoteControlLocator: Send + Sync {
         caller_id: String,
     ) -> BoxFuture<Option<LocatedControl>>;
 
-    fn remote_surface(&self) -> Option<&crate::thread::remote::ports::RemoteThreadSurface> {
+    fn remote_surface(&self) -> Option<&RemoteThreadSurface> {
+        None
+    }
+
+    fn remote_surface_arc(&self) -> Option<Arc<RemoteThreadSurface>> {
         None
     }
 }
@@ -84,85 +95,140 @@ pub fn find_session_file(call: &ThreadCall, address: &str, all_scope: bool) -> O
         .next()
 }
 
-async fn located_elsewhere(
-    call: &ThreadCall,
-    address: &str,
-    all_scope: bool,
-    failure: ThreadToolFailure,
-) -> LocatedControl {
-    if failure.code.as_str() != "not_found" {
-        return LocatedControl::Error(failure);
+/// The address book a send or control lookup resolves `address` against: this device's entries, plus (only when the
+/// address names none of them) the session files on disk it names, so a thread whose process exited is still found by
+/// id or name.
+pub fn send_address_book(call: &ThreadCall, address: &str, all_scope: bool) -> Vec<AddressEntry> {
+    let Some(directory) = call.sessions_directory.as_ref() else {
+        return call.book.clone();
+    };
+    if address == "self" || call.book.iter().any(|entry| entry.durable_id == address) {
+        return call.book.clone();
     }
-    if let Some(found) = find_session_file(call, address, all_scope) {
-        return LocatedControl::NotLive {
-            thread_id: found.durable_id.clone(),
-            title: thread_title(found.name.as_deref(), found.first_user_text.as_deref())
-                .unwrap_or_default(),
-            device: None,
-        };
+    let entries = to_thread_address_entries(&call.book);
+    let resolved = resolve_target(
+        &entries,
+        address,
+        &ResolveOptions {
+            all_scope,
+            caller_workspace_root: &call.caller_workspace_root,
+            ..ResolveOptions::default()
+        },
+    );
+    let id_only = !matches!(&resolved, Err(failure) if failure.code.as_str() == "not_found");
+    let roots = workspace_directories(&call.caller_workspace_root);
+    let found: Vec<DiskSession> = find_disk_sessions(directory, address, all_scope, &roots)
+        .into_iter()
+        .filter(|session| !id_only || session.durable_id == address)
+        .filter(|session| {
+            !call
+                .book
+                .iter()
+                .any(|entry| entry.durable_id == session.durable_id)
+        })
+        .collect();
+    if found.is_empty() {
+        return call.book.clone();
     }
-    if let Some(remote) = &call.remote
-        && let Some(located) = remote
-            .locate(address.to_owned(), all_scope, call.caller_id.clone())
-            .await
-    {
-        return located;
-    }
-    LocatedControl::Error(failure)
+    book_of(&call.view, &found, &call.now)
 }
 
-/// Resolves `address` (`self`, a durable id, a session id, a unique name or id prefix) to the thread a control acts on.
+/// Resolves `address` (`self`, a bare address, `here/<thread>`, or `<device>/<thread>`) through `resolve_address` to
+/// the thread a control acts on.
 pub async fn locate_control(call: &ThreadCall, address: &str, all_scope: bool) -> LocatedControl {
-    let entries = to_thread_address_entries(&call.book);
-    let target = if address.trim() == "self" {
-        match resolve_self(&entries, &call.caller_id) {
-            Ok(entry) => entry.thread_id.clone(),
-            Err(failure) => return LocatedControl::Error(*failure),
-        }
-    } else {
-        address.to_owned()
+    let remote_surface = call
+        .remote
+        .as_deref()
+        .and_then(RemoteControlLocator::remote_surface);
+    let local_for = |part: &str| -> Vec<ThreadAddressEntry> {
+        to_thread_address_entries(&send_address_book(call, part, all_scope))
     };
-    let options = ResolveOptions {
-        all_scope,
+    let local = local_for(address);
+    let context = ResolveContext {
+        remote: remote_surface,
         caller_workspace_root: &call.caller_workspace_root,
-        id_prefix: true,
-        exclude_from_prefix: None,
+        local: &local,
+        local_for: Some(&local_for),
+        caller_id: &call.caller_id,
     };
-    let entry = match resolve_target(&entries, &target, &options) {
-        Ok((entry, _)) => entry,
-        Err(failure) => return located_elsewhere(call, address, all_scope, *failure).await,
+    let options = AddressResolveOptions {
+        all_scope,
+        probe: true,
+        need_online: true,
+        ..AddressResolveOptions::default()
     };
-    let book_entry = call
-        .book
-        .iter()
-        .find(|candidate| candidate.thread_id == entry.thread_id)
-        .cloned();
-    let title = if entry.name.is_empty() {
-        book_entry
-            .as_ref()
-            .and_then(|candidate| candidate.title.clone())
-            .unwrap_or_default()
-    } else {
-        entry.name.clone()
-    };
-    let Some(session) = call.view.target_session(&entry.thread_id) else {
-        return LocatedControl::NotLive {
-            thread_id: entry.thread_id,
-            title,
-            device: None,
-        };
-    };
-    let visible = if all_scope {
-        entries.clone()
-    } else {
-        workspace_entries(&entries, &call.caller_workspace_root)
-    };
-    LocatedControl::Control(Arc::new(LocalControl::new(
-        call.host.session_port(session),
-        session.clone(),
-        title,
-        visible,
-        book_entry,
-        call.now.clone(),
-    )))
+    match resolve_address(&context, address, &options).await {
+        Ok(resolved) => match resolved.where_ {
+            ResolvedWhere::Here { .. } => {
+                let book_entry = call
+                    .book
+                    .iter()
+                    .find(|candidate| candidate.thread_id == resolved.thread)
+                    .cloned();
+                let title = if !resolved.entry.name.is_empty() {
+                    resolved.entry.name.clone()
+                } else {
+                    book_entry
+                        .as_ref()
+                        .and_then(|candidate| candidate.title.clone())
+                        .unwrap_or_default()
+                };
+                let Some(session) = call.view.target_session(&resolved.thread) else {
+                    return LocatedControl::NotLive {
+                        thread_id: resolved.thread,
+                        title,
+                        device: None,
+                    };
+                };
+                let entries = to_thread_address_entries(&call.book);
+                let visible = if all_scope {
+                    entries
+                } else {
+                    workspace_entries(&entries, &call.caller_workspace_root)
+                };
+                LocatedControl::Control(Arc::new(LocalControl::new(
+                    call.host.session_port(session),
+                    session.clone(),
+                    title,
+                    visible,
+                    book_entry,
+                    call.now.clone(),
+                )))
+            }
+            ResolvedWhere::Device { row } => {
+                if row.state == "ended" {
+                    LocatedControl::NotLive {
+                        thread_id: row_key(&keyed(&row)),
+                        title: escape_for_display(&row.title),
+                        device: Some(row.device.clone()),
+                    }
+                } else if let Some(surface) = call
+                    .remote
+                    .as_deref()
+                    .and_then(RemoteControlLocator::remote_surface_arc)
+                {
+                    LocatedControl::Control(Arc::new(create_relay_control(surface, (*row).clone())))
+                } else {
+                    LocatedControl::Error(thread_tool_failure(
+                        "host_unavailable",
+                        "Remote thread surface is not available for relay control.",
+                        "Retry when the remote surface is configured.",
+                        None,
+                    ))
+                }
+            }
+        },
+        Err(failure) => {
+            if remote_surface.is_none()
+                && failure.code.as_str() == "not_found"
+                && let Some(remote) = &call.remote
+                && let Some(located) = remote
+                    .locate(address.to_owned(), all_scope, call.caller_id.clone())
+                    .await
+            {
+                return located;
+            }
+            LocatedControl::Error(*failure)
+        }
+    }
 }

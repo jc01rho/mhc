@@ -523,6 +523,12 @@ fn graceful_close_and_thinking_suffix_rollback_run_through_live_surface() {
     else {
         panic!("expected live control");
     };
+    let LocatedControl::Control(here_control) =
+        block_on(locate_control(&call, &format!("here/{REVIEWER}"), false))
+    else {
+        panic!("expected live control for here/<id>");
+    };
+    assert_eq!(here_control.thread_id(), REVIEWER);
 
     let switched = block_on(set_model_on(control.as_ref(), "gpt:max", None)).expect("switch");
     assert_eq!(switched["kind"], "ok", "{switched}");
