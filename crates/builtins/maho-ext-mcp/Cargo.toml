@@ -48,7 +48,7 @@ maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 maho-ext-host = { path = "../../maho-ext-host" }
 maho-agent = { path = "../../maho-agent" }
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
-rustls = "=0.23.45"
+rustls = "=0.23.46"
 rustls-pki-types = "=1.14.0"
 tokio-rustls = "=0.26.4"
 
