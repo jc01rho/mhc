@@ -191,10 +191,10 @@ fn describes_images_for(
     runtime: &maho_ext_api::ExtensionRuntime,
     ctx: &maho_ext_api::ExtensionContext,
 ) -> Result<bool, maho_ext_api::ExtensionFailure> {
-    if !ctx
+    if ctx
         .model
         .as_ref()
-        .is_some_and(|model| !model.input.contains(&InputModality::Image))
+        .is_none_or(|model| model.input.contains(&InputModality::Image))
     {
         return Ok(false);
     }
