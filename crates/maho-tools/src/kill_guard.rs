@@ -251,10 +251,8 @@ fn judge_statement(segments: &[Vec<String>], view: &ProcessView, depth: usize) -
                     return Some(reason);
                 }
             }
-            "xargs" => {
-                if args.iter().any(|arg| KILLERS.contains(&basename(arg))) {
-                    targets_from_pipeline = true;
-                }
+            "xargs" if args.iter().any(|arg| KILLERS.contains(&basename(arg))) => {
+                targets_from_pipeline = true;
             }
             "eval" => {
                 if let Some(reason) = judge_command(&args.join(" "), view, depth + 1) {
