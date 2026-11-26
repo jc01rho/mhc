@@ -350,3 +350,154 @@ async fn owned_runner_native_error_and_cancellation_branches() {
         );
     }
 }
+
+struct DescribingLook(maho_ext_look_at::runner::VisionModelRunner);
+impl maho_ext_api::Extension for DescribingLook {
+    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        maho_ext_look_at::index::LookAtExtension {
+            runner: self.0.clone(),
+        }
+        .register(api);
+        api.register_tool(maho_ext_api::ToolDefinition::new(
+            "snap",
+            "screenshot fixture",
+            serde_json::json!({"type":"object"}),
+            std::sync::Arc::new(|_| {
+                Box::pin(async {
+                    Ok(maho_ext_api::ToolResult {
+                        content: vec![
+                            maho_ext_api::ToolContent::text("captured"),
+                            maho_ext_api::ToolContent::Image {
+                                data: "iVBORw0KGgo=".into(),
+                                mime_type: "image/png".into(),
+                            },
+                        ],
+                        ..maho_ext_api::ToolResult::text("")
+                    })
+                })
+            }),
+        ));
+        let runtime = api.runtime.clone();
+        api.on(
+            maho_ext_api::EventKind::BeforeAgentStart,
+            std::sync::Arc::new(move |_, _| {
+                let runtime = runtime.clone();
+                Box::pin(async move {
+                    runtime
+                        .session_actions()?
+                        .set_active_tools(vec!["look_at".into(), "snap".into()])?;
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
+    }
+}
+#[tokio::test]
+async fn tool_result_image_is_described_for_a_model_without_image_input() {
+    use maho_ai::providers::faux::{
+        FauxAssistantMessageOptions, FauxModelDefinition, faux_assistant_message, faux_tool_call,
+    };
+    use maho_ai::types::InputModality;
+    use maho_test_support::{faux::FauxScript, faux_session::FauxSession};
+    for (mode, input) in [
+        ("described", vec![InputModality::Text]),
+        ("vision-failed", vec![InputModality::Text]),
+        (
+            "model-sees-images",
+            vec![InputModality::Text, InputModality::Image],
+        ),
+    ] {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        let runner: maho_ext_look_at::runner::VisionModelRunner =
+            std::sync::Arc::new(move |args, _, _, _| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    assert_eq!(
+                        args.args.goal,
+                        maho_ext_look_at::prompts::TOOL_IMAGE_DESCRIPTION_GOAL
+                    );
+                    assert_eq!(
+                        maho_ext_look_at::runner::input_data(args),
+                        vec!["data:image/png;base64,iVBORw0KGgo=".to_owned()]
+                    );
+                    if mode == "vision-failed" {
+                        return Err(maho_ext_api::ExtensionFailure::new("vision down"));
+                    }
+                    Ok(maho_ext_look_at::runner::LookAtRunResult {
+                        model: "faux/vision".into(),
+                        sources: vec!["base64 input".into()],
+                        mime_types: vec!["image/png".into()],
+                        text: "a red square".into(),
+                    })
+                })
+            });
+        let session = FauxSession::new(FauxScript {
+            name: mode.into(),
+            prompt: "snap it".into(),
+            responses: vec![],
+        })
+        .with_faux_models(vec![FauxModelDefinition {
+            id: "faux-1".into(),
+            input: Some(input),
+            ..Default::default()
+        }])
+        .with_native_extension(maho_ext_host::loader::NativeExtensionFactory {
+            path: "builtin:look-at".into(),
+            source_info: maho_ext_api::SourceInfo {
+                source: "builtin".into(),
+                ..Default::default()
+            },
+            extension: Box::new(DescribingLook(runner)),
+        })
+        .with_native_responses(vec![
+            faux_assistant_message(
+                faux_tool_call(
+                    "snap",
+                    serde_json::json!({})
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                    Some(mode),
+                ),
+                FauxAssistantMessageOptions {
+                    stop_reason: Some(maho_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            ),
+            faux_assistant_message("done", FauxAssistantMessageOptions::default()),
+        ]);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), session.run_native())
+            .await
+            .expect("session timeout")
+            .expect("native session");
+        let tool = result["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find(|message| message["role"] == "toolResult")
+            .expect("tool result");
+        assert_eq!(tool["isError"], false, "{mode}: {tool}");
+        assert_eq!(tool["content"][0]["text"], "captured", "{mode}: {tool}");
+        let replaced = &tool["content"][1];
+        match mode {
+            "described" => {
+                assert_eq!(replaced["type"], "text", "{tool}");
+                assert_eq!(
+                    replaced["text"],
+                    maho_ext_look_at::prompts::build_image_description_block(
+                        "faux/vision",
+                        "look_at",
+                        "a red square"
+                    )
+                );
+            }
+            _ => assert_eq!(replaced["type"], "image", "{mode}: {tool}"),
+        }
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(mode != "model-sees-images"),
+            "{mode}"
+        );
+    }
+}
