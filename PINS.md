@@ -14,6 +14,8 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 | pi-tmux | 53af731 | 53af731148c4cd5f5132a7f02900ecbb5817fbb4 | JokerQianwei/pi-tmux (MIT; design reference for crates/maho-team) |
 | omo-components (COMP) | 93b78ac | 93b78ac1cc8d488d124da7ed1d19f678e93fb0fd | (private checkout) |
 
+The oh-my-openagent row is release `v5.1.83` (`69a1863a45`). Its sync ledgers are `docs/omo-sync/v5.1.83/*.md`; every row there is ported, n/a or excluded. Excluded on purpose: omo #14367 (v5.1.80, `agent_with_model`, refusing a call-site `model` for builtin agents such as `explore`, `librarian`, `plan-*` and the reviewers). The OmOMeow fleet passes a model to builtin agents, so this refusal is never ported; see `docs/omo-sync/v5.1.83/senpi-task-core.md`.
+
 ## Pin roles
 
 - `PINS.md` senpi row: latest upstream commit whose behavior has been ported (parity baseline).
