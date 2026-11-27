@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::adapter::{GatewayEndpointPort, ReleaseSessionReply, UiAnswer, UiAnswerReply};
+use super::adapter::{GatewayEndpointPort, ReleaseSessionReply};
 use super::live_surface::LiveThreadSurface;
 
 type Loader = Arc<dyn Fn() -> Result<Arc<LiveThreadSurface>, String> + Send + Sync>;
@@ -54,7 +54,6 @@ impl LazyLiveThreadSurface {
         let wake = self.clone_handle();
         let release = self.clone_handle();
         let liveness = self.clone_handle();
-        let respond = self.clone_handle();
         let _ = socket;
         GatewayEndpointPort {
             wake: Arc::new(move |endpoint, ids| {
@@ -99,22 +98,6 @@ impl LazyLiveThreadSurface {
                     match surface.gateway().classify_liveness {
                         Some(classify) => classify(endpoint).await,
                         None => super::adapter::EndpointLiveness::Dead,
-                    }
-                })
-            })),
-            respond_ui: Some(Arc::new(move |endpoint, answer: UiAnswer| {
-                let handle = respond.clone();
-                Box::pin(async move {
-                    let Ok(surface) = handle.surface() else {
-                        return UiAnswerReply::Refused {
-                            error: "host_unavailable".to_owned(),
-                        };
-                    };
-                    match surface.gateway().respond_ui {
-                        Some(respond) => respond(endpoint, answer).await,
-                        None => UiAnswerReply::Refused {
-                            error: "unsupported:respondUi".to_owned(),
-                        },
                     }
                 })
             })),

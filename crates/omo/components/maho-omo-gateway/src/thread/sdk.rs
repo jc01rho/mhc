@@ -1,7 +1,7 @@
-//! The gateway SDK: sends over one store, for a CLI or a connector.
+//! The gateway SDK: sends over one store, for a CLI.
 //!
-//! Upstream counterpart: `thread/sdk.ts`. A send resolves sender provenance in the sender's own
-//! runtime, and a send that queued for a parked session wakes it as an agent's `thread_send` does.
+//! Upstream counterpart: `thread/sdk.ts`. A send resolves sender provenance in the sender's own runtime, and a send
+//! that queued for a parked session wakes it as an agent's `thread_send` does.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

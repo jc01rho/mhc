@@ -10,6 +10,7 @@ pub mod cross_device;
 pub mod device_service;
 pub mod outcome;
 pub mod ports;
+pub mod receipt;
 pub mod remote_ops;
 
 use std::sync::Arc;

@@ -125,7 +125,6 @@ mod tests {
             body: delivery_id.into(),
             mode: GatewayDeliveryMode::FollowUp,
             expected_turn_id: None,
-            binding: None,
             receipt: ReceiptRef {
                 idempotency_key: delivery_id.into(),
                 args_hash: delivery_id.into(),
@@ -171,6 +170,7 @@ mod tests {
                     admission_kind: "queued".into(),
                     wait_kind: None,
                     turn_epoch: 1,
+                    mode_effective: None,
                 },
             ),
             (
@@ -179,6 +179,7 @@ mod tests {
                     admission_kind: "started".into(),
                     wait_kind: None,
                     turn_epoch: 1,
+                    mode_effective: None,
                 },
             ),
         ] {

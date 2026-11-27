@@ -56,7 +56,7 @@ const UNFENCED: [&str; 37] = [
 
 /// Commands whose reply union carries the host's refusal: their callers branch on the refusal code,
 /// so an attach refusal is answered as that command's own refusal frame instead of a throw.
-const TYPED_REFUSAL: [&str; 2] = ["release_session", "extension_ui_response"];
+const TYPED_REFUSAL: [&str; 1] = ["release_session"];
 
 /// One request on an authenticated connection.
 pub trait RpcTransport: Send + Sync {

@@ -1,7 +1,8 @@
 //! The gateway store schema through its public API (omo v5.1.80..v5.1.83 gateway-schema track). A v10 store, the one an
 //! mhc install holds today, migrates to the current schema without losing a row (v11..v16: omo#13014, #13037, #14333,
 //! #14428); a store another binary left at v14 keeps every column through the v15 rebuild of `deliveries`; and a rebuild
-//! that would leave a foreign-key violation keeps the store where it was.
+//! that would leave a foreign-key violation keeps the store where it was. The binding-era tables stay in the schema
+//! after the binding removal (omo#14312), and nothing the store does writes them (omo#14382).
 
 use std::sync::Arc;
 
@@ -12,7 +13,10 @@ use maho_omo_gateway::thread::store::{
 };
 use maho_omo_gateway::thread::store_api::GatewayStoreApi;
 use maho_omo_gateway::thread::store_ops::StoreError;
-use maho_omo_gateway::thread::types::{ClaimOutcome, ClaimRequest, DeliveryState, EffectiveLane};
+use maho_omo_gateway::thread::types::{
+    ClaimOutcome, ClaimRequest, DeliveryState, EffectiveLane, EnqueueOutcome, EnqueueRequest,
+    EnvelopeOrigin, GatewayDeliveryMode, Provenance, ReceiptRef,
+};
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
 
@@ -450,5 +454,121 @@ fn a_rebuild_that_would_leave_a_foreign_key_violation_keeps_the_store_at_v14_unt
             delivery_objects(&db),
         ),
         before
+    );
+}
+
+/// A follow-up from session A to session B, which the v14 fixture's deliveries already address.
+fn send_to_b(delivery_id: &str, now: i64) -> EnqueueRequest {
+    EnqueueRequest {
+        provenance: Provenance {
+            workspace: "w".into(),
+            project: "p".into(),
+            lane: None,
+            session: None,
+        },
+        now,
+        delivery_id: delivery_id.into(),
+        target_durable_id: "B".into(),
+        sender_principal: "session:A".into(),
+        rate_principal: None,
+        sender_node: "A".into(),
+        sender_turn: None,
+        cause_delivery_id: None,
+        claimed_root_id: None,
+        origin: EnvelopeOrigin::Session {
+            session: "A".into(),
+        },
+        actor: "A".into(),
+        body: format!("body of {delivery_id}"),
+        mode: GatewayDeliveryMode::FollowUp,
+        expected_turn_id: None,
+        receipt: ReceiptRef {
+            idempotency_key: format!("k-{delivery_id}"),
+            args_hash: format!("h-{delivery_id}"),
+        },
+        endpoint_kind: None,
+        collapse_key: None,
+    }
+}
+
+/// Every row of the binding-era tables, which stay in the schema so an omo still on schema 14 keeps reading them.
+fn binding_era_rows(db: &Connection) -> Vec<Rows> {
+    ["bindings", "outbox", "outbox_cursors", "completion_arms"]
+        .iter()
+        .map(|table| rows(db, &format!("SELECT rowid, * FROM {table} ORDER BY rowid")))
+        .collect()
+}
+
+#[test]
+fn a_v14_store_with_binding_era_rows_keeps_them_untouched_through_a_send_a_claim_and_a_list() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    v14_fixture(
+        &dir,
+        r#"INSERT INTO bindings (binding_id, revision, status, platform, account_id, chat_id, thread_id, session_realm_id, session_durable_id, direction_inbound, direction_outbound, inbound_mode, outbound_events, policy_id, created_at, updated_at, lease_started_at) VALUES ('bnd-1', 1, 'active', 'slack', 'acct', 'C1', '@chat', 'realm-1', 'B', 1, 1, 'auto', '["report"]', 'policy', '2026-11-25T00:00:00.000Z', '2026-11-25T00:00:00.000Z', '2026-11-25T00:00:00.000Z');
+        INSERT INTO outbox (binding_id, revision, event_kind, payload, state, created_at) VALUES ('bnd-1', 1, 'report', '{}', 'pending', 1);
+        INSERT INTO outbox_cursors (binding_id, acked_cursor, updated_at) VALUES ('bnd-1', 0, 1);
+        INSERT INTO completion_arms (session_durable_id, binding_id, revision, text, armed_at) VALUES ('B', 'bnd-1', 1, 'done', 1);"#,
+    );
+    let db = connect(&dir);
+    let before = binding_era_rows(&db);
+    assert!(
+        before.iter().all(|table| table.len() == 1),
+        "one row in each binding-era table: {before:?}"
+    );
+    drop(db);
+
+    let store = open(&dir).expect("the current build opens the v14 store");
+    let sent = store.enqueue(&send_to_b("d-new", 40)).expect("enqueue");
+    assert!(matches!(sent, EnqueueOutcome::Inserted { .. }), "{sent:?}");
+    let claimed = store
+        .claim(&ClaimRequest {
+            now: 41,
+            delivery_id: "d-new".into(),
+            self_identity: store.identity().expect("identity"),
+            lane: EffectiveLane::FollowUp,
+        })
+        .expect("claim");
+    assert!(
+        matches!(claimed, ClaimOutcome::Claimed { .. }),
+        "{claimed:?}"
+    );
+    let listed = store.list(Some("B"), None).expect("list");
+    assert!(listed.iter().any(|row| row.delivery_id == "d-new"));
+
+    assert_eq!(binding_era_rows(&connect(&dir)), before);
+}
+
+/// omo 7f068c4d32: a foreign client that takes itself for the last connection removes the `-wal` and `-shm` files an
+/// open connection uses, and the writes made after that land in an unlinked WAL no other process reads.
+#[cfg(unix)]
+#[test]
+fn a_store_whose_wal_files_a_foreign_close_removed_writes_where_other_connections_read() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = open(&dir).expect("the store opens");
+    let database = gateway_database_path(dir.path());
+    store
+        .enqueue(&send_to_b("d-before", 40))
+        .expect("the send before the removal");
+    // Another process folds the WAL into the database file, so only the later send depends on the files' fate.
+    let busy: i64 = connect(&dir)
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .expect("checkpoint");
+    assert_eq!(busy, 0, "the checkpoint ran to the end");
+    for suffix in ["-wal", "-shm"] {
+        let mut name = database.clone().into_os_string();
+        name.push(suffix);
+        std::fs::remove_file(&name).expect("a foreign close removes the file");
+    }
+
+    store
+        .enqueue(&send_to_b("d-after", 41))
+        .expect("the send after the removal");
+
+    assert_eq!(
+        texts(
+            &connect(&dir),
+            "SELECT delivery_id FROM deliveries ORDER BY seq"
+        ),
+        vec!["d-before".to_owned(), "d-after".to_owned()]
     );
 }

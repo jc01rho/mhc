@@ -23,10 +23,12 @@ use rusqlite::Connection;
 use rusqlite::types::Value as SqliteValue;
 use serde_json::Value;
 
+use super::address_book::find_disk_sessions;
 use super::backlog::{BacklogCheck, backlog_refusal};
 use super::constants::{
     GATEWAY_RECEIPT_RETENTION_MS, MAX_CAUSAL_DELIVERIES, MAX_HOPS, PAIR_BUCKET_BURST,
-    PAIR_BUCKET_REFILL_MS, QUEUED_TTL_MS, RETENTION_SWEEP_BATCH, ROOT_LIFETIME_MS, is_durable_id,
+    PAIR_BUCKET_REFILL_MS, QUEUED_TTL_MS, RETENTION_SWEEP_BATCH, ROOT_LIFETIME_MS,
+    SESSION_CONTROL_DELIVERY_TYPE, is_durable_id,
 };
 use super::errors::pair_loop_guard_message;
 use super::provenance_record::is_provenance;
@@ -37,8 +39,8 @@ use super::schema::{
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, DeliveryState, DeliveryTransition, EffectiveLane,
     EnqueueOutcome, EnqueueRequest, GatewayStoreConfig, GatewayStoreEvent, GatewayStoreStats,
-    OutcomeRecord, ProcessIdentity, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest,
-    RefusalReason, StoredDeliveryEnvelope,
+    OutcomeRecord, ProcessIdentity, ReceiptOutcome, ReceiptRefusalReason, ReconcileOutcome,
+    ReconcileRequest, RecordOutcomeRequest, RefusalNotice, RefusalReason, StoredDeliveryEnvelope,
 };
 use crate::paths::{gateway_database_path, gateway_inbox_directory, gateway_root_directory};
 
@@ -510,9 +512,6 @@ const DELIVERY_COLUMNS: &[&str] = &[
     "created_at",
     "updated_at",
     "expires_at",
-    "binding_id",
-    "binding_revision",
-    "actor_user_id",
     "ledger_id",
     "verbatim_text",
     "verbatim_display_text",
@@ -571,9 +570,6 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
         created_at: row_i64(record, "created_at"),
         updated_at: row_i64(record, "updated_at"),
         expires_at: row_i64(record, "expires_at"),
-        binding_id: row_opt_str(record, "binding_id"),
-        binding_revision: row_opt_i64(record, "binding_revision"),
-        actor_user_id: row_opt_str(record, "actor_user_id"),
         ledger_id: row_opt_str(record, "ledger_id"),
         verbatim_text: row_opt_str(record, "verbatim_text"),
         verbatim_display_text: row_opt_str(record, "verbatim_display_text"),
@@ -684,9 +680,6 @@ fn insert_delivery(ctx: &StoreContext, row: &DeliveryRow) -> Result<(), StoreErr
             v_i64(row.created_at),
             v_i64(row.updated_at),
             v_i64(row.expires_at),
-            v_opt_str(row.binding_id.clone()),
-            v_opt_i64(row.binding_revision),
-            v_opt_str(row.actor_user_id.clone()),
             v_opt_str(row.ledger_id.clone()),
             v_opt_str(row.verbatim_text.clone()),
             v_opt_str(row.verbatim_display_text.clone()),
@@ -917,7 +910,6 @@ struct ReceiptRecord {
     delivery_id: Option<String>,
     owner_instance: String,
     result: Option<String>,
-    expires_at: i64,
 }
 
 fn select_receipt(
@@ -926,7 +918,7 @@ fn select_receipt(
     key: &str,
 ) -> Result<Option<ReceiptRecord>, StoreError> {
     let found = ctx.one(
-        "SELECT args_hash, status, delivery_id, owner_instance, result, expires_at FROM receipts WHERE principal = ? AND operation = 'deliver' AND idempotency_key = ?",
+        "SELECT args_hash, status, delivery_id, owner_instance, result FROM receipts WHERE principal = ? AND operation = 'deliver' AND idempotency_key = ?",
         &[v_str(principal), v_str(key)],
     )?;
     Ok(found.map(|row| ReceiptRecord {
@@ -935,7 +927,6 @@ fn select_receipt(
         delivery_id: row_opt_str(&row, "delivery_id"),
         owner_instance: row_str(&row, "owner_instance"),
         result: row_opt_str(&row, "result"),
-        expires_at: row_i64(&row, "expires_at"),
     }))
 }
 
@@ -1173,23 +1164,20 @@ pub fn closes_cycle(edges: &[(String, String)], from: &str, to: &str) -> bool {
 
 fn take_pair_token(
     ctx: &StoreContext,
-    request: &EnqueueRequest,
+    sender: &str,
+    target_durable_id: &str,
+    now: i64,
 ) -> Result<Option<EnqueueOutcome>, StoreError> {
-    let sender = request
-        .rate_principal
-        .clone()
-        .unwrap_or_else(|| request.sender_principal.clone());
     let bucket = ctx.one(
         "SELECT tokens, updated_at FROM rate_buckets WHERE sender = ? AND target_durable_id = ?",
-        &[v_str(&sender), v_str(&request.target_durable_id)],
+        &[v_str(sender), v_str(target_durable_id)],
     )?;
     let tokens = match &bucket {
         None => PAIR_BUCKET_BURST,
         Some(bucket) => {
             let stored = bucket.get("tokens").and_then(Value::as_f64).unwrap_or(0.0);
             let updated = row_i64(bucket, "updated_at");
-            PAIR_BUCKET_BURST
-                .min(stored + ((request.now - updated).max(0) as f64) / PAIR_BUCKET_REFILL_MS)
+            PAIR_BUCKET_BURST.min(stored + ((now - updated).max(0) as f64) / PAIR_BUCKET_REFILL_MS)
         }
     };
     // An empty bucket means the sender spent at least the whole burst on this target within the time the bucket
@@ -1199,7 +1187,7 @@ fn take_pair_token(
         let window_ms = (PAIR_BUCKET_BURST * PAIR_BUCKET_REFILL_MS) as i64;
         return Ok(Some(refused(
             "pair_loop_guard",
-            pair_loop_guard_message(&sender, &request.target_durable_id, burst, window_ms),
+            pair_loop_guard_message(sender, target_durable_id, burst, window_ms),
             Some(serde_json::json!({
                 "guard": "pair_loop",
                 "burst": burst,
@@ -1210,44 +1198,12 @@ fn take_pair_token(
     }
     ctx.run(
         "INSERT INTO rate_buckets (sender, target_durable_id, tokens, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(sender, target_durable_id) DO UPDATE SET tokens = excluded.tokens, updated_at = excluded.updated_at",
-        &[v_str(&sender), v_str(&request.target_durable_id), SqliteValue::Real(tokens - 1.0), v_i64(request.now)],
+        &[v_str(sender), v_str(target_durable_id), SqliteValue::Real(tokens - 1.0), v_i64(now)],
     )?;
     Ok(None)
 }
 
-fn check_binding(
-    ctx: &StoreContext,
-    request: &EnqueueRequest,
-) -> Result<Result<Option<i64>, EnqueueOutcome>, StoreError> {
-    let Some(binding) = &request.binding else {
-        return Ok(Ok(None));
-    };
-    let found = ctx.one(
-        "SELECT revision, status, session_durable_id, direction_inbound, expires_at FROM bindings WHERE binding_id = ?",
-        &[v_str(&binding.binding_id)],
-    )?;
-    let expires_at = found
-        .as_ref()
-        .and_then(|row| row_opt_str(row, "expires_at"))
-        .and_then(|text| parse_rfc3339_millis(&text));
-    let valid = found.as_ref().is_some_and(|row| {
-        row_str(row, "status") == "active"
-            && row_i64(row, "revision") == binding.revision
-            && row_str(row, "session_durable_id") == request.target_durable_id
-            && row_i64(row, "direction_inbound") == 1
-            && expires_at.is_none_or(|expires| expires > request.now)
-    });
-    if !valid {
-        return Ok(Err(refused(
-            "invalid_arguments",
-            "The binding is not active for this session at this revision.",
-            Some(serde_json::json!({ "binding": binding.binding_id })),
-        )));
-    }
-    Ok(Ok(expires_at))
-}
-
-/// A minimal RFC 3339 reader for the binding columns: `YYYY-MM-DDTHH:MM:SS[.fff]Z`.
+/// A minimal RFC 3339 reader: `YYYY-MM-DDTHH:MM:SS[.fff]Z`.
 pub fn parse_rfc3339_millis(text: &str) -> Option<i64> {
     let (date, rest) = text.split_once('T')?;
     let mut date_parts = date.split('-');
@@ -1361,13 +1317,6 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             committed = true;
             return Ok(outcome);
         }
-        let binding_expiry = match check_binding(ctx, request)? {
-            Ok(expiry) => expiry,
-            Err(refusal) => {
-                rollback_quietly(ctx);
-                return Ok(refusal);
-            }
-        };
         // Expired queued rows of this target are refused first, so neither a collapse nor the cap counts them
         // (omo#14466).
         let expired = refuse_expired_queued(
@@ -1414,7 +1363,12 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
                 return Ok(refusal);
             }
         };
-        if let Some(budget) = take_pair_token(ctx, request)? {
+        let sender = request
+            .rate_principal
+            .as_deref()
+            .unwrap_or(&request.sender_principal);
+        if let Some(budget) = take_pair_token(ctx, sender, &request.target_durable_id, request.now)?
+        {
             rollback_quietly(ctx);
             return Ok(budget);
         }
@@ -1460,19 +1414,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             hop: placement.hop,
             created_at: request.now,
             updated_at: request.now,
-            expires_at: QUEUED_TTL_MS
-                .saturating_add(request.now)
-                .min(binding_expiry.unwrap_or(i64::MAX)),
-            binding_id: request
-                .binding
-                .as_ref()
-                .map(|binding| binding.binding_id.clone()),
-            binding_revision: request.binding.as_ref().map(|binding| binding.revision),
-            actor_user_id: request
-                .origin
-                .external()
-                .and_then(|origin| origin.author.as_ref())
-                .and_then(|author| author.user_id.clone()),
+            expires_at: request.now.saturating_add(QUEUED_TTL_MS),
             ledger_id: None,
             verbatim_text: None,
             verbatim_display_text: None,
@@ -1937,18 +1879,21 @@ pub fn record_outcome(
                 admission_kind,
                 wait_kind,
                 turn_epoch,
+                mode_effective,
             }
             | OutcomeRecord::Applied {
                 admission_kind,
                 wait_kind,
                 turn_epoch,
+                mode_effective,
             } => {
                 ctx.run(
-                    "UPDATE deliveries SET admission_kind = ?, wait_kind = ?, turn_epoch = ?, updated_at = ? WHERE delivery_id = ?",
+                    "UPDATE deliveries SET admission_kind = ?, wait_kind = ?, turn_epoch = ?, mode_effective = COALESCE(?, mode_effective), updated_at = ? WHERE delivery_id = ?",
                     &[
                         v_str(admission_kind.clone()),
                         v_opt_str(wait_kind.as_deref()),
                         v_i64(*turn_epoch),
+                        v_opt_str(mode_effective.map(EffectiveLane::as_str)),
                         v_i64(request.now),
                         v_str(&row.delivery_id),
                     ],
@@ -2046,94 +1991,282 @@ pub fn abandon_receipt(
     })
 }
 
-/// The stored result of a completed receipt, and the row facts its arguments hash was taken over.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DeliveryReceipt {
-    pub args_hash: String,
-    pub completed: bool,
-    pub result: Value,
-    pub target_durable_id: String,
-    pub binding_revision: Option<i64>,
-}
-
-pub fn delivery_receipt(
+/// What a retained delivery receipt reports of its row, as application evidence (omo#14623). The caller holds the write
+/// lock: a queued row past its lifetime that no claim ever touched is settled `expired` here, and an unresolved claim
+/// never expires by time alone.
+fn current_receipt_outcome(
     ctx: &StoreContext,
+    row: &DeliveryRow,
     now: i64,
-    principal: &str,
-    idempotency_key: &str,
-) -> Result<Option<DeliveryReceipt>, StoreError> {
-    let Some(receipt) = select_receipt(ctx, principal, idempotency_key)? else {
-        return Ok(None);
-    };
-    if receipt.expires_at <= now {
-        return Ok(None);
-    }
-    let Some(delivery_id) = receipt.delivery_id.clone() else {
-        return Ok(None);
-    };
-    let Some(row) = select_row(ctx, &delivery_id)? else {
-        return Ok(None);
-    };
-    let completed = receipt.status == "completed" && receipt.result.is_some();
-    Ok(Some(DeliveryReceipt {
-        args_hash: receipt.args_hash,
-        completed,
-        result: if completed {
-            serde_json::from_str(receipt.result.as_deref().unwrap_or("null")).unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        },
-        target_durable_id: row.target_durable_id,
-        binding_revision: row.binding_revision,
-    }))
-}
-
-pub fn recover_delivery(
-    ctx: &StoreContext,
-    now: i64,
-    principal: &str,
-    idempotency_key: &str,
-    args_hash: &str,
-) -> Result<Option<EnqueueOutcome>, StoreError> {
-    transaction(ctx, "recover_delivery", || {
-        let Some(receipt) = select_receipt(ctx, principal, idempotency_key)? else {
-            return Ok(None);
-        };
-        if receipt.expires_at <= now {
-            return Ok(None);
+) -> Result<ReceiptOutcome, StoreError> {
+    Ok(match row.state {
+        DeliveryState::Applied => ReceiptOutcome::Applied,
+        DeliveryState::Admitted => ReceiptOutcome::Admitted,
+        DeliveryState::Admitting | DeliveryState::Uncertain => ReceiptOutcome::OutcomeUnavailable,
+        DeliveryState::Refused => {
+            match row.reason.as_deref().and_then(ReceiptRefusalReason::parse) {
+                Some(reason) => ReceiptOutcome::Refused { reason },
+                None => ReceiptOutcome::OutcomeUnavailable,
+            }
         }
-        let request = EnqueueRequest {
-            provenance: super::types::Provenance {
-                workspace: "unclassified".into(),
-                project: "recover".into(),
-                lane: None,
-                session: None,
-            },
-            now,
-            delivery_id: receipt.delivery_id.clone().unwrap_or_default(),
-            target_durable_id: String::new(),
-            sender_principal: principal.to_owned(),
-            rate_principal: None,
-            sender_node: String::new(),
-            sender_turn: None,
-            cause_delivery_id: None,
-            claimed_root_id: None,
-            origin: super::types::EnvelopeOrigin::Session {
-                session: String::new(),
-            },
-            actor: String::new(),
-            body: String::new(),
-            mode: super::types::GatewayDeliveryMode::Auto,
-            expected_turn_id: None,
-            binding: None,
-            receipt: super::types::ReceiptRef {
-                idempotency_key: idempotency_key.to_owned(),
-                args_hash: args_hash.to_owned(),
-            },
-            endpoint_kind: None,
-            collapse_key: None,
+        DeliveryState::Queued => {
+            if row.expires_at > now {
+                ReceiptOutcome::Pending
+            } else if row.attempt != 0 || row.admitted_by.is_some() {
+                // A local message cannot reach an engine without a claim. If a previous claim existed, only
+                // reconciliation with its application evidence can establish non-delivery.
+                ReceiptOutcome::OutcomeUnavailable
+            } else {
+                transition(
+                    ctx,
+                    row,
+                    DeliveryState::Refused,
+                    now,
+                    Some(RefusalReason::Expired),
+                )?;
+                unlink_marker(ctx, &row.target_durable_id, &row.delivery_id);
+                ReceiptOutcome::Refused {
+                    reason: ReceiptRefusalReason::Expired,
+                }
+            }
+        }
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiptOutcomeRequest {
+    pub now: i64,
+    /// Authenticated principal, never the session claimed in a relayed message body.
+    pub principal: String,
+    pub delivery_id: String,
+    pub target_durable_id: String,
+    /// Receiver-owned path resolved by the local consumer; never a wire field.
+    pub session_path: Option<String>,
+}
+
+/// Whether the session file holds the custom message the engine wrote for `delivery_id` (`sessionHasToken`).
+fn session_has_token(
+    session_path: Option<&str>,
+    delivery_id: &str,
+) -> Result<bool, std::io::Error> {
+    let Some(path) = session_path else {
+        return Ok(false);
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(text
+        .lines()
+        .filter(|line| line.contains(delivery_id))
+        .any(|line| {
+            serde_json::from_str::<Value>(line).is_ok_and(|entry| {
+                entry["type"] == "custom_message"
+                    && entry["customType"] == SESSION_CONTROL_DELIVERY_TYPE
+                    && entry["details"]["delivery_id"] == delivery_id
+            })
+        }))
+}
+
+/// Bounded refusal-only candidates. A claim (`claim_refusal_notice`), after authorization, owns each notice once.
+pub fn refusal_notices(ctx: &StoreContext, now: i64) -> Result<Vec<RefusalNotice>, StoreError> {
+    let sql = format!(
+        "SELECT {} FROM deliveries WHERE state = 'refused' AND reason IN ('expired', 'not_steerable', 'turn_conflict', 'target_closed') AND ledger_id IS NOT NULL AND updated_at > ? AND NOT EXISTS (SELECT 1 FROM receipts r WHERE r.operation = 'outcome_notice' AND r.delivery_id = deliveries.delivery_id) ORDER BY updated_at LIMIT 32",
+        DELIVERY_COLUMNS.join(", ")
+    );
+    let mut notices = Vec::new();
+    for record in ctx.all(&sql, &[v_i64(now - GATEWAY_RECEIPT_RETENTION_MS)])? {
+        let row = row_from_record(&record);
+        let ReceiptOutcome::Refused { reason } = current_receipt_outcome(ctx, &row, now)? else {
+            continue;
         };
-        Ok(Some(classify_receipt(ctx, &request, &receipt)?))
+        let Some(device) = row.sender.strip_prefix("device:") else {
+            continue;
+        };
+        let super::types::EnvelopeOrigin::Session { session } = &row.envelope.origin else {
+            continue;
+        };
+        let prefix = format!("{}/", row.sender);
+        let Some(delivery_id) = row
+            .ledger_id
+            .as_deref()
+            .and_then(|ledger| ledger.strip_prefix(prefix.as_str()))
+        else {
+            continue;
+        };
+        notices.push(RefusalNotice {
+            row_id: row.delivery_id.clone(),
+            delivery_id: delivery_id.to_owned(),
+            device: device.to_owned(),
+            session: session.clone(),
+            target_durable_id: row.target_durable_id.clone(),
+            reason,
+        });
+    }
+    Ok(notices)
+}
+
+/// Uses the existing durable pair bucket and receipt retention; a lost notice is repaired by query.
+pub fn claim_refusal_notice(
+    ctx: &StoreContext,
+    now: i64,
+    notice: &RefusalNotice,
+    suppress: bool,
+) -> Result<bool, StoreError> {
+    transaction(ctx, "claim_outcome_notice", || {
+        let Some(row) = select_row(ctx, &notice.row_id)? else {
+            return Ok(false);
+        };
+        let expected_sender = format!("device:{}", notice.device);
+        let expected_ledger = format!("device:{}/{}", notice.device, notice.delivery_id);
+        if row.state != DeliveryState::Refused
+            || row.reason.as_deref() != Some(notice.reason.as_str())
+            || row.sender != expected_sender
+            || row.ledger_id.as_deref() != Some(expected_ledger.as_str())
+            || row.target_durable_id != notice.target_durable_id
+            || row.envelope.origin.session_id() != Some(notice.session.as_str())
+        {
+            return Ok(false);
+        }
+        let key = format!("outcome-notice:{}", notice.device);
+        let held = ctx.one(
+            "SELECT delivery_id FROM receipts WHERE principal = ? AND operation = 'outcome_notice' AND idempotency_key = ?",
+            &[v_str(&key), v_str(&notice.row_id)],
+        )?;
+        if held.is_some() {
+            return Ok(false);
+        }
+        if !suppress && take_pair_token(ctx, "outcome-notice", &notice.device, now)?.is_some() {
+            return Ok(false);
+        }
+        ctx.run(
+            "INSERT INTO receipts (principal, operation, idempotency_key, args_hash, status, delivery_id, owner_instance, created_at, updated_at, expires_at) VALUES (?, 'outcome_notice', ?, ?, 'completed', ?, ?, ?, ?, ?)",
+            &[
+                v_str(&key),
+                v_str(&notice.row_id),
+                v_str(notice.reason.as_str()),
+                v_str(&notice.row_id),
+                v_str(&ctx.config.instance_id),
+                v_i64(now),
+                v_i64(now),
+                v_i64(now + GATEWAY_RECEIPT_RETENTION_MS),
+            ],
+        )?;
+        Ok(true)
+    })
+}
+
+/// Query-only. It writes no receipt, admission, marker, or wake, even after retention.
+pub fn receipt_outcome(
+    ctx: &StoreContext,
+    request: &ReceiptOutcomeRequest,
+) -> Result<ReceiptOutcome, StoreError> {
+    let key = if request.principal.starts_with("device:") {
+        format!("{}/{}", request.principal, request.delivery_id)
+    } else {
+        request.delivery_id.clone()
+    };
+    let find = || -> Result<Option<DeliveryRow>, StoreError> {
+        Ok(select_rows(
+            ctx,
+            "sender = ? AND target_durable_id = ? AND (delivery_id = ? OR ledger_id = ?)",
+            &[
+                v_str(&request.principal),
+                v_str(&request.target_durable_id),
+                v_str(&key),
+                v_str(&key),
+            ],
+            None,
+        )?
+        .into_iter()
+        .next())
+    };
+    let Some(before) = find()? else {
+        // A live RPC admission bypasses intake. Its engine-stamped, device-scoped transcript ID is still
+        // authoritative application evidence; absence proves neither expiry nor admission.
+        if request.principal.starts_with("device:")
+            && let Some(path) = request.session_path.as_deref()
+        {
+            return Ok(match session_has_token(Some(path), &key) {
+                Ok(true) => ReceiptOutcome::Applied,
+                Ok(false) | Err(_) => ReceiptOutcome::OutcomeUnavailable,
+            });
+        }
+        return Ok(ReceiptOutcome::OutcomeUnavailable);
+    };
+    let remember = |row: &DeliveryRow,
+                    outcome: ReceiptOutcome|
+     -> Result<ReceiptOutcome, StoreError> {
+        if !request.principal.starts_with("session:") {
+            return Ok(outcome);
+        }
+        let encoded = serde_json::to_string(&outcome).unwrap_or_default();
+        ctx.run(
+            "UPDATE receipts SET result = json_set(result, '$.outcome', json(?)), updated_at = ? WHERE principal = ? AND operation = 'deliver' AND delivery_id = ? AND status = 'completed' AND expires_at > ? AND json_extract(result, '$.kind') = 'ok' AND COALESCE(json_extract(result, '$.outcome'), '') != ?",
+            &[
+                v_str(&encoded),
+                v_i64(request.now),
+                v_str(&request.principal),
+                v_str(&row.delivery_id),
+                v_i64(request.now),
+                v_str(&encoded),
+            ],
+        )?;
+        Ok(outcome)
+    };
+    // A terminal fact needs no filesystem observation and is immutable.
+    if matches!(
+        before.state,
+        DeliveryState::Applied | DeliveryState::Refused
+    ) {
+        return transaction(ctx, "receipt_outcome", || {
+            let Some(row) = find()? else {
+                return Ok(ReceiptOutcome::OutcomeUnavailable);
+            };
+            let outcome = current_receipt_outcome(ctx, &row, request.now)?;
+            remember(&row, outcome)
+        });
+    }
+    let paths: Vec<String> = match request.session_path.as_deref() {
+        Some(path) => vec![path.to_owned()],
+        None => find_disk_sessions(
+            &Path::new(&ctx.config.agent_dir).join("sessions"),
+            &before.target_durable_id,
+            true,
+            &[],
+        )
+        .into_iter()
+        .filter(|session| session.durable_id == before.target_durable_id)
+        .map(|session| session.session_path)
+        .collect(),
+    };
+    let mut written = false;
+    if let [path] = paths.as_slice() {
+        match session_has_token(Some(path.as_str()), engine_key(&before)) {
+            Ok(found) => written = found,
+            Err(_) => return Ok(ReceiptOutcome::OutcomeUnavailable),
+        }
+    }
+    transaction(ctx, "receipt_outcome", || {
+        let Some(row) = find()? else {
+            return Ok(ReceiptOutcome::OutcomeUnavailable);
+        };
+        if matches!(row.state, DeliveryState::Applied | DeliveryState::Refused) {
+            let outcome = current_receipt_outcome(ctx, &row, request.now)?;
+            return remember(&row, outcome);
+        }
+        if row.state != before.state || claim_fingerprint(&row) != claim_fingerprint(&before) {
+            return Ok(ReceiptOutcome::OutcomeUnavailable);
+        }
+        if written {
+            transition(ctx, &row, DeliveryState::Applied, request.now, None)?;
+            unlink_marker(ctx, &row.target_durable_id, &row.delivery_id);
+            return remember(&row, ReceiptOutcome::Applied);
+        }
+        let outcome = current_receipt_outcome(ctx, &row, request.now)?;
+        remember(&row, outcome)
     })
 }
 
@@ -2182,15 +2315,7 @@ pub fn is_referenced(ctx: &StoreContext, durable_id: &str) -> Result<bool, Store
     if open > 0 {
         return Ok(true);
     }
-    let bindings = ctx
-        .one(
-            "SELECT COUNT(*) AS n FROM bindings WHERE session_durable_id = ? AND status = 'active'",
-            &[v_str(durable_id)],
-        )?
-        .as_ref()
-        .map(|row| row_i64(row, "n"))
-        .unwrap_or(0);
-    Ok(bindings > 0 || !marker_names(ctx, durable_id).is_empty())
+    Ok(!marker_names(ctx, durable_id).is_empty())
 }
 
 pub fn journal_mode(ctx: &StoreContext) -> Result<String, StoreError> {

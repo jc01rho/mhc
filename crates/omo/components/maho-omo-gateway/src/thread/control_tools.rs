@@ -25,6 +25,7 @@ use super::read_ops::{
 };
 use super::reader::THREAD_READ_MAX_BYTES;
 use super::remote::cross_device::list_across;
+use super::remote::receipt::read_receipt;
 use super::store_ops::rfc3339;
 use super::tools::{ThreadTool, ThreadToolsOptions};
 
@@ -35,6 +36,7 @@ const ADDRESS: &str = "Recipient thread: the thread value of a thread_list row (
 const SELF_OR_THREAD: &str = "Thread to act on. Omit or pass self for this session. Accepts the thread value of a thread_list row (tool.thread_list() in an eval cell) or a unique name. A miss names the thread value to pass.";
 const ALL_SCOPE: &str = "Address threads in every workspace on this machine instead of only the caller's workspace; left unset, an exact id from another workspace returns scope_denied.";
 const ROUTE_TO_TASK: &str = "; to spawn a child task instead, use task.";
+const DELIVERY_ID_MAX_CHARS: usize = 128;
 
 /// A transport failure as the call's answer.
 pub fn transport_failure(message: &str) -> Value {
@@ -148,7 +150,11 @@ fn list_body(options: Arc<ThreadToolsOptions>, args: Value) -> BoxFuture<Value> 
                     .collect();
                 match parsed {
                     Some(parsed) => Some(parsed),
-                    None => return invalid("state lists running, idle, inactive or archived."),
+                    None => {
+                        return invalid(
+                            "state lists opening, running, idle, inactive or archived.",
+                        );
+                    }
                 }
             }
             Some(_) => return invalid("state must be a non-empty list of thread states."),
@@ -199,6 +205,24 @@ fn read_body(options: Arc<ThreadToolsOptions>, args: Value) -> BoxFuture<Value> 
                 }
             },
         };
+        match args.get("delivery_id") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(id))
+                if (1..=DELIVERY_ID_MAX_CHARS).contains(&id.chars().count()) =>
+            {
+                return read_receipt(
+                    options.store.as_ref(),
+                    &(options.caller_session_id)(),
+                    thread,
+                    id,
+                );
+            }
+            Some(_) => {
+                return invalid(format!(
+                    "delivery_id must be a string of 1 to {DELIVERY_ID_MAX_CHARS} characters."
+                ));
+            }
+        }
         let call = match thread_call(&options).await {
             Ok(call) => call,
             Err(result) => return result,
@@ -404,6 +428,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
             object(
                 json!({
                     "thread": { "type": "string", "description": ADDRESS },
+                    "delivery_id": { "type": "string", "minLength": 1, "maxLength": DELIVERY_ID_MAX_CHARS, "description": "Query only the outcome of your original delivery to this exact thread ID. Reads no conversation, sends no message and wakes no session; after evidence expires answers outcome_unavailable." },
                     "cursor": { "type": "string", "description": "Opaque cursor from an earlier thread_read (tool.thread_read() in an eval cell) to page the older messages of a truncated read; a transcript that moved past it returns cursor_stale." },
                     "max_bytes": { "type": "integer", "minimum": 1, "maximum": THREAD_READ_MAX_BYTES, "description": "Byte budget for the returned transcript slice, default 131072 and capped at 1048576; a longer transcript returns truncated with next_cursor." },
                     "all_scope": { "type": "boolean", "description": ALL_SCOPE },

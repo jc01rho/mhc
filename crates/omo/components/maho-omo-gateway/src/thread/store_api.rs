@@ -3,7 +3,6 @@
 //! Upstream counterpart: `thread/gateway/store-api.ts`. Every call is synchronous: the store owns one
 //! connection and the worker protocol serializes calls onto it.
 
-pub type BindingPageResult = Result<RelayOutcome<(Vec<BindingRecord>, Option<String>)>, StoreError>;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -13,15 +12,15 @@ use super::backlog::TargetBacklog;
 use super::store_extensions::{
     DeclaredSessionOp, SessionCaller, StoreExtensionRegistration, StoreExtensionResult,
 };
-use super::store_ops::{DeliveryReceipt, DeliveryView, StoreError};
-use super::store_relay_ops::{
-    AnswerClaim, AnswerClaimRef, AnswerDelivered, BindInput, BindingRecord, BindingsFilter,
-    OutboxPage, PriorAnswer, RelayOutcome, ReportOpRequest, ReportOpResult,
+use super::store_ops::{DeliveryView, ReceiptOutcomeRequest, StoreError};
+use super::store_tool_receipts::{
+    ReconcileRemoteReceiptRequest, RemoteReceipt, ToolReceiptBegin, ToolReceiptBeginRequest,
+    ToolReceiptReviseRequest, ToolReceiptScope, ToolReceiptSettleRequest,
 };
 use super::types::{
-    ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, ExternalAuthor,
-    GatewayStoreStats, ProcessIdentity, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest,
-    RefusalReason,
+    ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, GatewayStoreStats,
+    ProcessIdentity, ReceiptOutcome, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest,
+    RefusalNotice, RefusalReason,
 };
 
 pub type ExtensionErrorListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -65,19 +64,38 @@ pub trait GatewayStoreApi: Send + Sync {
         error_note: &str,
     ) -> Result<bool, StoreError>;
     fn delivery_view(&self, delivery_id: &str) -> Result<Option<DeliveryView>, StoreError>;
-    fn delivery_receipt(
+    /// A query-only read of one delivery's outcome (omo#14623): no receipt, admission, marker or wake is written.
+    fn receipt_outcome(
+        &self,
+        request: &ReceiptOutcomeRequest,
+    ) -> Result<ReceiptOutcome, StoreError>;
+    /// Bounded refusal-only candidates for the notices a consumer sends back to the original sender's device.
+    fn refusal_notices(&self, now: i64) -> Result<Vec<RefusalNotice>, StoreError>;
+    /// Claims one notice for its single send, rate limited per original peer unless `suppress` only records it.
+    fn claim_refusal_notice(
+        &self,
+        now: i64,
+        notice: &RefusalNotice,
+        suppress: bool,
+    ) -> Result<bool, StoreError>;
+    fn remote_receipt(
         &self,
         now: i64,
         principal: &str,
-        idempotency_key: &str,
-    ) -> Result<Option<DeliveryReceipt>, StoreError>;
-    fn recover_delivery(
+        delivery_id: &str,
+    ) -> Result<Option<RemoteReceipt>, StoreError>;
+    fn reconcile_remote_receipt(
         &self,
-        now: i64,
-        principal: &str,
-        idempotency_key: &str,
-        args_hash: &str,
-    ) -> Result<Option<EnqueueOutcome>, StoreError>;
+        request: &ReconcileRemoteReceiptRequest,
+    ) -> Result<ReceiptOutcome, StoreError>;
+    fn tool_receipt_begin(
+        &self,
+        request: &ToolReceiptBeginRequest,
+    ) -> Result<ToolReceiptBegin, StoreError>;
+    fn tool_receipt_settle(&self, request: &ToolReceiptSettleRequest) -> Result<bool, StoreError>;
+    fn tool_receipt_revise(&self, request: &ToolReceiptReviseRequest) -> Result<bool, StoreError>;
+    /// Drops this instance's `prepared` receipt for a call that wrote nothing, so the same key runs again.
+    fn tool_receipt_release(&self, scope: &ToolReceiptScope) -> Result<bool, StoreError>;
     fn list(
         &self,
         target_durable_id: Option<&str>,
@@ -92,78 +110,6 @@ pub trait GatewayStoreApi: Send + Sync {
     fn journal_mode(&self) -> Result<String, StoreError>;
     fn stats(&self) -> GatewayStoreStats;
 
-    fn bind(&self, now: i64, input: &BindInput) -> Result<RelayOutcome<BindingRecord>, StoreError>;
-    fn unbind(
-        &self,
-        now: i64,
-        binding_id: &str,
-        expected_revision: i64,
-    ) -> Result<RelayOutcome<(BindingRecord, bool, Vec<String>)>, StoreError>;
-    fn rebind(
-        &self,
-        now: i64,
-        binding_id: &str,
-        expected_revision: i64,
-        session_durable_id: &str,
-    ) -> Result<RelayOutcome<(BindingRecord, Vec<String>)>, StoreError>;
-    fn list_bindings(
-        &self,
-        now: i64,
-        filter: &BindingsFilter,
-        cursor: Option<&str>,
-        limit: Option<i64>,
-    ) -> BindingPageResult;
-    fn binding_view(&self, now: i64, binding_id: &str)
-    -> Result<Option<BindingRecord>, StoreError>;
-    fn report(
-        &self,
-        now: i64,
-        request: &ReportOpRequest,
-    ) -> Result<RelayOutcome<ReportOpResult>, StoreError>;
-    fn emit_completions(
-        &self,
-        now: i64,
-        session_durable_id: &str,
-        outcome: &str,
-        through_arm_seq: Option<i64>,
-    ) -> Result<Vec<(String, i64)>, StoreError>;
-    fn pending_completion_arms(&self, durable_id: &str) -> Result<i64, StoreError>;
-    fn latest_completion_arm(&self, durable_id: &str) -> Result<Option<i64>, StoreError>;
-    fn read_outbox(
-        &self,
-        now: i64,
-        binding_id: &str,
-        after_cursor: Option<i64>,
-        limit: Option<i64>,
-    ) -> Result<RelayOutcome<OutboxPage>, StoreError>;
-    fn ack_outbox(
-        &self,
-        now: i64,
-        binding_id: &str,
-        cursor: i64,
-        provider_message_id: Option<&str>,
-    ) -> Result<RelayOutcome<(i64, bool)>, StoreError>;
-    fn claim_answer(
-        &self,
-        now: i64,
-        binding_id: &str,
-        reply_token: &str,
-        answer: &str,
-        answered_by: Option<&ExternalAuthor>,
-    ) -> Result<RelayOutcome<AnswerClaim>, StoreError>;
-    fn release_answer(&self, claim: &AnswerClaimRef) -> Result<bool, StoreError>;
-    fn confirm_answer(&self, delivered: &AnswerDelivered) -> Result<bool, StoreError>;
-    fn mark_prior_delivered(
-        &self,
-        claim: &AnswerClaimRef,
-        prior: &PriorAnswer,
-    ) -> Result<bool, StoreError>;
-    fn close_question(
-        &self,
-        now: i64,
-        session_durable_id: &str,
-        ui_request_id: &str,
-    ) -> Result<i64, StoreError>;
     fn register_incarnation(
         &self,
         durable_id: &str,

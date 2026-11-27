@@ -12,7 +12,7 @@ use super::extension_registrations::{
     declaration_problem, declared_op_names, import_extension_module, module_exports,
     persist_descriptor, read_descriptor, tool_name_taken,
 };
-use super::extension_transaction::{SenderProvenance, extension_transaction};
+use super::extension_transaction::extension_transaction;
 use super::schema::GatewaySchemaVersionError;
 use super::store_extensions::{
     ExtensionModuleRegistry, StoreExtensionOperation, StoreExtensionRefusalCode,
@@ -338,7 +338,7 @@ impl StoreExtensions {
                 )
                 .into());
             }
-            let scope = extension_transaction(ctx, &descriptor.name, now, None::<SenderProvenance>);
+            let scope = extension_transaction(ctx, &descriptor.name, now);
             let result = operation(&scope.tx, args.clone());
             scope.finish();
             match result {

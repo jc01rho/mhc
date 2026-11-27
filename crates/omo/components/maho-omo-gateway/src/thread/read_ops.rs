@@ -549,7 +549,6 @@ mod tests {
                 body: "hello".into(),
                 mode: GatewayDeliveryMode::FollowUp,
                 expected_turn_id: None,
-                binding: None,
                 receipt: ReceiptRef {
                     idempotency_key: "d-msg-1".into(),
                     args_hash: "d-msg-1".into(),

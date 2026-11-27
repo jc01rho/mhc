@@ -111,7 +111,6 @@ pub enum RefusalReason {
     NotSteerable,
     TurnConflict,
     Expired,
-    BindingClosed,
     /// The sending device lost its admission before the row it sent was taken in (omo#13037 design 5.6).
     SenderNotAdmitted,
     /// The target was closed after the row was taken in, before it read the message (omo#14273, #14313).
@@ -127,7 +126,6 @@ impl RefusalReason {
             Self::NotSteerable => "not_steerable",
             Self::TurnConflict => "turn_conflict",
             Self::Expired => "expired",
-            Self::BindingClosed => "binding_closed",
             Self::SenderNotAdmitted => "sender_not_admitted",
             Self::TargetClosed => "target_closed",
             Self::Superseded => "superseded",
@@ -139,13 +137,66 @@ impl RefusalReason {
             "not_steerable" => Some(Self::NotSteerable),
             "turn_conflict" => Some(Self::TurnConflict),
             "expired" => Some(Self::Expired),
-            "binding_closed" => Some(Self::BindingClosed),
             "sender_not_admitted" => Some(Self::SenderNotAdmitted),
             "target_closed" => Some(Self::TargetClosed),
             "superseded" => Some(Self::Superseded),
             _ => None,
         }
     }
+}
+
+/// The refusals a retained delivery receipt reports as application evidence (omo#14623), apart from the historical
+/// admission lane the receipt keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptRefusalReason {
+    Expired,
+    NotSteerable,
+    TurnConflict,
+    TargetClosed,
+}
+
+impl ReceiptRefusalReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::NotSteerable => "not_steerable",
+            Self::TurnConflict => "turn_conflict",
+            Self::TargetClosed => "target_closed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "expired" => Some(Self::Expired),
+            "not_steerable" => Some(Self::NotSteerable),
+            "turn_conflict" => Some(Self::TurnConflict),
+            "target_closed" => Some(Self::TargetClosed),
+            _ => None,
+        }
+    }
+}
+
+/// What became of a delivery, read without waking anything: the answer to a sender's receipt query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReceiptOutcome {
+    Pending,
+    Admitted,
+    Applied,
+    OutcomeUnavailable,
+    Refused { reason: ReceiptRefusalReason },
+}
+
+/// A refused delivery taken in from another device, whose sender is told once (omo#14623).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefusalNotice {
+    pub row_id: String,
+    pub delivery_id: String,
+    pub device: String,
+    pub session: String,
+    pub target_durable_id: String,
+    pub reason: ReceiptRefusalReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,23 +209,12 @@ pub struct ProcessIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExternalAuthor {
-    pub platform_user_id: String,
-    pub display: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalOrigin {
     pub platform: String,
     pub account_id: String,
     pub chat_id: String,
     pub thread_id: String,
     pub message_id: String,
-    /// Absent on a message sent without an author, and on every row written before authors existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub author: Option<ExternalAuthor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,9 +317,6 @@ pub struct DeliveryRow {
     pub created_at: i64,
     pub updated_at: i64,
     pub expires_at: i64,
-    pub binding_id: Option<String>,
-    pub binding_revision: Option<i64>,
-    pub actor_user_id: Option<String>,
     /// The engine's ledger key of a delivery taken in from another device (v12, omo#13037); null on every other row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger_id: Option<String>,
@@ -310,17 +347,6 @@ pub enum GatewaySender {
         uid: i64,
         user: String,
     },
-    External {
-        origin: ExternalOrigin,
-        binding_id: String,
-        binding_revision: i64,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BindingRef {
-    pub binding_id: String,
-    pub revision: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,7 +390,6 @@ pub struct EnqueueRequest {
     pub body: String,
     pub mode: GatewayDeliveryMode,
     pub expected_turn_id: Option<i64>,
-    pub binding: Option<BindingRef>,
     pub receipt: ReceiptRef,
     pub endpoint_kind: Option<GatewayEndpointKind>,
     /// Replaces the sender's earlier undelivered delivery to this target under the same key (omo#14428).
@@ -467,12 +492,17 @@ pub enum OutcomeRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_kind: Option<String>,
         turn_epoch: i64,
+        /// The lane the admission actually took, when it differs from the one claimed (decided again at admission).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode_effective: Option<EffectiveLane>,
     },
     Applied {
         admission_kind: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_kind: Option<String>,
         turn_epoch: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode_effective: Option<EffectiveLane>,
     },
     Requeue,
     Refused {
@@ -532,6 +562,9 @@ pub struct GatewayDeliverySuccess {
     /// (omo#14428, #14431).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collapsed: bool,
+    /// What became of the delivery, answered on a retry of an earlier send (omo#14623).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ReceiptOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -549,6 +582,9 @@ pub enum GatewayDeliveryResult {
         /// (omo#14428, #14431).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         collapsed: bool,
+        /// What became of the delivery, answered on a retry of an earlier send (omo#14623).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<ReceiptOutcome>,
     },
     Error {
         error: ThreadToolFailure,

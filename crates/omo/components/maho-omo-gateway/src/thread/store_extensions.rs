@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::store_ops::SqlRow;
-use super::types::{BindingRef, GatewayDeliveryResult};
 
 /// One declared await: the ops that read and expire the request, and its deadline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,103 +193,33 @@ pub type TransactionAll<'a> = std::rc::Rc<
 pub type TransactionOne<'a> =
     std::rc::Rc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + 'a>;
 pub type TransactionExec<'a> = std::rc::Rc<dyn Fn(&str, &[Value]) -> Result<usize, String> + 'a>;
-pub type TransactionSessions<'a> = std::rc::Rc<dyn Fn(&str) -> Result<Vec<Value>, String> + 'a>;
+pub type TransactionBindingFor<'a> =
+    std::rc::Rc<dyn Fn(LegacyBindingWhere) -> Result<Option<LegacyBinding>, String> + 'a>;
+
 /// The transaction helpers an extension op may call, all inside its own transaction.
 #[derive(Clone)]
 pub struct StoreExtensionTransaction<'a> {
     pub all: TransactionAll<'a>,
     pub one: TransactionOne<'a>,
     pub exec: TransactionExec<'a>,
-    pub enqueue:
-        std::rc::Rc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + 'a>,
-    pub outbox_ack:
-        std::rc::Rc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + 'a>,
-    pub bind: std::rc::Rc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + 'a>,
-    pub unbind:
-        std::rc::Rc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + 'a>,
-    pub rebind:
-        std::rc::Rc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + 'a>,
-    pub binding_for:
-        std::rc::Rc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + 'a>,
-    pub bindings_for_session: TransactionSessions<'a>,
-    pub outbox_pending: std::rc::Rc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + 'a>,
+    /// Read-only, for importing routes an extension kept on the removed core bindings: the thread's active, unexpired
+    /// binding in the `bindings` table the store still keeps (`schema.rs`; dropping it is omo#14859), or none.
+    pub binding_for: TransactionBindingFor<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionEnqueueRequest {
-    pub binding_id: String,
-    pub event_id: String,
-    pub text: String,
-    pub mode: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionAckRequest {
-    pub binding_id: String,
-    pub cursor: i64,
-    pub provider_message_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionAckReply {
-    pub binding_id: String,
-    pub acked_cursor: i64,
-    pub changed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionBindRequest {
-    pub input: Value,
-    pub principal: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionBindReply {
-    pub binding: Value,
-    pub deduplicated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionUnbindRequest {
-    pub binding_id: String,
-    pub expected_revision: i64,
-    pub principal: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionUnbindReply {
-    pub binding: Value,
-    pub already_closed: bool,
-    pub in_flight: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionRebindRequest {
-    pub binding_id: String,
-    pub expected_revision: i64,
-    pub session_durable_id: String,
-    pub principal: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionRebindReply {
-    pub binding: Value,
-    pub closed: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionBindingLookup {
+pub struct LegacyBindingWhere {
     pub platform: String,
     pub account_id: String,
     pub chat_id: String,
     pub thread_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtensionOutboxRequest {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyBinding {
     pub binding_id: String,
-    pub after_cursor: Option<i64>,
-    pub limit: Option<i64>,
+    pub policy_id: String,
+    pub session_durable_id: String,
 }
 
 /// One operation a compiled extension module exports.
@@ -333,12 +262,4 @@ pub struct StoreExtensionApi {
 pub struct StoreExtensionSessionApi {
     pub session_callable_ops: Arc<dyn Fn() -> Vec<DeclaredSessionOp> + Send + Sync>,
     pub extension_session_await: ExtensionSessionAwaitCallback,
-}
-
-/// The delivery facts an extension enqueue carries back.
-pub fn binding_ref(binding_id: &str, revision: i64) -> BindingRef {
-    BindingRef {
-        binding_id: binding_id.to_owned(),
-        revision,
-    }
 }

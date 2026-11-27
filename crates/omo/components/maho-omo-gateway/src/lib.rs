@@ -8,8 +8,7 @@
 //! exactly one `rules_changed` delivery per affected session.
 //!
 //! The `thread` tree is the session gateway: durable deliveries between sessions with sender
-//! provenance, the relay that binds a session to a conversation thread, and the store extensions a
-//! session may call (`packages/omo-senpi/src/components/thread/`).
+//! provenance, and the store extensions a session may call (`packages/omo-senpi/src/components/thread/`).
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -23,10 +22,7 @@ pub mod thread;
 
 pub use index::{GatewayComponent, GatewayComponentOptions, has_scopes};
 pub use migrations::{GATEWAY_RULES_EXTENSION_NAME, GATEWAY_RULES_MIGRATIONS};
-pub use paths::{
-    gateway_database_path, gateway_inbox_directory, gateway_outbox_marker_path,
-    gateway_root_directory,
-};
+pub use paths::{gateway_database_path, gateway_inbox_directory, gateway_root_directory};
 pub use prompt::{
     GatewayRulesPromptHandler, GatewayRulesPromptOptions, GatewayRulesPromptResult,
     GatewayRulesStore, SqliteGatewayRulesStore,

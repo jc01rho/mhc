@@ -73,28 +73,6 @@ pub fn delivery_provenance_line(provenance: Option<&Provenance>) -> String {
     line
 }
 
-fn author_fields(row: &DeliveryRow) -> Vec<String> {
-    let author = row
-        .envelope
-        .origin
-        .external()
-        .and_then(|origin| origin.author.as_ref());
-    let Some(author) = author else {
-        return Vec::new();
-    };
-    let mut fields = vec![
-        format!("author={}", quoted_header_value(&author.display)),
-        format!(
-            "author_id={}",
-            quoted_header_value(&author.platform_user_id)
-        ),
-    ];
-    if let Some(user_id) = &author.user_id {
-        fields.push(format!("author_user_id={}", quoted_header_value(user_id)));
-    }
-    fields
-}
-
 /// Who sent the delivery, as a human surface labels it.
 pub fn delivery_sender(row: &DeliveryRow) -> DeliverySender {
     match &row.envelope.origin {
@@ -113,10 +91,7 @@ pub fn delivery_sender(row: &DeliveryRow) -> DeliverySender {
             }
             DeliverySender::External {
                 platform: external.platform.clone(),
-                author: external
-                    .author
-                    .as_ref()
-                    .map(|author| author.display.clone()),
+                author: None,
             }
         }
     }
@@ -153,20 +128,12 @@ pub fn render_delivery_text(row: &DeliveryRow) -> String {
         }
     }
     header.push(format!("actor={}", header_value(&envelope.actor)));
-    header.extend(author_fields(row));
     header.push(format!("sender_session={}", header_value(sender_session)));
     header.push(format!("delivery={}", header_value(&row.delivery_id)));
     header.push(format!("requested={}", row.mode_requested.as_str()));
     header.push(format!("effective={effective}"));
     header.push(format!("root={}", header_value(&envelope.root_id)));
     header.push(format!("hop={}", envelope.hop));
-    if let Some(binding_id) = &row.binding_id {
-        header.push(format!(
-            "binding={}@{}",
-            header_value(binding_id),
-            row.binding_revision.unwrap_or(0)
-        ));
-    }
     let body = serde_json::to_string(&Value::String(row.body.clone()))
         .unwrap_or_else(|_| "\"\"".to_owned());
     format!(
@@ -227,9 +194,6 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             expires_at: 2,
-            binding_id: None,
-            binding_revision: None,
-            actor_user_id: None,
             ledger_id: None,
             verbatim_text: None,
             verbatim_display_text: None,
@@ -310,7 +274,6 @@ mod tests {
                     chat_id: "@cli".into(),
                     thread_id: "@chat".into(),
                     message_id: "event".into(),
-                    author: None,
                 },
             },
         ];
@@ -354,27 +317,5 @@ mod tests {
         });
         let text = render_delivery_text(&row);
         assert!(first_line(&text).starts_with("From Example / project [OMO_GATEWAY v=1 "));
-    }
-
-    #[test]
-    fn author_fields_carry_the_authenticated_human() {
-        let mut row = delivery();
-        row.envelope.origin = EnvelopeOrigin::External {
-            external: ExternalOrigin {
-                platform: "custom".into(),
-                account_id: "connector".into(),
-                chat_id: "chat".into(),
-                thread_id: "@chat".into(),
-                message_id: "event".into(),
-                author: Some(super::super::types::ExternalAuthor {
-                    platform_user_id: "u-1".into(),
-                    display: "Ada".into(),
-                    user_id: Some("omo-1".into()),
-                }),
-            },
-        };
-        let header = first_line(&render_delivery_text(&row)).to_owned();
-        assert!(header.contains("author=\"Ada\" author_id=\"u-1\" author_user_id=\"omo-1\""));
-        assert!(header.contains("source=external"));
     }
 }

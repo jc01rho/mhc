@@ -59,7 +59,6 @@ mod tests {
             body: delivery_id.into(),
             mode: GatewayDeliveryMode::FollowUp,
             expected_turn_id: None,
-            binding: None,
             receipt: ReceiptRef {
                 idempotency_key: delivery_id.into(),
                 args_hash: delivery_id.into(),

@@ -120,9 +120,6 @@ fn sample_admitted_row(admission_kind: &str, turn_epoch: i64) -> DeliveryRow {
         created_at: 1,
         updated_at: 1,
         expires_at: 100,
-        binding_id: None,
-        binding_revision: None,
-        actor_user_id: None,
         ledger_id: None,
         verbatim_text: None,
         verbatim_display_text: None,
@@ -434,9 +431,10 @@ fn drain_intake_admission_admits_and_refuses_by_device_and_caches_per_pass() {
     assert_eq!(
         *admitted.lock().expect("admitted"),
         vec![
-            "device:dev-ok/d-ok-1".to_owned(),
             "device:dev-ok/d-ok-2".to_owned(),
-        ]
+            "device:dev-ok/d-ok-1".to_owned(),
+        ],
+        "the row that would start the idle session is admitted after the row that joins its start"
     );
     assert!(
         pass.outcomes.contains(&(

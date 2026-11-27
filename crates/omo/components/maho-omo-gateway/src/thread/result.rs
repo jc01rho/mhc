@@ -35,10 +35,6 @@ pub fn refusal_mapping(reason: Option<&str>) -> (&'static str, &'static str) {
             "not_resumable",
             "A newer message from the same sender with the same collapse_key replaced this one before the target read it; nothing to do.",
         ),
-        Some("binding_closed") => (
-            "invalid_arguments",
-            "The binding this message was queued under was detached or rebound; re-read the binding and send again.",
-        ),
         _ => ("internal_error", "Call thread_list and check the target."),
     }
 }
@@ -113,6 +109,7 @@ pub fn result_from_row_with_wait(
         endpoint_kind,
         deduplicated,
         collapsed: false,
+        outcome: None,
     };
     if matches!(row.state, DeliveryState::Admitted | DeliveryState::Applied) {
         if let Some(wait) = session_wait.or_else(|| admitted_wait(row)) {
@@ -174,7 +171,7 @@ pub fn result_from_row_with_wait(
 pub fn engine_next_action(code: &str) -> &'static str {
     match code {
         "loop_detected" => {
-            "Stop relaying here: a direct reply to the session that messaged you is a cycle. That session reads your answer with thread_read; a bound external thread gets it through thread_report, and its questions come back through thread_answer."
+            "Stop relaying here: a direct reply to the session that messaged you is a cycle. That session reads your answer with thread_read."
         }
         "overloaded" => "Wait before sending to this session again.",
         "queue_full" => {
@@ -266,9 +263,6 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             expires_at: 9,
-            binding_id: None,
-            binding_revision: None,
-            actor_user_id: None,
             ledger_id: None,
             verbatim_text: None,
             verbatim_display_text: None,

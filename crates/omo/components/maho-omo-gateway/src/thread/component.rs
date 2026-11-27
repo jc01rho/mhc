@@ -464,6 +464,8 @@ mod tests {
         for removed in [
             "thread_report",
             "thread_bind",
+            "thread_unbind",
+            "thread_rebind",
             "thread_bindings",
             "thread_outbox",
             "thread_outbox_ack",

@@ -230,7 +230,6 @@ mod tests {
                 body: "hi".into(),
                 mode: super::super::types::GatewayDeliveryMode::Auto,
                 expected_turn_id: None,
-                binding: None,
                 receipt: super::super::types::ReceiptRef {
                     idempotency_key: "k".into(),
                     args_hash: "h".into(),

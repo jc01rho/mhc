@@ -36,6 +36,7 @@ use maho_omo_gateway::thread::types::{
 
 const BUILDER: &str = "0aa00001-0000-4000-8000-000000000001";
 const REVIEWER: &str = "0bb00001-0000-4000-8000-000000000002";
+const OPENER: &str = "0ee00001-0000-4000-8000-000000000005";
 
 /// One rpc host listing both sessions; `reviewer` holds one delivery it has not read.
 struct FakeHost {
@@ -324,6 +325,131 @@ fn without_a_host_every_control_answers_host_unavailable_as_data() {
             answer["error"]["code"], "host_unavailable",
             "{tool}: {answer}"
         );
+    }
+}
+
+/// One rpc host that lists a single session its engine has not finished opening.
+struct OpeningHost {
+    cwd: String,
+}
+
+impl RpcTransport for OpeningHost {
+    fn request(
+        &self,
+        _socket: &str,
+        command: Value,
+        _durable_session_id: Option<String>,
+    ) -> BoxFuture<Result<Value, String>> {
+        let kind = command["type"].as_str().unwrap_or_default().to_owned();
+        let frame = if kind == "list_sessions" {
+            json!({ "type": "response", "command": kind, "success": true, "data": { "sessions": [
+                { "sessionId": "rpc-9", "durableSessionId": OPENER, "cwd": self.cwd, "name": "opener", "status": "opening" },
+            ] } })
+        } else {
+            json!({ "type": "response", "command": kind, "success": false, "error": "unsupported" })
+        };
+        Box::pin(async move { Ok(frame) })
+    }
+}
+
+#[test]
+fn a_control_on_a_thread_still_opening_answers_host_unavailable_naming_the_thread() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let surface: Arc<dyn ThreadHost> = Arc::new(LiveThreadSurface::new(LiveThreadSurfaceOptions {
+        socket: "/run/maho-test/rpc.sock".into(),
+        transport: Arc::new(OpeningHost { cwd: cwd.clone() }),
+        status_all: None,
+        now: None,
+    }));
+    let component = component(&dir, Some(surface), cwd);
+    let listed = run(&component, "thread_list", json!({}));
+    let row = listed["threads"]
+        .as_array()
+        .expect("threads")
+        .iter()
+        .find(|row| row["thread"] == OPENER)
+        .cloned()
+        .expect("the opening thread is listed");
+    assert_eq!(row["state"], "opening", "{listed}");
+    for (tool, args) in [
+        ("thread_interrupt", json!({ "thread": OPENER })),
+        ("thread_close", json!({ "thread": OPENER })),
+    ] {
+        let refused = run(&component, tool, args);
+        assert_eq!(
+            refused["error"]["code"], "host_unavailable",
+            "{tool}: {refused}"
+        );
+        assert_eq!(
+            refused["error"]["details"],
+            json!({ "thread": OPENER, "reason": "session_opening" }),
+            "{tool}: {refused}"
+        );
+    }
+}
+
+#[test]
+fn thread_read_with_a_delivery_id_answers_that_deliverys_outcome_without_a_host() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gw_store = store(&dir);
+    let enqueued = gw_store
+        .enqueue(&EnqueueRequest {
+            provenance: Provenance {
+                workspace: "unclassified".into(),
+                project: "test".into(),
+                lane: None,
+                session: None,
+            },
+            now: gw_store.now(),
+            delivery_id: "d-receipt-1".into(),
+            target_durable_id: REVIEWER.into(),
+            sender_principal: format!("session:{BUILDER}"),
+            rate_principal: None,
+            sender_node: BUILDER.into(),
+            sender_turn: None,
+            cause_delivery_id: None,
+            claimed_root_id: None,
+            origin: EnvelopeOrigin::Session {
+                session: BUILDER.into(),
+            },
+            actor: BUILDER.into(),
+            body: "ping".into(),
+            mode: GatewayDeliveryMode::FollowUp,
+            expected_turn_id: None,
+            receipt: ReceiptRef {
+                idempotency_key: "d-receipt-1".into(),
+                args_hash: "d-receipt-1".into(),
+            },
+            endpoint_kind: None,
+            collapse_key: None,
+        })
+        .expect("enqueue");
+    assert!(matches!(enqueued, EnqueueOutcome::Inserted { .. }));
+    let component = component(&dir, None, String::new());
+    let read = |thread: &str, delivery_id: &str| {
+        run(
+            &component,
+            "thread_read",
+            json!({ "thread": thread, "delivery_id": delivery_id }),
+        )
+    };
+    assert_eq!(
+        read(REVIEWER, "d-receipt-1"),
+        json!({
+            "kind": "ok",
+            "thread": REVIEWER,
+            "delivery_id": "d-receipt-1",
+            "outcome": { "kind": "pending" },
+        })
+    );
+    assert_eq!(
+        read(BUILDER, "d-receipt-1")["outcome"],
+        json!({ "kind": "outcome_unavailable" }),
+        "the delivery went to another thread"
+    );
+    for refused in [read(REVIEWER, ""), read(REVIEWER, &"x".repeat(129))] {
+        assert_eq!(refused["error"]["code"], "invalid_arguments", "{refused}");
     }
 }
 
@@ -749,7 +875,6 @@ fn thread_list_reports_engine_version_waiting_on_unnamed_archived_incomplete_and
             body: "ping".into(),
             mode: GatewayDeliveryMode::FollowUp,
             expected_turn_id: None,
-            binding: None,
             receipt: ReceiptRef {
                 idempotency_key: "d-backlog-1".into(),
                 args_hash: "d-backlog-1".into(),

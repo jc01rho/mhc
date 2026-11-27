@@ -61,6 +61,7 @@ impl SameDeviceWake {
             endpoint_kind,
             deduplicated,
             collapsed,
+            outcome,
         } = &result
         else {
             return result;
@@ -98,6 +99,7 @@ impl SameDeviceWake {
                 endpoint_kind: *endpoint_kind,
                 deduplicated: *deduplicated,
                 collapsed: *collapsed,
+                outcome: *outcome,
             };
         };
         let _ = wake(thread_id);
@@ -116,6 +118,7 @@ impl SameDeviceWake {
             endpoint_kind: *endpoint_kind,
             deduplicated: *deduplicated,
             collapsed: *collapsed,
+            outcome: *outcome,
         }
     }
 }

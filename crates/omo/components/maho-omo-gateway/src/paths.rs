@@ -18,10 +18,6 @@ pub fn gateway_inbox_directory(agent_dir: &Path, durable_id: &str) -> PathBuf {
         .join(durable_id)
 }
 
-pub fn gateway_outbox_marker_path(agent_dir: &Path) -> PathBuf {
-    gateway_root_directory(agent_dir).join("outbox.marker")
-}
-
 /// The hint wake carriers watch: rewritten when a wake is requested and when a woken row ends (omo#13037).
 pub fn gateway_wake_marker_path(agent_dir: &Path) -> PathBuf {
     gateway_root_directory(agent_dir).join("wake.marker")

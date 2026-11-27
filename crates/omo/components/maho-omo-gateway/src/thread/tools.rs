@@ -15,7 +15,6 @@ use super::control::locate::RemoteControlLocator;
 use super::engine::{GatewayDeliverRequest, GatewayEngine};
 use super::errors::thread_tool_failure;
 use super::host_view::ThreadHost;
-use super::relay::Keyed;
 use super::store_api::GatewayStoreApi;
 use super::store_extensions::{DeclaredSessionOp, SessionCaller, StoreExtensionResult};
 use super::types::{GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender};
@@ -88,6 +87,7 @@ fn delivery_result(result: GatewayDeliveryResult, link: String) -> Value {
             endpoint_kind: _,
             deduplicated,
             collapsed,
+            outcome,
         } => {
             let mut result = json!({
                 "thread": thread_id,
@@ -102,6 +102,15 @@ fn delivery_result(result: GatewayDeliveryResult, link: String) -> Value {
             // (omo#14431).
             if collapsed && let Some(object) = result.as_object_mut() {
                 object.insert("collapsed".into(), Value::Bool(true));
+            }
+            // What became of the delivery, answered on a retry of an earlier send (omo#14623).
+            if let Some(outcome) = outcome
+                && let Some(object) = result.as_object_mut()
+            {
+                object.insert(
+                    "outcome".into(),
+                    serde_json::to_value(outcome).unwrap_or(Value::Null),
+                );
             }
             ok_result(result)
         }
@@ -415,14 +424,6 @@ impl ExtensionToolRegistration {
     }
 }
 
-/// The key a tool call's receipt is recorded under.
-pub fn call_key(principal: &str, call_id: &str) -> Keyed {
-    Keyed {
-        principal: principal.to_owned(),
-        idempotency_key: Some(call_id.to_owned()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,12 +522,6 @@ mod tests {
             logs[0]
         );
         assert!(logs[1].contains("ext_plain_zz_open"), "{:?}", logs[1]);
-    }
-
-    #[test]
-    fn a_call_key_keeps_the_idempotency_key() {
-        let keyed = call_key("session:sender", "call-1");
-        assert_eq!(keyed.idempotency_key.as_deref(), Some("call-1"));
     }
 
     #[test]
