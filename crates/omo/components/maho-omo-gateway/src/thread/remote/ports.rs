@@ -48,6 +48,11 @@ pub struct RemoteSessionRow {
     pub model: Option<ThreadModel>,
     /// Archived flag carried by the listing row (#14304).
     pub archived: bool,
+    /// The holder's retry wait of a running session (`{kind, until, attempt, maxAttempts}`), as its device lists it
+    /// (#14278).
+    pub waiting: Option<Value>,
+    /// The version of the engine running that session on its device (#14278).
+    pub engine_version: Option<String>,
 }
 
 /// One account listing: its rows, and the devices whose rows this listing could not include.

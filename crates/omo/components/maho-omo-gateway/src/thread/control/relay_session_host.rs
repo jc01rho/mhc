@@ -1,6 +1,7 @@
 //! A thread on another device formatted for tool results (`thread/control/relay-session-host.ts`).
 
 use crate::thread::contracts_results::{ThreadResultSummary, thread_link};
+use crate::thread::thread_state::retry_wait;
 
 use crate::thread::remote::ports::{
     RemoteSessionRow, RowSource, escape_for_display, iso_from_ms, keyed, row_created_at,
@@ -26,8 +27,8 @@ pub fn listed_thread(row: &RemoteSessionRow, machine: Option<&str>) -> ThreadRes
         activity: None,
         error_code: None,
         turn_id: None,
-        waiting_on: None,
-        engine_version: None,
+        waiting_on: retry_wait(row.state == "running", row.waiting.as_ref()),
+        engine_version: row.engine_version.clone(),
         backlog: None,
         as_of,
         machine: machine.map(str::to_owned),
