@@ -375,6 +375,10 @@ fn a_hello_carrying_the_wrong_token_is_refused_and_no_op_is_ever_served() {
     .expect_err("a refused handshake answers no data");
     assert!(matches!(error, AgentdError::Timeout), "{error:?}");
     assert!(daemon.ops().is_empty(), "no op is served after a refusal");
+    assert!(
+        daemon.wait_for(|frames| frames.iter().any(|entry| entry.kind == "refused")),
+        "the daemon answers the hello it refused"
+    );
     assert_eq!(
         daemon.of_kind("refused")[0]["reason"],
         json!("bad_token"),
