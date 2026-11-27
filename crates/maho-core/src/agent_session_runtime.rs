@@ -3042,6 +3042,7 @@ mod tests {
             std::fs::read_dir(&holders)
                 .expect("holders")
                 .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
                 .count()
         };
 
