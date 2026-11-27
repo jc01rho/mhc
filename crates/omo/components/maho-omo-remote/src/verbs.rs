@@ -417,7 +417,7 @@ fn match_session_rows<'a>(rows: &'a [Value], query: &str) -> Vec<&'a Value> {
     let mut names: Vec<String> = Vec::with_capacity(rows.len());
     for row in rows {
         ids.push(non_empty(row, "durable_id").unwrap_or_default().to_owned());
-        let listing_key = text(row, "session_id");
+        let listing_key = value_text(row, "session_id");
         let identity_key = row_identity_key(row);
         let mut keys: Vec<String> = Vec::new();
         if !listing_key.is_empty() {
