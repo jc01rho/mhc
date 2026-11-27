@@ -2,3 +2,4 @@
 
 pub mod auth_check;
 pub mod custody;
+pub mod root;

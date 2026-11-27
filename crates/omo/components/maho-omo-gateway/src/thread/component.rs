@@ -33,6 +33,11 @@ pub struct GatewayThreadComponentOptions {
     pub caller_workspace_root: Arc<dyn Fn() -> String + Send + Sync>,
     pub sessions_directory: Option<std::path::PathBuf>,
     pub remote: Option<Arc<dyn super::control::locate::RemoteControlLocator>>,
+    /// The agent sessions whose deliveries the caller's current run took in (#12886); empty when none was consumed.
+    pub caller_reply_targets: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    /// The senders of those deliveries, as each delivery stated them (decision 0027 section 6).
+    pub caller_reply_senders:
+        Arc<dyn Fn() -> Vec<super::reply_permission::ReplySender> + Send + Sync>,
 }
 
 /// One session's gateway: its drain and the tools its model calls.
@@ -45,6 +50,8 @@ pub struct GatewayThreadComponent {
     pub send_as: ThreadSendAs,
     pub alerts: Arc<super::run_alerts::RunAlerts>,
     pub durable_id: String,
+    /// The current run's reply allowance, driven by `agent_start`, `message_start`, `message_end` and `agent_settled`.
+    run: Arc<std::sync::Mutex<super::run_context::RunContext>>,
     registration: Arc<std::sync::Mutex<super::tools::ExtensionToolRegistration>>,
     log: NotifyCallback,
 }
@@ -59,6 +66,9 @@ pub fn create_gateway_thread_component_with_alerts(
     options: Arc<GatewayThreadComponentOptions>,
     operator_alerts: Option<super::run_alerts::OperatorAlertsTestSeams>,
 ) -> GatewayThreadComponent {
+    let run = Arc::new(std::sync::Mutex::new(
+        super::run_context::RunContext::default(),
+    ));
     let engine = GatewayEngine::new(GatewayEngineOptions {
         sender_provenance: Some(options.caller_provenance.clone()),
         store: options.store.clone(),
@@ -88,6 +98,14 @@ pub fn create_gateway_thread_component_with_alerts(
         caller_workspace_root: options.caller_workspace_root.clone(),
         sessions_directory: options.sessions_directory.clone(),
         remote: options.remote.clone(),
+        caller_reply_targets: merged_reply_targets(
+            options.caller_reply_targets.clone(),
+            run.clone(),
+        ),
+        caller_reply_senders: merged_reply_senders(
+            options.caller_reply_senders.clone(),
+            run.clone(),
+        ),
     });
     let tools = create_thread_tools(tool_options.clone());
     let send_as = create_thread_send_as(tool_options);
@@ -148,12 +166,64 @@ pub fn create_gateway_thread_component_with_alerts(
         send_as,
         alerts,
         durable_id: options.durable_id.clone(),
+        run,
     }
+}
+
+/// The tool options' reply targets, unioned with the current run's consumed senders (deduplicated by id).
+fn merged_reply_targets(
+    host: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    run: Arc<std::sync::Mutex<super::run_context::RunContext>>,
+) -> Arc<dyn Fn() -> Vec<String> + Send + Sync> {
+    Arc::new(move || {
+        let mut targets = host();
+        if let Ok(run) = run.lock() {
+            for sender in &run.reply_to {
+                if !targets.iter().any(|target| target == sender) {
+                    targets.push(sender.clone());
+                }
+            }
+        }
+        targets
+    })
+}
+
+/// The tool options' reply senders, unioned with the current run's consumed senders (deduplicated).
+fn merged_reply_senders(
+    host: Arc<dyn Fn() -> Vec<super::reply_permission::ReplySender> + Send + Sync>,
+    run: Arc<std::sync::Mutex<super::run_context::RunContext>>,
+) -> Arc<dyn Fn() -> Vec<super::reply_permission::ReplySender> + Send + Sync> {
+    Arc::new(move || {
+        let mut senders = host();
+        if let Ok(run) = run.lock() {
+            for sender in &run.reply_senders {
+                if !senders.iter().any(|existing| {
+                    existing.session_id == sender.session_id
+                        && existing.device == sender.device
+                        && existing.name == sender.name
+                }) {
+                    senders.push(sender.clone());
+                }
+            }
+        }
+        senders
+    })
 }
 
 impl maho_ext_api::Extension for GatewayThreadComponent {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
         Arc::new(self.clone()).register_session_tools(api);
+    }
+}
+
+/// The message an engine event carries, as JSON, for the run's reply allowance.
+fn event_message(event: &mut maho_ext_api::ExtensionEvent) -> Option<Value> {
+    match event {
+        maho_ext_api::ExtensionEvent::MessageStart { message }
+        | maho_ext_api::ExtensionEvent::MessageEnd { message } => {
+            serde_json::to_value(message).ok()
+        }
+        _ => None,
     }
 }
 
@@ -258,6 +328,66 @@ impl GatewayThreadComponent {
                                 })
                             }),
                         ))?;
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let run_message_start = self.run.clone();
+        let run_agent_start = self.run.clone();
+        api.on(
+            EventKind::AgentStart,
+            Arc::new(move |_, _ctx| {
+                let run = run_agent_start.clone();
+                Box::pin(async move {
+                    if let Ok(mut state) = run.lock() {
+                        state.turn += 1;
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        api.on(
+            EventKind::MessageStart,
+            Arc::new(move |event, _ctx| {
+                let run = run_message_start.clone();
+                let message = event_message(event);
+                Box::pin(async move {
+                    if let Some(message) = message
+                        && let Ok(mut state) = run.lock()
+                    {
+                        state.note_input(&message);
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let run_message_end = self.run.clone();
+        api.on(
+            EventKind::MessageEnd,
+            Arc::new(move |event, _ctx| {
+                let run = run_message_end.clone();
+                let message = event_message(event);
+                Box::pin(async move {
+                    if let Some(message) = message
+                        && let Ok(mut state) = run.lock()
+                    {
+                        state.note_finished(&message);
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let run_settled = self.run.clone();
+        api.on(
+            EventKind::AgentSettled,
+            Arc::new(move |_, _ctx| {
+                let run = run_settled.clone();
+                Box::pin(async move {
+                    // A settle alone keeps the consumed delivery's senders, hop and cause (#13042): the next input
+                    // decides whether the work continues (note_input).
+                    if let Ok(mut state) = run.lock() {
+                        state.answered = true;
                     }
                     Ok(EventResult::None)
                 })
@@ -441,6 +571,8 @@ mod tests {
             caller_workspace_root: Arc::new(String::new),
             sessions_directory: None,
             remote: None,
+            caller_reply_targets: Arc::new(Vec::new),
+            caller_reply_senders: Arc::new(Vec::new),
         }))
     }
 

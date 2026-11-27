@@ -170,11 +170,17 @@ fn component(
         caller_workspace_root: Arc::new(move || cwd.clone()),
         sessions_directory: None,
         remote: None,
+        caller_reply_targets: Arc::new(Vec::new),
+        caller_reply_senders: Arc::new(Vec::new),
     }))
 }
 
 fn run(component: &GatewayThreadComponent, name: &str, args: Value) -> Value {
-    block_on(component.execute(name, "call-1", args).expect("tool"))
+    let call_id = format!(
+        "call-{}",
+        super::NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    );
+    block_on(component.execute(name, &call_id, args).expect("tool"))
 }
 
 fn keys(value: &Value, found: &mut Vec<String>) {
@@ -911,6 +917,8 @@ fn thread_list_reports_engine_version_waiting_on_unnamed_archived_incomplete_and
         caller_workspace_root: Arc::new(move || cwd_for_root.clone()),
         sessions_directory: Some(sessions_dir),
         remote: None,
+        caller_reply_targets: Arc::new(Vec::new),
+        caller_reply_senders: Arc::new(Vec::new),
     }));
 
     let listed = run(&comp, "thread_list", json!({}));

@@ -19,8 +19,8 @@ use super::store_tool_receipts::{
 };
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, GatewayStoreStats,
-    ProcessIdentity, ReceiptOutcome, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest,
-    RefusalNotice, RefusalReason,
+    IntakeOutcome, IntakeRequest, ProcessIdentity, ReceiptOutcome, ReconcileOutcome,
+    ReconcileRequest, RecordOutcomeRequest, RefusalNotice, RefusalReason,
 };
 
 pub type ExtensionErrorListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -33,6 +33,8 @@ pub trait GatewayStoreApi: Send + Sync {
     fn now(&self) -> i64;
     fn identity(&self) -> Result<ProcessIdentity, StoreError>;
     fn enqueue(&self, request: &EnqueueRequest) -> Result<EnqueueOutcome, StoreError>;
+    /// Takes in a record another device's service attested (#13037 design 5.5).
+    fn intake(&self, request: &IntakeRequest) -> Result<IntakeOutcome, StoreError>;
     fn reconcile(&self, request: &ReconcileRequest) -> Result<ReconcileOutcome, StoreError>;
     fn claim(&self, request: &ClaimRequest) -> Result<ClaimOutcome, StoreError>;
     fn record_outcome(&self, request: &RecordOutcomeRequest) -> Result<ClaimOutcome, StoreError>;

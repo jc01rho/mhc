@@ -34,8 +34,8 @@ use super::store_tool_receipts::{
 };
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, GatewayStoreConfig,
-    GatewayStoreStats, ProcessIdentity, ReceiptOutcome, ReconcileOutcome, ReconcileRequest,
-    RecordOutcomeRequest, RefusalNotice, RefusalReason,
+    GatewayStoreStats, IntakeOutcome, IntakeRequest, ProcessIdentity, ReceiptOutcome,
+    ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest, RefusalNotice, RefusalReason,
 };
 use crate::paths::gateway_database_path;
 
@@ -322,6 +322,10 @@ impl GatewayStoreApi for SqliteGatewayStore {
 
     fn enqueue(&self, request: &EnqueueRequest) -> Result<EnqueueOutcome, StoreError> {
         self.checked(|ctx| super::store_ops::enqueue(ctx, request))
+    }
+
+    fn intake(&self, request: &IntakeRequest) -> Result<IntakeOutcome, StoreError> {
+        self.checked(|ctx| super::store_ops::intake(ctx, request))
     }
 
     fn reconcile(&self, request: &ReconcileRequest) -> Result<ReconcileOutcome, StoreError> {

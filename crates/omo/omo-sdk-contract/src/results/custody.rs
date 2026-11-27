@@ -204,6 +204,11 @@ fn parses<T: serde::de::DeserializeOwned>(value: &Value) -> bool {
     serde_json::from_value::<T>(value.clone()).is_ok()
 }
 
+/// Whether `call` is one of the credential-bearing calls [`custody_answer_accepts`] decides.
+pub fn is_custody_answer(call: &str) -> bool {
+    CUSTODY_RESULT_CALLS.contains(&call)
+}
+
 /// Whether `value` is a valid answer of the credential-bearing call `call` to a person or a script; an unknown call
 /// accepts nothing.
 pub fn custody_answer_accepts(call: &str, value: &Value) -> bool {

@@ -19,3 +19,7 @@ workspace = true
 [[test]]
 name = "contract_suite"
 path = "tests/contract_suite.rs"
+
+[[test]]
+name = "root_calls"
+path = "tests/root_calls.rs"

@@ -8,10 +8,10 @@ mhc counterparts: `crates/omo/components/maho-omo-remote`, `crates/omo/component
 
 | verdict | count |
 |---|---:|
-| port | 2 |
+| port | 4 |
 | ported | 0 |
 | blocked | 5 |
-| gap | 3 |
+| gap | 1 |
 | n/a | 3 |
 | **total** | **13** |
 
@@ -32,11 +32,11 @@ already sends commands: the attach pool and the gateway's `DeviceServicePort`.
 | typed reference refuses C1 controls, format characters stay addressable (`a29c2980b8`) | n/a | In this track's paths the commit only adds a `remote-text-escape.test.ts` case; the rule itself lives in `thread/addressing.ts` (thread-core track) and `utils/escape-for-display.ts` (misc-skills track). |
 | #14748 lookup gate: solo probe lookups exclude every other locate of the port, the fence and admission rules, and watch recovery retrying a fence refusal (`4f4215f9f4`, `bd8df618cb`, `4051b7d173`, `2cb91cd067`, `de9066508b`, `049533bb09`, `e2abf877ad`, `e6799eda7f`, `5c132ac1d8`) | blocked | mhc has no device-service implementation of `RemoteSessionsPort` (`lookup`/`locate` over `mhc-relayd`; the trait's `lookup` defaults to `Unavailable`) and no remote session watch (`remote-watch.ts`), so the gate would have no caller. `e6799eda7f`/`5c132ac1d8` only move a TS barrel export. |
 | #14799 `thread_read`/`thread_send` reopen a session another device parked (`283011ad26`) | blocked | `reopen-parked.ts` needs `find_session` (`holderView`, `sessionFileOf`) and `open_session` through `RelaySessionHost`; `thread/control/plan_create.rs` still refuses those remote opens because `mhc-relayd` carries neither RPC. |
-| #14623 remote delivery receipts and #14278-era reconcile of queued delivery outcomes (`351df3416c`, `30411b35be`, `1e5ecd91a9`, `abf5e307ac`) | gap | `receipt.ts` reads and reconciles through gateway store members mhc lacks (`remoteReceipt`, `receiptOutcome`, `reconcileRemoteReceipt`) and a `thread_receipt` result; `RemoteSessionsPort.receipt` (`get_delivery_outcome`) also needs the live device-service port. Missing subsystem: the gateway's remote receipt store. |
+| #14623 remote delivery receipts and #14278-era reconcile of queued delivery outcomes (`351df3416c`, `30411b35be`, `1e5ecd91a9`, `abf5e307ac`) | port | `thread/remote/receipt.rs` `read_receipt` reads and reconciles through the gateway store members now ported (`store_tool_receipts.rs` `remote_receipt`, `store_ops.rs` `receipt_outcome`, `store_tool_receipts.rs` `reconcile_remote_receipt`) and answers `ThreadReceiptOk`. Tests: `tests/gateway_receipt_tests.rs` `a_receipt_read_reports_the_callers_own_delivery_to_exactly_that_thread`, `a_receipt_read_of_a_remote_send_reports_the_outcome_its_retained_receipt_holds`. The `RemoteSessionsPort.receipt` leg (`get_delivery_outcome` to the peer) is answered by the consumer once a live device-service port exists, which stays this track's blocked item. |
 | #14278 another device's `thread_list` rows carry the holder's retry wait and engine version (`ad364fb654`) | blocked | The fields are copied by the live device-service listing adapter (`remote/port/device-service.ts` `listing`), which mhc does not have; `device-service-core` already carries `waiting`/`engine_version` on its listing rows (v5.1.83 device-service track). |
 | #13031 / senpi#7085 `fork_from` forks on an engine that advertises `open_session_fork` (`aef88019f8`) | gap | No mhc engine or session host advertises `open_session_fork` (no symbol in the tree), so `thread/control/plan_create.rs` keeps the `fork_unsupported` refusal and its wording, which stays true for mhc. Missing subsystem: engine fork-on-open. |
 | retain buffered output from the identified active send (`25dc4d8220`) | blocked | `followRemote` streams a remote attach's records; mhc's `thread/remote/remote_ops.rs` has no attach-stream follow because `mhc-relayd` has no attach event stream. |
 | #14091 closing a remote client releases its per-connection sessions ports (`182c5aa2c4`) | blocked | mhc's `RemoteClient` owns no per-connection sessions port to release; `AttachPool::close` already ends held attaches. The `onClose` hook arrives with the live device-service port. |
-| #14305 U8 `sessions.resolve` on the shared thread-part ladder (`a5f001273f`) | gap | Needs `matchThread` in `thread-address-core` (`ladder.ts`), which is the thread-core track's port; `maho-omo-remote` keeps its v5.1.83 resolution until that lands. |
+| #14305 U8 `sessions.resolve` on the shared thread-part ladder (`a5f001273f`) | port | `maho-omo-remote` `verbs.rs` `match_session_rows` resolves through `thread-address-core` `match_thread` (`LadderView`): exact id, then the listing or row identity key, alias, name, and an 8+ hex prefix. Tests: `verbs_resolve_tests.rs` (7 cases). |
 | remove thread bindings, the relay tools and their store (`4f6a56bbc0`) | n/a | In the remote paths the commit only drops `binding_id`/`binding_revision` and moves `hashArgs`; mhc's remote send (`device_service.rs`) never wrote binding fields, and the binding store belongs to the thread-gateway track. |
 | TS formatting and bundle regeneration (`80e682a504`, `499aec3431`) | n/a | Formatting and generated bundle only; no Rust counterpart. |

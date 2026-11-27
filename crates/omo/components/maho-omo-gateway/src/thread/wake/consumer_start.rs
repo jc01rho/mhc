@@ -102,6 +102,10 @@ pub fn start_delivery_consumer(
         sessions_directory: input.sessions_directory.clone(),
         chain_count_limit: input.chain_count_limit.clone(),
         wake: input.wake.clone(),
+        on_error: Some({
+            let log = input.log.clone();
+            Arc::new(move |error: String| log(&format!("thread wake: {error}")))
+        }),
     });
     if let Some(on_consumer) = &input.on_consumer {
         on_consumer(consumer.clone());

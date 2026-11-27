@@ -11,10 +11,13 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use super::adapter::BoxFuture;
-use super::control::locate::RemoteControlLocator;
+use super::addressing::{ResolveOptions, resolve_target, to_thread_address_entries};
+use super::control::locate::{RemoteControlLocator, send_address_book};
 use super::engine::{GatewayDeliverRequest, GatewayEngine};
 use super::errors::thread_tool_failure;
 use super::host_view::ThreadHost;
+use super::reply_permission::{ReplySender, consumed_senders_of};
+use super::reply_target::reply_target_mismatch;
 use super::store_api::GatewayStoreApi;
 use super::store_extensions::{DeclaredSessionOp, SessionCaller, StoreExtensionResult};
 use super::types::{GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender};
@@ -53,6 +56,12 @@ pub struct ThreadToolsOptions {
     pub sessions_directory: Option<PathBuf>,
     /// The account's other devices, asked for an address this device's book does not name.
     pub remote: Option<Arc<dyn RemoteControlLocator>>,
+    /// The agent sessions whose deliveries the caller's current run took in: a `thread_send` back to one is a reply
+    /// the run may always answer (#12886). Empty when no delivery was consumed.
+    pub caller_reply_targets: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    /// The senders of those deliveries, as each delivery stated them (decision 0027 section 6): the reply is approved
+    /// from that evidence alone and must resolve to that sender on `device` (amendment A4.3.1 of #13037).
+    pub caller_reply_senders: Arc<dyn Fn() -> Vec<ReplySender> + Send + Sync>,
 }
 
 fn error_result(error: impl serde::Serialize) -> Value {
@@ -154,6 +163,17 @@ pub(crate) async fn deliver_thread_send(
         },
         None => None,
     };
+    let all_scope = args
+        .get("all_scope")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // Decision 0027 section 6 / A4.3.1: a send approved as a reply to a consumed delivery's sender is delivered only
+    // when the address resolves to that sender, on that sender's device; otherwise it is refused by name, unsent.
+    let (target, all_scope) = match reply_delivery_target(options, thread, all_scope).await {
+        Ok(Some(resolved)) => resolved,
+        Ok(None) => (thread.to_owned(), all_scope),
+        Err(result) => return result,
+    };
     let sender = GatewaySender::Session {
         durable_id: caller_id,
         name: caller_name,
@@ -169,13 +189,10 @@ pub(crate) async fn deliver_thread_send(
         resolve: options.engine.options().resolve.clone(),
         now: options.engine.options().now.clone(),
     });
-    let mut request = GatewayDeliverRequest::new(sender, thread, message);
+    let mut request = GatewayDeliverRequest::new(sender, target.as_str(), message);
     request.mode = mode;
     request.expected_turn_id = args.get("expected_turn_id").and_then(Value::as_i64);
-    request.all_scope = args
-        .get("all_scope")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    request.all_scope = all_scope;
     request.idempotency_key = Some(
         args.get("idempotency_key")
             .and_then(Value::as_str)
@@ -187,7 +204,112 @@ pub(crate) async fn deliver_thread_send(
         .and_then(Value::as_str)
         .map(str::to_owned);
     let result = engine.deliver(request).await;
-    delivery_result(result, thread_link(thread, thread))
+    delivery_result(result, thread_link(&target, thread))
+}
+
+/// Decision 0027 section 6, enforcement half (amendment A4.3.1 of #13037): `Some(thread id, all_scope)` when the send
+/// is an approved reply to a consumed delivery's sender and the address resolves to that sender, `None` when it is no
+/// reply, or the typed refusal when the address resolves elsewhere.
+///
+/// The reply allowance grants the sender's scope (a send to it is answered without `all_scope` even from another
+/// workspace), and only that: a scoped refusal is widened only when the widened hit is the sender itself. A stated
+/// name no session carries any more is answered through the sender's recorded id, so a renamed sender still answers.
+async fn reply_delivery_target(
+    options: &ThreadToolsOptions,
+    thread: &str,
+    all_scope: bool,
+) -> Result<Option<(String, bool)>, Value> {
+    let targets = (options.caller_reply_targets)();
+    let senders = (options.caller_reply_senders)();
+    let consumed = consumed_senders_of(&targets, &senders, thread);
+    if consumed.is_empty() {
+        return Ok(None);
+    }
+    let here = if senders.iter().any(|sender| sender.device.is_some()) {
+        match options
+            .remote
+            .as_deref()
+            .and_then(RemoteControlLocator::remote_surface)
+        {
+            Some(surface) => match surface.sessions.this_device().await {
+                Some(here) => Some(here),
+                // A reply to a sender named by its device cannot be routed without this device's id: fail closed.
+                None => {
+                    let devices: Vec<&str> = senders
+                        .iter()
+                        .filter_map(|sender| sender.device.as_deref())
+                        .collect();
+                    return Err(error_result(thread_tool_failure(
+                        "host_unavailable",
+                        "This device's id could not be read, so a reply to a sender named by its device cannot be routed; nothing was sent.",
+                        "Retry when the device service is reachable.",
+                        Some(json!({ "devices": devices, "reason": "device_id_unavailable" })),
+                    )));
+                }
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+    let here = here.as_deref();
+    let call = match super::control_tools::thread_call(options).await {
+        Ok(call) => call,
+        Err(result) => return Err(result),
+    };
+    let resolve_in = |scope: bool| {
+        let entries = to_thread_address_entries(&send_address_book(&call, thread, scope));
+        resolve_target(
+            &entries,
+            thread,
+            &ResolveOptions {
+                all_scope: scope,
+                caller_workspace_root: &call.caller_workspace_root,
+                ..ResolveOptions::default()
+            },
+        )
+    };
+    let mut resolved = resolve_in(all_scope);
+    // The reply grant widens a scoped refusal for the consumed sender: the widened hit must still be that sender.
+    let mut widened = false;
+    if matches!(&resolved, Err(failure) if failure.code.as_str() == "scope_denied")
+        && consumed.iter().any(|sender| sender.device.is_none())
+    {
+        resolved = resolve_in(true);
+        widened = true;
+    }
+    // A stated name no session on this device carries any more (the sender renamed itself): answer through its id.
+    if let Err(failure) = &resolved
+        && failure.code.as_str() == "not_found"
+        && let Some(sender) = consumed.first()
+        && sender.session_id != thread
+    {
+        let by_id = |scope: bool| {
+            let entries =
+                to_thread_address_entries(&send_address_book(&call, &sender.session_id, scope));
+            resolve_target(
+                &entries,
+                &sender.session_id,
+                &ResolveOptions {
+                    all_scope: scope,
+                    caller_workspace_root: &call.caller_workspace_root,
+                    ..ResolveOptions::default()
+                },
+            )
+        };
+        if let Ok((entry, _)) = by_id(true) {
+            resolved = Ok((entry, super::addressing::TargetResolution::Id));
+            widened = true;
+        }
+    }
+    match resolved {
+        Ok((entry, _)) => match reply_target_mismatch(&targets, &senders, thread, &entry, here) {
+            // The widened scope is what delivers: the engine re-resolves the target and would refuse it again.
+            Some(failure) => Err(error_result(failure)),
+            None => Ok(Some((entry.thread_id, all_scope || widened))),
+        },
+        Err(failure) => Err(error_result(*failure)),
+    }
 }
 
 pub fn create_thread_send_as(options: Arc<ThreadToolsOptions>) -> ThreadSendAs {
@@ -268,7 +390,81 @@ pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> 
 
     tools.extend(super::control_tools::create_control_tools(&options));
     tools.push(super::create_tool::thread_create_tool(&options));
+    receipted(tools, &options)
+}
+
+/// Every tool but the two sends records its call under an idempotency key before it runs (`tool_receipts.rs`); a send owns
+/// its idempotency in the gateway engine's receipt, written in the delivery's own transaction.
+fn receipted(tools: Vec<ThreadTool>, options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool> {
+    let store: Arc<dyn super::tool_receipts::ToolReceiptStore> = Arc::new(options.store.clone());
+    let receipts = super::tool_receipts::ToolReceipts::new(store);
+    let caller = options.caller_session_id.clone();
+    let create_options = options.clone();
     tools
+        .into_iter()
+        .map(|tool| {
+            if tool.name == "thread_send" || tool.name == "thread_handoff" {
+                return tool;
+            }
+            let receipts = receipts.clone();
+            let caller = caller.clone();
+            let name = tool.name.clone();
+            if name == "thread_create" {
+                let create_options = create_options.clone();
+                return ThreadTool {
+                    execute: Arc::new(move |call_id: &str, args: Value| {
+                        let receipts = receipts.clone();
+                        let caller = caller.clone();
+                        let create_options = create_options.clone();
+                        let call_id = call_id.to_owned();
+                        Box::pin(async move {
+                            let caller_id = (caller)();
+                            let key = call_id.clone();
+                            let passed = args.clone();
+                            receipts
+                                .execute("thread_create", &key, &caller_id, args, move |retrying| {
+                                    let options = create_options.clone();
+                                    let call_id = call_id.clone();
+                                    let args = passed.clone();
+                                    Box::pin(async move {
+                                        super::create_tool::create_body(
+                                            options, call_id, args, retrying,
+                                        )
+                                        .await
+                                    })
+                                })
+                                .await
+                        })
+                    }),
+                    ..tool
+                };
+            }
+            let inner = tool.execute.clone();
+            ThreadTool {
+                execute: Arc::new(move |call_id: &str, args: Value| {
+                    let receipts = receipts.clone();
+                    let inner = inner.clone();
+                    let caller = caller.clone();
+                    let name = name.clone();
+                    let call_id = call_id.to_owned();
+                    Box::pin(async move {
+                        let caller_id = (caller)();
+                        let key = call_id.clone();
+                        let passed = args.clone();
+                        receipts
+                            .execute(&name, &key, &caller_id, args, move |_retrying| {
+                                let inner = inner.clone();
+                                let call_id = call_id.clone();
+                                let args = passed.clone();
+                                Box::pin(async move { (inner)(call_id.as_str(), args).await })
+                            })
+                            .await
+                    })
+                }),
+                ..tool
+            }
+        })
+        .collect()
 }
 
 /// The tools a session's registered extension ops add: `ext_<extension>_<toolName>`, each waiting on

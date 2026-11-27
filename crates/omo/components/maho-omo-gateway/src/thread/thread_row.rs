@@ -6,7 +6,7 @@
 //! and the last entry's time, and the surface.
 
 use maho_thread_address_core::{NamedRow, row_name};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::address_book::{AddressEntry, HostSessionStatus};
 use super::contracts_results::{ThreadResultSummary, ThreadStatus, thread_link};
@@ -151,6 +151,217 @@ pub fn opened_result(opened: &ThreadResultSummary, deduplicated: bool) -> Value 
     Value::Object(result)
 }
 
+/// A stored tool receipt in today's shape (upstream `currentResult`): receipts live 30 days, so a retry under the same
+/// idempotency key can replay a result a build before #14044 wrote, with a nested `thread` object or `thread_id`, rows
+/// carrying routing ids and endpoint internals, an endpoint kind on a delivery, and candidates named `id`. Each is mapped
+/// to the shape a current call answers; a current result comes back unchanged.
+pub fn current_result(result: Value) -> Value {
+    let Value::Object(mut value) = result else {
+        return result;
+    };
+    if value.get("kind").and_then(Value::as_str) == Some("error") {
+        let Some(Value::Object(error)) = value.get("error").cloned() else {
+            return Value::Object(value);
+        };
+        let mut error = error;
+        if let Some(candidates) = value.get("candidates") {
+            let mapped = stored_candidates(candidates);
+            value.insert("candidates".to_owned(), mapped);
+        }
+        if let Some(Value::Object(details)) = error.get("details").cloned()
+            && details.contains_key("candidates")
+        {
+            let mut details = details;
+            let mapped = stored_candidates(details.get("candidates").unwrap_or(&Value::Null));
+            details.insert("candidates".to_owned(), mapped);
+            error.insert("details".to_owned(), Value::Object(details));
+        }
+        value.insert("error".to_owned(), Value::Object(error));
+        return Value::Object(value);
+    }
+    if let Some(Value::Object(nested)) = value.get("thread").cloned() {
+        let kind = value.get("kind").cloned();
+        let mut others = value.clone();
+        others.remove("thread");
+        others.remove("kind");
+        let mut rebuilt = Map::new();
+        if let Some(kind) = kind {
+            rebuilt.insert("kind".to_owned(), kind);
+        }
+        for (key, child) in stored_row(&nested) {
+            rebuilt.insert(key, child);
+        }
+        for key in ["requested_skills", "worktree", "warnings"] {
+            if let Some(value) = nested.get(key) {
+                rebuilt.insert(key.to_owned(), value.clone());
+            }
+        }
+        for (key, child) in others {
+            rebuilt.insert(key, child);
+        }
+        value = rebuilt;
+    } else if value.get("thread_id").is_some_and(Value::is_string) && value.get("thread").is_none()
+    {
+        value = renamed(&value, "thread_id", "thread");
+    }
+    if value.get("thread").is_some_and(Value::is_string)
+        && value.get("status").is_some_and(Value::is_string)
+    {
+        value = stored_row(&value);
+    }
+    if let Some(Value::Array(threads)) = value.get("threads").cloned() {
+        let mapped = threads
+            .into_iter()
+            .map(|row| match row {
+                Value::Object(row) => Value::Object(stored_row(&row)),
+                other => other,
+            })
+            .collect();
+        value.insert("threads".to_owned(), Value::Array(mapped));
+    }
+    value.remove("endpoint");
+    if let Some(Value::Object(prompt)) = value.get("prompt").cloned()
+        && prompt.contains_key("endpoint")
+    {
+        let mut prompt = prompt;
+        prompt.remove("endpoint");
+        value.insert("prompt".to_owned(), Value::Object(prompt));
+    }
+    Value::Object(value)
+}
+
+/// A row a build before #14044 stored (`thread_id`, routing ids, endpoint internals) as today's row; a current row as is.
+fn stored_row(row: &Map<String, Value>) -> Map<String, Value> {
+    let is_text = |key: &str| row.get(key).is_some_and(Value::is_string);
+    if is_text("thread") && is_text("state") {
+        return row.clone();
+    }
+    if is_text("thread") {
+        let mut rest = row.clone();
+        rest.remove("alive");
+        rest.insert(
+            "state".to_owned(),
+            Value::String(stored_state(row).to_owned()),
+        );
+        return rest;
+    }
+    let Some(Value::String(id)) = row.get("thread_id") else {
+        return row.clone();
+    };
+    let name = row
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let link = row
+        .get("link")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| thread_link(id, &name));
+    let mut source = row.clone();
+    source.insert("name".to_owned(), Value::String(name));
+    source.insert("link".to_owned(), Value::String(link));
+    source.insert(
+        "state".to_owned(),
+        Value::String(stored_state(row).to_owned()),
+    );
+    current_row(&source)
+}
+
+/// A stored row's state: a build before #13469 stored `alive` and `status` only, never `state`.
+fn stored_state(row: &Map<String, Value>) -> &'static str {
+    let live = row.get("status").and_then(Value::as_str) == Some("live");
+    if live && row.get("alive").and_then(Value::as_bool) != Some(false) {
+        "idle"
+    } else {
+        "inactive"
+    }
+}
+
+/// The fields of a row a tool result carries (upstream `threadRow`): only what a model acts on, so a routing id or an
+/// endpoint internal a stored receipt kept never comes back.
+fn current_row(row: &Map<String, Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    if let Some(thread) = row.get("thread_id") {
+        out.insert("thread".to_owned(), thread.clone());
+    }
+    for key in [
+        "name",
+        "unnamed",
+        "status",
+        "state",
+        "activity",
+        "error_code",
+        "turn_id",
+        "waiting_on",
+        "engine_version",
+        "backlog",
+        "as_of",
+        "machine",
+        "cwd",
+        "created_at",
+        "updated_at",
+        "link",
+        "device",
+        "alias",
+        "surface",
+        "controls",
+        "error_note",
+        "skills",
+    ] {
+        if let Some(value) = row.get(key) {
+            out.insert(key.to_owned(), value.clone());
+        }
+    }
+    if let Some(model) = row.get("model") {
+        let projected = match model {
+            Value::Object(model) => {
+                let mut projected = Map::new();
+                for key in ["provider", "id"] {
+                    if let Some(value) = model.get(key) {
+                        projected.insert(key.to_owned(), value.clone());
+                    }
+                }
+                Value::Object(projected)
+            }
+            other => other.clone(),
+        };
+        out.insert("model".to_owned(), projected);
+    }
+    out
+}
+
+fn stored_candidates(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|candidate| match candidate {
+                    Value::Object(candidate) if candidate.contains_key("id") => {
+                        Value::Object(renamed(candidate, "id", "thread"))
+                    }
+                    other => other.clone(),
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn renamed(value: &Map<String, Value>, from: &str, to: &str) -> Map<String, Value> {
+    value
+        .iter()
+        .map(|(key, child)| {
+            let key = if key == from {
+                to.to_owned()
+            } else {
+                key.clone()
+            };
+            (key, child.clone())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +484,141 @@ mod tests {
         let archived = degraded_row(&archived_entry);
         assert_eq!(archived.state, ThreadState::Archived);
         assert_eq!(archived.status, ThreadStatus::Resumable);
+    }
+
+    #[test]
+    fn a_receipt_a_build_before_14044_stored_replays_as_todays_row() {
+        // tools.test.ts: "#given thread_create, thread_list, thread_rename and an ambiguous thread_read receipts stored
+        // in the old shape #when the same keys are retried #then each replays the current shape".
+        let old_row = serde_json::json!({
+            "sessionId": "route-peer",
+            "durableSessionId": "dur-peer",
+            "thread_id": "dur-peer",
+            "name": "old create",
+            "status": "live",
+            "cwd": "/w",
+            "created_at": "2026-11-01T00:00:00.000Z",
+            "updated_at": "2026-11-01T00:00:00.000Z",
+            "socket": "/tmp/thread-tools-test.sock",
+            "endpoint_kind": "rpc_host",
+            "endpoint": { "kind": "rpc_host", "socket": "/tmp/thread-tools-test.sock", "routing_id": "route-peer" },
+            "surface": "daemon",
+            "alive": true,
+        });
+        let row = serde_json::json!({
+            "thread": "dur-peer",
+            "name": "old create",
+            "status": "live",
+            "cwd": "/w",
+            "created_at": "2026-11-01T00:00:00.000Z",
+            "updated_at": "2026-11-01T00:00:00.000Z",
+            "link": "[old create](omo-thread://v1/dur-peer)",
+            "surface": "daemon",
+            "state": "idle",
+        });
+        let mut nested = old_row.clone();
+        nested["requested_skills"] = serde_json::json!(["lead"]);
+        let created = current_result(serde_json::json!({
+            "kind": "ok",
+            "thread": nested,
+            "deduplicated": false,
+            "prompt": {
+                "delivery": { "kind": "started", "turn_id": "1" },
+                "deduplicated": false,
+                "endpoint": { "kind": "rpc_host" },
+            },
+        }));
+        let mut expected_create = row.clone();
+        expected_create["kind"] = serde_json::json!("ok");
+        expected_create["requested_skills"] = serde_json::json!(["lead"]);
+        expected_create["deduplicated"] = serde_json::json!(false);
+        expected_create["prompt"] = serde_json::json!({
+            "delivery": { "kind": "started", "turn_id": "1" },
+            "deduplicated": false,
+        });
+        assert_eq!(created, expected_create);
+
+        let listed = current_result(serde_json::json!({
+            "kind": "ok",
+            "threads": [old_row],
+            "scope": "workspace",
+        }));
+        assert_eq!(
+            listed,
+            serde_json::json!({ "kind": "ok", "threads": [row.clone()], "scope": "workspace" })
+        );
+        let renamed = current_result(serde_json::json!({
+            "kind": "ok",
+            "thread_id": "dur-peer",
+            "name": "Renamed",
+        }));
+        assert_eq!(
+            renamed,
+            serde_json::json!({ "kind": "ok", "thread": "dur-peer", "name": "Renamed" })
+        );
+
+        let old_candidates = serde_json::json!([
+            { "id": "dur-twin-1", "name": "twin", "cwd": "/w", "preview": "", "updatedAt": null, "state": "live" },
+            { "id": "dur-twin-2", "name": "twin", "cwd": "/w", "preview": "", "updatedAt": null, "state": "live" },
+        ]);
+        let read = current_result(serde_json::json!({
+            "kind": "error",
+            "error": {
+                "code": "ambiguous_target",
+                "message": "Two threads are named twin.",
+                "next_action": "Pass one thread.",
+                "details": { "candidates": old_candidates },
+            },
+        }));
+        assert_eq!(
+            read,
+            serde_json::json!({
+                "kind": "error",
+                "error": {
+                    "code": "ambiguous_target",
+                    "message": "Two threads are named twin.",
+                    "next_action": "Pass one thread.",
+                    "details": { "candidates": [
+                        { "thread": "dur-twin-1", "name": "twin", "cwd": "/w", "preview": "", "updatedAt": null, "state": "live" },
+                        { "thread": "dur-twin-2", "name": "twin", "cwd": "/w", "preview": "", "updatedAt": null, "state": "live" },
+                    ] },
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn a_current_receipt_replays_unchanged() {
+        // tools.test.ts: "#given current receipts #when replayed #then only the successful create's deduplication flag
+        // changes"; the flag is the wrapper's, so this checks the row mapping leaves a current result alone.
+        let row = serde_json::json!({
+            "thread": "dur-peer",
+            "name": "peer",
+            "status": "live",
+            "cwd": "/w",
+            "created_at": "2026-11-17T00:00:00.000Z",
+            "updated_at": null,
+            "link": "[peer](omo-thread://v1/dur-peer)",
+            "surface": "daemon",
+            "state": "idle",
+            "controls": ["send", "read"],
+        });
+        for result in [
+            serde_json::json!({ "kind": "ok", "threads": [row.clone()], "scope": "workspace", "devices": [] }),
+            serde_json::json!({ "kind": "ok", "thread": "dur-peer", "name": "Renamed" }),
+            serde_json::json!({
+                "kind": "error",
+                "error": {
+                    "code": "ambiguous_target",
+                    "message": "Two threads are named twin.",
+                    "next_action": "Pass one thread.",
+                    "details": { "candidates": [
+                        { "thread": "dur-twin-1", "name": "twin", "cwd": "/w", "preview": "", "updatedAt": null, "state": "live" },
+                    ] },
+                },
+            }),
+        ] {
+            assert_eq!(current_result(result.clone()), result);
+        }
     }
 }

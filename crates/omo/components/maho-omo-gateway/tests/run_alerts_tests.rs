@@ -365,6 +365,8 @@ impl SeatHarness {
                 caller_workspace_root: Arc::new(move || workspace_str.clone()),
                 sessions_directory: None,
                 remote: None,
+                caller_reply_targets: Arc::new(Vec::new),
+                caller_reply_senders: Arc::new(Vec::new),
             }),
             Some(seams),
         );

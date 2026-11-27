@@ -334,11 +334,17 @@ fn make_component(
         caller_workspace_root: Arc::new(move || cwd.clone()),
         sessions_directory: sessions_dir,
         remote: Some(locator),
+        caller_reply_targets: Arc::new(Vec::new),
+        caller_reply_senders: Arc::new(Vec::new),
     }))
 }
 
 fn run(component: &GatewayThreadComponent, name: &str, args: Value) -> Value {
-    block_on(component.execute(name, "call-1", args).expect("tool"))
+    let call_id = format!(
+        "call-{}",
+        super::NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    );
+    block_on(component.execute(name, &call_id, args).expect("tool"))
 }
 
 fn local_session(id: &str, cwd: &str) -> ThreadHostSession {
