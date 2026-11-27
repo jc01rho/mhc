@@ -11,6 +11,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::errors::MachineOpError;
+use crate::files::automount_realpath::AutomountRealpath;
+use crate::files::automount_trigger::{automount_trigger_path, realpath_under_automount};
 use crate::files::bounded_realpath::{
     RESOLUTION_DEADLINE, canonicalize_path, with_resolution_deadline,
 };
@@ -38,6 +40,17 @@ fn is_drive_relative(segment: &OsStr) -> bool {
 }
 
 async fn real_path_under(base: &Path, raw: &Path) -> Option<PathBuf> {
+    if automount_trigger_path(resolve(base, raw)).await.is_some() {
+        let unnormalized = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            base.join(raw)
+        };
+        return match realpath_under_automount(&unnormalized).await {
+            AutomountRealpath::Resolved(path) => Some(path),
+            AutomountRealpath::Failed { .. } | AutomountRealpath::Unanswered => None,
+        };
+    }
     let rooted = raw.has_root();
     let root: PathBuf = if rooted {
         raw.components()

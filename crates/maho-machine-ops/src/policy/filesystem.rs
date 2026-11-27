@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::errors::MachineOpError;
+use crate::errors::{MachineOpError, OpErrorCode};
+use crate::files::automount_realpath::AutomountRealpath;
+use crate::files::automount_trigger::{automount_trigger_path, realpath_under_automount};
 use crate::files::bounded_realpath::{
     RESOLUTION_DEADLINE, ResolutionTimedOut, canonicalize_path, is_missing_path_error,
     with_resolution_deadline,
@@ -86,14 +88,32 @@ impl FilesystemPolicy for ComposedFilesystemPolicy {
     }
 }
 
+async fn canonicalize_under_automount(absolute_path: &Path) -> Result<PathBuf, MachineOpError> {
+    match realpath_under_automount(absolute_path).await {
+        AutomountRealpath::Resolved(path) => Ok(path),
+        AutomountRealpath::Failed { code } => {
+            let op_code = match code.as_str() {
+                "ENOENT" | "ENOTDIR" => OpErrorCode::NotFound,
+                "EACCES" | "EPERM" => OpErrorCode::PermissionDenied,
+                _ => OpErrorCode::IoError,
+            };
+            Err(MachineOpError::new(
+                op_code,
+                format!("{code}: cannot resolve {}", absolute_path.display()),
+            ))
+        }
+        AutomountRealpath::Unanswered => Err(MachineOpError::policy_denied(format!(
+            "{} is under an automount that did not answer, so where it leads is unknown; refused",
+            absolute_path.display()
+        ))),
+    }
+}
+
 /// Compose policies in registration order. The first denial wins and later policies are not asked.
 pub fn compose_filesystem_policies(
     policies: Vec<Arc<dyn FilesystemPolicy>>,
 ) -> Option<Arc<dyn FilesystemPolicy>> {
-    if policies.is_empty() {
-        return None;
-    }
-    Some(Arc::new(ComposedFilesystemPolicy { policies }))
+    (!policies.is_empty()).then(|| Arc::new(ComposedFilesystemPolicy { policies }) as _)
 }
 
 fn join_missing(mut parent: PathBuf, missing: &[OsString]) -> PathBuf {
@@ -162,6 +182,9 @@ where
     Fut: Future<Output = io::Result<PathBuf>>,
 {
     let absolute_path = resolve(Path::new(""), file_path);
+    if automount_trigger_path(&absolute_path).await.is_some() {
+        return canonicalize_under_automount(&absolute_path).await;
+    }
     match with_resolution_deadline(open_resolver(absolute_path.clone()), deadline).await {
         Ok(result) => result.map_err(MachineOpError::from),
         Err(ResolutionTimedOut) => realpath_without_open_strict_blocking(absolute_path).await,

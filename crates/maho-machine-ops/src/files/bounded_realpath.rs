@@ -44,6 +44,7 @@ pub async fn with_resolution_deadline<T>(
 
 /// The kernel's canonical path, in the plain form on Windows (no `\\?\` prefix).
 pub(crate) async fn canonicalize_path(path: &Path) -> io::Result<PathBuf> {
+    crate::files::automount_trigger::record_in_process_call(path);
     let canonical = tokio::fs::canonicalize(path).await?;
     Ok(if cfg!(windows) {
         strip_verbatim_prefix(&canonical)

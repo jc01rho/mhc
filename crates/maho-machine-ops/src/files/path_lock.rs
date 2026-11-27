@@ -11,6 +11,7 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use crate::cancel::CancellationToken;
 use crate::errors::MachineOpError;
+use crate::files::automount_trigger::automount_trigger_path;
 use crate::files::bounded_realpath::{
     RESOLUTION_DEADLINE, ResolutionTimedOut, canonicalize_path,
     fold_path_for_case_insensitive_filesystem, is_missing_path_error, with_resolution_deadline,
@@ -32,6 +33,9 @@ fn slots() -> &'static StdMutex<Slots> {
 /// fallback and the fast path agree on the same file.
 pub async fn mutation_queue_key(file_path: &Path) -> Result<String, MachineOpError> {
     let resolved = resolve(Path::new(""), file_path);
+    if let Some(trigger_path) = automount_trigger_path(&resolved).await {
+        return Ok(fold_path_for_case_insensitive_filesystem(&trigger_path));
+    }
     let canonical =
         match with_resolution_deadline(canonicalize_path(&resolved), RESOLUTION_DEADLINE).await {
             Ok(Ok(canonical)) => canonical,
