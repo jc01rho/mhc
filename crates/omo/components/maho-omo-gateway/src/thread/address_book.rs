@@ -674,20 +674,28 @@ pub fn find_disk_sessions(
             .map(|root| session_directory_prefix(root))
             .collect()
     };
+    // The directory name maps both `/` and `-` to `-`, so `<root>-tmp` shares `<root>`'s prefix (#14893): the header's
+    // cwd decides, compared by path components.
+    let roots: Vec<&Path> = workspace_roots.iter().map(Path::new).collect();
+    let in_scope =
+        |cwd: &str| all_scope || roots.iter().any(|root| Path::new(cwd).starts_with(root));
     directories
         .into_iter()
         .filter(|directory| {
             prefixes.is_empty() || prefixes.iter().any(|prefix| directory.starts_with(prefix))
         })
         .flat_map(|directory| {
-            let wanted = wanted.clone();
             session_files(&sessions_dir.join(&directory))
                 .into_iter()
-                .filter_map(move |file| {
-                    let session = read_disk_session(&file, None)?;
-                    let name = session.name.as_deref()?;
-                    (name.trim().to_lowercase() == wanted).then_some(session)
-                })
+                .filter_map(|file| read_disk_session(&file, None))
+                .collect::<Vec<_>>()
+        })
+        .filter(|session| {
+            session
+                .name
+                .as_deref()
+                .is_some_and(|name| name.trim().to_lowercase() == wanted)
+                && in_scope(&session.cwd)
         })
         .collect()
 }
@@ -846,6 +854,54 @@ mod tests {
             session_directory_prefix("/home/indo/work"),
             "--home-indo-work-"
         );
+    }
+
+    #[test]
+    fn a_scoped_name_lookup_skips_a_sibling_directory_that_extends_the_workspace_path() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let sessions = base.path().join("sessions");
+        let root = base.path().join("fix-guard");
+        let write = |id: &str, cwd: &Path| -> String {
+            let cwd = cwd.to_string_lossy().into_owned();
+            let directory = sessions.join(format!("{}-", session_directory_prefix(&cwd)));
+            std::fs::create_dir_all(&directory).expect("session directory");
+            let path = directory.join(format!("2026-11-24T00-00-00-000Z_{id}.jsonl"));
+            let lines = [
+                serde_json::json!({
+                    "type": "session",
+                    "version": 3,
+                    "id": id,
+                    "cwd": cwd,
+                    "timestamp": "2026-11-24T00:00:00.000Z",
+                }),
+                serde_json::json!({
+                    "type": "session_info",
+                    "timestamp": "2026-11-24T00:01:00.000Z",
+                    "name": "lane",
+                }),
+            ];
+            let content = lines
+                .iter()
+                .map(serde_json::Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            std::fs::write(&path, content).expect("write");
+            path.to_string_lossy().into_owned()
+        };
+        let at_root = write("dur-root", &root);
+        let below = write("dur-below", &root.join("packages"));
+        write("dur-sibling", &base.path().join("fix-guard-tmp"));
+        let roots = [root.to_string_lossy().into_owned()];
+        let mut found: Vec<String> = find_disk_sessions(&sessions, "lane", false, &roots)
+            .into_iter()
+            .map(|session| session.session_path)
+            .collect();
+        found.sort();
+        let mut expected = vec![at_root, below];
+        expected.sort();
+        assert_eq!(found, expected);
+        assert_eq!(find_disk_sessions(&sessions, "lane", true, &[]).len(), 3);
     }
 
     #[test]
