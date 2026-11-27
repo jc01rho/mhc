@@ -61,7 +61,7 @@ pub(crate) fn validate_open_args(args: &serde_json::Value) -> Result<(), String>
             }
             match key.as_str() {
                 "cwd" => {
-                    if !value.as_str().is_some_and(|s| s.starts_with('/')) {
+                    if value.as_str().is_none_or(|s| !s.starts_with('/')) {
                         return Err("invalid_request".to_owned());
                     }
                 }
@@ -89,7 +89,7 @@ pub(crate) fn validate_open_args(args: &serde_json::Value) -> Result<(), String>
                 }
                 "thinking_level" | "permission_preset" | "kind" | "prompt_surface"
                 | "browser_engine" => {
-                    if !value.as_str().is_some_and(|s| !s.is_empty()) {
+                    if value.as_str().is_none_or(str::is_empty) {
                         return Err("invalid_request".to_owned());
                     }
                 }
