@@ -254,6 +254,28 @@ fn compose_task_engine_parts(
     options.isolation_settings = isolation_settings;
     // Fork policy gate for omo #12010/#12761: absent or `true` keeps the parent-model rung.
     options.parent_model_fallback = settings["parent_model_fallback"].as_bool() != Some(false);
+    let cloud_offload =
+        senpi_task::manager::cloud_router::CloudOffloadConfig::from_config(&settings);
+    let cloud_backend = Arc::new(
+        senpi_task::runners::remote_cloud::FerryxCliCloudBackend::new(
+            cloud_offload.ferryx_cli.as_deref().map(PathBuf::from),
+        ),
+    );
+    let cloud_runner = Arc::new(senpi_task::runners::remote_cloud::CloudManagedRunner::new(
+        cloud_backend,
+        senpi_task::runners::remote_cloud::CloudRunnerSettings {
+            provider: cloud_offload.provider.clone(),
+            ttl_seconds: cloud_offload.ttl_seconds,
+            sync_workspace: cloud_offload.sync_workspace,
+            apply_patch: cloud_offload.apply_patch,
+            delete_on_release: cloud_offload.delete_on_release,
+            ..Default::default()
+        },
+    ));
+    let cloud_check = Arc::clone(&cloud_runner);
+    options.cloud_runner = Some(cloud_runner);
+    options.cloud_available = Some(Arc::new(move || cloud_check.is_available()));
+    options.cloud_offload = cloud_offload;
     options.config = ManagerConfig {
         max_depth: settings["max_depth"]
             .as_u64()

@@ -30,6 +30,7 @@ pub mod doctor;
 #[cfg(feature = "omo")]
 pub mod doctor_memory_runtime;
 pub mod experimental;
+pub mod extension_providers;
 pub mod extension_registry;
 #[cfg(feature = "omo")]
 pub mod facts_child;

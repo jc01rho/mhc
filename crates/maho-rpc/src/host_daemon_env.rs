@@ -25,7 +25,16 @@ const TRANSIENT_ENV_NAMES: &[&str] = &[
 ];
 
 pub fn is_transient_daemon_env_name(name: &str) -> bool {
+    // mhc reads every setting under its own `MAHO_` brand prefix as well (`maho_core::brand::env_value`), so the
+    // `MAHO_` alias of a transient name identifies the same session or host and is dropped with it.
     TRANSIENT_ENV_NAMES.contains(&name)
+        || name.strip_prefix("MAHO_").is_some_and(|suffix| {
+            TRANSIENT_ENV_NAMES.iter().any(|transient| {
+                transient
+                    .split_once('_')
+                    .is_some_and(|(_, rest)| rest == suffix)
+            })
+        })
 }
 
 pub fn daemon_env_is_allowed(name: &str, platform: &str) -> bool {
@@ -81,6 +90,7 @@ pub fn daemon_env_is_allowed(name: &str, platform: &str) -> bool {
         || [
             "LC_",
             "XDG_",
+            "MAHO_",
             "SENPI_",
             "OMO_",
             "PI_",

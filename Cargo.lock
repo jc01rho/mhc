@@ -3473,6 +3473,7 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "prost-build",
+ "rcgen",
  "regex",
  "reqwest 0.12.28",
  "ring",
@@ -3715,6 +3716,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rpassword",
+ "rustls",
  "semver",
  "serde",
  "serde_json",
@@ -3946,6 +3948,8 @@ dependencies = [
  "maho-ext-builtin-loose",
  "maho-ext-host",
  "maho-test-support",
+ "nix 0.28.0",
+ "notify",
  "regex",
  "serde",
  "serde_json",
@@ -3953,6 +3957,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+ "url",
  "uuid",
 ]
 
@@ -6034,6 +6039,7 @@ version = "0.0.0"
 dependencies = [
  "fancy-regex",
  "maho-ext-api",
+ "maho-ultrawork",
  "regex",
  "serde_json",
  "tokio",
@@ -6817,6 +6823,7 @@ name = "maho-ultrawork"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "regex",
  "serde_json",
 ]
 

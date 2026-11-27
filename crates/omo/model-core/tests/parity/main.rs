@@ -6,6 +6,7 @@ mod category_routing_policy;
 mod context_limit_resolver;
 mod context_overflow;
 mod fable_52_recognition;
+mod fallback_lane_policy;
 mod gpt_5_6_copilot_resolution;
 mod gpt_6_2;
 mod luna_deepseek_chain_policy;

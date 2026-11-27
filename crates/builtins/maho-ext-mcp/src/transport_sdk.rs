@@ -1,3 +1,5 @@
+mod legacy_sse;
+
 use crate::{
     errors::{McpError, McpErrorKind},
     log::McpLogger,
@@ -233,6 +235,7 @@ impl StderrDiagnostics {
     }
 }
 enum ClientTransport {
+    LegacySse(Box<legacy_sse::LegacySse>),
     Stdio {
         input: tokio::sync::Mutex<Option<ChildStdin>>,
         child: Box<tokio::sync::Mutex<Child>>,
@@ -667,7 +670,7 @@ impl McpClient {
                 let client = reqwest::Client::builder()
                     .build()
                     .map_err(|e| failure(server, McpErrorKind::Connect, e.to_string(), "create"))?;
-                Ok(Self::remote(
+                Ok(Self::with_http_transport(
                     server,
                     ClientTransport::Http {
                         client,
@@ -682,7 +685,7 @@ impl McpClient {
                 // the bearer to another host.
                 let client = crate::modern::transport::within_origin_client()
                     .map_err(|e| failure(server, McpErrorKind::Connect, e.to_string(), "create"))?;
-                Ok(Self::remote(
+                Ok(Self::with_http_transport(
                     server,
                     ClientTransport::Sse {
                         client,
@@ -698,8 +701,10 @@ impl McpClient {
             }
         }
     }
-    /// A client over a network transport: no child process, nothing negotiated yet.
-    fn remote(server: &str, io: ClientTransport) -> Arc<Self> {
+    pub fn is_legacy_sse(&self) -> bool {
+        matches!(self.io, ClientTransport::LegacySse(_))
+    }
+    fn with_http_transport(server: &str, io: ClientTransport) -> Arc<Self> {
         let (notifications, _) = broadcast::channel(256);
         let (closed, _) = tokio::sync::watch::channel(false);
         Arc::new_cyclic(|this| Self {
@@ -830,10 +835,21 @@ impl McpClient {
     ) -> Result<Value, McpError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, sender);
+        {
+            let mut pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.is_legacy_sse() && pending.len() >= legacy_sse::MAX_PENDING_REQUESTS {
+                return Err(failure(
+                    &self.server,
+                    McpErrorKind::ToolExec,
+                    "too many pending SSE requests",
+                    "request",
+                ));
+            }
+            pending.insert(id, sender);
+        }
         struct PendingRequest {
             pending: Arc<Mutex<BTreeMap<u64, Reply>>>,
             id: u64,
@@ -899,7 +915,15 @@ impl McpClient {
         let result = tokio::select! {
             biased;
             ()=async {match signal {Some(signal)=>signal.cancelled().await,None=>std::future::pending().await}}=>{
-                self.send(&json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id,"reason":"Request cancelled"}})).await?;
+                let cancelled = json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id,"reason":"Request cancelled"}});
+                if self.is_legacy_sse() {
+                    // A missing POST acknowledgement must not hold the cancellation hostage.
+                    tokio::time::timeout(Duration::from_millis(400),self.send(&cancelled))
+                        .await
+                        .map_err(|_| failure(&self.server,McpErrorKind::Timeout,"MCP cancellation notification timed out","request"))??;
+                } else {
+                    self.send(&cancelled).await?;
+                }
                 Err(failure(&self.server,McpErrorKind::ToolExec,"Request cancelled","request"))
             }
             result=tokio::time::timeout(timeout,result)=>result.unwrap_or_else(|_|Err(failure(&self.server,McpErrorKind::Timeout,format!("MCP request {method} timed out"),"request"))),
@@ -1002,6 +1026,7 @@ impl McpClient {
     async fn write_line(&self, value: &Value) -> Result<(), McpError> {
         let input = match &self.io {
             ClientTransport::Stdio { input, .. } => input,
+            ClientTransport::LegacySse(sse) => return sse.post(self, value).await,
             ClientTransport::Sse { .. } => return self.sse_post(value).await,
             ClientTransport::Http { .. } => {
                 self.http_send(value).await?;
@@ -1629,6 +1654,12 @@ impl McpClient {
         Ok(())
     }
     pub async fn initialize(self: &Arc<Self>, timeout: Duration) -> Result<(), McpError> {
+        if let ClientTransport::LegacySse(sse) = &self.io {
+            return sse.initialize(self, timeout).await;
+        }
+        self.initialize_protocol(timeout).await
+    }
+    async fn initialize_protocol(self: &Arc<Self>, timeout: Duration) -> Result<(), McpError> {
         let local = self
             .local_initialize
             .lock()
@@ -1852,6 +1883,10 @@ impl McpClient {
         })
     }
     pub async fn close(&self) -> Result<(), McpError> {
+        if self.is_legacy_sse() {
+            self.close_sse();
+            return Ok(());
+        }
         // SDK `Client.close()` fires `onclose` for every transport: close observers (`on_mcp_client_close`) end.
         self.closed.send_replace(true);
         // sdk-bridge.ts close(): dispose the subscriptions (aborting listen streams) before closing the transport.
@@ -1932,6 +1967,10 @@ impl McpClient {
 }
 impl Drop for McpClient {
     fn drop(&mut self) {
+        if self.is_legacy_sse() {
+            self.close_sse();
+            return;
+        }
         if let Some(task) = self
             .http_stream
             .lock()

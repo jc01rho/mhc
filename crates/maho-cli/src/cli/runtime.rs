@@ -69,19 +69,12 @@ pub fn start_usage_polling(agent_dir: &str, report: Arc<dyn Fn(String) + Send + 
     let sources = AccountSources {
         store,
         env: Arc::new(|name| std::env::var(name).ok()),
-        refresher: Arc::new(|refresh, signal| {
-            Box::pin(async move {
-                let credential = maho_ai::auth::types::OAuthCredential::new("", refresh, 0.0);
-                maho_ai::auth::oauth::anthropic::anthropic_oauth()
-                    .refresh(&credential, &signal)
-                    .await
-            })
-        }),
         now: Arc::new(|| {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_millis() as i64)
         }),
+        agent_dir: Some(std::path::PathBuf::from(agent_dir)),
     };
     let _ = start_subscription_usage_polling(UsagePollingOptions {
         agent_dir: std::path::PathBuf::from(agent_dir),

@@ -211,6 +211,10 @@ pub async fn list_rotation_slots(
         let mut slots = Vec::new();
         // A slot of the other kind cannot project, so a session must never be handed it (senpi#3486).
         for slot in slots_of_own_kind(credential) {
+            // senpi v2026.11.19-5 rotation-slots.ts: a signed-out registration keeps its metadata but never serves.
+            if slot.extra.get("signedOut") == Some(&serde_json::Value::Bool(true)) {
+                continue;
+            }
             let revisions = repository
                 .stored_slot_revisions(
                     &provider_id,

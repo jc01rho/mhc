@@ -203,8 +203,8 @@ fn resolve_account_pin_applies_only_to_anthropic_subscription_provider() {
         "expires": far_future,
         "pinned": "work",
         "accounts": [
-            {"name": "default", "access": "fake-a", "refresh": "fake-r", "expires": far_future, "source": "login", "blockedUntil": far_future},
-            {"name": "work", "access": "fake-a", "refresh": "fake-r", "expires": far_future, "source": "login"}
+            {"name": "default", "store": "claude-cli", "access": "fake-a", "refresh": "fake-r", "expires": far_future, "source": "login", "blockedUntil": far_future},
+            {"name": "work", "store": "claude-cli", "access": "fake-a", "refresh": "fake-r", "expires": far_future, "source": "login"}
         ]
     });
     std::fs::write(

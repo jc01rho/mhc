@@ -7463,11 +7463,37 @@ pub async fn run_multi_session_host_with_signals(
     listen: Option<String>,
     signals: HostShutdownSignals,
 ) -> std::io::Result<()> {
+    run_multi_session_host_inner(core, listen, signals, None).await
+}
+
+/// Serve a host and notify the caller once its endpoint is bound and published.
+pub async fn run_multi_session_host_with_signals_and_ready(
+    core: std::sync::Arc<HostCore>,
+    listen: Option<String>,
+    signals: HostShutdownSignals,
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> std::io::Result<()> {
+    run_multi_session_host_inner(core, listen, signals, Some(ready)).await
+}
+
+async fn run_multi_session_host_inner(
+    core: std::sync::Arc<HostCore>,
+    listen: Option<String>,
+    signals: HostShutdownSignals,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> std::io::Result<()> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = signals;
         match listen.as_deref() {
-            None | Some("stdio://") => run_stdio_host(core).await,
+            None | Some("stdio://") => {
+                if let Some(ready) = ready
+                    && ready.send(()).is_err()
+                {
+                    eprintln!("senpi rpc host: readiness observer dropped");
+                }
+                run_stdio_host(core).await
+            }
             Some(_) => Err(std::io::Error::other(
                 "rpc host sockets are not supported on this platform yet",
             )),
@@ -7479,9 +7505,14 @@ pub async fn run_multi_session_host_with_signals(
             None | Some("stdio://") => {
                 // A stdio host serves no socket: it publishes claims only into a told daemon directory.
                 core.install_endpoint_reservations(None).await;
+                if let Some(ready) = ready
+                    && ready.send(()).is_err()
+                {
+                    eprintln!("senpi rpc host: readiness observer dropped");
+                }
                 run_stdio_host(core).await
             }
-            Some(path) => run_socket_host(core, path.to_owned(), signals).await,
+            Some(path) => run_socket_host(core, path.to_owned(), signals, ready).await,
         }
     }
 }
@@ -7695,6 +7726,7 @@ async fn run_socket_host(
     core: std::sync::Arc<HostCore>,
     listen: String,
     signals: HostShutdownSignals,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> std::io::Result<()> {
     #[cfg(unix)]
     let path = crate::host_ensure::normalize_socket_path(&listen).to_owned();
@@ -7980,6 +8012,11 @@ async fn run_socket_host(
         },
         std::sync::Arc::new(|message| eprintln!("senpi rpc host: {message}")),
     );
+    if let Some(ready) = ready
+        && ready.send(()).is_err()
+    {
+        eprintln!("senpi rpc host: readiness observer dropped");
+    }
     loop {
         tokio::select! {
             biased;
@@ -8147,9 +8184,15 @@ async fn serve_socket_connection(
         let tag = connection.clone();
         commands.push(Box::pin(async move { core.handle(Some(&tag), &line).await }) as HostCommand);
     }
-    drop(commands);
-    core.release_retained_attachments(&connection).await;
+    // senpi `runSocketHost` `detach`: the socket and its writer go at once, but every command the
+    // connection sent was started as `void handle(line)` and still settles (a `prompt` runs its whole
+    // turn inside its command), and the connection's attachments are released only after that.
+    drop(lines);
     core.unregister_connection(&connection);
+    while !commands.is_empty() {
+        let _ = poll_host_commands(&mut commands).await;
+    }
+    core.release_retained_attachments(&connection).await;
     // A socket that dies without close_session still owns its sessions' attachments and path
     // reservations (senpi `detach` -> `router.releaseConnection`).
     core.release_connection(&connection).await;
@@ -8183,6 +8226,81 @@ mod tests {
             writer,
         ));
         (core, client_read, directory)
+    }
+    /// senpi `runSocketHost` runs every line as `void handle(line)`: a command still in flight when its
+    /// socket closes settles anyway. A host `prompt` runs its whole turn inside its command, so a
+    /// client that disconnects after `started` (`host session open --prompt`) must not cancel the turn.
+    #[tokio::test]
+    async fn a_command_in_flight_settles_after_its_socket_closes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        type Signal = std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>;
+        let directory = tempfile::tempdir().unwrap();
+        let (entered_tx, entered) = tokio::sync::oneshot::channel();
+        let (settled_tx, settled) = tokio::sync::oneshot::channel();
+        let entered_tx: Signal = std::sync::Arc::new(std::sync::Mutex::new(Some(entered_tx)));
+        let settled_tx: Signal = std::sync::Arc::new(std::sync::Mutex::new(Some(settled_tx)));
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let held = release.clone();
+        let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
+            move |_profile: crate::session_registry::RpcSessionLaunchProfile| {
+                let (entered_tx, settled_tx, held) =
+                    (entered_tx.clone(), settled_tx.clone(), held.clone());
+                Box::pin(async move {
+                    if let Some(entered) = entered_tx.lock().unwrap().take() {
+                        let _ = entered.send(());
+                    }
+                    held.notified().await;
+                    if let Some(settled) = settled_tx.lock().unwrap().take() {
+                        let _ = settled.send(());
+                    }
+                    Err("held open settled".to_owned())
+                })
+            },
+        );
+        let core = std::sync::Arc::new(HostCore::new(
+            HostCoreOptions {
+                agent_dir: directory.path().to_owned(),
+                cwd: directory.path().to_string_lossy().into_owned(),
+                create_runtime,
+                capabilities: vec![],
+                close_grace_ms: 10_000,
+            },
+            std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
+                tokio::io::sink(),
+            )),
+        ));
+        let (mut client, server) = tokio::io::duplex(1 << 16);
+        let served = tokio::spawn(serve_socket_connection(
+            core,
+            "socket-1".into(),
+            Box::new(server),
+        ));
+        let open = serde_json::json!({"id":"o","type":"open_session","cwd":directory.path()});
+        client
+            .write_all(format!("{open}\n").as_bytes())
+            .await
+            .unwrap();
+        let bound = std::time::Duration::from_secs(10);
+        tokio::time::timeout(bound, entered)
+            .await
+            .expect("the open reaches the runtime factory")
+            .expect("entered");
+        // The host sees EOF and lets the socket go; reading EOF here proves it got past the read loop.
+        client.shutdown().await.unwrap();
+        let mut rest = Vec::new();
+        tokio::time::timeout(bound, client.read_to_end(&mut rest))
+            .await
+            .expect("the host closes the socket")
+            .unwrap();
+        release.notify_one();
+        tokio::time::timeout(bound, settled)
+            .await
+            .expect("bounded")
+            .expect("the in-flight open settled instead of being dropped with its socket");
+        tokio::time::timeout(bound, served)
+            .await
+            .expect("the connection finishes once its commands settled")
+            .unwrap();
     }
     #[tokio::test]
     async fn open_session_rejects_lone_provider_or_model_id() {

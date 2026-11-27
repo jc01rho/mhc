@@ -1,66 +1,44 @@
-//! The `BROWSER` helper of one login (senpi `claude-cli-browser-capture.ts`, senpi#4437 and senpi#4654).
-//!
-//! `Capture` appends the URL the CLI wants to open to a private sink, so the host can hand it to the client (the
-//! desktop opens it on the user's machine); `Discard` swallows it for copy-code login. The helper runs nothing but
-//! that one write. The sink is read whenever the CLI prints or exits: the native engine carries no file watcher.
-use std::path::{Path, PathBuf};
+//! Port of senpi `anthropic-subscription/claude-cli-browser-capture.ts` (v2026.11.19-5).
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::{
+    fs::{self, OpenOptions},
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
+use tempfile::TempDir;
+use tokio::sync::mpsc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BrowserCaptureMode {
-    Capture,
-    Discard,
-}
-
-pub struct ClaudeCliBrowserCapture {
-    dir: tempfile::TempDir,
-    sink_path: PathBuf,
+/// Private browser shim, either capturing a URL or discarding it without opening a browser.
+pub(crate) struct ClaudeCliBrowserCapture {
+    watcher: Option<RecommendedWatcher>,
+    changes: mpsc::Receiver<()>,
+    dir: Option<TempDir>,
     helper_path: PathBuf,
+    sink_path: PathBuf,
     consumed: usize,
 }
 
-fn sh_single_quoted(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
-}
-
-/// The helper script. Windows: delayed expansion keeps `&` and `?` in the URL literal and `echo(` prints even an empty
-/// argument. The CLI starts the helper in its own cwd (the account dir) and does not wait for it; Windows cannot delete
-/// a directory that a live process has as its cwd, so the helper leaves it before `setlocal`. The helper never holds
-/// the account dir after the URL is seen (senpi#4654).
-pub fn helper_script(mode: BrowserCaptureMode, sink_path: &str, windows: bool) -> String {
-    match (windows, mode) {
-        (true, BrowserCaptureMode::Discard) => "@exit /b 0\r\n".to_owned(),
-        (true, BrowserCaptureMode::Capture) => format!(
-            "@echo off\r\ncd /d \"%SystemRoot%\"\r\nsetlocal EnableDelayedExpansion\r\nset \"u=%~1\"\r\n>>\"{sink_path}\" echo(!u!\r\n"
-        ),
-        (false, BrowserCaptureMode::Discard) => "#!/bin/sh\nexit 0\n".to_owned(),
-        (false, BrowserCaptureMode::Capture) => format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> {}\n",
-            sh_single_quoted(sink_path)
-        ),
+fn helper_script(capture: bool, sink: &Path, windows: bool) -> String {
+    if windows {
+        if !capture {
+            return "@exit /b 0\r\n".into();
+        }
+        let sink = sink.to_string_lossy().replace('%', "%%");
+        return format!(
+            "@echo off\r\ncd /d \"%SystemRoot%\"\r\nsetlocal DisableDelayedExpansion\r\nset \"u=%~1\"\r\nset \"sink={sink}\"\r\nsetlocal EnableDelayedExpansion\r\n>>\"!sink!\" echo(!u!\r\n"
+        );
     }
-}
-
-#[cfg(unix)]
-fn write_helper(path: &Path, script: &str) -> std::io::Result<()> {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o700)
-        .open(path)?;
-    file.write_all(script.as_bytes())?;
-    file.flush()
-}
-
-#[cfg(not(unix))]
-fn write_helper(path: &Path, script: &str) -> std::io::Result<()> {
-    std::fs::write(path, script)
+    if !capture {
+        return "#!/bin/sh\nexit 0\n".into();
+    }
+    let sink = sink.to_string_lossy().replace('\'', "'\\''");
+    format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{sink}'\n")
 }
 
 impl ClaudeCliBrowserCapture {
-    pub fn create(mode: BrowserCaptureMode) -> std::io::Result<Self> {
+    pub(crate) fn new(capture: bool) -> io::Result<Self> {
         let dir = tempfile::Builder::new()
-            .prefix("senpi-claude-browser-")
+            .prefix("maho-claude-browser-")
             .tempdir()?;
         let sink_path = dir.path().join("urls");
         let helper_path = dir.path().join(if cfg!(windows) {
@@ -68,141 +46,146 @@ impl ClaudeCliBrowserCapture {
         } else {
             "browser"
         });
-        let script = helper_script(mode, &sink_path.to_string_lossy(), cfg!(windows));
-        write_helper(&helper_path, &script)?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o700);
+        }
+        options
+            .open(&helper_path)?
+            .write_all(helper_script(capture, &sink_path, cfg!(windows)).as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&helper_path, fs::Permissions::from_mode(0o700))?;
+        }
+        let (sender, changes) = mpsc::channel(1);
+        let watcher = if capture {
+            let watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+                if event.is_ok_and(|event| {
+                    matches!(
+                        event.kind,
+                        EventKind::Any | EventKind::Create(_) | EventKind::Modify(_)
+                    )
+                }) {
+                    let _ = sender.try_send(());
+                }
+            })
+            .and_then(|mut watcher| {
+                watcher.watch(dir.path(), RecursiveMode::NonRecursive)?;
+                Ok(watcher)
+            });
+            // If the platform watcher is unavailable, stdout and close still flush the sink.
+            watcher.ok()
+        } else {
+            None
+        };
         Ok(Self {
-            dir,
-            sink_path,
+            watcher,
+            changes,
+            dir: Some(dir),
             helper_path,
+            sink_path,
             consumed: 0,
         })
     }
 
-    pub fn helper_path(&self) -> &Path {
+    pub(crate) fn helper_path(&self) -> &Path {
         &self.helper_path
     }
 
-    /// Hands `on_url` every URL written since the last call: only complete lines count, blank lines never do.
-    pub fn flush(&mut self, on_url: &mut dyn FnMut(&str)) {
-        let Ok(text) = std::fs::read_to_string(&self.sink_path) else {
-            return;
-        };
-        let Some(end) = text.rfind('\n') else {
-            return;
-        };
-        let lines: Vec<&str> = text[..=end]
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect();
-        for line in lines.iter().skip(self.consumed) {
-            on_url(line);
+    pub(crate) async fn changed(&mut self) {
+        if self.changes.recv().await.is_none() {
+            std::future::pending::<()>().await;
         }
-        self.consumed = lines.len();
     }
 
-    /// A browser helper can outlive the CLI even after its stdio closes. Its absolute sink path is revoked before
-    /// deletion: late opens fail, already-open files unlink safely. Cleanup never prevents the login outcome.
-    pub fn dispose(self) {
-        let original = self.dir.path().to_path_buf();
-        let mut revoked = original.clone().into_os_string();
-        revoked.push("-disposed");
-        let revoked = PathBuf::from(revoked);
-        let target = if std::fs::rename(&original, &revoked).is_ok() {
-            revoked
-        } else {
-            original
+    pub(crate) fn flush(&mut self, mut on_url: impl FnMut(String)) {
+        let Ok(bytes) = fs::read(&self.sink_path) else {
+            return;
         };
-        let _ = std::fs::remove_dir_all(target);
+        let Some(unread) = bytes.get(self.consumed..) else {
+            return;
+        };
+        let Some(last_newline) = unread.iter().rposition(|byte| *byte == b'\n') else {
+            return;
+        };
+        for line in String::from_utf8_lossy(&unread[..=last_newline]).lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                on_url(line.to_owned());
+            }
+        }
+        self.consumed += last_newline + 1;
     }
 }
 
-#[cfg(test)]
+impl Drop for ClaudeCliBrowserCapture {
+    fn drop(&mut self) {
+        drop(self.watcher.take());
+        if let Some(dir) = self.dir.take() {
+            let path = dir.keep();
+            let disposed = path.with_extension("disposed");
+            // Revoke the sink path before removal so a late helper cannot recreate the file.
+            let cleanup = if fs::rename(&path, &disposed).is_ok() {
+                disposed
+            } else {
+                path
+            };
+            let _ = fs::remove_dir_all(cleanup);
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::{os::unix::fs::PermissionsExt, process::Command};
 
     #[test]
-    fn the_unix_helper_appends_its_first_argument_to_the_sink_and_quotes_the_path() {
-        assert_eq!(
-            helper_script(BrowserCaptureMode::Capture, "/tmp/it's here/urls", false),
-            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '/tmp/it'\\''s here/urls'\n"
-        );
-        assert_eq!(
-            helper_script(BrowserCaptureMode::Discard, "/tmp/urls", false),
-            "#!/bin/sh\nexit 0\n"
-        );
+    fn a_late_browser_helper_cannot_recreate_the_capture_sink() {
+        let capture = ClaudeCliBrowserCapture::new(true).unwrap();
+        let sink = capture.sink_path.clone();
+        let replay_dir = tempfile::tempdir().unwrap();
+        let replay = replay_dir.path().join("browser");
+        fs::copy(capture.helper_path(), &replay).unwrap();
+        fs::set_permissions(&replay, fs::Permissions::from_mode(0o700)).unwrap();
+        drop(capture);
+
+        let output = Command::new(replay)
+            .env_clear()
+            .arg("https://claude.ai/oauth/authorize?fixture=late")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!sink.exists());
+        assert!(!sink.parent().unwrap().with_extension("disposed").exists());
     }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::{os::windows::process::CommandExt, process::Command};
 
     #[test]
-    fn the_windows_helper_leaves_the_account_dir_before_it_writes() {
-        let script = helper_script(BrowserCaptureMode::Capture, r"C:\tmp\urls", true);
-        assert!(script.starts_with(
-            "@echo off\r\ncd /d \"%SystemRoot%\"\r\nsetlocal EnableDelayedExpansion\r\n"
-        ));
-        assert!(script.ends_with(">>\"C:\\tmp\\urls\" echo(!u!\r\n"));
-        assert_eq!(
-            helper_script(BrowserCaptureMode::Discard, r"C:\tmp\urls", true),
-            "@exit /b 0\r\n"
-        );
-    }
-
-    #[test]
-    fn only_complete_non_blank_sink_lines_are_handed_over_once() {
-        let mut capture =
-            ClaudeCliBrowserCapture::create(BrowserCaptureMode::Capture).expect("capture");
-        let mut seen: Vec<String> = Vec::new();
-        capture.flush(&mut |url| seen.push(url.to_owned()));
-        assert!(seen.is_empty());
-
-        std::fs::write(
-            &capture.sink_path,
-            "https://one.example/a?x=1&y=2\n\n  \nhttps://two.ex",
-        )
-        .expect("sink");
-        capture.flush(&mut |url| seen.push(url.to_owned()));
-        assert_eq!(seen, ["https://one.example/a?x=1&y=2"]);
-
-        std::fs::write(
-            &capture.sink_path,
-            "https://one.example/a?x=1&y=2\n\n  \nhttps://two.example/b\r\n",
-        )
-        .expect("sink");
-        capture.flush(&mut |url| seen.push(url.to_owned()));
-        capture.flush(&mut |url| seen.push(url.to_owned()));
-        assert_eq!(
-            seen,
-            ["https://one.example/a?x=1&y=2", "https://two.example/b"]
-        );
-        capture.dispose();
-    }
-
-    #[test]
-    fn disposing_removes_the_helper_and_its_sink() {
-        let capture =
-            ClaudeCliBrowserCapture::create(BrowserCaptureMode::Discard).expect("capture");
-        let helper = capture.helper_path().to_path_buf();
-        assert!(helper.exists());
-        capture.dispose();
-        assert!(!helper.exists());
-        assert!(!helper.parent().is_some_and(Path::exists));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_unix_helper_runs_and_records_the_url_it_was_given() {
-        let mut capture =
-            ClaudeCliBrowserCapture::create(BrowserCaptureMode::Capture).expect("capture");
-        let status = std::process::Command::new(capture.helper_path())
-            .arg("https://claude.ai/oauth/authorize?code=true&state=s")
+    fn cmd_helper_captures_query_metacharacters_verbatim() {
+        let mut capture = ClaudeCliBrowserCapture::new(true).unwrap();
+        let url = "https://claude.ai/oauth/authorize?scope=a+b&state=fixture";
+        let status = Command::new("cmd.exe")
+            .args(["/D", "/S", "/C"])
+            .raw_arg(format!(
+                "\"\"{}\" \"{url}\"\"",
+                capture.helper_path().display()
+            ))
+            .current_dir(capture.helper_path().parent().unwrap())
             .status()
-            .expect("helper runs");
+            .unwrap();
         assert!(status.success());
-        let mut seen: Vec<String> = Vec::new();
-        capture.flush(&mut |url| seen.push(url.to_owned()));
-        assert_eq!(
-            seen,
-            ["https://claude.ai/oauth/authorize?code=true&state=s"]
-        );
-        capture.dispose();
+        let mut urls = Vec::new();
+        capture.flush(|url| urls.push(url));
+        assert_eq!(urls, [url]);
     }
 }

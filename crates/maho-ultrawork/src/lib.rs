@@ -4,6 +4,7 @@
 //! injects the core contract once per session, answers re-mentions with a short notice, re-arms on
 //! demand after compaction or a contract revision change, and adds the todo sizing reminder.
 
+mod advice;
 mod classify;
 mod engine;
 mod extension;
@@ -13,12 +14,16 @@ mod mask_phrases;
 mod state;
 mod texts;
 
+pub use advice::mask_keyword_advice;
 pub use classify::{
     Classification, ClassifyInput, KeywordSpan, Route, Stage, Suppression, classify,
     classify_with_session_role, has_visible_keyword, visible_keyword_spans,
 };
 pub use engine::{Engine, InputOutcome, InputRequest, TodoResultView};
-pub use extension::{DISABLE_FLAG, KeywordDisabledFn, ModelContractFn, UltraworkExtension};
+pub use extension::{
+    DISABLE_FLAG, KeywordDisabledFn, ModelContractFn, UltraworkExtension,
+    keyword_activation_allowed,
+};
 pub use state::{SessionArming, Sessions};
 pub use texts::{CORE_CONTRACT, DIRECTIVE_MESSAGE_TYPE, REMINDER_MESSAGE_TYPE, mass_block};
 

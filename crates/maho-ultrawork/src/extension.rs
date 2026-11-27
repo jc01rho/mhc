@@ -24,6 +24,7 @@ pub struct UltraworkExtension {
     engine: Engine,
     keyword_disabled: Option<KeywordDisabledFn>,
     model_contract: Option<ModelContractFn>,
+    legacy_child: Option<bool>,
 }
 
 impl UltraworkExtension {
@@ -32,6 +33,7 @@ impl UltraworkExtension {
             engine,
             keyword_disabled: None,
             model_contract: None,
+            legacy_child: None,
         }
     }
 
@@ -48,6 +50,19 @@ impl UltraworkExtension {
         model_contract: impl Fn(&str) -> Option<&'static str> + Send + Sync + 'static,
     ) -> Self {
         self.model_contract = Some(Arc::new(model_contract));
+        self
+    }
+
+    /// Loads activation policy from the registration directory and takes legacy child detection
+    /// from the same host environment as the loader.
+    #[must_use]
+    pub fn with_keyword_policy(
+        mut self,
+        load: impl Fn(&Path) -> bool + Send + Sync + 'static,
+        legacy_child: bool,
+    ) -> Self {
+        self.keyword_disabled = Some(Arc::new(move |cwd| !load(cwd)));
+        self.legacy_child = Some(legacy_child);
         self
     }
 
@@ -90,6 +105,7 @@ impl Extension for UltraworkExtension {
         let model_contract = self.model_contract.clone();
         let api_cwd = api.cwd.clone();
         let session_role = api.profile.session_context.get("role").cloned();
+        let legacy_child = self.legacy_child;
         let on_input: ExtensionHandler = Arc::new(move |event, ctx| {
             let (engine, off) = (engine.clone(), Arc::clone(&off));
             let keyword_disabled = keyword_disabled.clone();
@@ -98,12 +114,17 @@ impl Extension for UltraworkExtension {
             let session_role = session_role
                 .clone()
                 .filter(|role| !role.is_empty())
-                .or_else(|| std::env::var_os("SENPI_TASK_MEMBER").map(|_| "member".into()))
-                .or_else(|| {
-                    std::env::var("OMO_SENPI_TASK_RPC_CHILD")
-                        .ok()
-                        .filter(|value| value == "1")
-                        .map(|_| "child".into())
+                .or_else(|| match legacy_child {
+                    Some(true) => Some("child".into()),
+                    Some(false) => None,
+                    None => std::env::var_os("SENPI_TASK_MEMBER")
+                        .map(|_| "member".into())
+                        .or_else(|| {
+                            std::env::var("OMO_SENPI_TASK_RPC_CHILD")
+                                .ok()
+                                .filter(|value| value == "1")
+                                .map(|_| "child".into())
+                        }),
                 });
             Box::pin(async move {
                 let input = match event {
@@ -227,4 +248,19 @@ impl Extension for UltraworkExtension {
         });
         api.on(EventKind::ToolResult, on_result);
     }
+}
+/// Applies the keyword lists from a validated `omo.jsonc` view.
+pub fn keyword_activation_allowed(config: &serde_json::Value) -> bool {
+    let contains_trigger = |values: &[serde_json::Value]| {
+        values
+            .iter()
+            .any(|value| value.as_str() == Some("ultrawork"))
+    };
+    let settings = &config["keyword_detector"];
+    !settings["disabled_keywords"]
+        .as_array()
+        .is_some_and(|values| contains_trigger(values))
+        && settings["enabled_expansions"]
+            .as_array()
+            .is_none_or(|values| contains_trigger(values))
 }

@@ -16,6 +16,20 @@ pub trait DestructionPort: Send + Sync {
     fn host_session_cancel(&self) -> Option<Arc<dyn HostSessionCancelPort>> {
         None
     }
+    fn supports_fenced_eviction(&self) -> bool {
+        false
+    }
+    fn evict_managed_if_current(
+        &self,
+        _task_id: &str,
+        _handle: &Arc<dyn ManagedChildHandle>,
+    ) -> Result<(), HostError> {
+        Err(HostError {
+            message:
+                "cloud tasks require a lifecycle destruction port that supports fenced eviction"
+                    .into(),
+        })
+    }
 }
 
 pub type RunStatsSnapshotFn = dyn Fn(&str) -> Option<TaskRunStats> + Send + Sync;

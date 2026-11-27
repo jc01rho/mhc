@@ -500,14 +500,8 @@ pub fn convert_responses_messages_with_provenance(
                 }
             }
             Message::ConfigurationUpdate(update) => {
-                // Sign in with ChatGPT rejects the item; openai-responses sends the level as
-                // reasoning.effort (senpi#6607).
                 if !supports_configuration_update(model)
-                    || model
-                        .compat
-                        .as_ref()
-                        .and_then(|compat| compat.openai_responses().siwc)
-                        == Some(true)
+                    || crate::openai_responses_compat::uses_siwc(model)
                 {
                     continue;
                 }
@@ -1240,7 +1234,7 @@ pub fn process_responses_events(
             &mut state,
         )?;
     }
-    finish(&state, output)
+    finish(&state, output, model)
 }
 
 /// `processResponsesStream`.
@@ -1277,14 +1271,20 @@ pub async fn process_responses_stream(
         }
         search_from = sse_boundary_resume_offset(&buffer);
     }
-    finish(&state, output)
+    finish(&state, output, model)
 }
 
-fn finish(state: &StreamState, output: &AssistantMessage) -> Result<(), ResponsesStreamError> {
+fn finish(
+    state: &StreamState,
+    output: &AssistantMessage,
+    model: &Model,
+) -> Result<(), ResponsesStreamError> {
     let has_finalized_tool_call = output.content.iter().enumerate().any(|(index, block)| {
         matches!(block, ContentBlock::ToolCall(_)) && !state.partial_json_blocks.contains(&index)
     });
-    if !state.saw_terminal_response_event && !has_finalized_tool_call {
+    if !state.saw_terminal_response_event
+        && (!has_finalized_tool_call || crate::openai_responses_compat::uses_siwc(model))
+    {
         return Err(ResponsesStreamError::new(
             "OpenAI Responses stream ended before a terminal response event",
         ));
@@ -2071,6 +2071,17 @@ fn handle_event(
         "response.completed" | "response.incomplete" => {
             let response = event.get("response").cloned().unwrap_or(Value::Null);
             finalize_response(&response, output, stream, model, options, state)?;
+            if event_type == "response.incomplete"
+                && crate::openai_responses_compat::uses_siwc(model)
+            {
+                let reason = response
+                    .pointer("/incomplete_details/reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown reason");
+                return Err(ResponsesStreamError::new(format!(
+                    "Response incomplete: {reason}"
+                )));
+            }
         }
         "error" => {
             let nested = event.get("error");
