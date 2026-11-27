@@ -20,15 +20,22 @@ const skillRoot = dirname(scriptDir)
 
 export function resolveOmowrightEntry(env = process.env) {
   const packageRoot = join(skillRoot, "..", "..", "..", "..", "node_modules", "omowright")
-  // Same order as stage-omowright-runtime.mjs: sources before the build, `.ts` before `.js`. A git
-  // install carries the sources (TypeScript since omowright's strict port, which only Bun imports);
-  // a package built for its `exports` carries `dist/` only.
+  // Same layouts and order as stage-omowright-runtime.mjs: sources before the build, `.ts` before `.js`,
+  // and an entry counts only together with the page bundle it reads at import time. A git install
+  // carries the sources (TypeScript since omowright's strict port, which only Bun imports); a package
+  // built for its `exports` carries `dist/` only.
+  const layouts = [
+    ["src/index.ts", "src/page-bundle.js"],
+    ["src/index.js", "src/page-bundle.js"],
+    ["dist/index.js", "dist/page-bundle.js"],
+  ]
+  const installed = layouts
+    .map(([entry, pageBundle]) => [join(packageRoot, entry), join(packageRoot, pageBundle)])
+    .find(([entry, pageBundle]) => existsSync(entry) && existsSync(pageBundle))
   const candidates = [
     env.OMOWRIGHT_ROOT ? join(env.OMOWRIGHT_ROOT, "index.js") : undefined,
     join(skillRoot, "runtime", "omowright", "index.js"),
-    join(packageRoot, "src", "index.ts"),
-    join(packageRoot, "src", "index.js"),
-    join(packageRoot, "dist", "index.js"),
+    installed?.[0],
   ].filter((candidate) => candidate !== undefined)
   return candidates.find((candidate) => existsSync(candidate))
 }

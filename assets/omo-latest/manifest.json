@@ -302,8 +302,8 @@
       },
       {
         "path": "scripts/omowright.mjs",
-        "bytes": 2271,
-        "sha256": "f30c28d01e8bec603b13246179aaa3963b2765460ff7cd2d9359293b009baa52",
+        "bytes": 2620,
+        "sha256": "351218d1e4fd4bc23e65e0077379a728f454483f487df827b40adce99b31c8af",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/scripts/omowright.mjs"
       }
     ],
