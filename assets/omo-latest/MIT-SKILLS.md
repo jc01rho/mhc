@@ -73,3 +73,18 @@ mhc adaptations listed above are kept.
 | ast-grep | e809c369 | downloaded `sg` goes to the user cache (`OMO_AST_GREP_BIN_DIR`, else XDG/LOCALAPPDATA `omo-ast-grep/bin`), never the skill dir |
 | coding-agent-sessions | e809c369 | finder runs with `python3 -B` and sets `sys.dont_write_bytecode` before importing its package |
 | ulw-research | e809c369 | scripts and references byte-equal to lazycodex@e809c369; `SKILL.md` follows the new router + `references/research-collection.md` / `research-delivery.md` split with the mhc tool notes (`task`/`team_create`/`workflow`, `mhc ulw-loop`) re-applied in those references; `AGENTS.md` keeps the mhc single-copy notes |
+
+## Browser skill sync to omo v5.1.84 (2026-11-27)
+
+Docs follow `code-yeongyu/lazycodex` @ `ebf7c57` (2026-11-26, "sync Codex marketplace v5.1.84"; MIT), which
+carries omo `a160f55ea5`, `9ae70c3e1a`, `9bdd640262` and `3dda9ef757`. The engine runtime moved with them:
+`manifest.json` `browserRuntime` pins omowright v0.3.4 (`d3b1a5d3c4`), the release omo v5.1.84 resolves.
+Manifest sources keep their clean-room label; the bytes below are what changed.
+
+| File | Notes |
+| --- | --- |
+| browser/SKILL.md, references/commands.md, references/install.md | three-way merge over lazycodex@75b01747 (the clean-room base), so only the mhc adaptations survive as differences: upstream's BrowserSkill 0.5 shared-control contract, wait and token-budget rules and the doctor state table are taken; the `OMO_BROWSER_ENGINE` engine policy (SKILL.md Step 0), the typed guard errors in `commands.md` and the install note are kept. The OmO Desktop built-in browser (`connectBuiltinBrowser()`, `references/desktop.md`) is not ported: the clean-room guard removed it (`browser/CLEANROOM.md` R1) and `OMO_BROWSER_ENGINE=builtin` hands the browser to the host's own tools |
+| browser/references/owned-engine/*, references/recipes/1password.md, ATTRIBUTION.md | byte-equal to lazycodex@ebf7c57 (no mhc adaptation) |
+| browser/scripts/omowright.mjs | after the staged runtime, a `node_modules/omowright` checkout resolves in the stager's layout order (`src/index.ts`, `src/index.js`, `dist/index.js`), and only together with the page bundle the entry reads at import time |
+| visual-qa/references/browser-setup.md, debugging/references/tools/browser-qa.md | byte-equal to lazycodex@ebf7c57 |
+| ultimate-browsing/SKILL.md | the one-line `connectPipe` browser path from lazycodex@ebf7c57; the mhc routing text is kept |
