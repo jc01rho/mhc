@@ -3037,47 +3037,65 @@ mod tests {
     // the holder record" and "takes the replacement runtime's session hold before the switched runtime
     // releases its own".
     #[tokio::test]
-    async fn constructs_a_runtime_around_a_passed_in_hold_and_keeps_the_replacement_hold_across_switch()
-     {
-        let (_dir, mut runtime) = saved_trust_fixture().await;
-        let initial_file = runtime.session().session_file().expect("initial file");
-        let initial_id = runtime.session().session_id();
-        let hold = runtime
-            .session()
-            .with_session_manager(|manager| hold_runtime_session(manager, None))
-            .expect("hold");
-        runtime = runtime.with_session_hold(hold);
-        assert!(runtime.has_session_hold());
-        let initial_holders = crate::schedule::runner_lease::session_holders_dir(
-            std::path::Path::new(&initial_file),
-            &initial_id,
+    async fn constructs_a_runtime_around_a_passed_in_hold_without_publishing_a_second_record() {
+        let (_dir, runtime) = runtime_fixture().await;
+        assert!(
+            !runtime.has_session_hold(),
+            "an in-memory session is never held"
+        );
+        let (_other_dir, _other_cwd, other_path) = other_project_session();
+        let manager = crate::session_manager::SessionManager::open(&other_path, None, None, None)
+            .expect("open the stored session");
+        let session_id = manager.session_id().to_owned();
+        let hold = hold_runtime_session(&manager, None)
+            .expect("hold")
+            .expect("a stored session is held");
+        let holders = crate::schedule::runner_lease::session_holders_dir(
+            std::path::Path::new(&other_path),
+            &session_id,
         )
         .expect("holders dir");
-        let own_record = initial_holders.join(format!("{}.json", std::process::id()));
-        assert!(own_record.exists());
+        let record = holders.join(format!("{}.json", std::process::id()));
+        assert!(record.exists());
+
+        // Built around the hold the caller took: the runtime publishes no second record for it.
+        let mut runtime = runtime.with_session_hold(Some(hold));
+        assert!(runtime.has_session_hold());
+        let published = std::fs::read_dir(&holders)
+            .expect("holders")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .count();
+        assert_eq!(published, 1);
 
         runtime.release_session_hold();
         assert!(!runtime.has_session_hold());
-        assert!(!own_record.exists());
+        assert!(!record.exists());
+    }
 
-        // Re-bind the hold and switch into a sibling session: the replacement hold is taken before the
-        // outgoing session's hold is released.
-        runtime.set_holder_endpoint(None).expect("re-hold");
-        assert!(own_record.exists());
+    #[tokio::test]
+    async fn a_switch_takes_the_replacement_hold_as_the_outgoing_one_is_released() {
+        let (_dir, mut runtime) = runtime_fixture().await;
+        assert!(
+            !runtime.has_session_hold(),
+            "an in-memory session is never held"
+        );
         let (_other_dir, other_cwd, other_path) = other_project_session();
+
         switch_into(&mut runtime, &other_cwd, &other_path).await;
+
         assert!(runtime.has_session_hold());
-        assert!(!own_record.exists());
-        let switched_id = runtime.session().session_id();
-        let switched_holders = crate::schedule::runner_lease::session_holders_dir(
+        let switched_id = runtime.session().session_id().to_owned();
+        let holders = crate::schedule::runner_lease::session_holders_dir(
             std::path::Path::new(&other_path),
             &switched_id,
         )
-        .expect("switched holders dir");
+        .expect("holders dir");
         assert!(
-            switched_holders
+            holders
                 .join(format!("{}.json", std::process::id()))
-                .exists()
+                .exists(),
+            "the replacement session published its own holder record"
         );
     }
 }
