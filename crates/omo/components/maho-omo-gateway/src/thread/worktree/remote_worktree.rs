@@ -124,23 +124,20 @@ async fn far_worktree_request(
     };
     let key = match located_hint {
         Some(key) => key,
-        None => {
-            match remote.sessions.locate(device.to_owned(), engine_id).await {
-                RemoteLocateOutcome::Located { session_id } => session_id,
-                RemoteLocateOutcome::Refused { reason } => {
-                    return Err(not_signed_in_failure(&reason, device).map_or_else(
-                    || {
-                        unsupported(
-                            device,
-                            format!("Device {device} could not address its worktree session ({reason})."),
-                            "Update omo on that device.",
-                        )
-                    },
-                    |f| *f,
-                ));
-                }
+        None => match remote.sessions.locate(device.to_owned(), engine_id).await {
+            RemoteLocateOutcome::Located { session_id } => session_id,
+            RemoteLocateOutcome::Refused { reason } => {
+                return Err(not_signed_in_failure(&reason, device).unwrap_or_else(|| {
+                    Box::new(unsupported(
+                        device,
+                        format!(
+                            "Device {device} could not address its worktree session ({reason})."
+                        ),
+                        "Update omo on that device.",
+                    ))
+                }));
             }
-        }
+        },
     };
     let answered = remote
         .sessions
