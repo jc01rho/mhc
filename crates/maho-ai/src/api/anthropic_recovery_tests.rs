@@ -28,23 +28,6 @@ fn haiku_55_uses_adaptive_xhigh_without_disabled_thinking() -> anyhow::Result<()
     Ok(())
 }
 
-#[test]
-fn refuses_claude_oauth_token_offered_as_an_api_key() {
-    let token = ["sk-ant-", "oat01-not-a-real-token"].concat();
-    let err = assert_not_claude_oauth_token("anthropic", "claude-sonnet-4-5", Some(&token))
-        .expect_err("must refuse Claude OAuth token");
-    assert!(is_claude_oauth_token_refused_message(&err));
-    assert!(err.contains("anthropic/claude-sonnet-4-5"));
-    assert!(
-        assert_not_claude_oauth_token(
-            "anthropic",
-            "claude-sonnet-4-5",
-            Some(&["sk-ant-", "api03-test"].concat())
-        )
-        .is_ok()
-    );
-}
-
 #[tokio::test]
 async fn expired_search_retries_and_remembers_only_for_its_session() -> anyhow::Result<()> {
     let captured = Arc::new(Mutex::new(Vec::<Value>::new()));

@@ -9,6 +9,11 @@
 //! bounded: a host with more session files than [`FIND_SESSION_FILE_LIMIT`] answers a typed error instead of a
 //! partial answer, and no file is read before that bound is decided.
 //!
+//! senpi names every session file it creates `<timestamp>_<durable id>.jsonl`, so the files named for the id are read
+//! first and every other header only when none of them carries it (senpi#7136): on a host with ~10,000 session files
+//! the full header pass took about a second, long enough to push a device's closed-session lookup past the account's
+//! probe bound. A file created under a caller-chosen name (`--session <path>`) is still found by that full pass.
+//!
 //! ADAPTATION: senpi classes `find_session` as `device_admin` on a delegated connection (it answers a file's path
 //! and folder, which is what makes a path-naming `open_session` `device_admin`). This host has no delegated
 //! connections yet, so every connection that may send a host command may send this one.
@@ -79,15 +84,32 @@ async fn header_of(file: &Path) -> Option<(String, String)> {
     Some((id.to_owned(), cwd.to_owned()))
 }
 
+/// The `.jsonl` names directly in `folder`; a folder that cannot be listed lists nothing.
+async fn jsonl_names(folder: &Path) -> Vec<std::ffi::OsString> {
+    let Ok(mut names) = tokio::fs::read_dir(folder).await else {
+        return Vec::new();
+    };
+    let mut listed = Vec::new();
+    while let Ok(Some(entry)) = names.next_entry().await {
+        let name = entry.file_name();
+        if name.to_string_lossy().ends_with(".jsonl") {
+            listed.push(name);
+        }
+    }
+    listed
+}
+
 /// Every session file of this host, counted before any of them is opened: the files in each folder of `sessions/`
 /// and the files directly in it, where a session started with that folder as its session dir keeps its file
-/// (senpi#7017).
+/// (senpi#7017). One folder per cwd: a host with thousands of them lists them `READERS` at a time, not one after
+/// another (senpi#7136).
 async fn session_files(agent_dir: &Path, limit: usize) -> Result<Vec<PathBuf>, TooMany> {
     let root = agent_dir.join("sessions");
     let mut files = Vec::new();
     let Ok(mut entries) = tokio::fs::read_dir(&root).await else {
         return Ok(files);
     };
+    let mut folders = Vec::new();
     while let Ok(Some(entry)) = entries.next_entry().await {
         let Ok(kind) = entry.file_type().await else {
             continue;
@@ -100,31 +122,45 @@ async fn session_files(agent_dir: &Path, limit: usize) -> Result<Vec<PathBuf>, T
                 return Err(TooMany { limit });
             }
             files.push(entry.path());
-            continue;
+        } else if kind.is_dir() {
+            folders.push(entry.path());
         }
-        if !kind.is_dir() {
-            continue;
-        }
-        let folder_path = entry.path();
-        let Ok(mut names) = tokio::fs::read_dir(&folder_path).await else {
-            continue;
-        };
-        while let Ok(Some(name)) = names.next_entry().await {
-            let name = name.file_name();
-            if !name.to_string_lossy().ends_with(".jsonl") {
-                continue;
+    }
+    for batch in folders.chunks(READERS) {
+        let listed =
+            futures::future::join_all(batch.iter().map(|folder| jsonl_names(folder))).await;
+        for (folder, names) in batch.iter().zip(listed) {
+            for name in names {
+                if files.len() >= limit {
+                    return Err(TooMany { limit });
+                }
+                files.push(folder.join(name));
             }
-            if files.len() >= limit {
-                return Err(TooMany { limit });
-            }
-            files.push(folder_path.join(name));
         }
     }
     Ok(files)
 }
 
-/// senpi `findSessionFile`: the hosted rows first (an engine holds those), then every session file whose header
-/// carries the id. One file answers `found`; two answer `ambiguous` and name neither.
+/// The files among `files` whose header carries `durable_session_id`, read `READERS` at a time, with each header's cwd.
+async fn carrying(files: &[PathBuf], durable_session_id: &str) -> Vec<(PathBuf, String)> {
+    let mut matches = Vec::new();
+    for batch in files.chunks(READERS) {
+        let headers = futures::future::join_all(batch.iter().map(|file| header_of(file))).await;
+        for (file, header) in batch.iter().zip(headers) {
+            let Some((id, cwd)) = header else {
+                continue;
+            };
+            if id == durable_session_id {
+                matches.push((file.clone(), cwd));
+            }
+        }
+    }
+    matches
+}
+
+/// senpi `findSessionFile`: the hosted rows first (an engine holds those), then the session files named for the id whose
+/// header carries it, or when none does every session file whose header carries it (senpi#7136). One file answers
+/// `found`; two answer `ambiguous` and name neither.
 async fn find_session_file(
     agent_dir: &Path,
     durable_session_id: &str,
@@ -132,6 +168,19 @@ async fn find_session_file(
     limit: usize,
 ) -> Result<Value, TooMany> {
     let files = session_files(agent_dir, limit).await?;
+    let suffix = format!("_{durable_session_id}.jsonl");
+    let named: Vec<PathBuf> = files
+        .iter()
+        .filter(|file| {
+            file.file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(&suffix))
+        })
+        .cloned()
+        .collect();
+    let mut matches = carrying(&named, durable_session_id).await;
+    if matches.is_empty() {
+        matches = carrying(&files, durable_session_id).await;
+    }
     let mut by_path: BTreeMap<PathBuf, Candidate> = BTreeMap::new();
     for row in hosted {
         if row.get("durableSessionId").and_then(Value::as_str) != Some(durable_session_id) {
@@ -153,24 +202,15 @@ async fn find_session_file(
             },
         );
     }
-    for batch in files.chunks(READERS) {
-        let headers = futures::future::join_all(batch.iter().map(|file| header_of(file))).await;
-        for (file, header) in batch.iter().zip(headers) {
-            let Some((id, cwd)) = header else {
-                continue;
-            };
-            if id != durable_session_id {
-                continue;
-            }
-            // A hosted row for the same file already says an engine holds it; the file never takes that back.
-            by_path
-                .entry(canonical_session_path(file))
-                .or_insert_with(|| Candidate {
-                    session_path: file.to_string_lossy().into_owned(),
-                    cwd,
-                    open: false,
-                });
-        }
+    for (file, cwd) in matches {
+        // A hosted row for the same file already says an engine holds it; the file never takes that back.
+        by_path
+            .entry(canonical_session_path(&file))
+            .or_insert_with(|| Candidate {
+                session_path: file.to_string_lossy().into_owned(),
+                cwd,
+                open: false,
+            });
     }
     let mut found = by_path.into_values();
     Ok(match (found.next(), found.next()) {
@@ -347,6 +387,113 @@ mod tests {
 
         assert_eq!(answered["success"], true);
         assert_eq!(answered["data"], json!({"unknown": true}));
+    }
+
+    // senpi#7021 review: the root scan adds only session files that carry the id.
+    #[tokio::test]
+    async fn root_files_that_are_no_session_or_carry_another_id_answer_unknown() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("sessions");
+        std::fs::create_dir_all(&root).expect("session root");
+        write_session_file(&root, OTHER_ID, "2026-11-11T00-00-00-000Z");
+        std::fs::write(
+            root.join(format!("2026-11-11T02-00-00-000Z_{ID}.jsonl")),
+            "not a session header\n",
+        )
+        .expect("file");
+
+        let answered = find_session(Some(temp.path()), &[], &request(json!(ID))).await;
+
+        assert_eq!(answered["data"], json!({"unknown": true}));
+    }
+
+    // senpi#7136: the file senpi named for the id answers, and a file under another name whose header carries the same id
+    // is not a second candidate.
+    #[tokio::test]
+    async fn the_named_file_answers_and_a_renamed_copy_beside_it_is_not_read() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = session_dir(temp.path(), "--a--");
+        let file = write_session_file(&dir, ID, "2026-11-11T00-00-00-000Z");
+        let other = session_dir(temp.path(), "--b--");
+        std::fs::rename(
+            write_session_file(&other, ID, "2026-11-11T01-00-00-000Z"),
+            other.join("copy.jsonl"),
+        )
+        .expect("rename copy");
+
+        let answered = find_session(Some(temp.path()), &[], &request(json!(ID))).await;
+
+        assert_eq!(
+            answered["data"],
+            json!({"found": {"sessionPath": file, "cwd": dir, "open": false}})
+        );
+    }
+
+    // senpi#7136: the header decides, never the name alone.
+    #[tokio::test]
+    async fn a_file_named_for_the_id_whose_header_names_another_id_does_not_answer() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = session_dir(temp.path(), "--a--");
+        std::fs::rename(
+            write_session_file(&dir, OTHER_ID, "2026-11-11T00-00-00-000Z"),
+            dir.join(format!("2026-11-11T00-00-00-000Z_{ID}.jsonl")),
+        )
+        .expect("rename decoy");
+        let real = dir.join("chosen.jsonl");
+        std::fs::rename(
+            write_session_file(&dir, ID, "2026-11-11T03-00-00-000Z"),
+            &real,
+        )
+        .expect("rename real");
+
+        let answered = find_session(Some(temp.path()), &[], &request(json!(ID))).await;
+
+        assert_eq!(
+            answered["data"],
+            json!({"found": {"sessionPath": real, "cwd": dir, "open": false}})
+        );
+    }
+
+    // senpi#7136: a session file under a caller-chosen name is found by the full header pass.
+    #[tokio::test]
+    async fn a_session_file_under_a_caller_chosen_name_is_found_by_the_full_pass() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = session_dir(temp.path(), "--work--");
+        let file = dir.join("chosen.jsonl");
+        std::fs::rename(
+            write_session_file(&dir, ID, "2026-11-11T00-00-00-000Z"),
+            &file,
+        )
+        .expect("rename");
+
+        let answered = find_session(Some(temp.path()), &[], &request(json!(ID))).await;
+
+        assert_eq!(
+            answered["data"],
+            json!({"found": {"sessionPath": file, "cwd": dir, "open": false}})
+        );
+    }
+
+    // senpi#7136: the session folders are listed READERS at a time; a match in a later batch is still found.
+    #[tokio::test]
+    async fn a_session_in_a_late_folder_batch_is_found() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        for index in 0..=(READERS * 2) {
+            write_session_file(
+                &session_dir(temp.path(), &format!("--f{index:03}--")),
+                OTHER_ID,
+                &format!("2026-11-11T00-00-{index:02}-000Z"),
+            );
+        }
+        let dir = session_dir(temp.path(), "--zz-last--");
+        let file = write_session_file(&dir, ID, "2026-11-11T09-00-00-000Z");
+
+        let answered = find_session(Some(temp.path()), &[], &request(json!(ID))).await;
+
+        assert_eq!(
+            answered["data"],
+            json!({"found": {"sessionPath": file, "cwd": dir, "open": false}})
+        );
     }
 
     // senpi#6429 "a session this host has open": its row names the file and says an engine holds it, and the file

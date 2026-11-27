@@ -88,33 +88,6 @@ use anthropic_web_search_expiry::{
 
 pub use crate::utils::prompt_cache_ttl::get_anthropic_compat as anthropic_compat;
 
-/// A Claude subscription token was passed as a Messages API key (senpi#5131).
-#[derive(Debug, Clone, thiserror::Error)]
-#[error(
-    "{provider}/{model_id}: a Claude OAuth token (sk-ant-oat...) is not accepted as an API key; mhc does not send Claude subscription tokens to the Anthropic API directly. For a Claude Pro/Max subscription sign in with /login anthropic-subscription (or set CLAUDE_CODE_OAUTH_TOKEN) and use anthropic-subscription/{model_id}; otherwise use an Anthropic API key."
-)]
-pub struct ClaudeOAuthTokenRefusedError {
-    pub provider: String,
-    pub model_id: String,
-}
-
-impl ClaudeOAuthTokenRefusedError {
-    pub const CODE: &str = "claude_oauth_token_refused";
-}
-
-fn refuse_claude_oauth_token(
-    model: &Model,
-    api_key: Option<&str>,
-) -> Result<(), ClaudeOAuthTokenRefusedError> {
-    if api_key.is_some_and(|key| key.contains(CLAUDE_OAUTH_TOKEN_MARKER)) {
-        return Err(ClaudeOAuthTokenRefusedError {
-            provider: model.provider.clone(),
-            model_id: model.id.clone(),
-        });
-    }
-    Ok(())
-}
-
 const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 const COMPUTER_USE_BETA_PREFIX: &str = "computer-use-";
@@ -399,27 +372,6 @@ fn assert_request_auth(
         return Ok(());
     }
     Err(format!("No API key for provider: {provider}"))
-}
-
-const CLAUDE_OAUTH_TOKEN_MARKER: &str = "sk-ant-oat";
-
-pub fn is_claude_oauth_token_refused_message(message: &str) -> bool {
-    message
-        .contains("is not accepted as an API key; senpi does not send Claude subscription tokens")
-}
-
-pub fn assert_not_claude_oauth_token(
-    provider: &str,
-    model_id: &str,
-    api_key: Option<&str>,
-) -> Result<(), String> {
-    let Some(key) = api_key.filter(|key| key.contains(CLAUDE_OAUTH_TOKEN_MARKER)) else {
-        return Ok(());
-    };
-    let _ = key;
-    Err(format!(
-        "{provider}/{model_id}: a Claude OAuth token ({CLAUDE_OAUTH_TOKEN_MARKER}...) is not accepted as an API key; senpi does not send Claude subscription tokens to the Anthropic API directly. For a Claude Pro/Max subscription sign in with /login anthropic-subscription (or set CLAUDE_CODE_OAUTH_TOKEN) and use anthropic-subscription/{model_id}; otherwise use an Anthropic API key."
-    ))
 }
 
 /// `removeAnthropicBetaHeaders`: drop the beta features `should_remove_beta` rejects.
@@ -2111,7 +2063,6 @@ pub(crate) enum AnthropicStreamError {
         timeout: bool,
     },
     Message(String),
-    ClaudeOAuthTokenRefused(ClaudeOAuthTokenRefusedError),
     Aborted,
 }
 
@@ -2121,7 +2072,6 @@ impl std::fmt::Display for AnthropicStreamError {
             Self::Http { message, .. } | Self::Network { message, .. } | Self::Message(message) => {
                 formatter.write_str(message)
             }
-            Self::ClaudeOAuthTokenRefused(error) => std::fmt::Display::fmt(error, formatter),
             Self::Aborted => formatter.write_str("Request aborted"),
         }
     }
@@ -2181,15 +2131,6 @@ impl AnthropicStreamError {
                 name: "Error".into(),
                 class_name: None,
                 message: message.clone(),
-                status: None,
-                headers: None,
-                error: None,
-            },
-            Self::ClaudeOAuthTokenRefused(error) => RetryErrorShape {
-                is_error: true,
-                name: "ClaudeOAuthTokenRefusedError".into(),
-                class_name: None,
-                message: error.to_string(),
                 status: None,
                 headers: None,
                 error: None,
@@ -3531,8 +3472,6 @@ async fn drive(
     if federation.is_none() {
         auth.map_err(AnthropicStreamError::Message)?;
     }
-    refuse_claude_oauth_token(model, api_key.as_deref())
-        .map_err(AnthropicStreamError::ClaudeOAuthTokenRefused)?;
 
     let dynamic_headers = (model.provider == "github-copilot").then(|| {
         let has_images = has_copilot_vision_input(&context.messages);
@@ -3954,9 +3893,6 @@ pub fn stream_simple(
     ) && anthropic_federation::resolve(model, &simple.stream, false).is_none()
     {
         return crate::utils::lazy::error_stream(model, &message);
-    }
-    if let Err(error) = refuse_claude_oauth_token(model, api_key.as_deref()) {
-        return crate::utils::lazy::error_stream(model, &error.to_string());
     }
 
     let mut stream_options =
