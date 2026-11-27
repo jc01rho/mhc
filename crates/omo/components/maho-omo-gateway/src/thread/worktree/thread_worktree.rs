@@ -33,7 +33,7 @@ pub struct ThreadWorktree {
     pub setup_session_left_open: Option<String>,
 }
 
-pub type WorktreeOutcome = Result<ThreadWorktree, ThreadToolFailure>;
+pub type WorktreeOutcome = Result<ThreadWorktree, Box<ThreadToolFailure>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitResult {
@@ -120,11 +120,11 @@ pub fn create_thread_worktree(
     let default_git: GitRun = Box::new(run_git);
     let git = custom_git.unwrap_or(&default_git);
     if let Some(failure) = check_folder(repository) {
-        return Err(failure);
+        return Err(Box::new(failure));
     }
     let top = git(&["rev-parse", "--show-toplevel"], repository);
     if top.exit != Some(0) {
-        return Err(failed_git(&top, json!({ "path": repository })));
+        return Err(Box::new(failed_git(&top, json!({ "path": repository }))));
     }
     let repo_root = top.stdout.trim().to_owned();
     let branch = request.branch.clone().unwrap_or_else(generated_branch);
@@ -132,11 +132,11 @@ pub fn create_thread_worktree(
     if branch.starts_with('-')
         || git(&["check-ref-format", "--branch", &branch], &repo_root).exit != Some(0)
     {
-        return Err(folder_failure(
+        return Err(Box::new(folder_failure(
             "invalid_branch",
             format!("{branch} is not a valid branch name."),
             Some(json!({ "branch": branch })),
-        ));
+        )));
     }
     let commit = if base.starts_with('-') {
         None
@@ -152,11 +152,11 @@ pub fn create_thread_worktree(
         ))
     };
     let Some(commit) = commit.filter(|res| res.exit == Some(0)) else {
-        return Err(folder_failure(
+        return Err(Box::new(folder_failure(
             "base_not_found",
             format!("{base} names no commit in {repo_root}."),
             Some(json!({ "base": base, "repository": repo_root })),
-        ));
+        )));
     };
     if git(
         &[
@@ -170,11 +170,11 @@ pub fn create_thread_worktree(
     .exit
         == Some(0)
     {
-        return Err(folder_failure(
+        return Err(Box::new(folder_failure(
             "branch_exists",
             format!("Branch {branch} already exists in {repo_root}."),
             Some(json!({ "branch": branch, "repository": repo_root })),
-        ));
+        )));
     }
     let mut hasher = Sha256::new();
     hasher.update(repo_root.as_bytes());
@@ -189,11 +189,11 @@ pub fn create_thread_worktree(
         .join(branch.replace('/', "-"));
     let target_str = target_path.to_string_lossy().into_owned();
     if target_path.exists() {
-        return Err(folder_failure(
+        return Err(Box::new(folder_failure(
             "worktree_path_exists",
             format!("{target_str} already exists."),
             Some(json!({ "path": target_str, "branch": branch })),
-        ));
+        )));
     }
     let parent = target_path
         .parent()
@@ -202,11 +202,11 @@ pub fn create_thread_worktree(
     let parent_existed = Path::new(&parent).exists();
     if let Err(error) = std::fs::create_dir_all(&parent) {
         let reason = io_reason(&error).unwrap_or("permission_denied");
-        return Err(folder_failure(
+        return Err(Box::new(folder_failure(
             reason,
             format!("The worktrees folder {parent} cannot be created ({reason})."),
             Some(json!({ "path": target_str })),
-        ));
+        )));
     }
     let commit_sha = commit.stdout.trim().to_owned();
     let added = git(
@@ -223,12 +223,12 @@ pub fn create_thread_worktree(
             created_folder: (!parent_existed).then_some(parent.as_str()),
             remove_unregistered_folder: true,
         });
-        return Err(left.unwrap_or_else(|| {
+        return Err(Box::new(left.unwrap_or_else(|| {
             failed_git(
                 &added,
                 json!({ "path": target_str, "branch": branch, "repository": repo_root }),
             )
-        }));
+        })));
     }
     Ok(ThreadWorktree {
         path: target_str,

@@ -648,7 +648,7 @@ impl SessionHost for RelaySessionHost {
                         wt_req,
                     )
                     .await
-                    .map_err(|f| ControlError::Refused(Box::new(f)))?,
+                    .map_err(ControlError::Refused)?,
                 ),
                 None => None,
             };

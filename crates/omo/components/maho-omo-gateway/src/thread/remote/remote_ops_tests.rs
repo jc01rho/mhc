@@ -464,7 +464,7 @@ async fn retain_buffered_output_from_identified_active_send_25dc4d8220_and_all_o
         rig.deliver(&run_records);
         follow.aim(RemoteFollowLane::Started);
         flush().await;
-        rig.deliver(&[settle.clone()]);
+        rig.deliver(std::slice::from_ref(&settle));
         assert_eq!(await_settled(follow).await, "settled");
         assert_eq!(*lock(&printed), "pong\n");
     }
@@ -509,7 +509,7 @@ async fn retain_buffered_output_from_identified_active_send_25dc4d8220_and_all_o
         )
         .await
         .expect("follow");
-        rig.deliver(&[settle.clone()]);
+        rig.deliver(std::slice::from_ref(&settle));
         rig.deliver(&run_records);
         follow.aim(RemoteFollowLane::Started);
         flush().await;

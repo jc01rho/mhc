@@ -342,24 +342,18 @@ impl FollowRunner {
         if matches!(record_type, "message_start" | "message_end") {
             st.new_message = true;
         }
-        let Some(event) = record
+        let event = record
             .get("assistantMessageEvent")
-            .and_then(Value::as_object)
-        else {
-            return None;
-        };
+            .and_then(Value::as_object)?;
         if record_type != "message_update"
             || event.get("type").and_then(Value::as_str) != Some("text_delta")
         {
             return None;
         }
-        let Some(delta) = event
+        let delta = event
             .get("delta")
             .and_then(Value::as_str)
-            .filter(|d| !d.is_empty())
-        else {
-            return None;
-        };
+            .filter(|d| !d.is_empty())?;
         let content_index = event.get("contentIndex").cloned();
         if let Some(ref last) = st.last
             && !last.ends_line

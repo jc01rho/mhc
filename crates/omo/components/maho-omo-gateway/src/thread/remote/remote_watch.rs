@@ -387,9 +387,9 @@ impl SessionWatch {
             let from = c.status.clone();
             let settled_turns = match c.running_turn.clone() {
                 Some(turn)
-                    if !(state.status == "running"
-                        && state.current_turn_id.as_deref() == Some(turn.as_str()))
-                        && !c.settled.contains(&turn) =>
+                    if !(c.settled.contains(&turn)
+                        || state.status == "running"
+                            && state.current_turn_id.as_deref() == Some(turn.as_str())) =>
                 {
                     Self::mark_settled(&mut c, turn.clone());
                     vec![turn]

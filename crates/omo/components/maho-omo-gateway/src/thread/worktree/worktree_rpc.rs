@@ -194,6 +194,6 @@ pub fn answer_worktree_request(data: &Value, root: &str, custom_git: Option<&Git
     }
     match create_thread_worktree(cwd, &WorktreeRequest { branch, base }, root, Some(git)) {
         Ok(worktree) => json!({ "kind": "ok", "worktree": worktree }),
-        Err(failure) => error_value(failure),
+        Err(failure) => error_value(*failure),
     }
 }

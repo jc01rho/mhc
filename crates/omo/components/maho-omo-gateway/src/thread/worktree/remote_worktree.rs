@@ -63,18 +63,18 @@ fn far_outcome(data: &Map<String, Value>, device: &str) -> WorktreeOutcome {
             .cloned()
             .unwrap_or_default();
         details.insert("device".to_owned(), json!(device));
-        return Err(thread_tool_failure(
+        return Err(Box::new(thread_tool_failure(
             code,
             message,
             next_action,
             Some(Value::Object(details)),
-        ));
+        )));
     }
-    Err(unsupported(
+    Err(Box::new(unsupported(
         device,
         format!("Device {device} answered the worktree request with an unexpected reply."),
         "Update omo on that device.",
-    ))
+    )))
 }
 
 struct FarAnswered {
@@ -87,7 +87,7 @@ async fn far_worktree_request(
     device: &str,
     cwd: &str,
     request: Value,
-) -> Result<FarAnswered, ThreadToolFailure> {
+) -> Result<FarAnswered, Box<ThreadToolFailure>> {
     let opened = remote
         .sessions
         .endpoint_command(
@@ -99,7 +99,15 @@ async fn far_worktree_request(
         RemoteCommandOutcome::Ok {
             response, located, ..
         } => (response, located.clone()),
-        _ => return Err(open_refusal(&opened, device, Some(cwd), None, None)),
+        _ => {
+            return Err(Box::new(open_refusal(
+                &opened,
+                device,
+                Some(cwd),
+                None,
+                None,
+            )));
+        }
     };
     let data = reply_data(response);
     let state = data
@@ -108,11 +116,11 @@ async fn far_worktree_request(
         .cloned()
         .unwrap_or_default();
     let Some(engine_id) = opened_engine_id(&data, &state) else {
-        return Err(unsupported(
+        return Err(Box::new(unsupported(
             device,
             format!("Device {device} opened no session for the worktree request."),
             "Update omo on that device.",
-        ));
+        )));
     };
     let key = match located_hint {
         Some(key) => key,
@@ -143,16 +151,16 @@ async fn far_worktree_request(
             SessionCommandOptions::default(),
         )
         .await;
-    let result: Result<Map<String, Value>, ThreadToolFailure> = match &answered {
+    let result: Result<Map<String, Value>, Box<ThreadToolFailure>> = match &answered {
         RemoteCommandOutcome::Ok { response, .. } => Ok(reply_data(response)),
         RemoteCommandOutcome::Refused { reason, .. } if reason.contains(THREAD_WORKTREE_RPC) => {
-            Err(unsupported(
+            Err(Box::new(unsupported(
                 device,
                 format!("omo on device {device} cannot create worktrees yet."),
                 "Update omo on that device, then retry.",
-            ))
+            )))
         }
-        other => Err(*relay_outcome_failure(other, device)),
+        other => Err(relay_outcome_failure(other, device)),
     };
     let closed = close_ladder(
         &key,

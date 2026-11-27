@@ -501,6 +501,8 @@ enum Op {
     Admit,
 }
 
+type RunningMap = Arc<Mutex<Vec<(String, oneshot::Sender<()>)>>>;
+
 async fn interleave(first: Op, second: Op, offset: usize) -> Vec<String> {
     let violations = Arc::new(Mutex::new(Vec::<String>::new()));
     let running: Arc<Mutex<Vec<(String, oneshot::Sender<()>)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -608,8 +610,7 @@ async fn interleave(first: Op, second: Op, offset: usize) -> Vec<String> {
             let _ = tx.send(());
         }
     }
-    let out = lock(&violations).clone();
-    out
+    lock(&violations).clone()
 }
 
 #[test]
