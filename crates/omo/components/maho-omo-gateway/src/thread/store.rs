@@ -23,13 +23,17 @@ use super::store_extensions::{
     StoreExtensionRegistration, StoreExtensionResult,
 };
 use super::store_ops::{
-    DeliveryView, SqlAccess, StoreContext, StoreError, in_checked_snapshot, migrate,
-    open_connection, self_identity_now,
+    DeliveryView, ReceiptOutcomeRequest, SqlAccess, StoreContext, StoreError, in_checked_snapshot,
+    migrate, open_connection, self_identity_now,
+};
+use super::store_tool_receipts::{
+    ReconcileRemoteReceiptRequest, RemoteReceipt, ToolReceiptBegin, ToolReceiptBeginRequest,
+    ToolReceiptReviseRequest, ToolReceiptScope, ToolReceiptSettleRequest,
 };
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, GatewayStoreConfig,
-    GatewayStoreStats, ProcessIdentity, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest,
-    RefusalReason,
+    GatewayStoreStats, ProcessIdentity, ReceiptOutcome, ReconcileOutcome, ReconcileRequest,
+    RecordOutcomeRequest, RefusalNotice, RefusalReason,
 };
 use crate::paths::gateway_database_path;
 
@@ -356,6 +360,63 @@ impl GatewayStoreApi for SqliteGatewayStore {
 
     fn delivery_view(&self, delivery_id: &str) -> Result<Option<DeliveryView>, StoreError> {
         self.checked(|ctx| super::store_ops::delivery_view(ctx, delivery_id))
+    }
+
+    fn receipt_outcome(
+        &self,
+        request: &ReceiptOutcomeRequest,
+    ) -> Result<ReceiptOutcome, StoreError> {
+        self.checked(|ctx| super::store_ops::receipt_outcome(ctx, request))
+    }
+
+    fn refusal_notices(&self, now: i64) -> Result<Vec<RefusalNotice>, StoreError> {
+        self.checked(|ctx| super::store_ops::refusal_notices(ctx, now))
+    }
+
+    fn claim_refusal_notice(
+        &self,
+        now: i64,
+        notice: &RefusalNotice,
+        suppress: bool,
+    ) -> Result<bool, StoreError> {
+        self.checked(|ctx| super::store_ops::claim_refusal_notice(ctx, now, notice, suppress))
+    }
+
+    fn remote_receipt(
+        &self,
+        now: i64,
+        principal: &str,
+        delivery_id: &str,
+    ) -> Result<Option<RemoteReceipt>, StoreError> {
+        self.checked(|ctx| {
+            super::store_tool_receipts::remote_receipt(ctx, now, principal, delivery_id)
+        })
+    }
+
+    fn reconcile_remote_receipt(
+        &self,
+        request: &ReconcileRemoteReceiptRequest,
+    ) -> Result<ReceiptOutcome, StoreError> {
+        self.checked(|ctx| super::store_tool_receipts::reconcile_remote_receipt(ctx, request))
+    }
+
+    fn tool_receipt_begin(
+        &self,
+        request: &ToolReceiptBeginRequest,
+    ) -> Result<ToolReceiptBegin, StoreError> {
+        self.checked(|ctx| super::store_tool_receipts::tool_receipt_begin(ctx, request))
+    }
+
+    fn tool_receipt_settle(&self, request: &ToolReceiptSettleRequest) -> Result<bool, StoreError> {
+        self.checked(|ctx| super::store_tool_receipts::tool_receipt_settle(ctx, request))
+    }
+
+    fn tool_receipt_revise(&self, request: &ToolReceiptReviseRequest) -> Result<bool, StoreError> {
+        self.checked(|ctx| super::store_tool_receipts::tool_receipt_revise(ctx, request))
+    }
+
+    fn tool_receipt_release(&self, scope: &ToolReceiptScope) -> Result<bool, StoreError> {
+        self.checked(|ctx| super::store_tool_receipts::tool_receipt_release(ctx, scope))
     }
 
     fn list(

@@ -12,10 +12,15 @@ use super::backlog::TargetBacklog;
 use super::store_extensions::{
     DeclaredSessionOp, SessionCaller, StoreExtensionRegistration, StoreExtensionResult,
 };
-use super::store_ops::{DeliveryView, StoreError};
+use super::store_ops::{DeliveryView, ReceiptOutcomeRequest, StoreError};
+use super::store_tool_receipts::{
+    ReconcileRemoteReceiptRequest, RemoteReceipt, ToolReceiptBegin, ToolReceiptBeginRequest,
+    ToolReceiptReviseRequest, ToolReceiptScope, ToolReceiptSettleRequest,
+};
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, GatewayStoreStats,
-    ProcessIdentity, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest, RefusalReason,
+    ProcessIdentity, ReceiptOutcome, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest,
+    RefusalNotice, RefusalReason,
 };
 
 pub type ExtensionErrorListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -59,6 +64,38 @@ pub trait GatewayStoreApi: Send + Sync {
         error_note: &str,
     ) -> Result<bool, StoreError>;
     fn delivery_view(&self, delivery_id: &str) -> Result<Option<DeliveryView>, StoreError>;
+    /// A query-only read of one delivery's outcome (omo#14623): no receipt, admission, marker or wake is written.
+    fn receipt_outcome(
+        &self,
+        request: &ReceiptOutcomeRequest,
+    ) -> Result<ReceiptOutcome, StoreError>;
+    /// Bounded refusal-only candidates for the notices a consumer sends back to the original sender's device.
+    fn refusal_notices(&self, now: i64) -> Result<Vec<RefusalNotice>, StoreError>;
+    /// Claims one notice for its single send, rate limited per original peer unless `suppress` only records it.
+    fn claim_refusal_notice(
+        &self,
+        now: i64,
+        notice: &RefusalNotice,
+        suppress: bool,
+    ) -> Result<bool, StoreError>;
+    fn remote_receipt(
+        &self,
+        now: i64,
+        principal: &str,
+        delivery_id: &str,
+    ) -> Result<Option<RemoteReceipt>, StoreError>;
+    fn reconcile_remote_receipt(
+        &self,
+        request: &ReconcileRemoteReceiptRequest,
+    ) -> Result<ReceiptOutcome, StoreError>;
+    fn tool_receipt_begin(
+        &self,
+        request: &ToolReceiptBeginRequest,
+    ) -> Result<ToolReceiptBegin, StoreError>;
+    fn tool_receipt_settle(&self, request: &ToolReceiptSettleRequest) -> Result<bool, StoreError>;
+    fn tool_receipt_revise(&self, request: &ToolReceiptReviseRequest) -> Result<bool, StoreError>;
+    /// Drops this instance's `prepared` receipt for a call that wrote nothing, so the same key runs again.
+    fn tool_receipt_release(&self, scope: &ToolReceiptScope) -> Result<bool, StoreError>;
     fn list(
         &self,
         target_durable_id: Option<&str>,

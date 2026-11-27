@@ -16,7 +16,7 @@ use super::errors::ThreadToolFailure;
 use super::provenance_resolver::{ProvenanceRuntime, resolve_provenance};
 use super::result::{engine_failure, result_from_row};
 use super::store_api::GatewayStoreApi;
-use super::store_ops::hash_args;
+use super::store_ops::{ReceiptOutcomeRequest, hash_args};
 use super::types::{
     DeliveryEnvelope, EnqueueOutcome, EnqueueRequest, EnvelopeOrigin, GatewayDeliveryMode,
     GatewayDeliveryResult, GatewaySender, Provenance, ReceiptRef,
@@ -319,16 +319,30 @@ impl GatewayEngine {
                         endpoint_kind,
                         collapsed,
                         ..
-                    }) => GatewayDeliveryResult::Ok {
-                        thread_id,
-                        delivery_id,
-                        message_seq,
-                        delivery,
-                        effective_mode,
-                        endpoint_kind,
-                        deduplicated: true,
-                        collapsed,
-                    },
+                    }) => {
+                        let receipt_outcome =
+                            match self.options.store.receipt_outcome(&ReceiptOutcomeRequest {
+                                now: self.now(),
+                                principal: facts.principal.clone(),
+                                delivery_id: delivery_id.clone(),
+                                target_durable_id: thread_id.clone(),
+                                session_path: None,
+                            }) {
+                                Ok(receipt_outcome) => receipt_outcome,
+                                Err(error) => return fail("internal_error", error.message(), None),
+                            };
+                        GatewayDeliveryResult::Ok {
+                            thread_id,
+                            delivery_id,
+                            message_seq,
+                            delivery,
+                            effective_mode,
+                            endpoint_kind,
+                            deduplicated: true,
+                            collapsed,
+                            outcome: Some(receipt_outcome),
+                        }
+                    }
                     Ok(other) => other,
                     Err(error) => fail("internal_error", error.to_string(), None),
                 }
@@ -365,6 +379,7 @@ impl GatewayEngine {
                         endpoint_kind,
                         deduplicated,
                         collapsed: true,
+                        outcome: None,
                     },
                     other => other,
                 })

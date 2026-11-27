@@ -87,6 +87,7 @@ fn delivery_result(result: GatewayDeliveryResult, link: String) -> Value {
             endpoint_kind: _,
             deduplicated,
             collapsed,
+            outcome,
         } => {
             let mut result = json!({
                 "thread": thread_id,
@@ -101,6 +102,15 @@ fn delivery_result(result: GatewayDeliveryResult, link: String) -> Value {
             // (omo#14431).
             if collapsed && let Some(object) = result.as_object_mut() {
                 object.insert("collapsed".into(), Value::Bool(true));
+            }
+            // What became of the delivery, answered on a retry of an earlier send (omo#14623).
+            if let Some(outcome) = outcome
+                && let Some(object) = result.as_object_mut()
+            {
+                object.insert(
+                    "outcome".into(),
+                    serde_json::to_value(outcome).unwrap_or(Value::Null),
+                );
             }
             ok_result(result)
         }

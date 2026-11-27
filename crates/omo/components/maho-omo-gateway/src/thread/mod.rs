@@ -62,6 +62,7 @@ pub mod store_extension_session_ops;
 pub mod store_extensions;
 pub mod store_ops;
 pub mod store_ownership;
+pub mod store_tool_receipts;
 pub mod store_woken_facade;
 pub mod store_woken_ops;
 pub mod store_worker;

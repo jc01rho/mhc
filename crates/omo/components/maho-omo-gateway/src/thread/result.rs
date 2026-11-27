@@ -109,6 +109,7 @@ pub fn result_from_row_with_wait(
         endpoint_kind,
         deduplicated,
         collapsed: false,
+        outcome: None,
     };
     if matches!(row.state, DeliveryState::Admitted | DeliveryState::Applied) {
         if let Some(wait) = session_wait.or_else(|| admitted_wait(row)) {

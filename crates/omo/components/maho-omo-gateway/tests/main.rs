@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "gateway_receipt_tests.rs"]
+mod gateway_receipt_tests;
 #[path = "gateway_schema_tests.rs"]
 mod gateway_schema_tests;
 #[path = "gateway_store_tests.rs"]

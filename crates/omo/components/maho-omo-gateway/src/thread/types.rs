@@ -145,6 +145,60 @@ impl RefusalReason {
     }
 }
 
+/// The refusals a retained delivery receipt reports as application evidence (omo#14623), apart from the historical
+/// admission lane the receipt keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptRefusalReason {
+    Expired,
+    NotSteerable,
+    TurnConflict,
+    TargetClosed,
+}
+
+impl ReceiptRefusalReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::NotSteerable => "not_steerable",
+            Self::TurnConflict => "turn_conflict",
+            Self::TargetClosed => "target_closed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "expired" => Some(Self::Expired),
+            "not_steerable" => Some(Self::NotSteerable),
+            "turn_conflict" => Some(Self::TurnConflict),
+            "target_closed" => Some(Self::TargetClosed),
+            _ => None,
+        }
+    }
+}
+
+/// What became of a delivery, read without waking anything: the answer to a sender's receipt query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReceiptOutcome {
+    Pending,
+    Admitted,
+    Applied,
+    OutcomeUnavailable,
+    Refused { reason: ReceiptRefusalReason },
+}
+
+/// A refused delivery taken in from another device, whose sender is told once (omo#14623).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefusalNotice {
+    pub row_id: String,
+    pub delivery_id: String,
+    pub device: String,
+    pub session: String,
+    pub target_durable_id: String,
+    pub reason: ReceiptRefusalReason,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessIdentity {
     pub pid: i64,
@@ -503,6 +557,9 @@ pub struct GatewayDeliverySuccess {
     /// (omo#14428, #14431).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collapsed: bool,
+    /// What became of the delivery, answered on a retry of an earlier send (omo#14623).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ReceiptOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -520,6 +577,9 @@ pub enum GatewayDeliveryResult {
         /// (omo#14428, #14431).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         collapsed: bool,
+        /// What became of the delivery, answered on a retry of an earlier send (omo#14623).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<ReceiptOutcome>,
     },
     Error {
         error: ThreadToolFailure,
