@@ -34,6 +34,9 @@ enum Reply {
     Drop,
 }
 
+/// What the daemon answers one `cmd` with, given the op and its args; `None` is `unsupported:<op>`.
+type AnswerFn = dyn Fn(&str, &Value) -> Option<Reply> + Send + Sync;
+
 /// A fake agentd on loopback: one thread accepts one connection at a time and answers the ops of the contract from
 /// `answer`, so a test drives the real client over a real socket and a real frame format.
 struct FakeAgentd {
@@ -45,11 +48,15 @@ struct FakeAgentd {
     writer: Mutex<Option<TcpStream>>,
     connections: AtomicUsize,
     stop: AtomicBool,
-    answer: Box<dyn Fn(&str, &Value) -> Option<Reply> + Send + Sync>,
+    answer: Box<AnswerFn>,
 }
 
 impl FakeAgentd {
-    fn start(answer: impl Fn(&str, &Value) -> Option<Reply> + Send + Sync + 'static) -> Arc<Self> {
+    fn start<F>(answer: F) -> Arc<Self>
+    where
+        F: Fn(&str, &Value) -> Option<Reply> + Send + Sync + 'static,
+    {
+        let answer: Box<AnswerFn> = Box::new(answer);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let port = listener.local_addr().expect("addr").port();
         listener
@@ -63,7 +70,7 @@ impl FakeAgentd {
             writer: Mutex::new(None),
             connections: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
-            answer: Box::new(answer),
+            answer,
         });
         let serving = Arc::clone(&daemon);
         std::thread::Builder::new()
@@ -106,17 +113,15 @@ impl FakeAgentd {
         };
         self.remember(&hello);
         if hello.get("t").and_then(Value::as_str) != Some("hello") {
-            self.send(
-                &mut write_half,
-                &json!({ "t": "refused", "reason": "hello_expected" }),
-            )?;
+            let refused = json!({ "t": "refused", "reason": "hello_expected" });
+            self.send(&mut write_half, &refused)?;
+            self.remember(&refused);
             return Ok(());
         }
         if hello.get("token").and_then(Value::as_str) != Some(TOKEN) {
-            self.send(
-                &mut write_half,
-                &json!({ "t": "refused", "reason": "bad_token" }),
-            )?;
+            let refused = json!({ "t": "refused", "reason": "bad_token" });
+            self.send(&mut write_half, &refused)?;
+            self.remember(&refused);
             return Ok(());
         }
         self.send(

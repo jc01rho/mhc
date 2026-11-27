@@ -61,7 +61,7 @@ drained report runs after it with the refusal notices beside it, never ahead of 
 The local-API client behind the port (`consumer/device-service-port.ts`) is not ported: the device service in this
 repository serves no `deliveries.*` protocol, so the runtime keeps taking a factory and a host that brings one binds it.
 
-## E — live device-service `RemoteSessionsPort` over mhc-relayd: `blocked`
+## E — the account-wide sessions port: `blocked` on the relay half, `port` over agentd
 
 Upstream's `remote/port/device-service.ts` speaks a `deliveries.*`/`sessions.*` protocol to the device service. mhc's
 relay daemon answers the requests it serves and refuses this list by name (`crates/omo/mhc-relayd/src/local_server.rs`
@@ -70,13 +70,16 @@ relay daemon answers the requests it serves and refuses this list by name (`crat
 `refresher.register`, `device.adopt`, `enforcement.report`, `owner.shutdown_for_upgrade`, `session.endpoints`,
 `session.locate`, `session.read`, `session.command_part`, `sessions.events.subscribe`, `deliveries.serve`.
 
-What each missing RPC carries: `session.endpoints` and `session.locate` are #14748's lookup gate and #14799's reopen
-path; `session.read` is #14278's listing row (`waiting`, `engine_version`) and the read leg; `session.command_part`
-and `sessions.events.subscribe` are `25dc4d8220`'s follow stream; `deliveries.serve` is the delivery consumer's own
-declaration. Porting this port is not a small addition on both sides — it is the whole device-service delivery
-protocol — so the row stays `blocked` with those six names as the gap. `#14091`'s `onClose` arrives with the same port
-and has nothing to release before it: mhc's `RemoteClient` owns no per-connection sessions port, and
-`AttachPool::close` already ends held attaches.
+This track did not port that protocol onto the relay. It built the port mhc uses instead: a device whose `relayd.json`
+peer carries an `agentd` object (address, port, tokenFile) answers the contract's ops over one TCP link of
+LF-delimited JSON frames (`crates/omo/components/maho-omo-gateway/src/thread/remote/agentd/`), and every leg that was
+waiting on the port is ported on it — `mhc.sessions.list` with `waiting`/`engine_version` (#14278), `mhc.session.locate`
+and the solo-probe gate (#14748), `mhc.session.read`, `mhc.session.open` for a reopen and a fork (#14799, #13031),
+`mhc.session.command` with its chunked parts, `mhc.session.follow` with seq/ack/resume (#14091, `25dc4d8220`), and
+`mhc.delivery.push`/`mhc.delivery.outcome` (#14623). A device with no `agentd` entry keeps the relay path unchanged;
+`mhc-relayd` is not removed, so the six names above stay the gap for that path and the row stays `blocked` for it.
+What is still unwritten is the consumer of the follow stream (`remote_ops.rs` has no `followRemote` loop) and the fence,
+admission and remote-session-watch rules of the live port.
 
 ## F — `fork_from` on an engine advertising `open_session_fork`: `port` (fork track)
 
@@ -84,9 +87,11 @@ This track left F a `gap`: no mhc engine advertised `open_session_fork`, so `thr
 `fork_from` as `fork_unsupported` before any open. The fork track (`docs/omo-sync/v5.1.84/fork.md`) built the missing
 engine half and ported #13031 (`aef88019f8`, `90dc3fef61`, `07060a225b`) on it: `crates/maho-rpc` forks on
 `open_session { forkFrom }` and advertises the capability, this device reads it through `ThreadHost::capabilities` and
-`SessionHost::forks` and forks, and a source on another device is decided by that device's capabilities. Only the open
-on another device stays refused, because `mhc-relayd` carries no remote `open_session`. The thread-core,
-thread-gateway and thread-remote rows are `port`.
+`SessionHost::forks` and forks, and a source on another device is decided by that device's capabilities. The open on
+another device is now carried too, for a device this build reaches over agentd: `AgentdSessionHost::forks` reads
+`open_session_fork` off that daemon's own listing and the fork opens there with `mhc.session.open { fork_from }`. A
+device reached only over `mhc-relayd` still refuses the open, because the relay carries no remote `open_session`. The
+thread-core, thread-gateway and thread-remote rows are `port`.
 
 ## The sdk slice
 
