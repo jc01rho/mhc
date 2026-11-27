@@ -3414,8 +3414,8 @@
       },
       {
         "path": "scripts/sdk/ports.ts",
-        "bytes": 3015,
-        "sha256": "478c017607bd67275a5a8193c40f68eccf6008926e4ead4ae398b31661a79f72",
+        "bytes": 3027,
+        "sha256": "063c130ec180cbdb4c563b7ea04f68367ee1bb9ed7ea116d0feda76655854c9c",
         "source": "packages/omo-senpi/skills/omo-relay/scripts/sdk/ports.ts"
       },
       {
