@@ -9,7 +9,7 @@
 //! exactly the bytes that were judged stale, so a fresh lease another waiter just published is
 //! never deleted and two concurrent reclaims cannot both acquire.
 use crate::process_identity::{
-    PROCESS_START_TOLERANCE_MS, own_process_started_at_ms, process_boot_at_ms, same_boot,
+    PROCESS_START_TOLERANCE_MS, own_process_started_at_ms, process_boot_at_ms, same_boot_as_own,
     same_process_start,
 };
 use serde::{Deserialize, Serialize};
@@ -309,7 +309,7 @@ pub fn reclaim_lock_state(lock: &Path, probes: &mut LeaseProbes<'_>) -> std::io:
             LockState::Held(None)
         });
     };
-    if !same_boot(holder.boot_at_ms, Some(process_boot_at_ms(None))) {
+    if !same_boot_as_own(Some(holder.boot_at_ms)) {
         return Ok(LockState::Stale(raw));
     }
     if holder.pid == f64::from(std::process::id()) {

@@ -4,7 +4,9 @@
 use crate::agent_session::AgentSession;
 use crate::agent_session_services::{AgentSessionRuntimeDiagnostic, MountedAgentSessionServices};
 use crate::session_cwd::assert_session_cwd_exists;
-use crate::session_holders::{SessionHolderEndpoint, hold_active_session, was_flushed};
+use crate::session_holders::{
+    SessionHolderEndpoint, hold_active_session, hold_runtime_session, was_flushed,
+};
 
 pub struct ExtensionModelRuntimeActions(pub std::sync::Mutex<crate::model_runtime::ModelRuntime>);
 impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
@@ -562,7 +564,7 @@ impl AgentSessionRuntime {
     ) -> Result<(), String> {
         self.holder_endpoint = endpoint;
         let hold = self.session.with_session_manager(|manager| {
-            hold_active_session(manager, was_flushed(manager), self.holder_endpoint.as_ref())
+            hold_runtime_session(manager, self.holder_endpoint.as_ref())
         })?;
         *self.lock_hold() = hold;
         Ok(())
@@ -3017,6 +3019,73 @@ mod tests {
         assert_eq!(
             extract_user_message_text(&serde_json::json!("plain")),
             "plain"
+        );
+    }
+
+    // senpi rpc-session-registry.test.ts: "takes the replacement runtime's session hold before the
+    // switched runtime releases its own". The Rust runtime has no constructor parameter for a hold
+    // (senpi's `new AgentSessionRuntime(..., sessionHold)`); `set_holder_endpoint` and
+    // `apply_replacement` are the seams that take one, and one record per process is shared by both.
+    #[tokio::test]
+    async fn a_session_hold_is_shared_by_every_holder_and_outlives_only_until_the_last_one() {
+        let (_other_dir, _other_cwd, other_path) = other_project_session();
+        let manager = crate::session_manager::SessionManager::open(&other_path, None, None, None)
+            .expect("open the stored session");
+        let session_id = manager.session_id().to_owned();
+        let holders = crate::schedule::runner_lease::session_holders_dir(
+            std::path::Path::new(&other_path),
+            &session_id,
+        )
+        .expect("holders dir");
+        let record = holders.join(format!("{}.json", std::process::id()));
+        let count_records = || {
+            std::fs::read_dir(&holders)
+                .expect("holders")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+                .count()
+        };
+
+        // A speculative runtime and the host that claims it ask for the same hold: one record, never two.
+        let first = hold_runtime_session(&manager, None)
+            .expect("hold")
+            .expect("a stored session is held");
+        let second = hold_runtime_session(&manager, None)
+            .expect("hold")
+            .expect("a stored session is held");
+        assert!(record.exists());
+        assert_eq!(count_records(), 1);
+
+        drop(first);
+        assert!(record.exists(), "one reference is still held");
+        drop(second);
+        drop(manager);
+        assert!(!record.exists());
+    }
+
+    #[tokio::test]
+    async fn a_switch_takes_the_replacement_hold_as_the_outgoing_one_is_released() {
+        let (_dir, mut runtime) = runtime_fixture().await;
+        assert!(
+            !runtime.has_session_hold(),
+            "an in-memory session is never held"
+        );
+        let (_other_dir, other_cwd, other_path) = other_project_session();
+
+        switch_into(&mut runtime, &other_cwd, &other_path).await;
+
+        assert!(runtime.has_session_hold());
+        let switched_id = runtime.session().session_id().to_owned();
+        let holders = crate::schedule::runner_lease::session_holders_dir(
+            std::path::Path::new(&other_path),
+            &switched_id,
+        )
+        .expect("holders dir");
+        assert!(
+            holders
+                .join(format!("{}.json", std::process::id()))
+                .exists(),
+            "the replacement session published its own holder record"
         );
     }
 }

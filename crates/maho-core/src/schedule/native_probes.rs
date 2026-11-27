@@ -29,7 +29,10 @@ impl ProcessProbes for NativeProbes {
         self.owner.clone()
     }
     fn boot_at_ms(&self) -> u64 {
-        self.boot
+        native_boot_at_ms(false).unwrap_or(self.boot)
+    }
+    fn own_boot_at_ms(&self, fresh: bool) -> u64 {
+        native_boot_at_ms(fresh).unwrap_or(self.boot)
     }
     fn now(&self) -> u64 {
         (self.now)()
@@ -57,7 +60,7 @@ impl ProcessProbes for NativeProbes {
         if pid == self.owner.pid {
             return Ok(Some(self.owner.process_started_at_ms));
         }
-        let boot = self.boot;
+        let boot = self.own_boot_at_ms(false);
         tokio::task::spawn_blocking(move || read_process_start_ms(pid, boot))
             .await
             .map_err(|error| ScheduleError::Invalid(error.to_string()))?

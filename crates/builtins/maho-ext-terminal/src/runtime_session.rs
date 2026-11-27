@@ -381,6 +381,8 @@ pub struct TerminalRuntimeSession {
     pub command: String,
     /// Upstream `startedAtMs`: wall-clock instant the child was spawned.
     pub started_at_ms: f64,
+    /// The boot instant this process recorded for its children (`runtime-session.ts` `bootAtMs`).
+    pub boot_at_ms: f64,
     /// Upstream `argv`: the spawned program and its arguments.
     argv: Vec<String>,
     session: TerminalSessionBackend,
@@ -416,6 +418,7 @@ impl TerminalRuntimeSession {
         scrollback: usize,
         redact_secrets_in_output: bool,
     ) -> Result<Self, RuntimeError> {
+        let boot_at_ms = crate::process_identity::process_boot_at_ms(None);
         let argv = std::iter::once(options.command.clone())
             .chain(options.args.iter().cloned())
             .collect::<Vec<_>>();
@@ -516,6 +519,7 @@ impl TerminalRuntimeSession {
         Ok(Self {
             command: command.to_owned(),
             started_at_ms,
+            boot_at_ms,
             argv,
             session,
             kill_requested,
@@ -558,7 +562,7 @@ impl TerminalRuntimeSession {
             pid: self.pid()?,
             process_group_id: self.process_group(),
             started_at_ms: self.started_at_ms,
-            boot_at_ms: crate::process_identity::process_boot_at_ms(None),
+            boot_at_ms: self.boot_at_ms,
             argv: self.argv.clone(),
         })
     }
