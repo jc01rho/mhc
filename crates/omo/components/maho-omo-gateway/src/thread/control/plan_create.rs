@@ -28,7 +28,7 @@ use crate::thread::thread_row::opened_result;
 use super::create_folder::place_folder;
 use super::locate::{RemoteControlLocator, ThreadCall, send_address_book};
 use super::operations::error_json;
-use super::port::SessionOpenRequest;
+use super::port::{ControlError, SessionOpenRequest};
 use super::relay_session_host::displayed_thread;
 use super::session_host::{OPEN_SESSION_FORK, session_summary};
 
@@ -462,7 +462,20 @@ pub async fn plan_create(
                         .as_deref()
                         .and_then(|remote| remote.session_host(&row.device))
                     {
-                        Some(host) => host.forks().await?,
+                        Some(host) => match host.forks().await {
+                            Ok(forks) => forks,
+                            Err(ControlError::Refused(failure)) => {
+                                return CreatePlan::done(error_json(*failure));
+                            }
+                            Err(ControlError::Transport(message)) => {
+                                return CreatePlan::done(error_json(thread_tool_failure(
+                                    "host_unavailable",
+                                    message,
+                                    "Retry when that device answers.",
+                                    None,
+                                )));
+                            }
+                        },
                         None => relay_forks(remote, &row.device).await,
                     };
                     if !forks {
