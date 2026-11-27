@@ -78,7 +78,16 @@ fn replace_images_with_placeholder(
     result
 }
 
-fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Message> {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImageDowngradeOptions {
+    pub image_description_tool: Option<String>,
+}
+
+pub fn downgrade_unsupported_images(
+    messages: &[Message],
+    model: &Model,
+    options: &ImageDowngradeOptions,
+) -> Vec<Message> {
     use crate::types::InputModality;
 
     let supports_images = model.input.contains(&InputModality::Image);
@@ -86,6 +95,22 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
     if supports_images && supports_video {
         return messages.to_vec();
     }
+    let tool = options
+        .image_description_tool
+        .as_deref()
+        .filter(|tool| !tool.is_empty());
+    let user_image_placeholder = match tool {
+        Some(tool) => std::borrow::Cow::Owned(format!(
+            "(image omitted: this model cannot see images; {tool} describes an image given its file path)"
+        )),
+        None => std::borrow::Cow::Borrowed(NON_VISION_USER_IMAGE_PLACEHOLDER),
+    };
+    let tool_image_placeholder = match tool {
+        Some(tool) => std::borrow::Cow::Owned(format!(
+            "(tool image omitted: this model cannot see images; call {tool} with the image's file path for a description)"
+        )),
+        None => std::borrow::Cow::Borrowed(NON_VISION_TOOL_IMAGE_PLACEHOLDER),
+    };
 
     messages
         .iter()
@@ -103,10 +128,7 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
                     );
                 }
                 if !supports_images {
-                    content = replace_images_with_placeholder(
-                        &content,
-                        NON_VISION_USER_IMAGE_PLACEHOLDER,
-                    );
+                    content = replace_images_with_placeholder(&content, &user_image_placeholder);
                 }
                 let mut next = user.clone();
                 next.content = crate::types::UserContent::Blocks(content);
@@ -122,10 +144,7 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
                     );
                 }
                 if !supports_images {
-                    content = replace_images_with_placeholder(
-                        &content,
-                        NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-                    );
+                    content = replace_images_with_placeholder(&content, &tool_image_placeholder);
                 }
                 let mut next = result.clone();
                 next.content = content;
@@ -154,7 +173,8 @@ pub fn transform_messages(
 ) -> Vec<Message> {
     let mut tool_call_id_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    let image_aware_messages = downgrade_unsupported_images(messages, model);
+    let image_aware_messages =
+        downgrade_unsupported_images(messages, model, &ImageDowngradeOptions::default());
     let preserve_thinking = options.preserve_thinking.unwrap_or(true);
     let preserve_text_signatures = options.preserve_text_signatures.unwrap_or(false);
     let preserve_unsigned_thinking = options.preserve_unsigned_thinking.unwrap_or(false);

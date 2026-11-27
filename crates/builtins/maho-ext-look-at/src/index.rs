@@ -48,6 +48,7 @@ impl maho_ext_api::Extension for LookAtExtension {
             .commit_registration()
             .unwrap_or_else(|error| std::panic::panic_any(error));
         register_activation_hooks(api, store.clone());
+        register_image_placeholder_hook(api);
         register_tool_result_describer(api, self.runner.clone(), store.clone());
         let runtime = api.runtime.clone();
         let command_store = store.clone();
@@ -95,6 +96,39 @@ pub fn register_activation_hooks(
             }),
         );
     }
+}
+pub fn register_image_placeholder_hook(api: &mut maho_ext_api::ExtensionApi) {
+    let runtime = api.runtime.clone();
+    api.on_with_options(
+        maho_ext_api::EventKind::Context,
+        std::sync::Arc::new(move |event, ctx| {
+            let result =
+                (|| -> Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure> {
+                    if !describes_images_for(&runtime, ctx)? {
+                        return Ok(maho_ext_api::EventResult::None);
+                    }
+                    let (maho_ext_api::ExtensionEvent::Context { messages, .. }, Some(model)) =
+                        (event, ctx.model.as_ref())
+                    else {
+                        return Ok(maho_ext_api::EventResult::None);
+                    };
+                    let Some(next) = crate::image_placeholder::try_replace_images_naming_tool(
+                        messages, model, "look_at",
+                    ) else {
+                        return Ok(maho_ext_api::EventResult::None);
+                    };
+                    *messages = next.clone();
+                    Ok(maho_ext_api::EventResult::Context {
+                        messages: Some(next),
+                    })
+                })();
+            Box::pin(async move { result })
+        }),
+        maho_ext_api::ExtensionHandlerOptions {
+            mutates_messages: Some(false),
+            ..Default::default()
+        },
+    );
 }
 /// senpi#7260: the image a tool returns to a model without image input is described by the vision
 /// model before the result is stored, so the transcript holds the description and no later request
@@ -185,9 +219,7 @@ pub fn register_tool_result_describer(
         }),
     );
 }
-/// look_at is offered only while the model has no image input and a vision model is available; with
-/// images blocked the transport replaces them itself and look_at refuses every input.
-fn describes_images_for(
+pub fn offers_look_at(
     runtime: &maho_ext_api::ExtensionRuntime,
     ctx: &maho_ext_api::ExtensionContext,
 ) -> Result<bool, maho_ext_api::ExtensionFailure> {
@@ -198,12 +230,19 @@ fn describes_images_for(
     {
         return Ok(false);
     }
-    if !runtime
+    Ok(runtime
         .session_actions()?
         .get_active_tools()?
         .iter()
-        .any(|name| name == "look_at")
-    {
+        .any(|name| name == "look_at"))
+}
+/// look_at is offered only while the model has no image input and a vision model is available; with
+/// images blocked the transport replaces them itself and look_at refuses every input.
+fn describes_images_for(
+    runtime: &maho_ext_api::ExtensionRuntime,
+    ctx: &maho_ext_api::ExtensionContext,
+) -> Result<bool, maho_ext_api::ExtensionFailure> {
+    if !offers_look_at(runtime, ctx)? {
         return Ok(false);
     }
     Ok(!ctx.get_image_settings()?.block_images)
