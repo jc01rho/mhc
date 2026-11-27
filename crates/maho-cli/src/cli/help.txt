@@ -27,6 +27,7 @@ Commands:
   mhc senpi-install             Install or uninstall the Senpi companion plugin
   mhc remote <command>          Devices and sessions on your other devices (mhc remote help)
   mhc sync status [--json]      This device's memory sync: account, devices, join requests, engine
+  mhc account <command>         Shared sign-in and device keys (show, adopt, token, export, forget, retire-sync)
   mhc login | whoami | logout   This device's key for remote sessions (local mode)
   mhc mini                      Experimental minimal TUI client
   mhc gateway <list|send>       List or message live gateway sessions (MIT profile build only)

@@ -98,6 +98,7 @@ fn root_metadata_output(argv: &[String], grok: bool) -> Result<Option<String>, S
                 | "list"
                 | "config"
                 | "remote"
+                | "account"
                 | "login"
                 | "whoami"
                 | "logout"
@@ -1051,7 +1052,7 @@ fn register_ultrawork_keywords() {
 #[cfg(feature = "omo")]
 fn run_omo_entry(argv: &[String]) -> Option<Result<(), String>> {
     if let Some(verb) = argv.first().map(String::as_str)
-        && matches!(verb, "remote" | "login" | "whoami" | "logout")
+        && matches!(verb, "remote" | "account" | "login" | "whoami" | "logout")
     {
         return Some(run_remote_entry(verb, &argv[1..]));
     }
@@ -1114,6 +1115,8 @@ fn run_remote_entry(verb: &str, args: &[String]) -> Result<(), String> {
     let code = runtime.block_on(async {
         if verb == "remote" {
             maho_omo_remote::run_remote(&context, args).await
+        } else if verb == "account" {
+            maho_omo_remote::run_account_cli(&context, args).await
         } else {
             maho_omo_remote::run_account_command(&context, verb, args).await
         }
@@ -1133,6 +1136,7 @@ fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
         "ulw-loop" => "mhc ulw-loop",
         "senpi-install" => "mhc senpi-install",
         "remote" => "mhc remote",
+        "account" => "mhc account",
         "sync" => "mhc sync",
         "login" | "whoami" | "logout" => "mhc login, whoami and logout",
         "--memory-supervisor" | "--child-bootstrap" => "the memory supervisor",
