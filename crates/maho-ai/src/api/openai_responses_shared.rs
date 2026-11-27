@@ -2959,7 +2959,11 @@ mod tests {
         .expect("the stream ends");
 
         // Then: the completion lands inside the restarted grace, so the stream completes.
-        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            result.is_ok(),
+            "{result:?} at {:?} after the first item was finalized",
+            tokio::time::Instant::now()
+        );
         sender.abort();
     }
 }
