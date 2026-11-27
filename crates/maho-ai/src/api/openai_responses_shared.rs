@@ -2839,10 +2839,10 @@ mod tests {
         let sent = Arc::clone(&keepalives_sent);
         let sender = tokio::spawn(async move {
             let grace = Duration::from_millis(RESPONSES_COMPLETION_GRACE_MS);
-            // Every quarter of the budget, for twice the budget: a per-chunk grace would never
-            // expire, and the last keepalive lands well after the one budget has run out.
-            for _ in 0..8 {
-                tokio::time::sleep(grace / 4).await;
+            // Every fifth of the budget, for well over the budget: a per-chunk grace would never
+            // expire, and no keepalive lands on the deadline itself.
+            for _ in 0..10 {
+                tokio::time::sleep(grace / 5).await;
                 // The receiver is dropped once the stall ends the stream, so a late send is expected.
                 if tx
                     .send(Ok(bytes::Bytes::from_static(b": keepalive\n\n")))
@@ -2901,8 +2901,9 @@ mod tests {
         tx.send(Ok(bytes::Bytes::from(item_done_event())))
             .expect("send item done");
         let grace = Duration::from_millis(RESPONSES_COMPLETION_GRACE_MS);
-        let sender = tokio::spawn(async move {
-            tokio::time::sleep(grace * 3 / 4).await;
+        let _sender = tokio::spawn(async move {
+            // Well inside the first budget, so the read is never racing its own deadline.
+            tokio::time::sleep(grace / 2).await;
             let opened_and_done = format!(
                 "data: {}\n\ndata: {}\n\n",
                 json!({
@@ -2920,7 +2921,7 @@ mod tests {
             );
             let _ = tx.send(Ok(bytes::Bytes::from(opened_and_done)));
             // Past the deadline the first budget would have set, inside the restarted one.
-            tokio::time::sleep(grace / 2).await;
+            tokio::time::sleep(grace * 3 / 4).await;
             let completed = format!(
                 "data: {}\n\n",
                 json!({
@@ -2929,7 +2930,8 @@ mod tests {
                 })
             );
             let _ = tx.send(Ok(bytes::Bytes::from(completed)));
-            std::future::pending::<()>().await;
+            // Dropping `tx` ends the body, so the stream finishes instead of waiting on a task
+            // with no timer, which the paused clock would run ahead of.
         });
         let body = futures::stream::unfold(rx, |mut rx| async move {
             rx.recv().await.map(|item| (item, rx))
@@ -2959,11 +2961,6 @@ mod tests {
         .expect("the stream ends");
 
         // Then: the completion lands inside the restarted grace, so the stream completes.
-        assert!(
-            result.is_ok(),
-            "{result:?} at {:?} after the first item was finalized",
-            tokio::time::Instant::now()
-        );
-        sender.abort();
+        assert!(result.is_ok(), "{result:?}");
     }
 }
