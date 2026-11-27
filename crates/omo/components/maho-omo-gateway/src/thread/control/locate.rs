@@ -62,6 +62,12 @@ pub trait RemoteControlLocator: Send + Sync {
     fn remote_surface_arc(&self) -> Option<Arc<RemoteThreadSurface>> {
         None
     }
+
+    /// The `open` leg of a device this account reaches over a transport that can open sessions there (agentd), when the
+    /// locator has one; `None` keeps placement's `relay_session_host_unsupported` refusal.
+    fn session_host(&self, _device: &str) -> Option<Arc<dyn SessionHost>> {
+        None
+    }
 }
 
 /// One control call's reading of this device: the host view and the address book assembled from it, the caller, and

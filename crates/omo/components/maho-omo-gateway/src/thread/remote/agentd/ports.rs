@@ -944,7 +944,7 @@ mod tests {
             "project": "/work/app",
             "path": "/work/app",
             "state": state,
-            "updated_ms": 1_700_000_000_000,
+            "updated_ms": 1_700_000_000_000i64,
             "model": { "provider": "openai", "id": "gpt-6" },
             "waiting": { "kind": "rate_limit", "until": "2026-11-02T00:01:00.000Z", "attempt": 2, "maxAttempts": 5 },
             "engine_version": "2026.11.1",
