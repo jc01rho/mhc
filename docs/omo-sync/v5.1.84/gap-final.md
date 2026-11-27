@@ -11,11 +11,11 @@ Counts computed from the slice rows below (E and F are the two rows this track h
 
 | verdict | slices |
 |---|---:|
-| port | 5 |
+| port | 6 |
 | ported | 1 |
 | gap | 0 |
 | blocked | 1 |
-| **total** | **7** |
+| **total** | **8** |
 
 ## Slices
 
@@ -26,6 +26,7 @@ Counts computed from the slice rows below (E and F are the two rows this track h
 | reply grant | #14541 `8409382654`, #14542 `ca85fc8b51` | port | `src/thread/reply_permission.rs`, `src/thread/reply_target.rs`, `src/thread/run_context.rs`, `src/thread/tools.rs` `reply_delivery_target`; `tests/reply_scope_tests.rs` |
 | resolve | #14305 `a5f001273f` | port | `crates/omo/components/maho-omo-remote` `src/verbs.rs`, `verbs_resolve_tests.rs` |
 | sdk | #14948 `bb8b61313a`, `5d2e861f2f` | ported | `crates/omo/omo-sdk-contract` `src/calls.rs`, `src/shape.rs`, `src/results/root.rs`, `tests/root_calls.rs`; see `parity.d/5184s.md` and `docs/omo-sync/v5.1.84/omo-sdk.md` |
+| agentd sessions port | E's six names, answered over the tailnet daemon: #14748, #14799, #14278, #13031, #14091, `25dc4d8220`, #14623 `351df3416c` M2 | port | `crates/omo/components/maho-omo-gateway` `src/thread/remote/agentd/{mod,frame,link,ports,delivery,peer_config}.rs`, `src/thread/control/{plan_create,create,relay_control,locate}.rs`; `tests/agentd_client_tests.rs`; see `parity.d/5184ad.md` |
 
 ## Tool receipts
 
