@@ -1253,9 +1253,7 @@ pub async fn process_responses_stream(
     let mut search_from = 0;
     let mut utf8 = crate::utils::utf8_stream::Utf8ChunkDecoder::default();
     let mut completion_phase_started_at: Option<tokio::time::Instant> = None;
-    while let Some(chunk) =
-        read_chunk(&mut body, &state, &mut completion_phase_started_at).await?
-    {
+    while let Some(chunk) = read_chunk(&mut body, &state, &mut completion_phase_started_at).await? {
         // DIVERGENCE(senpi openai-responses-shared.ts): a multibyte character split across two network chunks is carried to the next chunk instead of becoming two U+FFFD; Node's TextDecoder in stream mode keeps split characters, so this matches upstream behavior. A truncated tail at stream end is never framed (the buffer tail is dropped), so no flush is needed.
         utf8.push(&chunk, &mut buffer);
         while let Some((index, length)) = find_sse_boundary(&buffer, search_from) {
@@ -1342,9 +1340,7 @@ async fn read_chunk(
     let grace_left = Duration::from_millis(RESPONSES_COMPLETION_GRACE_MS)
         .checked_sub(started_at.elapsed())
         .unwrap_or_default();
-    match tokio::time::timeout(grace_left, body.next())
-    .await
-    {
+    match tokio::time::timeout(grace_left, body.next()).await {
         Ok(None) => Ok(None),
         Ok(Some(chunk)) => chunk
             .map(Some)
@@ -2343,6 +2339,8 @@ pub fn get_done_reason(stop_reason: StopReason) -> DoneReason {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn test_model(api: &str, id: &str, capability: Option<Value>) -> Model {
@@ -2826,7 +2824,10 @@ mod tests {
             for _ in 0..8 {
                 tokio::time::sleep(grace / 4).await;
                 // The receiver is dropped once the stall ends the stream, so a late send is expected.
-                if tx.send(Ok(bytes::Bytes::from_static(b": keepalive\n\n"))).is_ok() {
+                if tx
+                    .send(Ok(bytes::Bytes::from_static(b": keepalive\n\n")))
+                    .is_ok()
+                {
                     sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
             }
