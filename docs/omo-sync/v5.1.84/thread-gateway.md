@@ -10,10 +10,10 @@ Counts are computed from the per-PR rows below; every one of the 39 commits is n
 
 | verdict | rows | commits |
 |---|---:|---:|
-| port | 8 | 13 |
+| port | 9 | 14 |
 | ported | 0 | 0 |
 | n/a | 4 | 16 |
-| gap | 2 | 2 |
+| gap | 1 | 1 |
 | blocked | 3 | 8 |
 | **total** | **17** | **39** |
 

@@ -10,8 +10,8 @@ Counts computed programmatically from the per-PR rows below.
 
 | verdict | rows |
 |---|---:|
-| port | 13 |
-| gap | 7 |
+| port | 17 |
+| gap | 3 |
 | n/a | 8 |
 | blocked | 0 |
 | ported | 0 |

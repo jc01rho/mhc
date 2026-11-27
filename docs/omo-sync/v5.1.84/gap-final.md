@@ -5,6 +5,19 @@ This track closes the gaps the per-track ledgers left open, one slice per missin
 own verdicts in the ledger of the track that owns the upstream paths; this file is the index, and it records the two
 items this track had to decide with evidence (E and F).
 
+## Summary
+
+Counts computed from the slice rows below (E and F are the two rows this track had to decide).
+
+| verdict | slices |
+|---|---:|
+| port | 3 |
+| ported | 1 |
+| see `thread-core.md` (reply grant) | 1 |
+| gap | 1 |
+| blocked | 1 |
+| **total** | **7** |
+
 ## Slices
 
 | slice | upstream | verdict | where |

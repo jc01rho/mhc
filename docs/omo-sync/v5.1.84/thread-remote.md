@@ -8,10 +8,10 @@ mhc counterparts: `crates/omo/components/maho-omo-remote`, `crates/omo/component
 
 | verdict | count |
 |---|---:|
-| port | 2 |
+| port | 4 |
 | ported | 0 |
 | blocked | 5 |
-| gap | 3 |
+| gap | 1 |
 | n/a | 3 |
 | **total** | **13** |
 
