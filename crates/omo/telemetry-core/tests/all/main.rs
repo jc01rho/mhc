@@ -4,6 +4,7 @@ mod activity_state;
 mod common;
 mod env;
 mod events;
+mod install_disclosure;
 mod otel_providers;
 mod otel_turn_span;
 mod otlp_children;

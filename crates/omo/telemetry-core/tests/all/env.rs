@@ -43,7 +43,7 @@ fn api_key_configuration_matches_expected_availability() {
 
 #[test]
 fn opt_out_env_matrix() {
-    let cases: [OptOutCase; 15] = [
+    let cases: [OptOutCase; 20] = [
         ("unset env enables telemetry", &[], false),
         ("global disable 1", &[("OMO_DISABLE_POSTHOG", "1")], true),
         (
@@ -102,9 +102,34 @@ fn opt_out_env_matrix() {
             true,
         ),
         (
-            "approved codex send yes convergence",
+            "codex send yes keeps telemetry on",
             &[("OMO_CODEX_SEND_ANONYMOUS_TELEMETRY", "yes")],
+            false,
+        ),
+        (
+            "global send yes keeps telemetry on",
+            &[("OMO_SEND_ANONYMOUS_TELEMETRY", "yes")],
+            false,
+        ),
+        (
+            "otel sdk disabled true stops telemetry",
+            &[("OTEL_SDK_DISABLED", "true")],
             true,
+        ),
+        (
+            "otel sdk disabled trims and lowercases",
+            &[("OTEL_SDK_DISABLED", " TRUE ")],
+            true,
+        ),
+        (
+            "otel sdk disabled false keeps telemetry on",
+            &[("OTEL_SDK_DISABLED", "false")],
+            false,
+        ),
+        (
+            "otel sdk disabled 1 is not the boolean form",
+            &[("OTEL_SDK_DISABLED", "1")],
+            false,
         ),
         (
             "invalid disable value",
