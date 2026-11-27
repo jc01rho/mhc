@@ -51,8 +51,6 @@ pub struct OpenAIResponsesCompat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_tool_search: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub siwc: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_explicit_prompt_cache_mode: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_max_output_tokens: Option<bool>,

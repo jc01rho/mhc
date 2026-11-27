@@ -102,11 +102,11 @@ impl ClaudeOAuthTokenRefusedError {
     pub const CODE: &str = "claude_oauth_token_refused";
 }
 
-fn assert_not_claude_oauth_token(
+fn refuse_claude_oauth_token(
     model: &Model,
     api_key: Option<&str>,
 ) -> Result<(), ClaudeOAuthTokenRefusedError> {
-    if api_key.is_some_and(|key| key.contains("sk-ant-oat")) {
+    if api_key.is_some_and(|key| key.contains(CLAUDE_OAUTH_TOKEN_MARKER)) {
         return Err(ClaudeOAuthTokenRefusedError {
             provider: model.provider.clone(),
             model_id: model.id.clone(),
@@ -3531,7 +3531,7 @@ async fn drive(
     if federation.is_none() {
         auth.map_err(AnthropicStreamError::Message)?;
     }
-    assert_not_claude_oauth_token(model, api_key.as_deref())
+    refuse_claude_oauth_token(model, api_key.as_deref())
         .map_err(AnthropicStreamError::ClaudeOAuthTokenRefused)?;
 
     let dynamic_headers = (model.provider == "github-copilot").then(|| {
@@ -3955,7 +3955,7 @@ pub fn stream_simple(
     {
         return crate::utils::lazy::error_stream(model, &message);
     }
-    if let Err(error) = assert_not_claude_oauth_token(model, api_key.as_deref()) {
+    if let Err(error) = refuse_claude_oauth_token(model, api_key.as_deref()) {
         return crate::utils::lazy::error_stream(model, &error.to_string());
     }
 

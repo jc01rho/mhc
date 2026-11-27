@@ -21,7 +21,7 @@ async fn streams_refuse_a_claude_oauth_api_key_before_building_the_request() {
         observed.store(true, Ordering::Relaxed);
         None
     }));
-    let error = assert_not_claude_oauth_token(&model, Some(&token)).expect_err("typed refusal");
+    let error = refuse_claude_oauth_token(&model, Some(&token)).expect_err("typed refusal");
     assert_eq!(
         ClaudeOAuthTokenRefusedError::CODE,
         "claude_oauth_token_refused"
