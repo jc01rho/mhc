@@ -142,11 +142,14 @@ mod unix_resolvers {
         let f = TriggerFixture::create();
         let target = f.home_with_link("dave").join("link/secret.txt");
         let (killed_tx, killed_rx) = tokio::sync::oneshot::channel();
+        let killed_tx = StdMutex::new(Some(killed_tx));
         let opts = AutomountRealpathOptions {
             deadline: Some(Duration::from_millis(200)),
             resolver: Some(Arc::new(move |_path, abort| {
                 let was_aborted = abort.wait_aborted(Duration::from_secs(5));
-                let _ = killed_tx.send(was_aborted);
+                if let Some(tx) = killed_tx.lock().unwrap().take() {
+                    let _ = tx.send(was_aborted);
+                }
                 AutomountRealpath::Unanswered
             })),
         };
