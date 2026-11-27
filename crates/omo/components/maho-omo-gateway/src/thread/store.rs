@@ -9,9 +9,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use rusqlite::Connection;
 use serde_json::Value;
 
 use super::backlog::TargetBacklog;
+use super::connection_lost::WalWatch;
 use super::constants::{GATEWAY_BUSY_TIMEOUT_MS, GATEWAY_LOCK_WAIT_MAX_MS};
 use super::extension_registrations::{list_session_ops, read_descriptor};
 use super::extension_session_ops::{SessionCallPhase, SessionCallRequest, session_call};
@@ -70,6 +72,7 @@ pub struct SqliteGatewayStore {
     config: GatewayStoreConfig,
     clock: Clock,
     after_commit_listeners: Mutex<Vec<super::store_api::ExtensionErrorListener>>,
+    wal: Mutex<WalWatch>,
 }
 
 fn poisoned<T>(_: std::sync::PoisonError<T>) -> StoreError {
@@ -77,8 +80,22 @@ fn poisoned<T>(_: std::sync::PoisonError<T>) -> StoreError {
 }
 
 impl SqliteGatewayStore {
+    /// The connection, replaced first when another process removed or replaced its `-wal`/`-shm` files (omo
+    /// 7f068c4d32). The old connection closes before the fresh one opens: alone on the database it folds the frames
+    /// it committed into the database file, and while another connection is open its close removes no file.
     fn context(&self) -> Result<MutexGuard<'_, StoreContext>, StoreError> {
-        self.context.lock().map_err(poisoned)
+        let mut ctx = self.context.lock().map_err(poisoned)?;
+        let lost = self.wal.lock().map_err(poisoned)?.lost();
+        if lost.is_some() {
+            drop(std::mem::replace(
+                &mut ctx.conn,
+                Connection::open_in_memory()?,
+            ));
+            let path = gateway_database_path(Path::new(&self.config.agent_dir));
+            ctx.conn = open_connection(&path, self.config.busy_timeout_ms)?;
+            self.wal.lock().map_err(poisoned)?.reset();
+        }
+        Ok(ctx)
     }
 
     fn extensions(&self) -> Result<MutexGuard<'_, StoreExtensions>, StoreError> {
@@ -264,6 +281,8 @@ pub fn create_gateway_store(
     };
     let context = StoreContext::new(conn, config.clone(), identity);
     migrate(&context)?;
+    let mut wal = WalWatch::new(path);
+    wal.lost();
     Ok(Arc::new(SqliteGatewayStore {
         context: Mutex::new(context),
         extensions: Mutex::new(StoreExtensions::new()),
@@ -271,6 +290,7 @@ pub fn create_gateway_store(
         config,
         clock,
         after_commit_listeners: Mutex::new(Vec::new()),
+        wal: Mutex::new(wal),
     }))
 }
 

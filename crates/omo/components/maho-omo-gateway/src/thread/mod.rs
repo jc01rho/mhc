@@ -10,6 +10,7 @@ pub mod addressing;
 pub mod attachment_fence;
 pub mod backlog;
 pub mod component;
+pub mod connection_lost;
 pub mod constants;
 pub mod consumer;
 pub mod contracts_create_params;
