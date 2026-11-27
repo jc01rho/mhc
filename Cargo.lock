@@ -5981,6 +5981,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-omo-sdk-contract"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "maho-omo-side-panel"
 version = "0.0.0"
 dependencies = [

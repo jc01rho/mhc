@@ -130,6 +130,7 @@ members = [
     "crates/omo/delegate-core",
     "crates/omo/telemetry-core",
     "crates/omo/device-service-core",
+    "crates/omo/omo-sdk-contract",
     "crates/omo/mhc-relayd",
     "crates/omo/tmux-core",
     "crates/omo/team-core",
