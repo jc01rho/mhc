@@ -618,7 +618,7 @@ impl ExtensionToolRegistration {
                     if self.reported.insert(tool.name.clone()) {
                         log(&format!(
                             "thread gateway: extension session tool {} was not registered: {why}",
-                            tool.name
+                            super::remote::ports::escape_for_display(&tool.name)
                         ));
                     }
                     false
@@ -697,6 +697,46 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn a_skipped_extension_tool_is_logged_with_its_name_escaped() {
+        let tool = |name: &str| ThreadTool {
+            name: name.into(),
+            description: String::new(),
+            parameters: json!({}),
+            execute: Arc::new(|_, _| Box::pin(async { Value::Null })),
+        };
+        let mut registry = ExtensionToolRegistration::default();
+        let logs = std::sync::Mutex::new(Vec::new());
+        let log = |line: &str| logs.lock().unwrap().push(line.to_owned());
+        let unsafe_name = "ext_a\u{1b}[31m\u{202e}b";
+        let accepted = registry.session_start(
+            vec![
+                tool(unsafe_name),
+                tool(unsafe_name),
+                tool("ext_plain_zz_open"),
+            ],
+            &["ext_plain_zz_open".into()],
+            &log,
+        );
+        assert!(accepted.is_empty());
+        let logs = logs.into_inner().unwrap();
+        assert_eq!(logs.len(), 2);
+        for line in &logs {
+            assert!(
+                !line
+                    .chars()
+                    .any(|character| character.is_control() || character == '\u{202e}'),
+                "{line:?}"
+            );
+        }
+        assert!(
+            logs[0].contains("ext_a\\u001b[31m\\u202eb"),
+            "{:?}",
+            logs[0]
+        );
+        assert!(logs[1].contains("ext_plain_zz_open"), "{:?}", logs[1]);
     }
 
     #[test]
