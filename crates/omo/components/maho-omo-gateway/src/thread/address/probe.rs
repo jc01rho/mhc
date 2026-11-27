@@ -16,6 +16,7 @@ use crate::thread::remote::ports::{
 use super::account::{StatusRound, account_devices};
 use super::device::AccountDevice;
 use super::refusals::{ThreadRefusal, refusal, tool_refusal};
+use super::solo_retry::ask_silent_alone;
 use super::types::{Found, Pin, Resolution};
 
 fn name_of(devices: Option<&[AccountDevice]>, id: &str) -> String {
@@ -33,7 +34,8 @@ fn probed(row: &RemoteSessionRow, resolution: Resolution) -> Found {
 }
 
 /// omo#13037 A4.3.3: a thread id this device and the account listing both miss is looked up with one single-probe query
-/// to each ONLINE device other than this one, in parallel. One holder: its ended row. Several: `ambiguous_target`. None
+/// to each ONLINE device other than this one, in parallel; when none found it, each device that stayed silent is asked
+/// again alone (#14748, `solo_retry.rs`). One holder: its ended row. Several: `ambiguous_target`. None
 /// and a device stayed silent: `device_unanswered`. None, every device answered: `not_found`. `None` when this device's
 /// service makes no single probe: the caller answers as before.
 pub async fn probe_across(
@@ -61,7 +63,16 @@ pub async fn probe_across(
             async move { (id, pending.await) }
         })
         .collect();
-    let answers = futures::future::join_all(lookups).await;
+    let together = futures::future::join_all(lookups).await;
+    // #14748: when no device found it, each device that stayed silent is asked again alone, one at a time.
+    let answers = if together
+        .iter()
+        .any(|(_, answer)| matches!(answer, RemoteLookupOutcome::Found { .. }))
+    {
+        together
+    } else {
+        ask_silent_alone(remote.sessions.as_ref(), thread, together).await
+    };
     if answers
         .iter()
         .any(|(_, answer)| *answer == RemoteLookupOutcome::Unavailable)

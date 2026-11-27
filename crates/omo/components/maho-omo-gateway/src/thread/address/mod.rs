@@ -11,7 +11,7 @@
 //! Upstream counterpart: omo `packages/omo-senpi/src/components/thread/address/` at `v5.1.83` (`69a1863a457`). One
 //! upstream file maps to one module here: `types.ts` -> `types.rs`, `refusals.ts` -> `refusals.rs`, `device.ts` ->
 //! `device.rs`, `ladder.ts` -> `ladder.rs`, `bare.ts` -> `bare.rs`, `account.ts` -> `account.rs`, `holder.ts` ->
-//! `holder.rs`, `on-device.ts` -> `on_device.rs`, `probe.ts` -> `probe.rs`, `resolve.ts` -> `resolve.rs`, and `index.ts`
+//! `holder.rs`, `on-device.ts` -> `on_device.rs`, `probe.ts` -> `probe.rs`, `solo-retry.ts` -> `solo_retry.rs`, `resolve.ts` -> `resolve.rs`, and `index.ts`
 //! is this module's re-exports. `lazy.ts` is a JS entry-bundle split with no Rust counterpart.
 
 pub mod account;
@@ -23,6 +23,7 @@ pub mod on_device;
 pub mod probe;
 pub mod refusals;
 pub mod resolve;
+pub mod solo_retry;
 pub mod types;
 
 #[cfg(test)]
