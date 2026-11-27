@@ -722,10 +722,10 @@ async fn prompt_that_ran(
         _ => None,
     };
     match &waited {
-        Some(PromptStart::Started(started)) => {
+        Some(PromptStart::Started { delivery }) => {
             prompt.insert(
                 "delivery".to_owned(),
-                serde_json::to_value(started).unwrap_or(Value::Null),
+                serde_json::to_value(delivery).unwrap_or(Value::Null),
             );
             return Ok(PromptOutcome::Prompt(Value::Object(prompt)));
         }

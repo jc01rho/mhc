@@ -877,7 +877,7 @@ impl RemoteSessionsPort for AgentdPorts {
                                     return;
                                 }
                                 let watch_event = match frame {
-                                    Some(EventFrame { seq, event }) => {
+                                    Some(EventFrame { seq, event, .. }) => {
                                         parse_follow_event(seq, event)
                                     }
                                     None => WatchAttachEvent::Ended {

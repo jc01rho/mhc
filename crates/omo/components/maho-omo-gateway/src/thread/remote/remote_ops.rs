@@ -713,17 +713,19 @@ impl FollowRunner {
         if let Some(start) = run_start
             && !run_settled
         {
+            let mut stop_reason = st.last_stop_reason.clone();
             for record in &st.buffer[start + 1..] {
                 if record.get("type").and_then(Value::as_str) == Some("message_end")
                     && let Some(ended) = record.get("message").and_then(Value::as_object)
                     && ended.get("role").and_then(Value::as_str) == Some("assistant")
                 {
-                    st.last_stop_reason = ended
+                    stop_reason = ended
                         .get("stopReason")
                         .and_then(Value::as_str)
                         .map(str::to_owned);
                 }
             }
+            st.last_stop_reason = stop_reason;
         }
         if lane == RemoteFollowLane::Started {
             let by_id = st

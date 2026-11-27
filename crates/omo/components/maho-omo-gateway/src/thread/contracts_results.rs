@@ -73,10 +73,6 @@ pub struct ThreadSummary {
     pub controls: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<ThreadWorktree>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warnings: Option<Vec<ThreadToolFailure>>,
 }
 
 /// A thread as a tool result names it (#14044 step 4a): `thread` is the address every thread tool takes back, and
@@ -132,6 +128,10 @@ pub struct ThreadResultSummary {
     pub error_note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<ThreadWorktree>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<ThreadToolFailure>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
