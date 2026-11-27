@@ -3,9 +3,13 @@
 
 #[path = "argument_source_cases.rs"]
 mod argument_source_cases;
+#[path = "image_placeholder.rs"]
+mod image_placeholder;
 #[path = "image_service.rs"]
 mod image_service;
 #[path = "model_auth.rs"]
 mod model_auth;
 #[path = "native.rs"]
 mod native;
+#[path = "tool_result_description.rs"]
+mod tool_result_description;

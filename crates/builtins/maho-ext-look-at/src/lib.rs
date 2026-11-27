@@ -1,6 +1,7 @@
 pub mod arguments;
 pub mod commands;
 pub mod image_input;
+pub mod image_placeholder;
 pub mod index;
 pub mod model_selector;
 pub mod prompts;

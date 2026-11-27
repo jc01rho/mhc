@@ -71,13 +71,38 @@ fn is_video_block(block: &ContentBlock) -> bool {
     matches!(block, ContentBlock::Image(image) if is_video_mime_type(&image.mime_type))
 }
 
-fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Message> {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImageDowngradeOptions {
+    pub image_description_tool: Option<String>,
+}
+
+pub fn downgrade_unsupported_images(
+    messages: &[Message],
+    model: &Model,
+    options: &ImageDowngradeOptions,
+) -> Vec<Message> {
     use crate::types::InputModality;
     let supports_images = model.input.contains(&InputModality::Image);
     let supports_video = model.input.contains(&InputModality::Video);
     if supports_images && supports_video {
         return messages.to_vec();
     }
+    let tool = options
+        .image_description_tool
+        .as_deref()
+        .filter(|tool| !tool.is_empty());
+    let user_image_placeholder = match tool {
+        Some(tool) => std::borrow::Cow::Owned(format!(
+            "(image omitted: this model cannot see images; {tool} describes an image given its file path)"
+        )),
+        None => std::borrow::Cow::Borrowed(NON_VISION_USER_IMAGE_PLACEHOLDER),
+    };
+    let tool_image_placeholder = match tool {
+        Some(tool) => std::borrow::Cow::Owned(format!(
+            "(tool image omitted: this model cannot see images; call {tool} with the image's file path for a description)"
+        )),
+        None => std::borrow::Cow::Borrowed(NON_VISION_TOOL_IMAGE_PLACEHOLDER),
+    };
 
     messages
         .iter()
@@ -95,10 +120,7 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
                     );
                 }
                 if !supports_images {
-                    content = replace_images_with_placeholder(
-                        &content,
-                        NON_VISION_USER_IMAGE_PLACEHOLDER,
-                    );
+                    content = replace_images_with_placeholder(&content, &user_image_placeholder);
                 }
                 let mut user = user.clone();
                 user.content = UserContent::Blocks(content);
@@ -114,10 +136,7 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
                     );
                 }
                 if !supports_images {
-                    content = replace_images_with_placeholder(
-                        &content,
-                        NON_VISION_TOOL_IMAGE_PLACEHOLDER,
-                    );
+                    content = replace_images_with_placeholder(&content, &tool_image_placeholder);
                 }
                 let mut result = result.clone();
                 result.content = content;
@@ -169,7 +188,8 @@ pub fn transform_messages_with_sources(
     use std::collections::HashMap;
 
     let mut tool_call_id_map: HashMap<String, String> = HashMap::new();
-    let image_aware_messages = downgrade_unsupported_images(messages, model);
+    let image_aware_messages =
+        downgrade_unsupported_images(messages, model, &ImageDowngradeOptions::default());
     let preserve_thinking = options.preserve_thinking.unwrap_or(true);
     let preserve_text_signatures = options.preserve_text_signatures.unwrap_or(false);
     let preserve_unsigned_thinking = options.preserve_unsigned_thinking.unwrap_or(false);
@@ -664,5 +684,99 @@ mod tests {
             &TransformMessagesOptions::default(),
         );
         assert!(transformed.is_empty());
+    }
+
+    fn describing_conversation() -> Vec<Message> {
+        let image = ContentBlock::Image(ImageContent {
+            data: "AAAA".into(),
+            mime_type: "image/png".into(),
+        });
+        vec![
+            Message::User(crate::types::UserMessage {
+                content: UserContent::Blocks(vec![
+                    ContentBlock::text("what is this"),
+                    image.clone(),
+                ]),
+                timestamp: 1,
+                client_message_id: None,
+            }),
+            Message::ToolResult(ToolResultMessage {
+                nested_calls: None,
+                tool_call_id: "call_1".into(),
+                tool_name: "read".into(),
+                content: vec![
+                    ContentBlock::text("Read image file [image/png]"),
+                    image.clone(),
+                    image,
+                ],
+                details: None,
+                usage: None,
+                added_tool_names: None,
+                is_error: false,
+                timestamp: 2,
+            }),
+        ]
+    }
+
+    fn message_texts(message: &Message) -> Vec<String> {
+        let blocks = match message {
+            Message::User(user) => match &user.content {
+                UserContent::Blocks(blocks) => blocks.as_slice(),
+                UserContent::Text(_) => panic!("Expected structured content."),
+            },
+            Message::ToolResult(result) => result.content.as_slice(),
+            _ => panic!("Expected structured content."),
+        };
+        blocks
+            .iter()
+            .map(|block| match block {
+                ContentBlock::Text(text) => text.text.clone(),
+                other => format!("<{}>", other.type_name()),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn names_the_tool_where_a_user_image_and_a_run_of_tool_result_images_were() {
+        let describing_tool = "describe_image";
+        let downgraded = downgrade_unsupported_images(
+            &describing_conversation(),
+            &model_with_input(vec![InputModality::Text]),
+            &ImageDowngradeOptions {
+                image_description_tool: Some(describing_tool.into()),
+            },
+        );
+        let user_texts = message_texts(&downgraded[0]);
+        assert_eq!(user_texts.len(), 2);
+        assert_eq!(user_texts[0], "what is this");
+        assert!(user_texts[1].contains(describing_tool));
+
+        let tool_texts = message_texts(&downgraded[1]);
+        assert_eq!(tool_texts.len(), 2);
+        assert_eq!(tool_texts[0], "Read image file [image/png]");
+        assert!(tool_texts[1].contains(describing_tool));
+    }
+
+    #[test]
+    fn leaves_the_images_of_a_model_with_image_input_in_place() {
+        let downgraded = downgrade_unsupported_images(
+            &describing_conversation(),
+            &model_with_input(vec![InputModality::Text, InputModality::Image]),
+            &ImageDowngradeOptions {
+                image_description_tool: Some("describe_image".into()),
+            },
+        );
+        let texts: Vec<Vec<String>> = downgraded.iter().map(message_texts).collect();
+        assert_eq!(
+            texts,
+            vec![
+                vec!["what is this".to_owned(), "<image>".to_owned()],
+                vec![
+                    "Read image file [image/png]".to_owned(),
+                    "<image>".to_owned(),
+                    "<image>".to_owned(),
+                ],
+            ]
+        );
     }
 }
