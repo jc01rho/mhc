@@ -6,6 +6,8 @@ use std::sync::atomic::AtomicU64;
 /// Each tool call in these modules takes its own call id, so no two calls share a receipt key.
 pub(crate) static NEXT_CALL: AtomicU64 = AtomicU64::new(1);
 
+#[path = "agentd_client_tests.rs"]
+mod agentd_client_tests;
 #[path = "gateway_receipt_tests.rs"]
 mod gateway_receipt_tests;
 #[path = "gateway_schema_tests.rs"]

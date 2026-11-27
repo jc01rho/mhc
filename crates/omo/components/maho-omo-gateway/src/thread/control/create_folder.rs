@@ -160,6 +160,8 @@ mod tests {
                 cwd: Some("relative".into()),
                 session_path: Some("/sessions/a.jsonl".into()),
                 fork_from: None,
+                remote: None,
+                remote_session: None,
             },
             creates: false,
             previous_name: Some("kept".into()),
