@@ -48,7 +48,6 @@ fn send(delivery_id: &str, now: i64) -> EnqueueRequest {
         body: "alert".into(),
         mode: GatewayDeliveryMode::FollowUp,
         expected_turn_id: None,
-        binding: None,
         receipt: ReceiptRef {
             idempotency_key: delivery_id.into(),
             args_hash: delivery_id.into(),
@@ -289,10 +288,10 @@ fn a_repeat_under_a_collapse_key_supersedes_the_queued_one_whose_retry_replays_t
     );
     assert!(inbox.join("d-2").exists(), "the repeat keeps its wake");
     match store
-        .recover_delivery(1_002, "session:notifier", "d-1", "d-1")
-        .expect("recover")
+        .enqueue(&keyed("d-1", 1_002, "alert"))
+        .expect("retry under the superseded row's key")
     {
-        Some(EnqueueOutcome::Replay { result }) => {
+        EnqueueOutcome::Replay { result } => {
             assert_eq!(result["kind"], "error");
             assert_eq!(result["error"]["code"], "not_resumable");
         }

@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use super::contracts_state::{ThreadActivity, ThreadModel, ThreadRetryWait, ThreadState};
 use super::control::port::CloseGraceful;
 use super::errors::ThreadToolFailure;
-use super::store_relay_ops::{BindingRecord, OutboxRow};
 use super::types::DeliveryWait;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -392,70 +391,6 @@ pub struct ThreadArchiveOk {
     #[serde(flatten)]
     pub thread: ThreadResultSummary,
     pub archived: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ThreadBindOk {
-    pub binding: BindingRecord,
-    pub deduplicated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ThreadUnbindOk {
-    pub binding: BindingRecord,
-    pub already_closed: bool,
-    pub in_flight: Vec<String>,
-    pub deduplicated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ThreadRebindOk {
-    pub binding: BindingRecord,
-    pub closed: Vec<String>,
-    pub deduplicated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ThreadBindingsOk {
-    pub bindings: Vec<BindingRecord>,
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ThreadReportOk {
-    pub binding_id: String,
-    pub revision: i64,
-    pub event: String,
-    pub cursor: Option<i64>,
-    pub reply_token: Option<String>,
-    pub armed: bool,
-    pub deduplicated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ThreadOutboxOk {
-    pub binding_id: String,
-    pub revision: i64,
-    pub status: String,
-    pub rows: Vec<OutboxRow>,
-    pub next_cursor: i64,
-    pub acked_cursor: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ThreadOutboxAckOk {
-    pub binding_id: String,
-    pub acked_cursor: i64,
-    pub changed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ThreadAnswerOk {
-    pub binding_id: String,
-    pub cursor: i64,
-    pub session_durable_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub answered_by: Option<super::types::ExternalAuthor>,
 }
 
 /// `[title](omo-thread://v1/<thread_id>)`, pasted when telling the user about the thread. The label is a session name

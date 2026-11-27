@@ -16,10 +16,10 @@ use super::errors::ThreadToolFailure;
 use super::provenance_resolver::{ProvenanceRuntime, resolve_provenance};
 use super::result::{engine_failure, result_from_row};
 use super::store_api::GatewayStoreApi;
-use super::store_relay_ops::hash_args;
+use super::store_ops::hash_args;
 use super::types::{
-    DeliveryEnvelope, EnqueueOutcome, EnqueueRequest, EnvelopeOrigin, ExternalAuthor,
-    GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender, Provenance, ReceiptRef,
+    DeliveryEnvelope, EnqueueOutcome, EnqueueRequest, EnvelopeOrigin, GatewayDeliveryMode,
+    GatewayDeliveryResult, GatewaySender, Provenance, ReceiptRef,
 };
 
 /// The endpoint serving a thread right now, or null when nothing answers for it.
@@ -92,7 +92,6 @@ struct SenderFacts {
     cause: Option<String>,
     actor: String,
     origin: EnvelopeOrigin,
-    binding: Option<super::types::BindingRef>,
 }
 
 fn sender_facts(sender: &GatewaySender, resolved: Provenance) -> SenderFacts {
@@ -124,7 +123,6 @@ fn sender_facts(sender: &GatewaySender, resolved: Provenance) -> SenderFacts {
             origin: EnvelopeOrigin::Session {
                 session: durable_id.clone(),
             },
-            binding: None,
         },
         GatewaySender::Cli { uid, user } => {
             let principal = format!("cli:{uid}");
@@ -139,48 +137,20 @@ fn sender_facts(sender: &GatewaySender, resolved: Provenance) -> SenderFacts {
                 origin: EnvelopeOrigin::Session {
                     session: user.clone(),
                 },
-                binding: None,
-            }
-        }
-        GatewaySender::External {
-            origin,
-            binding_id,
-            binding_revision,
-        } => {
-            let principal = format!("binding:{binding_id}");
-            // Each human in a bound thread gets their own pair bucket; a sender with no author shares the binding's.
-            let rate_principal = match &origin.author {
-                Some(author) => format!("{principal}#author:{}", author.platform_user_id),
-                None => principal.clone(),
-            };
-            SenderFacts {
-                provenance,
-                principal,
-                rate_principal,
-                node: format!("binding:{binding_id}"),
-                turn: None,
-                cause: None,
-                actor: origin.account_id.clone(),
-                origin: EnvelopeOrigin::External {
-                    external: origin.clone(),
-                },
-                binding: Some(super::types::BindingRef {
-                    binding_id: binding_id.clone(),
-                    revision: *binding_revision,
-                }),
             }
         }
     }
 }
 
-/// The arguments a delivery receipt is keyed by: a retry with the same ones replays, different ones conflict.
+/// The arguments a delivery receipt is keyed by: a retry with the same ones replays, different ones conflict. The hash
+/// keeps the `binding: null` and `author: null` every send carried before the binding removal (omo#14312), so a receipt
+/// written by the previous build still replays its unchanged retry instead of answering idempotency_conflict (omo#14623
+/// review M1).
 pub fn delivery_args_hash(
     target: &str,
     text: &str,
     mode: GatewayDeliveryMode,
     expected_turn_id: Option<i64>,
-    binding: Option<&super::types::BindingRef>,
-    author: Option<&ExternalAuthor>,
     collapse_key: Option<&str>,
 ) -> String {
     let mut fields = serde_json::Map::new();
@@ -191,18 +161,8 @@ pub fn delivery_args_hash(
         "expected_turn_id".into(),
         expected_turn_id.map_or(Value::Null, Value::from),
     );
-    fields.insert(
-        "binding".into(),
-        binding.map_or(Value::Null, |binding| {
-            serde_json::to_value(binding).unwrap_or(Value::Null)
-        }),
-    );
-    fields.insert(
-        "author".into(),
-        author.map_or(Value::Null, |author| {
-            serde_json::to_value(author).unwrap_or(Value::Null)
-        }),
-    );
+    fields.insert("binding".into(), Value::Null);
+    fields.insert("author".into(), Value::Null);
     if let Some(collapse_key) = collapse_key {
         fields.insert(
             "collapse_key".into(),
@@ -294,10 +254,6 @@ impl GatewayEngine {
             .idempotency_key
             .clone()
             .unwrap_or_else(|| format!("auto:{delivery_id}"));
-        let author = match &request.sender {
-            GatewaySender::External { origin, .. } => origin.author.as_ref(),
-            _ => None,
-        };
         let enqueue = EnqueueRequest {
             provenance: facts.provenance.clone(),
             now: self.now(),
@@ -314,7 +270,6 @@ impl GatewayEngine {
             body: request.text.clone(),
             mode,
             expected_turn_id: request.expected_turn_id,
-            binding: facts.binding.clone(),
             receipt: ReceiptRef {
                 idempotency_key: idempotency_key.clone(),
                 args_hash: delivery_args_hash(
@@ -322,8 +277,6 @@ impl GatewayEngine {
                     &request.text,
                     mode,
                     request.expected_turn_id,
-                    facts.binding.as_ref(),
-                    author,
                     request.collapse_key.as_deref(),
                 ),
             },
@@ -521,30 +474,12 @@ mod tests {
 
     #[test]
     fn a_delivery_receipt_hash_changes_with_its_arguments() {
-        let left = delivery_args_hash(
-            "receiver",
-            "hello",
-            GatewayDeliveryMode::Auto,
-            None,
-            None,
-            None,
-            None,
-        );
-        let right = delivery_args_hash(
-            "receiver",
-            "hello",
-            GatewayDeliveryMode::Auto,
-            None,
-            None,
-            None,
-            None,
-        );
+        let left = delivery_args_hash("receiver", "hello", GatewayDeliveryMode::Auto, None, None);
+        let right = delivery_args_hash("receiver", "hello", GatewayDeliveryMode::Auto, None, None);
         let other = delivery_args_hash(
             "receiver",
             "hello",
             GatewayDeliveryMode::FollowUp,
-            None,
-            None,
             None,
             None,
         );
@@ -552,8 +487,6 @@ mod tests {
             "receiver",
             "hello",
             GatewayDeliveryMode::Auto,
-            None,
-            None,
             None,
             Some("alert"),
         );

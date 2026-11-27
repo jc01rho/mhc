@@ -510,9 +510,6 @@ const DELIVERY_COLUMNS: &[&str] = &[
     "created_at",
     "updated_at",
     "expires_at",
-    "binding_id",
-    "binding_revision",
-    "actor_user_id",
     "ledger_id",
     "verbatim_text",
     "verbatim_display_text",
@@ -571,9 +568,6 @@ fn row_from_record(record: &SqlRow) -> DeliveryRow {
         created_at: row_i64(record, "created_at"),
         updated_at: row_i64(record, "updated_at"),
         expires_at: row_i64(record, "expires_at"),
-        binding_id: row_opt_str(record, "binding_id"),
-        binding_revision: row_opt_i64(record, "binding_revision"),
-        actor_user_id: row_opt_str(record, "actor_user_id"),
         ledger_id: row_opt_str(record, "ledger_id"),
         verbatim_text: row_opt_str(record, "verbatim_text"),
         verbatim_display_text: row_opt_str(record, "verbatim_display_text"),
@@ -684,9 +678,6 @@ fn insert_delivery(ctx: &StoreContext, row: &DeliveryRow) -> Result<(), StoreErr
             v_i64(row.created_at),
             v_i64(row.updated_at),
             v_i64(row.expires_at),
-            v_opt_str(row.binding_id.clone()),
-            v_opt_i64(row.binding_revision),
-            v_opt_str(row.actor_user_id.clone()),
             v_opt_str(row.ledger_id.clone()),
             v_opt_str(row.verbatim_text.clone()),
             v_opt_str(row.verbatim_display_text.clone()),
@@ -917,7 +908,6 @@ struct ReceiptRecord {
     delivery_id: Option<String>,
     owner_instance: String,
     result: Option<String>,
-    expires_at: i64,
 }
 
 fn select_receipt(
@@ -926,7 +916,7 @@ fn select_receipt(
     key: &str,
 ) -> Result<Option<ReceiptRecord>, StoreError> {
     let found = ctx.one(
-        "SELECT args_hash, status, delivery_id, owner_instance, result, expires_at FROM receipts WHERE principal = ? AND operation = 'deliver' AND idempotency_key = ?",
+        "SELECT args_hash, status, delivery_id, owner_instance, result FROM receipts WHERE principal = ? AND operation = 'deliver' AND idempotency_key = ?",
         &[v_str(principal), v_str(key)],
     )?;
     Ok(found.map(|row| ReceiptRecord {
@@ -935,7 +925,6 @@ fn select_receipt(
         delivery_id: row_opt_str(&row, "delivery_id"),
         owner_instance: row_str(&row, "owner_instance"),
         result: row_opt_str(&row, "result"),
-        expires_at: row_i64(&row, "expires_at"),
     }))
 }
 
@@ -1215,39 +1204,7 @@ fn take_pair_token(
     Ok(None)
 }
 
-fn check_binding(
-    ctx: &StoreContext,
-    request: &EnqueueRequest,
-) -> Result<Result<Option<i64>, EnqueueOutcome>, StoreError> {
-    let Some(binding) = &request.binding else {
-        return Ok(Ok(None));
-    };
-    let found = ctx.one(
-        "SELECT revision, status, session_durable_id, direction_inbound, expires_at FROM bindings WHERE binding_id = ?",
-        &[v_str(&binding.binding_id)],
-    )?;
-    let expires_at = found
-        .as_ref()
-        .and_then(|row| row_opt_str(row, "expires_at"))
-        .and_then(|text| parse_rfc3339_millis(&text));
-    let valid = found.as_ref().is_some_and(|row| {
-        row_str(row, "status") == "active"
-            && row_i64(row, "revision") == binding.revision
-            && row_str(row, "session_durable_id") == request.target_durable_id
-            && row_i64(row, "direction_inbound") == 1
-            && expires_at.is_none_or(|expires| expires > request.now)
-    });
-    if !valid {
-        return Ok(Err(refused(
-            "invalid_arguments",
-            "The binding is not active for this session at this revision.",
-            Some(serde_json::json!({ "binding": binding.binding_id })),
-        )));
-    }
-    Ok(Ok(expires_at))
-}
-
-/// A minimal RFC 3339 reader for the binding columns: `YYYY-MM-DDTHH:MM:SS[.fff]Z`.
+/// A minimal RFC 3339 reader: `YYYY-MM-DDTHH:MM:SS[.fff]Z`.
 pub fn parse_rfc3339_millis(text: &str) -> Option<i64> {
     let (date, rest) = text.split_once('T')?;
     let mut date_parts = date.split('-');
@@ -1361,13 +1318,6 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             committed = true;
             return Ok(outcome);
         }
-        let binding_expiry = match check_binding(ctx, request)? {
-            Ok(expiry) => expiry,
-            Err(refusal) => {
-                rollback_quietly(ctx);
-                return Ok(refusal);
-            }
-        };
         // Expired queued rows of this target are refused first, so neither a collapse nor the cap counts them
         // (omo#14466).
         let expired = refuse_expired_queued(
@@ -1460,19 +1410,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             hop: placement.hop,
             created_at: request.now,
             updated_at: request.now,
-            expires_at: QUEUED_TTL_MS
-                .saturating_add(request.now)
-                .min(binding_expiry.unwrap_or(i64::MAX)),
-            binding_id: request
-                .binding
-                .as_ref()
-                .map(|binding| binding.binding_id.clone()),
-            binding_revision: request.binding.as_ref().map(|binding| binding.revision),
-            actor_user_id: request
-                .origin
-                .external()
-                .and_then(|origin| origin.author.as_ref())
-                .and_then(|author| author.user_id.clone()),
+            expires_at: request.now.saturating_add(QUEUED_TTL_MS),
             ledger_id: None,
             verbatim_text: None,
             verbatim_display_text: None,
@@ -2046,97 +1984,6 @@ pub fn abandon_receipt(
     })
 }
 
-/// The stored result of a completed receipt, and the row facts its arguments hash was taken over.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DeliveryReceipt {
-    pub args_hash: String,
-    pub completed: bool,
-    pub result: Value,
-    pub target_durable_id: String,
-    pub binding_revision: Option<i64>,
-}
-
-pub fn delivery_receipt(
-    ctx: &StoreContext,
-    now: i64,
-    principal: &str,
-    idempotency_key: &str,
-) -> Result<Option<DeliveryReceipt>, StoreError> {
-    let Some(receipt) = select_receipt(ctx, principal, idempotency_key)? else {
-        return Ok(None);
-    };
-    if receipt.expires_at <= now {
-        return Ok(None);
-    }
-    let Some(delivery_id) = receipt.delivery_id.clone() else {
-        return Ok(None);
-    };
-    let Some(row) = select_row(ctx, &delivery_id)? else {
-        return Ok(None);
-    };
-    let completed = receipt.status == "completed" && receipt.result.is_some();
-    Ok(Some(DeliveryReceipt {
-        args_hash: receipt.args_hash,
-        completed,
-        result: if completed {
-            serde_json::from_str(receipt.result.as_deref().unwrap_or("null")).unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        },
-        target_durable_id: row.target_durable_id,
-        binding_revision: row.binding_revision,
-    }))
-}
-
-pub fn recover_delivery(
-    ctx: &StoreContext,
-    now: i64,
-    principal: &str,
-    idempotency_key: &str,
-    args_hash: &str,
-) -> Result<Option<EnqueueOutcome>, StoreError> {
-    transaction(ctx, "recover_delivery", || {
-        let Some(receipt) = select_receipt(ctx, principal, idempotency_key)? else {
-            return Ok(None);
-        };
-        if receipt.expires_at <= now {
-            return Ok(None);
-        }
-        let request = EnqueueRequest {
-            provenance: super::types::Provenance {
-                workspace: "unclassified".into(),
-                project: "recover".into(),
-                lane: None,
-                session: None,
-            },
-            now,
-            delivery_id: receipt.delivery_id.clone().unwrap_or_default(),
-            target_durable_id: String::new(),
-            sender_principal: principal.to_owned(),
-            rate_principal: None,
-            sender_node: String::new(),
-            sender_turn: None,
-            cause_delivery_id: None,
-            claimed_root_id: None,
-            origin: super::types::EnvelopeOrigin::Session {
-                session: String::new(),
-            },
-            actor: String::new(),
-            body: String::new(),
-            mode: super::types::GatewayDeliveryMode::Auto,
-            expected_turn_id: None,
-            binding: None,
-            receipt: super::types::ReceiptRef {
-                idempotency_key: idempotency_key.to_owned(),
-                args_hash: args_hash.to_owned(),
-            },
-            endpoint_kind: None,
-            collapse_key: None,
-        };
-        Ok(Some(classify_receipt(ctx, &request, &receipt)?))
-    })
-}
-
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeliveryView {
     pub row: DeliveryRow,
@@ -2182,15 +2029,7 @@ pub fn is_referenced(ctx: &StoreContext, durable_id: &str) -> Result<bool, Store
     if open > 0 {
         return Ok(true);
     }
-    let bindings = ctx
-        .one(
-            "SELECT COUNT(*) AS n FROM bindings WHERE session_durable_id = ? AND status = 'active'",
-            &[v_str(durable_id)],
-        )?
-        .as_ref()
-        .map(|row| row_i64(row, "n"))
-        .unwrap_or(0);
-    Ok(bindings > 0 || !marker_names(ctx, durable_id).is_empty())
+    Ok(!marker_names(ctx, durable_id).is_empty())
 }
 
 pub fn journal_mode(ctx: &StoreContext) -> Result<String, StoreError> {

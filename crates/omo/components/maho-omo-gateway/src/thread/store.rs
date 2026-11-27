@@ -23,17 +23,13 @@ use super::store_extensions::{
     StoreExtensionRegistration, StoreExtensionResult,
 };
 use super::store_ops::{
-    DeliveryReceipt, DeliveryView, SqlAccess, StoreContext, StoreError, in_checked_snapshot,
-    migrate, open_connection, self_identity_now,
-};
-use super::store_relay_ops::{
-    AnswerClaim, AnswerClaimRef, AnswerDelivered, BindInput, BindingRecord, BindingsFilter,
-    OutboxPage, PriorAnswer, RelayOutcome, ReportOpRequest, ReportOpResult,
+    DeliveryView, SqlAccess, StoreContext, StoreError, in_checked_snapshot, migrate,
+    open_connection, self_identity_now,
 };
 use super::types::{
-    ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, ExternalAuthor,
-    GatewayStoreConfig, GatewayStoreStats, ProcessIdentity, ReconcileOutcome, ReconcileRequest,
-    RecordOutcomeRequest, RefusalReason,
+    ClaimOutcome, ClaimRequest, DeliveryRow, EnqueueOutcome, EnqueueRequest, GatewayStoreConfig,
+    GatewayStoreStats, ProcessIdentity, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest,
+    RefusalReason,
 };
 use crate::paths::gateway_database_path;
 
@@ -362,27 +358,6 @@ impl GatewayStoreApi for SqliteGatewayStore {
         self.checked(|ctx| super::store_ops::delivery_view(ctx, delivery_id))
     }
 
-    fn delivery_receipt(
-        &self,
-        now: i64,
-        principal: &str,
-        idempotency_key: &str,
-    ) -> Result<Option<DeliveryReceipt>, StoreError> {
-        self.checked(|ctx| super::store_ops::delivery_receipt(ctx, now, principal, idempotency_key))
-    }
-
-    fn recover_delivery(
-        &self,
-        now: i64,
-        principal: &str,
-        idempotency_key: &str,
-        args_hash: &str,
-    ) -> Result<Option<EnqueueOutcome>, StoreError> {
-        self.checked(|ctx| {
-            super::store_ops::recover_delivery(ctx, now, principal, idempotency_key, args_hash)
-        })
-    }
-
     fn list(
         &self,
         target_durable_id: Option<&str>,
@@ -414,162 +389,6 @@ impl GatewayStoreApi for SqliteGatewayStore {
             .unwrap_or_default()
     }
 
-    fn bind(&self, now: i64, input: &BindInput) -> Result<RelayOutcome<BindingRecord>, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::bind_thread(ctx, now, input))
-    }
-
-    fn unbind(
-        &self,
-        now: i64,
-        binding_id: &str,
-        expected_revision: i64,
-    ) -> Result<RelayOutcome<(BindingRecord, bool, Vec<String>)>, StoreError> {
-        self.checked(|ctx| {
-            super::store_relay_ops::unbind_thread(ctx, now, binding_id, expected_revision)
-        })
-    }
-
-    fn rebind(
-        &self,
-        now: i64,
-        binding_id: &str,
-        expected_revision: i64,
-        session_durable_id: &str,
-    ) -> Result<RelayOutcome<(BindingRecord, Vec<String>)>, StoreError> {
-        self.checked(|ctx| {
-            super::store_relay_ops::rebind_thread(
-                ctx,
-                now,
-                binding_id,
-                expected_revision,
-                session_durable_id,
-            )
-        })
-    }
-
-    fn list_bindings(
-        &self,
-        now: i64,
-        filter: &BindingsFilter,
-        cursor: Option<&str>,
-        limit: Option<i64>,
-    ) -> Result<RelayOutcome<(Vec<BindingRecord>, Option<String>)>, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::list_bindings(ctx, now, filter, cursor, limit))
-    }
-
-    fn binding_view(
-        &self,
-        now: i64,
-        binding_id: &str,
-    ) -> Result<Option<BindingRecord>, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::binding_view(ctx, now, binding_id))
-    }
-
-    fn report(
-        &self,
-        now: i64,
-        request: &ReportOpRequest,
-    ) -> Result<RelayOutcome<ReportOpResult>, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::report_event(ctx, now, request))
-    }
-
-    fn emit_completions(
-        &self,
-        now: i64,
-        session_durable_id: &str,
-        outcome: &str,
-        through_arm_seq: Option<i64>,
-    ) -> Result<Vec<(String, i64)>, StoreError> {
-        self.checked(|ctx| {
-            super::store_relay_ops::emit_completions(
-                ctx,
-                now,
-                session_durable_id,
-                outcome,
-                through_arm_seq,
-            )
-        })
-    }
-
-    fn pending_completion_arms(&self, durable_id: &str) -> Result<i64, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::pending_completion_arms(ctx, durable_id))
-    }
-
-    fn latest_completion_arm(&self, durable_id: &str) -> Result<Option<i64>, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::latest_completion_arm(ctx, durable_id))
-    }
-
-    fn read_outbox(
-        &self,
-        now: i64,
-        binding_id: &str,
-        after_cursor: Option<i64>,
-        limit: Option<i64>,
-    ) -> Result<RelayOutcome<OutboxPage>, StoreError> {
-        self.checked(|ctx| {
-            super::store_relay_ops::read_outbox(ctx, now, binding_id, after_cursor, limit, false)
-        })
-    }
-
-    fn ack_outbox(
-        &self,
-        now: i64,
-        binding_id: &str,
-        cursor: i64,
-        provider_message_id: Option<&str>,
-    ) -> Result<RelayOutcome<(i64, bool)>, StoreError> {
-        self.checked(|ctx| {
-            super::store_relay_ops::ack_outbox(ctx, now, binding_id, cursor, provider_message_id)
-        })
-    }
-
-    fn claim_answer(
-        &self,
-        now: i64,
-        binding_id: &str,
-        reply_token: &str,
-        answer: &str,
-        answered_by: Option<&ExternalAuthor>,
-    ) -> Result<RelayOutcome<AnswerClaim>, StoreError> {
-        self.checked(|ctx| {
-            super::store_relay_ops::claim_answer(
-                ctx,
-                now,
-                binding_id,
-                reply_token,
-                answer,
-                answered_by,
-            )
-        })
-    }
-
-    fn release_answer(&self, claim: &AnswerClaimRef) -> Result<bool, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::release_answer(ctx, claim))
-    }
-
-    fn confirm_answer(&self, delivered: &AnswerDelivered) -> Result<bool, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::confirm_answer(ctx, delivered))
-    }
-
-    fn mark_prior_delivered(
-        &self,
-        claim: &AnswerClaimRef,
-        prior: &PriorAnswer,
-    ) -> Result<bool, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::mark_prior_delivered(ctx, claim, prior))
-    }
-
-    fn close_question(
-        &self,
-        now: i64,
-        session_durable_id: &str,
-        ui_request_id: &str,
-    ) -> Result<i64, StoreError> {
-        self.checked(|ctx| {
-            super::store_relay_ops::close_question(ctx, now, session_durable_id, ui_request_id)
-        })
-    }
-
     fn register_incarnation(
         &self,
         durable_id: &str,
@@ -578,7 +397,7 @@ impl GatewayStoreApi for SqliteGatewayStore {
         endpoint_kind: Option<&str>,
     ) -> Result<(), StoreError> {
         self.checked(|ctx| {
-            super::store_relay_ops::register_incarnation(
+            super::store_ownership::register_incarnation(
                 ctx,
                 durable_id,
                 incarnation,
@@ -589,14 +408,14 @@ impl GatewayStoreApi for SqliteGatewayStore {
     }
 
     fn clear_endpoint(&self, durable_id: &str, incarnation: &str) -> Result<(), StoreError> {
-        self.checked(|ctx| super::store_relay_ops::clear_endpoint(ctx, durable_id, incarnation))
+        self.checked(|ctx| super::store_ownership::clear_endpoint(ctx, durable_id, incarnation))
     }
 
     fn session_endpoint(
         &self,
         durable_id: &str,
     ) -> Result<Option<(String, String, String)>, StoreError> {
-        self.checked(|ctx| super::store_relay_ops::session_endpoint(ctx, durable_id))
+        self.checked(|ctx| super::store_ownership::session_endpoint(ctx, durable_id))
     }
 
     fn register_store_extension(

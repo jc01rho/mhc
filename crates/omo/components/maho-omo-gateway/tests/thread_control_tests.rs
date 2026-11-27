@@ -749,7 +749,6 @@ fn thread_list_reports_engine_version_waiting_on_unnamed_archived_incomplete_and
             body: "ping".into(),
             mode: GatewayDeliveryMode::FollowUp,
             expected_turn_id: None,
-            binding: None,
             receipt: ReceiptRef {
                 idempotency_key: "d-backlog-1".into(),
                 args_hash: "d-backlog-1".into(),

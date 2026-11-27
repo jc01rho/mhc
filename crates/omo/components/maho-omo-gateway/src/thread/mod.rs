@@ -1,5 +1,4 @@
-//! The session gateway: durable delivery between sessions, and the relay that binds a session to a
-//! conversation thread.
+//! The session gateway: durable delivery between sessions.
 //!
 //! Upstream counterpart: `packages/omo-senpi/src/components/thread/`. One upstream file maps to one
 //! module here (`gateway/<name>.ts` -> `thread/<name>.rs`).
@@ -46,7 +45,6 @@ pub mod provenance_resolver;
 pub mod read_item;
 pub mod read_ops;
 pub mod reader;
-pub mod relay;
 pub mod remote;
 pub mod result;
 pub mod run_alerts;
@@ -63,7 +61,7 @@ pub use store_extension_session_ops as extension_session_ops;
 pub mod store_extension_session_ops;
 pub mod store_extensions;
 pub mod store_ops;
-pub mod store_relay_ops;
+pub mod store_ownership;
 pub mod store_woken_facade;
 pub mod store_woken_ops;
 pub mod store_worker;

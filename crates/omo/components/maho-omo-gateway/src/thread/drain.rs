@@ -482,9 +482,6 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             expires_at: 9,
-            binding_id: None,
-            binding_revision: None,
-            actor_user_id: None,
             ledger_id: None,
             verbatim_text: None,
             verbatim_display_text: None,
@@ -565,7 +562,6 @@ mod tests {
                     body: id.into(),
                     mode: GatewayDeliveryMode::Auto,
                     expected_turn_id: None,
-                    binding: None,
                     receipt: ReceiptRef {
                         idempotency_key: id.into(),
                         args_hash: id.into(),
