@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::contracts_state::{ThreadActivity, ThreadModel, ThreadRetryWait, ThreadState};
 use super::control::port::CloseGraceful;
 use super::errors::ThreadToolFailure;
-use super::types::DeliveryWait;
+use super::types::{DeliveryWait, ReceiptOutcome};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -261,6 +261,14 @@ pub struct ThreadReadOk {
     pub error_note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+}
+
+/// A query-only read of the caller's original delivery; the transcript read result stays unchanged (omo#14623).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadReceiptOk {
+    pub thread: String,
+    pub delivery_id: String,
+    pub outcome: ReceiptOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

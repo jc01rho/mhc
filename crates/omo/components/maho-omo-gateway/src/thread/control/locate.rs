@@ -9,13 +9,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use maho_thread_address_core::row_key;
+use serde_json::json;
 
 use crate::thread::adapter::BoxFuture;
 use crate::thread::address::{
     ResolveContext, ResolveOptions as AddressResolveOptions, ResolvedWhere, resolve_address,
 };
 use crate::thread::address_book::{
-    AddressEntry, DiskSession, assemble_address_book, find_disk_sessions,
+    AddressEntry, DiskSession, HostSessionStatus, assemble_address_book, find_disk_sessions,
 };
 use crate::thread::addressing::{
     ResolveOptions, ThreadAddressEntry, resolve_target, to_thread_address_entries,
@@ -180,6 +181,17 @@ pub async fn locate_control(call: &ThreadCall, address: &str, all_scope: bool) -
                         device: None,
                     };
                 };
+                if session.status == Some(HostSessionStatus::Opening) {
+                    return LocatedControl::Error(thread_tool_failure(
+                        "host_unavailable",
+                        format!(
+                            "Thread {} is opening on its host and cannot accept controls yet.",
+                            resolved.thread
+                        ),
+                        "Retry once the thread is open.",
+                        Some(json!({ "thread": resolved.thread, "reason": "session_opening" })),
+                    ));
+                }
                 let entries = to_thread_address_entries(&call.book);
                 let visible = if all_scope {
                     entries

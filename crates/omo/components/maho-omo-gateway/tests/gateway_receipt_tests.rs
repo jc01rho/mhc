@@ -17,6 +17,7 @@ use maho_omo_gateway::thread::constants::{
 use maho_omo_gateway::thread::engine::{
     GatewayDeliverRequest, GatewayEngine, GatewayEngineOptions, GatewayResolution, GatewayTarget,
 };
+use maho_omo_gateway::thread::remote::receipt::read_receipt;
 use maho_omo_gateway::thread::store::{
     GatewayStoreOptions, SqliteGatewayStore, create_gateway_store,
 };
@@ -967,4 +968,60 @@ fn a_remote_outcome_for_another_device_thread_or_key_is_not_recorded() {
         .expect("lookup")
         .expect("the retained receipt");
     assert!(stored.result.get("outcome").is_none());
+}
+
+#[test]
+fn a_receipt_read_reports_the_callers_own_delivery_to_exactly_that_thread() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let clock = clock(1_000);
+    let store = instance(&dir, "instance-a", &clock);
+    store
+        .enqueue(&send("d-1", "target", 1_000))
+        .expect("enqueue");
+    let read = |caller: &str, thread: &str| read_receipt(&*store, caller, thread, "d-1");
+    assert_eq!(
+        read("notifier", "target"),
+        json!({
+            "kind": "ok",
+            "thread": "target",
+            "delivery_id": "d-1",
+            "outcome": { "kind": "pending" },
+        })
+    );
+    for (caller, thread) in [("notifier", "other"), ("stranger", "target")] {
+        assert_eq!(
+            read(caller, thread)["outcome"],
+            json!({ "kind": "outcome_unavailable" }),
+            "{caller} reading {thread}"
+        );
+    }
+}
+
+#[test]
+fn a_receipt_read_of_a_remote_send_reports_the_outcome_its_retained_receipt_holds() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let clock = clock(1_000);
+    let store = instance(&dir, "instance-a", &clock);
+    let connection =
+        rusqlite::Connection::open(gateway_database_path(dir.path())).expect("another connection");
+    remote_receipt_row(&connection, None);
+    let read = |thread: &str| read_receipt(&*store, "caller", thread, "d-1")["outcome"].clone();
+    assert_eq!(
+        read("t-1"),
+        json!({ "kind": "outcome_unavailable" }),
+        "the peer has told nothing yet"
+    );
+    store
+        .reconcile_remote_receipt(&reconcile(ReceiptOutcome::Applied, "peer", "key-1"))
+        .expect("reconcile");
+    assert_eq!(
+        read("t-1"),
+        json!({ "kind": "applied" }),
+        "a terminal fact outlives a read that learns nothing"
+    );
+    assert_eq!(
+        read("t-2"),
+        json!({ "kind": "outcome_unavailable" }),
+        "another thread is not that send's target"
+    );
 }
