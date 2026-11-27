@@ -325,6 +325,85 @@ fn an_auto_row_decided_as_a_start_is_steered_into_a_run_that_began_before_its_ad
 }
 
 #[test]
+fn an_auto_row_decided_as_a_steer_is_steered_into_the_turn_that_replaced_the_one_it_was_decided_on()
+{
+    let fixture = fixture();
+    {
+        let mut world = fixture.world.lock().expect("world");
+        world.phase = RuntimePhase::MidTurn;
+        world.epoch = 1;
+    }
+    send(&fixture.store, "d-1", GatewayDeliveryMode::Auto, None);
+    let queued = row(&fixture.store, "d-1");
+    let claimed = claim(&fixture.store, "d-1", EffectiveLane::Steer);
+    fixture.world.lock().expect("world").epoch = 2;
+
+    let mut out = DrainOutputs::default();
+    let step = fixture
+        .drain
+        .admit_claimed(&mut out, &queued, &claimed, false)
+        .expect("admit");
+
+    assert_eq!(step, AdmitStep::Next);
+    assert_eq!(
+        out.admitted,
+        vec![Admission {
+            delivery_id: "d-1".into(),
+            kind: ExternalAdmissionKind::Steered
+        }]
+    );
+    assert_eq!(
+        fixture.world.lock().expect("world").calls,
+        vec![("steer", "d-1".to_owned())]
+    );
+    let steered = row(&fixture.store, "d-1");
+    assert_eq!(steered.state, DeliveryState::Admitted);
+    assert_eq!(steered.mode_effective, Some(EffectiveLane::Steer));
+}
+
+#[test]
+fn deliveries_to_a_running_turn_are_steered_together_in_send_order() {
+    let fixture = fixture();
+    {
+        let mut world = fixture.world.lock().expect("world");
+        world.phase = RuntimePhase::MidTurn;
+        world.epoch = 1;
+    }
+    for id in ["d-1", "d-2", "d-3"] {
+        send(&fixture.store, id, GatewayDeliveryMode::Auto, None);
+    }
+
+    let result = start_pass(&fixture);
+
+    assert_eq!(
+        kinds(&result),
+        vec![
+            ("d-1".to_owned(), ExternalAdmissionKind::Steered),
+            ("d-2".to_owned(), ExternalAdmissionKind::Steered),
+            ("d-3".to_owned(), ExternalAdmissionKind::Steered)
+        ]
+    );
+    let world = fixture.world.lock().expect("world");
+    assert_eq!(
+        world.calls,
+        vec![
+            ("steer", "d-1".to_owned()),
+            ("steer", "d-2".to_owned()),
+            ("steer", "d-3".to_owned())
+        ],
+        "one run takes every steer, in the order they were sent"
+    );
+    assert!(
+        world
+            .when_idle
+            .iter()
+            .all(|(_, when_idle)| when_idle.is_none()),
+        "a run that began needs no join: {:?}",
+        world.when_idle
+    );
+}
+
+#[test]
 fn an_explicit_follow_up_decided_as_a_start_still_queues_behind_a_run_that_began() {
     let fixture = fixture();
     send(&fixture.store, "d-1", GatewayDeliveryMode::FollowUp, None);
