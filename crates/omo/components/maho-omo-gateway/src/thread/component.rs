@@ -386,8 +386,9 @@ impl GatewayThreadComponent {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_tool_set_covers_send_and_control_and_no_binding_tool_is_reachable() {
+    /// A component over a throwaway store: its `tools` is the list both registration paths
+    /// (`register_session_tools` here and `native.rs`) draw from.
+    fn component() -> GatewayThreadComponent {
         let store: Arc<dyn GatewayStoreApi> = super::super::store::create_gateway_store(
             super::super::store::GatewayStoreOptions::new(
                 std::env::temp_dir()
@@ -408,7 +409,7 @@ mod tests {
             admit_external_message: Arc::new(|_| Err("not in this test".to_owned())),
             list_admitted_deliveries: Arc::new(super::super::types::AdmissionLedger::default),
         };
-        let component = create_gateway_thread_component(Arc::new(GatewayThreadComponentOptions {
+        create_gateway_thread_component(Arc::new(GatewayThreadComponentOptions {
             store,
             runtime,
             durable_id: "receiver".into(),
@@ -440,7 +441,12 @@ mod tests {
             caller_workspace_root: Arc::new(String::new),
             sessions_directory: None,
             remote: None,
-        }));
+        }))
+    }
+
+    #[test]
+    fn the_tool_set_covers_send_and_control_and_no_binding_tool_is_reachable() {
+        let component = component();
         let names: Vec<&str> = component
             .tools
             .iter()
@@ -479,5 +485,42 @@ mod tests {
                 .execute("thread_missing", "call-1", Value::Null)
                 .is_none()
         );
+    }
+
+    /// The five legacy binding tools are superseded by thread-core's send/control surface: upstream
+    /// removed them in `4f6a56bbc0` (ported by `docs/omo-sync/v5.1.84/thread-core.md`) and mhc has no
+    /// `omo thread bind` CLI to keep a binding path alive. Neither the name nor a mention of one may
+    /// survive in the tool surface, so a stale description cannot advertise a call that no longer runs.
+    #[test]
+    fn the_legacy_thread_binding_tools_are_absent_from_the_registered_tool_set() {
+        let component = component();
+        for legacy in [
+            "thread_report",
+            "thread_bind",
+            "thread_bindings",
+            "thread_outbox",
+            "thread_outbox_ack",
+        ] {
+            assert!(
+                !component.tools.iter().any(|tool| tool.name == legacy),
+                "{legacy} is still registered"
+            );
+            assert!(
+                component.execute(legacy, "call-1", Value::Null).is_none(),
+                "{legacy} is still executable"
+            );
+            for tool in &component.tools {
+                assert!(
+                    !tool.description.contains(legacy),
+                    "{} still advertises {legacy}",
+                    tool.name
+                );
+                assert!(
+                    !tool.parameters.to_string().contains(legacy),
+                    "{} still takes {legacy} in its schema",
+                    tool.name
+                );
+            }
+        }
     }
 }
