@@ -1,6 +1,7 @@
 //! `/remote` in the terminal UI (omo#13741, #14234): `/remote <verb> ...` runs the `mhc remote` verb and
 //! shows its answer; a bare `/remote` walks from a device to a session to what to do with it. A close
-//! refused because the session is running a turn offers "Close anyway".
+//! refused because the session is running a turn offers "Close anyway". Every line, title and option it
+//! shows is display-escaped (omo `989f0a8a06`); the argv a verb gets keeps the raw values.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -8,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use maho_ext_api::{
     Extension, ExtensionApi, ExtensionContext, ExtensionUiDialogOptions, NotificationType,
 };
+use maho_omo_gateway::thread::remote::ports::escape_for_display;
 use serde_json::Value;
 
 use crate::context::RemoteContext;
@@ -69,6 +71,40 @@ fn drain(captured: &Captured) -> Vec<(bool, String)> {
     std::mem::take(&mut *captured.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
+/// What a verb printed, one escaped line per line it wrote (line feeds between them kept).
+fn shown_lines(lines: &[(bool, String)]) -> String {
+    lines
+        .iter()
+        .map(|(_, line)| escape_for_display(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One device row as the picker shows it.
+fn device_option(row: &Value) -> String {
+    escape_for_display(&format!(
+        "{} ({})",
+        row["label"].as_str().unwrap_or_default(),
+        row["device"].as_str().unwrap_or_default()
+    ))
+}
+
+/// The listed sessions of `device` as `(shown, target)`: the option is escaped, the target a verb gets stays raw.
+fn session_options(device: &str, listing: &Value) -> Vec<(String, String)> {
+    listing["rows"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row["session_id"].as_str())
+                .map(|id| {
+                    let target = format!("{device}/{id}");
+                    (escape_for_display(&target), target)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Runs one verb and shows what it printed. True when it was a close refused because the session is
 /// running a turn.
 async fn run_and_show(
@@ -79,11 +115,7 @@ async fn run_and_show(
 ) -> bool {
     let code = run_remote(remote, argv).await;
     let lines = drain(captured);
-    let text = lines
-        .iter()
-        .map(|(_, line)| line.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = shown_lines(&lines);
     if !text.is_empty() {
         let kind = if code == 0 {
             NotificationType::Info
@@ -120,16 +152,7 @@ async fn pick(ctx: &ExtensionContext, remote: &RemoteContext, captured: &Capture
         return;
     };
     let rows = devices.as_array().cloned().unwrap_or_default();
-    let labels: Vec<String> = rows
-        .iter()
-        .map(|row| {
-            format!(
-                "{} ({})",
-                row["label"].as_str().unwrap_or_default(),
-                row["device"].as_str().unwrap_or_default()
-            )
-        })
-        .collect();
+    let labels: Vec<String> = rows.iter().map(device_option).collect();
     let Some(chosen) = ctx
         .ui
         .select(
@@ -162,28 +185,21 @@ async fn pick(ctx: &ExtensionContext, remote: &RemoteContext, captured: &Capture
         );
         return;
     };
-    let sessions: Vec<String> = listing["rows"]
-        .as_array()
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| {
-                    row["session_id"]
-                        .as_str()
-                        .map(|id| format!("{device}/{id}"))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let sessions = session_options(&device, &listing);
     if sessions.is_empty() {
         ctx.ui
             .notify("No sessions on that device.", NotificationType::Info);
         return;
     }
-    let Some(target) = ctx
+    let shown: Vec<String> = sessions.iter().map(|(option, _)| option.clone()).collect();
+    let Some(chosen) = ctx
         .ui
-        .select("Session", &sessions, ExtensionUiDialogOptions::default())
+        .select("Session", &shown, ExtensionUiDialogOptions::default())
         .await
     else {
+        return;
+    };
+    let Some((title, target)) = sessions.into_iter().find(|(option, _)| *option == chosen) else {
         return;
     };
     let actions = vec![
@@ -194,7 +210,7 @@ async fn pick(ctx: &ExtensionContext, remote: &RemoteContext, captured: &Capture
     ];
     let Some(action) = ctx
         .ui
-        .select(&target, &actions, ExtensionUiDialogOptions::default())
+        .select(&title, &actions, ExtensionUiDialogOptions::default())
         .await
     else {
         return;
@@ -235,7 +251,7 @@ async fn pick(ctx: &ExtensionContext, remote: &RemoteContext, captured: &Capture
             .ui
             .confirm(
                 "Close anyway?",
-                &format!("{target} is running a turn. Close it anyway, ending that turn?"),
+                &format!("{title} is running a turn. Close it anyway, ending that turn?"),
                 ExtensionUiDialogOptions::default(),
             )
             .await;
@@ -282,6 +298,50 @@ impl Extension for RemoteCommandComponent {
                     Ok(())
                 })
             }),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    // omo 989f0a8a06 / 944c86d6a4 (command-display-escape.test.ts): what /remote shows carries no control, format or
+    // separator character, ordinary text appears unchanged, and the target a verb is run with keeps the raw value.
+    #[test]
+    fn the_picker_shows_escaped_options_and_keeps_the_raw_target() {
+        assert_eq!(
+            device_option(&json!({ "label": "a\u{1b}[31m", "device": "d\u{202e}1" })),
+            "a\\u001b[31m (d\\u202e1)"
+        );
+        assert_eq!(
+            device_option(&json!({ "label": "Studio 한글", "device": "dev-1" })),
+            "Studio 한글 (dev-1)"
+        );
+        assert_eq!(
+            session_options(
+                "dev\u{200b}",
+                &json!({ "rows": [{ "session_id": "s\u{2028}1" }, { "title": "no id" }] })
+            ),
+            vec![(
+                "dev\\u200b/s\\u20281".to_owned(),
+                "dev\u{200b}/s\u{2028}1".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_verbs_output_is_shown_line_by_line_escaped() {
+        let lines = vec![
+            (false, "ok \u{1b}]0;x\u{7}".to_owned()),
+            (true, "line\rtwo".to_owned()),
+            (false, "plain".to_owned()),
+        ];
+        assert_eq!(
+            shown_lines(&lines),
+            "ok \\u001b]0;x\\u0007\nline\\u000dtwo\nplain"
         );
     }
 }

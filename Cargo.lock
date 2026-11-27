@@ -5971,6 +5971,7 @@ dependencies = [
  "maho-device-service-core",
  "maho-ext-api",
  "maho-memory-core",
+ "maho-omo-gateway",
  "maho-rpc",
  "maho-service-endpoints",
  "maho-thread-address-core",

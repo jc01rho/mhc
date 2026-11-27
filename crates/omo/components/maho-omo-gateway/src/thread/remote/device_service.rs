@@ -6,12 +6,14 @@ use std::path::PathBuf;
 
 use device_service_core::local_api::transport::is_service_not_running;
 use device_service_core::local_api::{
-    ClientInfo, ConnectOptions, LocalApiClient, connect_local_api,
+    ClientInfo, CommandOutcome, ConnectOptions, LocalApiClient, LocalApiError, connect_local_api,
 };
 use maho_thread_address_core::ResolveDeviceOptions;
 use serde_json::{Value, json};
 
-use super::outcome::{engine_state_of, outcome_failure, plan_delivery, result_of, steer_conflict};
+use super::outcome::{
+    command_not_ready, engine_state_of, outcome_failure, plan_delivery, result_of, steer_conflict,
+};
 use super::{RemoteAddress, RemoteSendOptions, RemoteThreadPort, remote_failure};
 use crate::thread::adapter::BoxFuture;
 use crate::thread::address::device::{AccountDevice, AccountDevices, resolve_account_device};
@@ -104,6 +106,24 @@ fn listing_names_device(
             .is_some_and(|states| states.contains_key(device))
 }
 
+/// #14358: a command the other device refused `attach_required` ran nothing there: this device's attach is dropped and
+/// made again, and the record is sent once more; a second refusal is the answer.
+async fn command_reattaching(
+    client: &LocalApiClient,
+    attach: &mut String,
+    device: &str,
+    session: &str,
+    rpc: Value,
+) -> Result<CommandOutcome, LocalApiError> {
+    let outcome = client.command(attach.as_str(), rpc.clone(), None).await?;
+    if command_not_ready(&outcome) != Some("attach_required") {
+        return Ok(outcome);
+    }
+    let _ = client.detach(attach.as_str()).await;
+    *attach = client.attach(device, session).await?;
+    client.command(attach.as_str(), rpc, None).await
+}
+
 async fn send(
     state_dir: PathBuf,
     address: RemoteAddress,
@@ -172,26 +192,32 @@ async fn send(
                 None,
             ));
         }
-        let attach = client
-            .attach(&device, &address.session)
-            .await
-            .map_err(|error| match error.code.as_str() {
-                "session_not_found" => remote_failure(
-                    "not_found",
-                    format!("{} lists no session {}", address.device, address.session),
-                    "Call thread_list for that device's sessions.",
-                    None,
-                ),
-                _ => unavailable(error.reason),
-            })?;
+        let mut attach =
+            client
+                .attach(&device, &address.session)
+                .await
+                .map_err(|error| match error.code.as_str() {
+                    "session_not_found" => remote_failure(
+                        "not_found",
+                        format!("{} lists no session {}", address.device, address.session),
+                        "Call thread_list for that device's sessions.",
+                        None,
+                    ),
+                    _ => unavailable(error.reason),
+                })?;
 
         let requested_mode = options.mode.unwrap_or(GatewayDeliveryMode::Auto);
         let (mut method, mut planned_lane, expected_turn) = if requested_mode
             != GatewayDeliveryMode::FollowUp
         {
-            let probe = client
-                .command(&attach, json!({ "type": "get_state" }), None)
-                .await;
+            let probe = command_reattaching(
+                &client,
+                &mut attach,
+                &device,
+                &address.session,
+                json!({ "type": "get_state" }),
+            )
+            .await;
             match probe {
                 Ok(outcome) if outcome.applied() => {
                     let state = engine_state_of(outcome.receipt.as_ref().unwrap_or(&Value::Null));
@@ -238,9 +264,14 @@ async fn send(
             record
         };
 
-        let mut outcome = match client
-            .command(&attach, build_record(method, expected_turn), None)
-            .await
+        let mut outcome = match command_reattaching(
+            &client,
+            &mut attach,
+            &device,
+            &address.session,
+            build_record(method, expected_turn),
+        )
+        .await
         {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -254,9 +285,14 @@ async fn send(
         {
             method = "follow_up";
             planned_lane = "follow_up";
-            outcome = match client
-                .command(&attach, build_record(method, None), None)
-                .await
+            outcome = match command_reattaching(
+                &client,
+                &mut attach,
+                &device,
+                &address.session,
+                build_record(method, None),
+            )
+            .await
             {
                 Ok(retried) => retried,
                 Err(error) => {

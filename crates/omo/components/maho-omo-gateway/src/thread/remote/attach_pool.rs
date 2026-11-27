@@ -1,5 +1,5 @@
 //! Per-session attach pool and bounded catalog hold (`thread/remote/attach-pool.ts`, `remote/port/device-service.ts`;
-//! omo #14252, #13873).
+//! omo #14252, #13873, #14358).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::thread::adapter::BoxFuture;
 
+use super::outcome::attach_required;
 use super::ports::{RemoteCommandOutcome, SessionCommandOptions};
 
 pub const HELD_RECORDS: [&str; 2] = ["get_available_models", "get_protocol_info"];
@@ -380,6 +381,10 @@ impl AttachPool {
 
     /// Runs `rpc` on `(device, session_id)`, returning a bounded local catalog hit when eligible or forwarding to
     /// the pooled attachment (or a one-shot direct attach when `options.direct` is set).
+    ///
+    /// #14358: a command the other device refused `attach_required` ran nothing there, so the pooled attach is dropped
+    /// and made again and the record is sent once more; a second refusal is the answer. A direct send so refused goes
+    /// the attach way, and is never sent directly twice (review M2).
     pub async fn session_command(
         &self,
         device: &str,
@@ -392,11 +397,28 @@ impl AttachPool {
                 Ok(client) => client,
                 Err(outcome) => return outcome,
             };
-            let outcome = client.command(rpc, options).await;
+            let outcome = client.command(rpc.clone(), options).await;
             client.detach().await;
-            return outcome;
+            if !attach_required(&outcome) {
+                return outcome;
+            }
         }
+        let first = self
+            .pooled_command(device, session_id, rpc.clone(), options)
+            .await;
+        if !attach_required(&first) {
+            return first;
+        }
+        self.pooled_command(device, session_id, rpc, options).await
+    }
 
+    async fn pooled_command(
+        &self,
+        device: &str,
+        session_id: &str,
+        rpc: Value,
+        options: SessionCommandOptions,
+    ) -> RemoteCommandOutcome {
         let key = entry_key(device, session_id);
         let entry = match self.acquire(device, session_id).await {
             Ok(entry) => entry,
@@ -450,7 +472,7 @@ impl AttachPool {
                 .hold
                 .keep(rpc_type, response.clone(), sent_at, now);
         }
-        if should_drop_entry(&outcome) {
+        if should_drop_entry(&outcome) || attach_required(&outcome) {
             self.drop_entry(&key, &entry).await;
         } else {
             self.release(&key, &entry);
@@ -837,5 +859,91 @@ mod tests {
         assert_eq!(manual.active_count(), 0);
         manual.advance_by(1_000);
         assert_eq!(lock_unpoison(&transport.detaches).len(), 2);
+    }
+
+    fn attach_required_refusal() -> RemoteCommandOutcome {
+        RemoteCommandOutcome::Refused {
+            reason: "engine_capability_missing".to_owned(),
+            detail: Some("attach_required".to_owned()),
+        }
+    }
+
+    fn applied() -> RemoteCommandOutcome {
+        RemoteCommandOutcome::Ok {
+            response: json!({ "success": true, "data": { "isStreaming": false } }),
+            local: false,
+            located: None,
+        }
+    }
+
+    fn get_state(
+        replies: Vec<RemoteCommandOutcome>,
+        direct: bool,
+    ) -> (RemoteCommandOutcome, Arc<FakeTransport>) {
+        let manual = ManualSchedule::new(0);
+        let transport = FakeTransport::new(replies);
+        let pool = AttachPool::new(
+            transport.clone(),
+            manual.clock(),
+            manual.schedule(),
+            ATTACH_IDLE_MS,
+        );
+        let outcome = block_on(pool.session_command(
+            "b",
+            "s1",
+            json!({ "type": "get_state", "sessionId": "s1" }),
+            SessionCommandOptions {
+                direct,
+                ..SessionCommandOptions::default()
+            },
+        ));
+        (outcome, transport)
+    }
+
+    // #14358 (device-service-attach-required.test.ts): b refuses a command attach_required when it counts no attach of
+    // this device to the session; nothing ran, so the pool attaches again and sends the record once more.
+    #[test]
+    fn a_command_refused_attach_required_is_sent_again_once_on_a_fresh_attach() {
+        let (outcome, transport) = get_state(vec![attach_required_refusal(), applied()], false);
+        assert!(matches!(outcome, RemoteCommandOutcome::Ok { .. }));
+        assert_eq!(lock_unpoison(&transport.attaches).len(), 2);
+        assert_eq!(lock_unpoison(&transport.commands).len(), 2);
+        assert_eq!(lock_unpoison(&transport.detaches).as_slice(), ["s1"]);
+    }
+
+    #[test]
+    fn a_second_attach_required_refusal_is_the_answer_after_exactly_two_attaches() {
+        let (outcome, transport) = get_state(
+            vec![attach_required_refusal(), attach_required_refusal()],
+            false,
+        );
+        assert_eq!(outcome, attach_required_refusal());
+        assert_eq!(lock_unpoison(&transport.attaches).len(), 2);
+        assert_eq!(lock_unpoison(&transport.commands).len(), 2);
+    }
+
+    #[test]
+    fn a_direct_command_refused_attach_required_goes_the_attach_way() {
+        let (outcome, transport) = get_state(vec![attach_required_refusal(), applied()], true);
+        assert!(matches!(outcome, RemoteCommandOutcome::Ok { .. }));
+        assert_eq!(lock_unpoison(&transport.attaches).len(), 2);
+        assert_eq!(lock_unpoison(&transport.commands).len(), 2);
+    }
+
+    // Review M2: one retry, attach-only. A direct send refused, then its attach refused, is retried once on a fresh
+    // attach and never sent directly again: one direct send and two attached ones in all.
+    #[test]
+    fn a_direct_command_refused_everywhere_is_sent_once_directly_and_twice_attached() {
+        let (outcome, transport) = get_state(
+            vec![
+                attach_required_refusal(),
+                attach_required_refusal(),
+                attach_required_refusal(),
+            ],
+            true,
+        );
+        assert_eq!(outcome, attach_required_refusal());
+        assert_eq!(lock_unpoison(&transport.attaches).len(), 3);
+        assert_eq!(lock_unpoison(&transport.commands).len(), 3);
     }
 }
