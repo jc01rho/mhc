@@ -3,8 +3,8 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 
 export const SENPI_PIN = "f01af134919f0bbf24b2887000e2142dfd290567";
-/** senpi v2026.11.19-5: the commit crates/maho-ai/data/models.json is generated from (docs/divergences.md CAT-1). */
-export const SENPI_CATALOG_PIN = "99a26322f4a81d5ed95f0fd9f292938a6afbd8ff";
+/** senpi v2026.11.23: the commit crates/maho-ai/data/models.json is generated from (docs/divergences.md CAT-1). */
+export const SENPI_CATALOG_PIN = "47333c26cdba96631d64317284a06ca6e0aab68e";
 
 /** Returns the absolute SENPI_SRC path, or exits 3 when it is not a checkout at `pin`. */
 export function pinnedSenpiRoot(pin = SENPI_PIN) {
