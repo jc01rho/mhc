@@ -166,6 +166,30 @@ mod tests {
     }
 
     #[test]
+    fn inside_a_call_budget_the_wait_offered_leaves_the_lookup_its_time() {
+        let port = Solo {
+            answers: vec![("b", Some(RemoteLookupOutcome::NotHeld))],
+            asked: Mutex::new(Vec::new()),
+        };
+        let deadline =
+            call_budget::now_ms() + call_budget::READ_RESERVE_MS + SOLO_LOOKUP_MS + 1_000;
+        let settled = block_on(call_budget::with_call_deadline(
+            deadline,
+            ask_silent_alone(&port, "t-1", vec![("b".to_owned(), silent())]),
+        ));
+        assert_eq!(
+            settled,
+            vec![("b".to_owned(), RemoteLookupOutcome::NotHeld)]
+        );
+        let asked = port
+            .asked
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(asked.len(), 1);
+        assert!(asked[0].1 > 0 && asked[0].1 <= 1_000, "{asked:?}");
+    }
+
+    #[test]
     fn a_port_that_cannot_ask_alone_leaves_every_answer_as_it_was() {
         struct Plain;
         impl RemoteSessionsPort for Plain {
