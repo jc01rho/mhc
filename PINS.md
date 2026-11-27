@@ -5,7 +5,7 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 | Source | Short | Full commit | Location |
 | --- | --- | --- | --- |
 | senpi | f01af1349 | f01af134919f0bbf24b2887000e2142dfd290567 | code-yeongyu/senpi |
-| oh-my-openagent | 69a1863a45 | 69a1863a457da06fb64ae788e335bf272f1df406 | code-yeongyu/oh-my-openagent |
+| oh-my-openagent | 8dbccd1284 | 8dbccd12842f42c62d4ec0e2592c144ca6e25bd7 | code-yeongyu/oh-my-openagent |
 | oh-my-pi | f59bbac3d | f59bbac3d56e8b485fef466388b1cb5be4b93123 | can1357/oh-my-pi (MIT; LSP mux design in crates/maho-lsp, task model in crates/maho-task, mnemopi memory engine in crates/maho-memory, Chromium discovery and browser/computer tool surface in crates/maho-browser, telemetry export and usage stats in crates/maho-telemetry, pi-iso rcopy backend and task worktree isolation in crates/maho-isolation, agentic-commit git tools in crates/maho-git, terminal launch and multiplexer detection in crates/maho-team, setup wizard step model in crates/maho-onboarding, `/init` context-file scope in crates/maho-context-files) |
 | omowright | a019fdf | a019fdfbc337bd917d10b8f3d64026b3549e0b2c | code-yeongyu/omowright (MIT; CDP transport, page model and snapshot world in crates/maho-browser) |
 | pi-cua-integration | 9ba0c9e | 9ba0c9e23f13a7fc834c28c65e8733b40a162163 | code-yeongyu/pi-cua-integration (MIT; desktop computer-use daemon in crates/maho-browser) |
@@ -14,7 +14,7 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 | pi-tmux | 53af731 | 53af731148c4cd5f5132a7f02900ecbb5817fbb4 | JokerQianwei/pi-tmux (MIT; design reference for crates/maho-team) |
 | omo-components (COMP) | 93b78ac | 93b78ac1cc8d488d124da7ed1d19f678e93fb0fd | (private checkout) |
 
-The oh-my-openagent row is release `v5.1.83` (`69a1863a45`). Its sync ledgers are `docs/omo-sync/v5.1.83/*.md`; every row there is ported, n/a or excluded. Excluded on purpose: omo #14367 (v5.1.80, `agent_with_model`, refusing a call-site `model` for builtin agents such as `explore`, `librarian`, `plan-*` and the reviewers). The OmOMeow fleet passes a model to builtin agents, so this refusal is never ported; see `docs/omo-sync/v5.1.83/senpi-task-core.md`.
+The oh-my-openagent row is release `v5.1.84` (`8dbccd1284`). Its sync ledgers are `docs/omo-sync/v5.1.83/*.md` and `docs/omo-sync/v5.1.84/*.md`; every v5.1.83 row is ported, n/a or excluded, and each v5.1.84 row names its verdict, with the remaining gaps listed per track in `thread-core.md`, `thread-gateway.md`, `thread-remote.md` and `omo-sdk.md`. Excluded on purpose: omo #14367 (v5.1.80, `agent_with_model`, refusing a call-site `model` for builtin agents such as `explore`, `librarian`, `plan-*` and the reviewers). The OmOMeow fleet passes a model to builtin agents, so this refusal is never ported; see `docs/omo-sync/v5.1.83/senpi-task-core.md`.
 
 ## Pin roles
 
