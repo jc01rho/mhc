@@ -146,7 +146,12 @@ impl PosthogRecorder {
     }
 }
 
-fn setup_fixture(home: &std::path::Path, llm_addr: std::net::SocketAddr, telemetry_enabled: bool) {
+fn setup_fixture(
+    home: &std::path::Path,
+    llm_addr: std::net::SocketAddr,
+    telemetry_enabled: bool,
+    consent_accepted: bool,
+) {
     let omo_dir = home.join(".omo");
     std::fs::create_dir_all(&omo_dir).expect("create .omo");
     std::fs::write(omo_dir.join("onboarding-completed"), "{}\n").expect("write onboarding");
@@ -167,6 +172,13 @@ fn setup_fixture(home: &std::path::Path, llm_addr: std::net::SocketAddr, telemet
         "{}\n",
     )
     .expect("write native onboarding");
+    if consent_accepted {
+        std::fs::write(
+            agent_dir.join("omo-senpi/omo-native/consent-answer"),
+            "{\"v\":1,\"answer\":\"accepted\"}\n",
+        )
+        .expect("write consent answer");
+    }
 
     let models = serde_json::json!({
         "providers": {
@@ -238,7 +250,7 @@ async fn telemetry_defaults_to_disabled_recording_zero_requests() {
     let llm = MockLlmServer::start().await;
     let recorder = PosthogRecorder::start().await;
 
-    setup_fixture(temp.path(), llm.address, false);
+    setup_fixture(temp.path(), llm.address, false, false);
 
     let output = run_mhc_print(temp.path(), recorder.address).await;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -260,6 +272,34 @@ async fn telemetry_defaults_to_disabled_recording_zero_requests() {
     let _ = recorder.shutdown.send(());
 }
 
+#[cfg(feature = "omo")]
+#[tokio::test]
+async fn enabled_config_without_a_recorded_consent_records_zero_requests() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let llm = MockLlmServer::start().await;
+    let recorder = PosthogRecorder::start().await;
+
+    setup_fixture(temp.path(), llm.address, true, false);
+
+    let output = run_mhc_print(temp.path(), recorder.address).await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stderr: {stderr}\nstdout: {stdout}"
+    );
+
+    let recorded = recorder.requests.lock().expect("test").clone();
+    assert_eq!(
+        recorded.len(),
+        0,
+        "a headless run with no first-run answer must send nothing, got: {recorded:?}"
+    );
+
+    let _ = llm.shutdown.send(());
+    let _ = recorder.shutdown.send(());
+}
+
 // Telemetry is recorded by the omo telemetry component; the MIT profile sends none (the
 // disabled-by-default test above still holds there).
 #[cfg(feature = "omo")]
@@ -269,7 +309,7 @@ async fn telemetry_enabled_records_requests_with_geoip_disabled() {
     let llm = MockLlmServer::start().await;
     let recorder = PosthogRecorder::start().await;
 
-    setup_fixture(temp.path(), llm.address, true);
+    setup_fixture(temp.path(), llm.address, true, true);
 
     let output = run_mhc_print(temp.path(), recorder.address).await;
     let stderr = String::from_utf8_lossy(&output.stderr);
