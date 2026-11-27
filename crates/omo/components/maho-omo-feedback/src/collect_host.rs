@@ -119,16 +119,28 @@ pub fn native_install_hash(env: &BTreeMap<String, String>, state_dir: &Path) -> 
     Some(format!("{:x}", Sha256::digest(install_id.as_bytes())))
 }
 
-fn telemetry_allowed(env: &BTreeMap<String, String>, config: &Value) -> bool {
+fn telemetry_allowed(env: &BTreeMap<String, String>, config: &Value, cwd: Option<&str>) -> bool {
     let telemetry_env: HashMap<String, String> = env
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    !telemetry_core::should_disable_telemetry(&telemetry_core::ShouldDisableTelemetryInput {
+    if telemetry_core::should_disable_telemetry(&telemetry_core::ShouldDisableTelemetryInput {
         env: Some(&telemetry_env),
         global_env_prefix: None,
         product_env_prefix: "OMO_NATIVE",
-    }) && omo_config_core::is_omo_telemetry_enabled(config)
+    }) {
+        return false;
+    }
+    let config_enabled = omo_config_core::is_omo_telemetry_enabled(config);
+    let options = maho_omo_telemetry::index::SenpiTelemetryOptions {
+        is_config_enabled: Some(std::sync::Arc::new(move |_| config_enabled)),
+        ..Default::default()
+    };
+    maho_omo_telemetry::omo_native_session::is_omo_native_telemetry_enabled(
+        &options,
+        cwd.map(Path::new),
+        &telemetry_env,
+    )
 }
 
 fn home_dir(env: &BTreeMap<String, String>) -> PathBuf {
@@ -144,14 +156,15 @@ pub fn collect_host_sections(facts: &HostFacts) -> HostCollection {
         .session
         .as_ref()
         .and_then(|session| session.cwd.clone());
+    let cwd_for_gate = cwd_override.clone();
     let loaded =
         maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
             cwd: cwd_override,
             env: Some(facts.env.clone()),
             ..Default::default()
         });
-    let hashes_allowed =
-        loaded.diagnostics.is_empty() && telemetry_allowed(&facts.env, &loaded.config);
+    let hashes_allowed = loaded.diagnostics.is_empty()
+        && telemetry_allowed(&facts.env, &loaded.config, cwd_for_gate.as_deref());
 
     let telemetry_env: HashMap<String, String> = facts
         .env
@@ -239,6 +252,7 @@ pub fn collect_host_sections(facts: &HostFacts) -> HostCollection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maho_omo_telemetry::omo_native_consent_marker::{ConsentAnswer, record_omo_native_consent};
 
     #[test]
     fn install_hash_prefers_env_id_and_persists_generated_one() {
@@ -257,5 +271,60 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.len(), 64);
         assert!(dir.path().join("install-id").is_file());
+    }
+
+    fn gate_env(agent_dir: &Path) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (
+                "SENPI_CODING_AGENT_DIR".to_string(),
+                agent_dir.to_string_lossy().into_owned(),
+            ),
+            ("POSTHOG_API_KEY".to_string(), "test-api-key".to_string()),
+            (
+                "OMO_TELEMETRY_ALLOW_AUTOMATION".to_string(),
+                "1".to_string(),
+            ),
+        ])
+    }
+
+    fn answer(env: &BTreeMap<String, String>, answer: Option<ConsentAnswer>) {
+        let Some(answer) = answer else {
+            return;
+        };
+        let telemetry_env: HashMap<String, String> = env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let state_dir =
+            maho_omo_telemetry::product_identity::get_omo_native_state_dir(&telemetry_env);
+        assert!(record_omo_native_consent(&state_dir, answer).expect("record answer"));
+    }
+
+    #[test]
+    fn hashes_need_a_recorded_accepted_consent() {
+        let config = serde_json::json!({ "telemetry": { "enabled": true } });
+        for (answered, expected) in [
+            (None, false),
+            (Some(ConsentAnswer::Declined), false),
+            (Some(ConsentAnswer::Accepted), true),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let env = gate_env(dir.path());
+            answer(&env, answered);
+            assert_eq!(telemetry_allowed(&env, &config, None), expected);
+        }
+    }
+
+    #[test]
+    fn an_accepted_answer_does_not_override_a_disabled_config_or_an_env_opt_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut env = gate_env(dir.path());
+        answer(&env, Some(ConsentAnswer::Accepted));
+        let disabled = serde_json::json!({ "telemetry": { "enabled": false } });
+        assert!(!telemetry_allowed(&env, &disabled, None));
+        let enabled = serde_json::json!({ "telemetry": { "enabled": true } });
+        assert!(telemetry_allowed(&env, &enabled, None));
+        env.insert("DO_NOT_TRACK".to_string(), "1".to_string());
+        assert!(!telemetry_allowed(&env, &enabled, None));
     }
 }
