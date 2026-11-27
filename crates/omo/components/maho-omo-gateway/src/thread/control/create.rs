@@ -27,7 +27,9 @@ use super::create_launch::{CreateLaunch, create_launch};
 use super::local_session_host::{LocalSessionHost, workspace_note};
 use super::locate::{LocatedControl, ThreadCall, locate_control};
 use super::operations::error_json;
-use super::plan_create::{CreatePlan, LocalExisting, existing_here, file_open, plan_create};
+use super::plan_create::{
+    CreatePlan, LocalExisting, existing_here, file_open, fork_unsupported, plan_create,
+};
 use super::port::{
     ControlError, ControlResult, SessionHost, SessionOpenOptions, SessionOpenRequest,
 };
@@ -262,6 +264,13 @@ async fn create_made(
                 local_alias,
             } => (request, creates, previous_name, local_alias),
         };
+    // #13031: an engine that does not fork on open would start a blank thread for an open carrying forkFrom, so the fork
+    // is refused before anything opens (`cross-device.ts` `planCreate`, `plan.host.forks()`).
+    if let Some(source) = request.fork_from.as_deref()
+        && !host.forks().await?
+    {
+        return Ok(Made::answer(fork_unsupported(source, None)));
+    }
     let name = if local_alias.is_none() {
         value.name.clone()
     } else {

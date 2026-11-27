@@ -33,6 +33,9 @@ pub fn created_thread_id(caller_id: &str, idempotency_key: &str) -> String {
     )
 }
 
+/// The engine capability that says `open_session` forks a session on `forkFrom` (#13031).
+pub const OPEN_SESSION_FORK: &str = "open_session_fork";
+
 /// One session as the tools report a thread when no address book entry names it (`summary()` without an entry): the
 /// name is the session's own, else empty, never a fallback.
 pub fn session_summary(session: &ThreadHostSession, now: &str) -> ThreadResultSummary {

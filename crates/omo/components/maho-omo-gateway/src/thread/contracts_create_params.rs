@@ -372,7 +372,7 @@ pub fn thread_create_parameters() -> Value {
     put(
         "fork_from",
         string_property(
-            "Durable id of an existing thread to fork. The engine does not fork on open yet (#13031), so this is refused with unsupported (details.reason fork_unsupported) and nothing is created; create a thread and hand it the context with thread_send (tool.thread_send() in an eval cell) instead.",
+            "Durable id of an existing thread to fork: the new thread starts as a copy of its conversation, on the device that holds it (#13031). An engine that cannot fork on open refuses this with unsupported (details.reason fork_unsupported) and nothing is created; then create a thread and hand it the context with thread_send (tool.thread_send() in an eval cell) instead.",
             None,
             None,
         ),

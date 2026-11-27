@@ -162,6 +162,10 @@ impl RemoteSessionsPort for ClosedRowsPort {
         self.inner.can_wake()
     }
 
+    fn endpoint_command(&self, device: String, rpc: Value) -> BoxFuture<RemoteCommandOutcome> {
+        self.inner.endpoint_command(device, rpc)
+    }
+
     fn session_command(
         &self,
         device: String,

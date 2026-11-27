@@ -1,8 +1,8 @@
 //! This device's operator endpoint as a `SessionHost`.
 //!
-//! Upstream counterpart: `thread/control/local-session-host.ts` (`createLocalSessionHost`, `workspaceNote`) and the folder
-//! check and model refusal of `local-open.ts` (`openLocally`). The worktree `local-open.ts` also creates is not ported
-//! (`worktree/mod.rs`).
+//! Upstream counterpart: `thread/control/local-session-host.ts` (`createLocalSessionHost`, `workspaceNote`, `forks` read
+//! from the host's capabilities) and the folder check and the model and fork refusals of `local-open.ts`
+//! (`openLocally`). The worktree `local-open.ts` also creates is not ported (`worktree/mod.rs`).
 
 use std::sync::Arc;
 
@@ -15,11 +15,11 @@ use crate::thread::host_view::ThreadHost;
 use crate::thread::initial_skills::INITIAL_SKILLS_CONTEXT_KEY;
 use crate::thread::worktree::thread_worktree::check_folder;
 
-use super::open_reply::model_refusal;
+use super::open_reply::{fork_refusal, model_refusal};
 use super::port::{
     ControlError, ControlResult, SessionHost, SessionOpenOptions, SessionOpenRequest,
 };
-use super::session_host::opened_thread;
+use super::session_host::{OPEN_SESSION_FORK, opened_thread};
 
 /// A thread this device opened in a folder outside the caller's workspace is `scope_denied` to the caller (its creator
 /// included) unless `all_scope` is set; the result says so. A thread on another device belongs to the account, so it
@@ -85,7 +85,7 @@ pub fn open_params(request: &SessionOpenRequest) -> Value {
 }
 
 /// The open of a thread on this device: the folder it names is checked first; a model the engine cannot run is the
-/// caller's argument to fix.
+/// caller's argument to fix, and so is a source it cannot fork (no thread was created).
 pub async fn open_locally(
     host: &dyn ThreadHost,
     request: SessionOpenRequest,
@@ -105,7 +105,9 @@ pub async fn open_locally(
         .await
     {
         Ok(session) => Ok(opened_thread(&session, now)),
-        Err(message) => match model_refusal(&message, model.as_deref()) {
+        Err(message) => match model_refusal(&message, model.as_deref())
+            .or_else(|| fork_refusal(&message, request.fork_from.as_deref()))
+        {
             Some(refused) => Err(ControlError::Refused(Box::new(refused))),
             None => Err(ControlError::Transport(message)),
         },
@@ -133,6 +135,16 @@ impl SessionHost for LocalSessionHost {
     fn visible(&self) -> BoxFuture<ControlResult<Vec<ThreadAddressEntry>>> {
         let visible = self.visible.clone();
         Box::pin(async move { Ok(visible) })
+    }
+
+    fn forks(&self) -> BoxFuture<ControlResult<bool>> {
+        let capabilities = self.host.capabilities();
+        Box::pin(async move {
+            capabilities
+                .await
+                .map(|names| names.iter().any(|name| name == OPEN_SESSION_FORK))
+                .map_err(ControlError::Transport)
+        })
     }
 
     fn open(
@@ -168,6 +180,7 @@ mod tests {
     struct OpeningHost {
         opens: Mutex<Vec<(Value, Option<String>)>>,
         answer: Result<Value, String>,
+        capabilities: Result<Vec<String>, String>,
     }
 
     impl ThreadHost for OpeningHost {
@@ -196,12 +209,25 @@ mod tests {
             });
             Box::pin(async move { answer })
         }
+
+        fn capabilities(&self) -> BoxFuture<Result<Vec<String>, String>> {
+            let capabilities = self.capabilities.clone();
+            Box::pin(async move { capabilities })
+        }
     }
 
     fn host(answer: Result<Value, String>) -> Arc<OpeningHost> {
+        host_with(answer, Ok(Vec::new()))
+    }
+
+    fn host_with(
+        answer: Result<Value, String>,
+        capabilities: Result<Vec<String>, String>,
+    ) -> Arc<OpeningHost> {
         Arc::new(OpeningHost {
             opens: Mutex::new(Vec::new()),
             answer,
+            capabilities,
         })
     }
 
@@ -329,6 +355,57 @@ mod tests {
         assert_eq!(
             block_on(failing.open(request, SessionOpenOptions::default())).expect_err("failed"),
             ControlError::Transport("connection closed".into())
+        );
+    }
+
+    #[test]
+    fn the_host_forks_only_when_its_engine_advertises_open_session_fork() {
+        let forks = |capabilities: Result<Vec<String>, String>| {
+            let local = LocalSessionHost::new(
+                host_with(Ok(opened_row("/work")), capabilities),
+                Vec::new(),
+                "2026-11-26T00:00:00Z".into(),
+            );
+            block_on(local.forks())
+        };
+        assert_eq!(
+            forks(Ok(vec![
+                "unload_session".to_owned(),
+                OPEN_SESSION_FORK.to_owned()
+            ])),
+            Ok(true)
+        );
+        assert_eq!(forks(Ok(vec!["unload_session".to_owned()])), Ok(false));
+        assert_eq!(
+            forks(Err("host_unavailable:/run/host.sock".to_owned())),
+            Err(ControlError::Transport(
+                "host_unavailable:/run/host.sock".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_source_the_engine_cannot_fork_is_not_found_naming_the_source() {
+        let refusing = LocalSessionHost::new(
+            host(Err(
+                "thread RPC request failed: \"fork_source_not_local\"".into()
+            )),
+            Vec::new(),
+            "2026-11-26T00:00:00Z".into(),
+        );
+        let request = SessionOpenRequest {
+            fork_from: Some("dur-1".into()),
+            ..SessionOpenRequest::default()
+        };
+        let Err(ControlError::Refused(refused)) =
+            block_on(refusing.open(request, SessionOpenOptions::default()))
+        else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(refused.code.as_str(), "not_found");
+        assert_eq!(
+            refused.details.expect("details"),
+            json!({ "reason": "fork_source_not_local", "thread": "dur-1" })
         );
     }
 
