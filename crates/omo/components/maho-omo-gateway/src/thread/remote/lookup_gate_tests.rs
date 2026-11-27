@@ -505,7 +505,7 @@ type RunningMap = Arc<Mutex<Vec<(String, oneshot::Sender<()>)>>>;
 
 async fn interleave(first: Op, second: Op, offset: usize) -> Vec<String> {
     let violations = Arc::new(Mutex::new(Vec::<String>::new()));
-    let running: Arc<Mutex<Vec<(String, oneshot::Sender<()>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let running: RunningMap = Arc::new(Mutex::new(Vec::new()));
     let solo_running = Arc::new(Mutex::new(0usize));
 
     let begin = {
