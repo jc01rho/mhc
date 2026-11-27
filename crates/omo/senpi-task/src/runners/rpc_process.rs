@@ -49,7 +49,8 @@ pub struct RpcProcessRunnerOptions {
     pub startup_cpu_cap_s: Option<f64>,
     /// The bound that holds even when the child's CPU cannot be read (#13165).
     pub startup_outer_bound_ms: Option<u64>,
-    /// The injection seam for the CPU reader; defaults to `platform::native_process`.
+    /// The injection seam for the CPU reader; defaults to the live process-tree reader
+    /// (`platform::process_tree_cpu`, #14820).
     pub read_cpu_seconds: Option<ReadCpuSeconds>,
     pub exclude_models: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pub spawn_child: Option<SpawnChild>,
@@ -103,7 +104,7 @@ impl RpcProcessRunner {
                         .unwrap_or(DEFAULT_STARTUP_OUTER_BOUND_MS),
                 ),
                 read_cpu_seconds: options.read_cpu_seconds.unwrap_or_else(|| {
-                    Arc::new(crate::platform::native_process::read_process_cpu_seconds)
+                    Arc::new(crate::platform::process_tree_cpu::read_process_tree_cpu_seconds)
                 }),
             },
             unsupported_noticed: std::sync::atomic::AtomicBool::new(false),

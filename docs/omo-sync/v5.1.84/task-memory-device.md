@@ -1,0 +1,58 @@
+# omo v5.1.83..v5.1.84 sync ledger — `task-memory-device` track
+
+Source range: `69a1863a457` (`v5.1.83`) .. `8dbccd12842f` (`v5.1.84`)
+Upstream paths: `packages/senpi-task`, `packages/omo-senpi/src/components/task`, `packages/omo-senpi/src/components/memory`, `packages/memory-core`, `packages/device-service-core`
+mhc counterparts: `crates/omo/senpi-task`, `crates/omo/components/maho-omo-task`, `crates/omo/memory-core`, `crates/omo/components/maho-omo-memory`, `crates/omo/device-service-core`
+
+## Summary
+
+| verdict | rows |
+|---|---:|
+| port | 4 |
+| ported | 1 |
+| gap | 1 |
+| blocked | 0 |
+| n/a | 8 |
+| **total** | **14** |
+
+Counted programmatically from the verdict column below. The 14 rows name all 24 non-merge upstream commits in
+`tracks/task-memory-device.md`, each in exactly one row.
+
+## What landed
+
+1. **`#14820` a child's startup bound counts its whole process tree's CPU** (`7bb0445983`):
+   - `crates/omo/senpi-task/src/platform/process_tree_cpu.rs` (new): `ProcessTable`, `sum_process_tree_cpu_seconds`, `read_process_tree_cpu_seconds`. A launcher that spawns the engine as its own child stays CPU-flat while the engine works, so a bound on the launcher alone called a booting engine stalled.
+   - `crates/omo/senpi-task/src/platform/mod.rs` re-exports the module.
+   - `crates/omo/senpi-task/src/runners/rpc_process.rs`: the default `read_cpu_seconds` seam is now `read_process_tree_cpu_seconds`.
+   - `crates/omo/senpi-task/src/platform/process_tree_cpu_tests.rs` (new): the three upstream cases (a reused pid's long-lived process excluded, equal start stamps counted, an unreadable stamp counted) plus an unreadable root answering `None`.
+2. **`#13953` a process joins a tree only if it is not older than the parent it names** (`44f80f32a1`, `5dae9ba23f`):
+   - `process_tree_cpu.rs` (`born_before`): only a start stamp strictly earlier than the parent's proves a stale parent pid; equal and unreadable stamps count. Windows records the parent pid at creation and reuses pids, so a long-lived process whose original parent exited can name a fresh pid as its parent.
+3. **`#14821` Linux `CLK_TCK` from `sysconf`** (`3f0e344d7e`):
+   - `crates/omo/senpi-task/src/platform/native_process.rs`: `FALLBACK_LINUX_CLK_TCK` (100) is only the answer when `sysconf(_SC_CLK_TCK)` cannot be read; the value is read once through a `OnceLock`.
+4. **`#14808` / `#14820` the start-time and parent-table readers those two need** (`44f80f32a1`):
+   - `native_process.rs`: `read_process_start_time` (Linux boot clock ticks, darwin `pbi_start_tvsec`, Windows creation FILETIME), `read_parent_pids` (Linux `/proc` readdir + `stat[1]`, darwin `proc_listallpids` + `PROC_PIDTBSDINFO` ppid at offset 16, Windows one toolhelp snapshot), `parse_linux_stat_start_time`, `parse_linux_stat_parent_pid`, `start_identity_prefix`. `read_process_start_identity` is now derived from `read_process_start_time`, as upstream does.
+5. **`#14864` the URL userinfo step matches the scheme backwards from `://`** (`6f894e5cec`, `0acdc0ccb3`, `5b65c779cb`):
+   - `crates/omo/memory-core/src/sync/redact.rs`: `mask_url_userinfo` (public), `mask_url_userinfo_counting`, `url_userinfo_after_scheme`, `userinfo_run_end`, `is_js_whitespace_unit`, `is_scheme_unit`, `is_scheme_first_unit`, `scheme_separator`, `URL_USERINFO_MAX_UNITS` (256). A leading `[a-z][a-z0-9+.-]*` regex could start at every letter of a long run and rescan it each time; the walk back stops at the previous match's end and starts at the run's first letter, so the matches are the same. `redact_url` calls it only when the value contains `://`.
+   - `crates/omo/memory-core/src/sync/redact_tests.rs`: the old pattern is the oracle over 20 real shapes and a seeded 20,000-input corpus, and a doubling input may at most double the code units read (five shapes that made the regex scheme quadratic).
+6. **`#14258` / `#14191` an installed unit's argv** (`a1d9844daf`):
+   - `crates/omo/device-service-core/src/cold_wake/installed_unit.rs`: `program: String` became `argv: Vec<String>`, holding every `ExecStart` / `ProgramArguments` entry (the omo-versions layout names its launcher script in the second entry, behind the runtime that runs it). systemd reads every quoted argument of `ExecStart=`, launchd every `<string>` inside `ProgramArguments`' `<array>`; an empty argv is no unit.
+   - `crates/omo/device-service-core/tests/unit_mode_0644.rs`: the readback assertions compare `argv`, and a new test reads a bun-plus-launcher-script unit back whole on both platforms.
+
+## Per-PR verdicts
+
+| upstream PR | verdict | mhc location or reason |
+|---|---|---|
+| `#14820` bound a child's start by its whole process tree's CPU (`7bb0445983`) | port | `crates/omo/senpi-task/src/platform/process_tree_cpu.rs`, `src/platform/mod.rs`, `src/runners/rpc_process.rs`, `src/platform/process_tree_cpu_tests.rs` (4 tests). Upstream's added live launcher/child tree case in `native-process.test.ts` is not ported as a second live-spawn test: `native-process.rs`'s existing `this_process_reads_its_own_cpu_seconds` already measures a live process against the runtime's own clock, and a second spawn-and-poll test would add a timing-sensitive test without covering a new branch (`sum_process_tree_cpu_seconds` is covered with a table) |
+| `#13953` count a process in a tree only if it is not older than the parent it names (`44f80f32a1`, `5dae9ba23f`) | port | `crates/omo/senpi-task/src/platform/process_tree_cpu.rs` (`born_before`, with upstream's reasoning for equal and unreadable stamps); `process_tree_cpu_tests.rs` (`a_long_lived_process_naming_the_engines_reused_pid_counts_only_when_born_after_its_parent`, `a_child_whose_start_stamp_equals_its_parents_counts`, `a_descendant_whose_start_time_cannot_be_read_still_counts`) |
+| `#14821` read Linux CLK_TCK from `sysconf` instead of assuming 100 (`3f0e344d7e`) | port | `crates/omo/senpi-task/src/platform/native_process.rs` (`linux_clock_ticks_per_second`, `FALLBACK_LINUX_CLK_TCK`, `parse_linux_stat_cpu_seconds`) |
+| `#14864` match the URL scheme backwards from `://` so `redactUrl` stays linear (`6f894e5cec`, `0acdc0ccb3`, `5b65c779cb`) | port | `crates/omo/memory-core/src/sync/redact.rs` (`mask_url_userinfo`, `url_userinfo_after_scheme`, `userinfo_run_end`, `is_js_whitespace_unit`), `src/sync/redact_tests.rs` (`test_mask_url_userinfo_when_real_url_shapes_then_the_output_is_the_old_patterns`, `..._generated_corpus_...`, `..._scheme_run_doubles_then_the_characters_read_at_most_double`). Upstream spies `String.prototype.charAt`; the port counts the code units its own reader touches, which is the same work without patching a global |
+| `#14258` / `#14191` render the session host unit for the omo that ran enable (`a1d9844daf`) | ported | `crates/omo/device-service-core/src/cold_wake/installed_unit.rs` (`argv`, multi-entry systemd and launchd reads), `tests/unit_mode_0644.rs` (`an_installed_unit_reads_back_every_argument`). `refresh.ts` and its `INSTALLED_RUNTIME` / `installedRuntimeVersion` stay unported: `mhc` never refreshes an installed omo unit (no `refreshColdWakeAtLaunch` caller; `parity.d/5179.md` already records `refresh.ts` as n/a), so the version matcher would be code with no caller. The argv widening it depends on is what mhc's own readback and `mhc remote bootstrap`'s PATH carry-over need |
+| `#15064` a detach during an in-flight open ends that open's connection (`21c24f0cb3`, `4389f1792b`) | gap | `mhc` has no `HostSessionClient`: `runners/rpc_host/session_client_connection.rs` wraps an already-open `HostRpcClient` and forwards `detach(routing_id)` to it, and the open path (`runners/rpc_host/open_session.rs`, `session_open.rs`) takes no `bindClient` callback, so there is no window where an open is dialing with nothing for `detach` to stop. Porting the generation counter would add a field no code path can move |
+| `#14860` guards for the PEM scan and the regex passes (`e1fe67a584`, `9b0faee574`, `2f1e0003a1`, `f01a632aa4`) | n/a | Both guards measure JavaScript execution: the PEM one counts characters `String.prototype.indexOf` examines and fails when the scan stops going through it, and the regex one is a wall-clock bound on V8's backtracking. `mhc`'s PEM scan is `find_ascii` over `windows()`, which has no `indexOf` to instrument, and a wall-clock bound is the timing-dependent test the repo forbids. The linearity property those guards protect is covered for the code the port does change by `..._scheme_run_doubles_then_the_characters_read_at_most_double` |
+| `b2dfa1a7dd` bound the attach replay history to its newest events | n/a | `mhc-relayd` serves no attach stream and `device-service-core` has no `remote-attach` module (see `parity.d/5179.md`); attach replay belongs to `maho-omo-gateway`'s thread tracks |
+| `dde26d7b4c` send the delivery-outcome notice through device-service-core's consumer client (`#14623` receipt) | n/a | `crates/omo/components/maho-omo-gateway/src/thread/consumer/delivery_consumer.rs` owns the delivery consumer in `mhc`; this track owns no gateway file, and the upstream change is that component's receipt wiring |
+| `50189c7524`, `8f6459c749` `shard-routing.test.ts` fixture changes (one short temp root, a primary-shard precondition) | n/a | Test-fixture-only changes to `packages/omo-senpi/src/components/task/shard-routing.test.ts`. `crates/omo/components/maho-omo-task/src/shard_routing.rs` has no test file of its own in `mhc`, so there is no fixture to shorten and no precondition to assert |
+| `77307aa0db`, `80e682a504` attach test harness declarations and formatting | n/a | `packages/device-service-core/test/attach-events.test.ts` has no `mhc` counterpart (`mhc-relayd` serves no attach stream) |
+| `1b60cd7b79` pin device service 0.1.45 | n/a | `mhc` ships its own `mhc-relayd` and downloads no signed `omo-relay-daemon` (`device-service-core/parity.d/5179.md`) |
+| `7d20fe0b70`, `fa3c0e61e7` senpi dependency pins and the revert of one | n/a | JS dependency pins in `packages/senpi-task/package.json`; `mhc`'s senpi pin lives in `PINS.md` |
+| `8dbccd1284` release v5.1.84 | n/a | `packages/senpi-task/changes.md` version note with no Rust counterpart |

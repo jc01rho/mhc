@@ -230,7 +230,7 @@ fn units_quote_specifiers_and_read_back() {
         systemd_quote(launch.program(), true)
     )));
     let read = read_installed_session_host_unit(&unit, false).expect("systemd readback");
-    assert_eq!(read.program, launch.program());
+    assert_eq!(read.argv, launch.argv());
     assert_eq!(
         read.env.get("MAHO_CODING_AGENT_DIR").map(String::as_str),
         Some("/home/me/agent 100%")
@@ -239,7 +239,7 @@ fn units_quote_specifiers_and_read_back() {
     let plist = launchd_session_host_plist(&launch);
     assert!(plist.contains("<key>AbandonProcessGroup</key>"));
     let read = read_installed_session_host_unit(&plist, true).expect("launchd readback");
-    assert_eq!(read.program, launch.program());
+    assert_eq!(read.argv, launch.argv());
     assert_eq!(
         read.env.get("MAHO_CODING_AGENT_DIR").map(String::as_str),
         Some("/home/me/agent 100%")
@@ -264,4 +264,49 @@ fn a_launch_refuses_control_characters_and_relative_paths() {
             "{mhc_bin:?} {agent_dir:?}"
         );
     }
+}
+
+// omo#14258: a unit naming its launcher script behind the runtime that runs it reads back whole.
+#[test]
+fn an_installed_unit_reads_back_every_argument() {
+    let systemd = "[Service]\nExecStart=\"/h/.bun/bin/bun\" \"/h/.omo/omo-versions/5.1.76/omo-ai/bin/omo.js\" \"daemon\" \"run\" \"--pinned\"\nEnvironment=\"PATH=/opt/tools/bin:/usr/bin\"\n";
+    let read = read_installed_session_host_unit(systemd, false).expect("systemd readback");
+    assert_eq!(
+        read.argv,
+        [
+            "/h/.bun/bin/bun",
+            "/h/.omo/omo-versions/5.1.76/omo-ai/bin/omo.js",
+            "daemon",
+            "run",
+            "--pinned",
+        ]
+    );
+    assert_eq!(
+        read.argv.first().map(String::as_str),
+        Some("/h/.bun/bin/bun")
+    );
+    assert_eq!(
+        read.env.get("PATH").map(String::as_str),
+        Some("/opt/tools/bin:/usr/bin")
+    );
+
+    let launchd = "<key>ProgramArguments</key>\n  <array>\n    <string>/h/.bun/bin/bun</string>\n    <string>/h/.omo/omo-versions/5.1.76/omo-ai/bin/omo.js</string>\n    <string>a &amp; b</string>\n  </array>\n";
+    let read = read_installed_session_host_unit(launchd, true).expect("launchd readback");
+    assert_eq!(
+        read.argv,
+        [
+            "/h/.bun/bin/bun",
+            "/h/.omo/omo-versions/5.1.76/omo-ai/bin/omo.js",
+            "a & b",
+        ]
+    );
+
+    assert_eq!(
+        read_installed_session_host_unit("[Service]\nExecStart=\n", false),
+        None
+    );
+    assert_eq!(
+        read_installed_session_host_unit("<key>ProgramArguments</key><array></array>", true),
+        None
+    );
 }
