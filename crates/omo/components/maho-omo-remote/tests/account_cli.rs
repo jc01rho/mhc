@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use device_service_core::hand_device_keys::device_service_endpoint_path;
@@ -15,9 +15,22 @@ use maho_omo_remote::device_service_handoff::{
     CliDeviceServiceHandoff, DeviceServiceHandoff, HandoffClient, HeldDeviceCredential,
     MachineDeviceState,
 };
-use memory_core::sync::crypto::anchor::PinCandidate;
-use memory_core::sync::crypto::trust_pin::pin_trust_anchor;
+use memory_core::sync::crypto::signatures::sha256_b64;
 use serde_json::{Value, json};
+
+/// Writes the trust pin `load_trust_anchor` reads, in the shape `parse_pin` accepts: a 32-byte digest
+/// in base64url without padding, which 43 `A` characters are.
+fn pin_join(pin_dir: &Path, account: &str) {
+    const DIGEST: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let dir = pin_dir
+        .join("trust-anchor")
+        .join(sha256_b64(account.as_bytes()));
+    std::fs::create_dir_all(&dir).expect("pin dir");
+    let pin = format!(
+        "{{\"version\":1,\"account\":\"{account}\",\"genesis_digest\":\"{DIGEST}\",\"pinned_by\":\"pairing\",\"pinned_at\":{{\"seq\":2,\"keyring_link\":\"{DIGEST}\"}}}}\n"
+    );
+    std::fs::write(dir.join("pin.json"), pin).expect("pin file");
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -230,8 +243,8 @@ async fn adopt_stores_credentials_refuses_different_device_and_keeps_newer_token
     );
 
     let older_same = credential("dev_a", 60_000, "rt-older");
-    for args in [vec!["adopt"], vec!["adopt", "--replace"]] {
-        let (code, _, _) = h.run(&args, Some(&older_same.to_value().to_string())).await;
+    for args in [&["adopt"][..], &["adopt", "--replace"][..]] {
+        let (code, _, _) = h.run(args, Some(&older_same.to_value().to_string())).await;
         assert_eq!(code, AccountExit::Ok.code());
         assert_eq!(
             store.current().map(|c| c.refresh_token),
@@ -323,16 +336,16 @@ async fn storage_failures_report_exact_exit_codes_without_second_read_including_
     );
 
     for args in [
-        vec!["show"],
-        vec!["token"],
-        vec!["export"],
-        vec!["forget"],
-        vec!["adopt"],
+        &["show"][..],
+        &["token"][..],
+        &["export"][..],
+        &["forget"][..],
+        &["adopt"][..],
     ] {
         lock(&store.calls).clear();
         let stdin =
             (args[0] == "adopt").then(|| credential("dev_x", 60_000, "rt").to_value().to_string());
-        let (code, out, err) = h.run(&args, stdin.as_deref()).await;
+        let (code, out, err) = h.run(args, stdin.as_deref()).await;
         assert_eq!(code, AccountExit::KeychainLocked.code(), "{args:?}");
         assert_eq!(out, vec![json!({ "keychain": "locked" })]);
         assert_eq!(store.calls(), vec!["get"]);
@@ -356,20 +369,8 @@ async fn storage_failures_report_exact_exit_codes_without_second_read_including_
 async fn discarding_keys_retires_sync_pin_and_file_store_round_trips() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pin_dir = dir.path().join("pins");
-    let b64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     for account in ["acct-1", "acct-other"] {
-        pin_trust_anchor(
-            &pin_dir,
-            account,
-            &PinCandidate {
-                account: account.into(),
-                genesis_digest: b64.into(),
-                pinned_by: "pairing".into(),
-                seq: 2,
-                keyring_link: b64.into(),
-            },
-        )
-        .expect("pin");
+        pin_join(&pin_dir, account);
     }
 
     let file_store: Arc<dyn AccountCredentialStore> = Arc::new(FileAccountCredentialStore::new(

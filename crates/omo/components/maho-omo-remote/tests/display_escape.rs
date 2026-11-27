@@ -72,7 +72,8 @@ fn every_remote_line(value: &str) -> Vec<String> {
     })];
     let unanswered = vec![value.to_owned()];
     let details = RefusalDetails::Device {
-        typed: value.to_owned(),
+        kind: "device",
+        device: value.to_owned(),
         candidates: vec![DeviceCandidate {
             device: value.to_owned(),
             name: value.to_owned(),

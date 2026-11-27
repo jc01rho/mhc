@@ -4,7 +4,6 @@
 use std::cmp::Ordering;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 
 use device_service_core::hand_device_keys::device_service_endpoint_path;
@@ -116,7 +115,7 @@ fn classify_connect_failure(error: &LocalApiError) -> &'static str {
     }
 }
 
-pub async fn connect_or_not_running<C, F, Fut>(connect: F, log: Option<&dyn Fn(&str)>) -> Option<C>
+pub async fn connect_or_not_running<C, F, Fut>(connect: F, log: Option<&LineSink>) -> Option<C>
 where
     C: HandoffClient,
     F: FnOnce() -> Fut,
@@ -147,7 +146,7 @@ pub async fn hand_device_keys<C, F, Fut>(
     connect: F,
     credential: &HeldDeviceCredential,
     when: HandWhen,
-    log: Option<&dyn Fn(&str)>,
+    log: Option<&LineSink>,
 ) -> Result<HandOutcome, LocalApiError>
 where
     C: HandoffClient,
@@ -175,7 +174,7 @@ where
 pub async fn forget_device_service<C, F, Fut>(
     state_dir: &Path,
     connect: F,
-    log: Option<&dyn Fn(&str)>,
+    log: Option<&LineSink>,
 ) -> Result<(), LocalApiError>
 where
     C: HandoffClient,
@@ -306,14 +305,13 @@ impl DeviceServiceHandoff for CliDeviceServiceHandoff {
                 sealing_private_key: credentials.sealing_private_key.clone(),
                 account,
             };
-            let log = Arc::clone(&self.log);
             let connect = Arc::clone(&self.connect);
             if let Err(error) = hand_device_keys(
                 &self.state_dir,
                 move || connect(),
                 &held,
                 HandWhen::Always,
-                Some(&move |line: &str| log(line)),
+                Some(&self.log),
             )
             .await
             {
@@ -324,14 +322,9 @@ impl DeviceServiceHandoff for CliDeviceServiceHandoff {
 
     fn forget(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
-            let log = Arc::clone(&self.log);
             let connect = Arc::clone(&self.connect);
-            if let Err(error) = forget_device_service(
-                &self.state_dir,
-                move || connect(),
-                Some(&move |line: &str| log(line)),
-            )
-            .await
+            if let Err(error) =
+                forget_device_service(&self.state_dir, move || connect(), Some(&self.log)).await
             {
                 self.report("forgetting this device", &error.reason);
             }
@@ -344,17 +337,15 @@ impl DeviceServiceHandoff for CliDeviceServiceHandoff {
             if !endpoint.exists() {
                 return MachineDeviceState::Absent;
             }
-            let failure = std::sync::Mutex::new(None::<String>);
+            let failure = Arc::new(std::sync::Mutex::new(None::<String>));
+            let failure_sink = Arc::clone(&failure);
+            let capture: LineSink = Arc::new(move |line: &str| {
+                *failure_sink
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(line.to_owned());
+            });
             let connect = Arc::clone(&self.connect);
-            let service = connect_or_not_running(
-                move || connect(),
-                Some(&|line: &str| {
-                    *failure
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(line.to_owned());
-                }),
-            )
-            .await;
+            let service = connect_or_not_running(move || connect(), Some(&capture)).await;
             let Some(service) = service else {
                 let reason = failure
                     .lock()

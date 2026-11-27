@@ -435,11 +435,10 @@ pub async fn logout_account_session(deps: &AccountCommandDependencies) -> i32 {
             return AccountExit::Failed.code();
         }
     };
-    let device_id = current
-        .as_ref()
-        .ok()
-        .and_then(Option::as_ref)
-        .map(|cred| cred.device.id.as_str());
+    let device_id = match &current {
+        Ok(Some(cred)) => Some(cred.device.id.as_str()),
+        Ok(None) | Err(()) => None,
+    };
     if let Err(error) = write_signed_out_marker(&deps.marker_path(), device_id) {
         if let Some(ds) = &deps.device_service {
             ds.forget().await;
