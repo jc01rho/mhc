@@ -1392,10 +1392,6 @@ fn terminal_theme_for_scheme(
 }
 const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING: &str = "Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage. Disable this warning in /settings.";
 
-fn is_anthropic_subscription_auth_key(api_key: Option<&str>) -> bool {
-    api_key.is_some_and(|key| key.starts_with("sk-ant-oat"))
-}
-
 /// The renderer `UiRequest::Notify` selects for a notification kind: senpi
 /// `showExtensionNotify` (`interactive-mode.ts:4538`) dispatches error -> `showError`,
 /// warning -> `showWarning`, everything else -> `showStatus`.
@@ -12086,11 +12082,8 @@ impl InteractiveMode {
         let sender = self.auth_ui_sender.clone();
         tokio::spawn(async move {
             let subscription = match runtime.check_auth("anthropic", None).await {
-                Ok(Some(check)) if check.auth_type == maho_ai::auth::types::AuthType::OAuth => true,
-                Ok(_) => {
-                    matches!(runtime.get_auth(&model.provider).await, Ok(Some(resolution)) if is_anthropic_subscription_auth_key(resolution.auth.api_key.as_deref()))
-                }
-                Err(_) => false,
+                Ok(Some(check)) => check.auth_type == maho_ai::auth::types::AuthType::OAuth,
+                Ok(None) | Err(_) => false,
             };
             if subscription {
                 let _ = sender.send(AuthUiEvent::AnthropicSubscriptionAuth);

@@ -1,8 +1,15 @@
 use super::*;
 use crate::types::{ConstrainedSampling, ConstrainedSamplingConfig, JsonSchemaStrictness};
 
+/// A value shaped like a Claude OAuth token, assembled at run time so no credential-shaped literal sits in the source (senpi#5308).
+fn oat_shaped_key() -> String {
+    ["sk", "ant", "oat01", "not-a-real-token"].join("-")
+}
+
+// senpi#7391: an sk-ant-oat value given as an API key is an ordinary key, so both stream entry points go on to build
+// the request instead of refusing it.
 #[tokio::test]
-async fn streams_refuse_a_claude_oauth_api_key_before_building_the_request() {
+async fn streams_send_a_claude_oauth_api_key_instead_of_refusing_it() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let mut model = crate::providers::all::get_builtin_models("anthropic")
@@ -10,7 +17,7 @@ async fn streams_refuse_a_claude_oauth_api_key_before_building_the_request() {
         .next()
         .expect("Anthropic model");
     model.base_url = "http://127.0.0.1:0".into();
-    let token = ["sk-ant", "oat01", "test-only"].join("-");
+    let token = oat_shaped_key();
     let context = Context::default();
     let mut options = SimpleStreamOptions::default();
     options.stream.request.api_key = Some(token.clone());
@@ -21,32 +28,22 @@ async fn streams_refuse_a_claude_oauth_api_key_before_building_the_request() {
         observed.store(true, Ordering::Relaxed);
         None
     }));
-    let error = refuse_claude_oauth_token(&model, Some(&token)).expect_err("typed refusal");
-    assert_eq!(
-        ClaudeOAuthTokenRefusedError::CODE,
-        "claude_oauth_token_refused"
-    );
-    assert_eq!(error.provider, "anthropic");
-    assert_eq!(error.model_id, model.id);
 
-    for stream in [
-        stream_simple(&model, &context, Some(options.clone())),
-        stream(&model, &context, Some(options.stream)),
-    ] {
-        let message = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
+    let simple = stream_simple(&model, &context, Some(options.clone()));
+    let full = stream(&model, &context, Some(options.stream));
+    for settled in [simple, full] {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), settled.result())
             .await
-            .expect("refusal must settle")
-            .expect("error result");
-        assert_eq!(message.stop_reason, StopReason::Error);
-        let detail = message.error_message.expect("refusal detail");
-        assert_eq!(detail, error.to_string());
+            .expect("request must settle")
+            .expect("assistant message");
+        let detail = message.error_message.unwrap_or_default();
+        assert!(!detail.contains("not accepted as an API key"), "{detail}");
         assert!(!detail.contains(&token));
     }
-    assert!(!built.load(Ordering::Relaxed));
+    assert!(built.load(Ordering::Relaxed));
 }
 
-#[test]
-fn api_key_requests_keep_their_own_prompt_identity_and_tool_names() {
+fn assert_plain_api_key_request(key: &str) {
     let mut model = crate::providers::all::get_builtin_models("anthropic")
         .into_iter()
         .next()
@@ -67,7 +64,6 @@ fn api_key_requests_keep_their_own_prompt_identity_and_tool_names() {
         ..Default::default()
     };
     let options = StreamOptions::default();
-    let key = "test-api-key";
     let client = create_client(&model, &context, &options, Some(key), None, None);
     let headers = request_headers(&client, &model, Some(key));
     let body = build_params(&model, &context, &options, "text").expect("API key payload");
@@ -107,6 +103,19 @@ fn api_key_requests_keep_their_own_prompt_identity_and_tool_names() {
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
     assert_eq!(names, ["read", "ask_user_question"]);
+}
+
+#[test]
+fn api_key_requests_keep_their_own_prompt_identity_and_tool_names() {
+    assert_plain_api_key_request("test-api-key");
+}
+
+// senpi#7391: the same request shape for an sk-ant-oat value: a plain x-api-key, none of the Claude Code identity.
+#[test]
+fn a_claude_oauth_token_given_as_an_api_key_goes_out_as_a_plain_x_api_key() {
+    let key = oat_shaped_key();
+    assert!(key.starts_with(&["sk", "ant", "oat"].join("-")));
+    assert_plain_api_key_request(&key);
 }
 
 #[tokio::test]
