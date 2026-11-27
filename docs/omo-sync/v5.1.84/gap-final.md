@@ -2,17 +2,77 @@
 
 Source range: `69a1863a457` (`v5.1.83`) .. `8dbccd12842f` (`v5.1.84`), repo code-yeongyu/oh-my-openagent.
 This track closes the gaps the per-track ledgers left open, one slice per missing subsystem. Each slice records its
-own verdicts in the ledger of the track that owns the upstream paths; this file is the index and the slice the sdk
-track's own gap closed here.
+own verdicts in the ledger of the track that owns the upstream paths; this file is the index, and it records the two
+items this track had to decide with evidence (E and F).
 
 ## Slices
 
 | slice | upstream | verdict | where |
 |---|---|---|---|
-| sdk | #14948 `bb8b61313a`, `5d2e861f2f` — the root's typed call table | ported | `crates/omo/omo-sdk-contract` `src/calls.rs`, `src/shape.rs`, `src/results/root.rs`, `tests/root_calls.rs`; see `crates/omo/omo-sdk-contract/parity.d/5184s.md` and `docs/omo-sync/v5.1.84/omo-sdk.md` |
-| consumer | #14623 `dde26d7b4c`, `1e5ecd91a9` — store intake write and the delivery-outcome consumer | see `thread-remote.md`, `thread-gateway.md` | `crates/omo/components/maho-omo-gateway` |
-| reply | #14542 `8409382654`, `ca85fc8b51` — the reply allowance and its grant, local device | see `thread-remote.md`, `thread-gateway.md` | `crates/omo/components/maho-omo-gateway` |
-| resolve | #14305 `a5f001273f` — `sessions.resolve` on the shared thread-part ladder | see `thread-core.md`, `thread-remote.md` | `crates/omo/components/maho-omo-remote` |
+| tool receipts | #14623 `351df3416c`, `a77765fca0`, `abf5e307ac`, `1e5ecd91a9`; #14569 `cdc0aa9720`; #14560 `877fe926ec` local half | port | `crates/omo/components/maho-omo-gateway` `src/thread/tool_receipts.rs`, `create_tool.rs`, `remote/receipt.rs`, `store_tool_receipts.rs`; `tests/tool_receipts_tests.rs`, `tests/gateway_receipt_tests.rs` |
+| consumer and intake | #14623 `dde26d7b4c`, `1e5ecd91a9`; #13037 design 5.4–5.5 | port | `src/thread/consumer/delivery_consumer.rs` (`create_delivery_consumer`), `src/thread/store_ops.rs` (`intake`), `store_api.rs`, `store.rs`; `tests/intake_tests.rs` |
+| reply grant | #14541 `8409382654`, #14542 `ca85fc8b51` | see `thread-core.md` | `crates/omo/components/maho-omo-gateway` `src/thread/` |
+| resolve | #14305 `a5f001273f` | port | `crates/omo/components/maho-omo-remote` `src/verbs.rs`, `verbs_resolve_tests.rs` |
+| sdk | #14948 `bb8b61313a`, `5d2e861f2f` | ported | `crates/omo/omo-sdk-contract` `src/calls.rs`, `src/shape.rs`, `src/results/root.rs`, `tests/root_calls.rs`; see `parity.d/5184s.md` and `docs/omo-sync/v5.1.84/omo-sdk.md` |
+
+## Tool receipts
+
+`thread/tool_receipts.rs` `ToolReceipts` runs every gateway tool call under its idempotency key: scope
+`session:<caller>`, key `args.idempotency_key` or `call:<call_id>`, a recovery bound that answers `overloaded` with
+`details.budget=receipt_recovery`, `idempotency_in_progress` resumed by its owner, and Replay / Conflict / Uncertain /
+Retry as the store's receipt status decides. `settle` maps an `invalid_arguments` refusal to a released key, and a
+thrown call or an undecided create to `idempotency_uncertain` — which is what a lost reply answers on the retry, and
+what makes #14560's local half real. `thread_send` and `thread_handoff` stay outside the wrapper: a send carries its
+own delivery receipt, and a handoff's own contract decides it.
+
+`thread_row.rs` `current_result` / `stored_row` / `stored_state` / `stored_candidates` / `renamed` / `current_row`
+replay a receipt written before #14044 as today's row, so an old receipt is never a shape this build cannot read.
+
+## Consumer and intake
+
+`store_ops.rs` `intake` is upstream `store-worker.ts` `intake` ported: the device, delivery id and target must be
+durable ids, only an agent sender reaches a session that is not running, a steer to one is a `turn_conflict`, a child
+or worker target is `not_resumable`, a chain over this machine's limit is `unsupported` with `chain_count` and `limit`,
+and every one of those refusals happens before the commit. The accepted record is one enqueue transaction's row with
+`ledger_id = device:<device>/<deliveryId>` and its receipt keyed by the attested device alone, completed with the answer
+in the same commit; a repeat answers from that receipt, and a repeat whose receipt expired but whose row is still
+stored answers from the row (`answer_from_ledger_row`), which is what the argument hash would have answered.
+
+`consumer/delivery_consumer.rs` `create_delivery_consumer` is the consumer the wake runtime starts: a handed record is
+resolved first (`resolve_wake_target`: gone, ambiguous and a non-interactive session are refused before anything is
+committed), committed through the intake, answered from the row, and only then is the sender's admission checked —
+a yes wakes the session, a no settles the row `sender_not_admitted`. `delivery_outcome_notice` reconciles the caller's
+retained remote receipt, `get_delivery_outcome` answers a receipt outcome (and checks the sender's admission again
+before and after, since the service re-checks its grant), the pending list is reported after every declaration, and the
+drained report runs after it with the refusal notices beside it, never ahead of it.
+
+The local-API client behind the port (`consumer/device-service-port.ts`) is not ported: the device service in this
+repository serves no `deliveries.*` protocol, so the runtime keeps taking a factory and a host that brings one binds it.
+
+## E — live device-service `RemoteSessionsPort` over mhc-relayd: `blocked`
+
+Upstream's `remote/port/device-service.ts` speaks a `deliveries.*`/`sessions.*` protocol to the device service. mhc's
+relay daemon answers the requests it serves and refuses this list by name (`crates/omo/mhc-relayd/src/local_server.rs`
+`UNSUPPORTED_REQUESTS`):
+
+`refresher.register`, `device.adopt`, `enforcement.report`, `owner.shutdown_for_upgrade`, `session.endpoints`,
+`session.locate`, `session.read`, `session.command_part`, `sessions.events.subscribe`, `deliveries.serve`.
+
+What each missing RPC carries: `session.endpoints` and `session.locate` are #14748's lookup gate and #14799's reopen
+path; `session.read` is #14278's listing row (`waiting`, `engine_version`) and the read leg; `session.command_part`
+and `sessions.events.subscribe` are `25dc4d8220`'s follow stream; `deliveries.serve` is the delivery consumer's own
+declaration. Porting this port is not a small addition on both sides — it is the whole device-service delivery
+protocol — so the row stays `blocked` with those six names as the gap. `#14091`'s `onClose` arrives with the same port
+and has nothing to release before it: mhc's `RemoteClient` owns no per-connection sessions port, and
+`AttachPool::close` already ends held attaches.
+
+## F — `fork_from` on an engine advertising `open_session_fork`: `gap`
+
+`open_session_fork` appears nowhere in this tree (`grep -rn open_session_fork crates/` is empty), so no mhc engine or
+session host advertises it, and `thread/control/plan_create.rs` refuses `fork_from` as `fork_unsupported` before any
+open. The upstream work (#13031 `aef88019f8`, `90dc3fef61`, `07060a225b`) is a reader of `ThreadHost.capabilities`
+plus the fork branch in the control legs; with no capability to read and no `SessionHost.forks`, the refusal this build
+gives is the true answer, and it is the row's `gap`.
 
 ## The sdk slice
 
