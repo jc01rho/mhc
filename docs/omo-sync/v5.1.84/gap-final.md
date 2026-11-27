@@ -11,9 +11,9 @@ Counts computed from the slice rows below (E and F are the two rows this track h
 
 | verdict | slices |
 |---|---:|
-| port | 4 |
+| port | 5 |
 | ported | 1 |
-| gap | 1 |
+| gap | 0 |
 | blocked | 1 |
 | **total** | **7** |
 
@@ -78,13 +78,15 @@ protocol — so the row stays `blocked` with those six names as the gap. `#14091
 and has nothing to release before it: mhc's `RemoteClient` owns no per-connection sessions port, and
 `AttachPool::close` already ends held attaches.
 
-## F — `fork_from` on an engine advertising `open_session_fork`: `gap`
+## F — `fork_from` on an engine advertising `open_session_fork`: `port` (fork track)
 
-`open_session_fork` appears nowhere in this tree (`grep -rn open_session_fork crates/` is empty), so no mhc engine or
-session host advertises it, and `thread/control/plan_create.rs` refuses `fork_from` as `fork_unsupported` before any
-open. The upstream work (#13031 `aef88019f8`, `90dc3fef61`, `07060a225b`) is a reader of `ThreadHost.capabilities`
-plus the fork branch in the control legs; with no capability to read and no `SessionHost.forks`, the refusal this build
-gives is the true answer, and it is the row's `gap`.
+This track left F a `gap`: no mhc engine advertised `open_session_fork`, so `thread/control/plan_create.rs` refused
+`fork_from` as `fork_unsupported` before any open. The fork track (`docs/omo-sync/v5.1.84/fork.md`) built the missing
+engine half and ported #13031 (`aef88019f8`, `90dc3fef61`, `07060a225b`) on it: `crates/maho-rpc` forks on
+`open_session { forkFrom }` and advertises the capability, this device reads it through `ThreadHost::capabilities` and
+`SessionHost::forks` and forks, and a source on another device is decided by that device's capabilities. Only the open
+on another device stays refused, because `mhc-relayd` carries no remote `open_session`. The thread-core,
+thread-gateway and thread-remote rows are `port`.
 
 ## The sdk slice
 
