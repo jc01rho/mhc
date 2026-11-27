@@ -29,7 +29,7 @@ use crate::thread::store_ops::ReceiptOutcomeRequest;
 use crate::thread::store_tool_receipts::ReconcileRemoteReceiptRequest;
 use crate::thread::types::{
     IntakeOutcome, IntakeRecord, IntakeRequest, IntakeSender, Provenance, ReceiptOutcome,
-    ReceiptRefusalReason, RefusalNotice, RefusalReason,
+    ReceiptRefusalReason, RefusalReason,
 };
 use crate::thread::wake::pending_sweep::WakeSession;
 use crate::thread::wake::session_target::{WakeSessionKind, WakeTarget, resolve_wake_target};

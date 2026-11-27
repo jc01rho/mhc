@@ -76,6 +76,7 @@ impl RpcTransport for PeerHost {
 }
 
 fn component(dir: &tempfile::TempDir, host: Arc<PeerHost>, cwd: &str) -> GatewayThreadComponent {
+    let workspace_root = cwd.to_owned();
     let surface: Arc<dyn ThreadHost> = Arc::new(LiveThreadSurface::new(LiveThreadSurfaceOptions {
         socket: SOCKET.into(),
         transport: host,
@@ -117,7 +118,7 @@ fn component(dir: &tempfile::TempDir, host: Arc<PeerHost>, cwd: &str) -> Gateway
         notify: None,
         log: None,
         host: Some(surface),
-        caller_workspace_root: Arc::new(move || cwd.to_owned()),
+        caller_workspace_root: Arc::new(move || workspace_root.clone()),
         sessions_directory: None,
         remote: None,
     }))

@@ -2026,7 +2026,7 @@ pub fn intake(ctx: &StoreContext, request: &IntakeRequest) -> Result<IntakeOutco
         ));
     }
     let sender_session = (record.sender.kind == "agent")
-        .then(|| record.sender.session_id.as_deref())
+        .then_some(record.sender.session_id.as_deref())
         .flatten();
     let Some(sender_session) = sender_session.filter(|session| is_durable_id(session)) else {
         return Ok(intake_refused(
@@ -2072,7 +2072,7 @@ pub fn intake(ctx: &StoreContext, request: &IntakeRequest) -> Result<IntakeOutco
         .filter(|name| !name.is_empty())
         .unwrap_or(sender_session)
         .to_owned();
-    let mut enqueue_request = EnqueueRequest {
+    let enqueue_request = EnqueueRequest {
         provenance: request.provenance.clone(),
         now: request.now,
         delivery_id: new_id("delivery"),
@@ -2106,7 +2106,7 @@ pub fn intake(ctx: &StoreContext, request: &IntakeRequest) -> Result<IntakeOutco
     // A repeat whose receipt expired but whose row is still stored answers from that row: the receipt's argument hash
     // would have answered the same, so the ledger key alone decides it.
     if let Some(row) = ledger_row(ctx, &ledger_id)? {
-        return Ok(answer_from_ledger_row(ctx, &row, record, &ledger_id)?);
+        return answer_from_ledger_row(ctx, &row, record, &ledger_id);
     }
     // The ledger row is looked up above, in the same snapshot, so the unique index is never met here; if another writer
     // raced it, intake still answers from the row rather than let the raw constraint error out.
@@ -2133,12 +2133,14 @@ pub fn intake(ctx: &StoreContext, request: &IntakeRequest) -> Result<IntakeOutco
             mark_intake(
                 ctx,
                 request.now,
-                &principal,
-                &record.delivery_id,
-                &row.delivery_id,
-                &ledger_id,
-                record,
-                &answer,
+                &IntakeMark {
+                    principal: &principal,
+                    idempotency_key: &record.delivery_id,
+                    delivery_id: &row.delivery_id,
+                    ledger_id: &ledger_id,
+                    record,
+                    answer: &answer,
+                },
             )?;
             Ok(IntakeOutcome::Queued {
                 delivery_id: record.delivery_id.clone(),
@@ -2192,12 +2194,14 @@ pub fn intake(ctx: &StoreContext, request: &IntakeRequest) -> Result<IntakeOutco
                 mark_intake(
                     ctx,
                     request.now,
-                    &principal,
-                    &record.delivery_id,
-                    &row.delivery_id,
-                    &ledger_id,
-                    record,
-                    &answer,
+                    &IntakeMark {
+                        principal: &principal,
+                        idempotency_key: &record.delivery_id,
+                        delivery_id: &row.delivery_id,
+                        ledger_id: &ledger_id,
+                        record,
+                        answer: &answer,
+                    },
                 )?;
                 return Ok(IntakeOutcome::Queued {
                     delivery_id: record.delivery_id.clone(),
@@ -2266,7 +2270,7 @@ fn answer_from_ledger_row(
         && row.hop == record.chain_count
         && row.envelope.origin.session_id()
             == (record.sender.kind == "agent")
-                .then(|| record.sender.session_id.as_deref())
+                .then_some(record.sender.session_id.as_deref())
                 .flatten();
     if !same {
         return Ok(intake_refused(
@@ -2286,34 +2290,34 @@ fn answer_from_ledger_row(
 
 /// Marks the row this intake stored with its ledger key and verbatim text, and completes the receipt with the answer in
 /// the same commit, so a repeat from the same device replays it.
-fn mark_intake(
-    ctx: &StoreContext,
-    now: i64,
-    principal: &str,
-    idempotency_key: &str,
-    delivery_id: &str,
-    ledger_id: &str,
-    record: &IntakeRecord,
-    answer: &Value,
-) -> Result<(), StoreError> {
+struct IntakeMark<'a> {
+    principal: &'a str,
+    idempotency_key: &'a str,
+    delivery_id: &'a str,
+    ledger_id: &'a str,
+    record: &'a IntakeRecord,
+    answer: &'a Value,
+}
+
+fn mark_intake(ctx: &StoreContext, now: i64, mark: &IntakeMark<'_>) -> Result<(), StoreError> {
     transaction(ctx, "intake_mark", || {
         ctx.run(
             "UPDATE deliveries SET ledger_id = ?, verbatim_text = ?, verbatim_display_text = ?, updated_at = ? WHERE delivery_id = ?",
             &[
-                v_str(ledger_id),
-                v_str(&record.text),
-                v_str(&record.display_text),
+                v_str(mark.ledger_id),
+                v_str(&mark.record.text),
+                v_str(&mark.record.display_text),
                 v_i64(now),
-                v_str(delivery_id),
+                v_str(mark.delivery_id),
             ],
         )?;
         ctx.run(
             "UPDATE receipts SET status = 'completed', result = ?, updated_at = ? WHERE principal = ? AND operation = 'deliver' AND idempotency_key = ? AND status = 'prepared' AND owner_instance = ?",
             &[
-                v_str(answer.to_string()),
+                v_str(mark.answer.to_string()),
                 v_i64(now),
-                v_str(principal),
-                v_str(idempotency_key),
+                v_str(mark.principal),
+                v_str(mark.idempotency_key),
                 v_str(&ctx.config.instance_id),
             ],
         )?;
