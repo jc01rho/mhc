@@ -1,5 +1,5 @@
 //! Cross-device command state, probe decision and refusal mapping (`thread/remote/outcome.ts`,
-//! `relay-transport.ts`; omo #14320, #14333, #14428, senpi#7014).
+//! `relay-transport.ts`; omo #14320, #14333, #14358, #14428, senpi#7014).
 
 use device_service_core::local_api::CommandOutcome;
 use serde_json::{Map, Value, json};
@@ -205,6 +205,62 @@ const UNANSWERED_REMOTE_REASONS: &[&str] = &[
     "result_undecodable",
 ];
 
+// The causes an `engine_capability_missing` refusal can name that pass on their own: an attach the device no longer
+// counts (after this device re-attached once), or no omo engine came up there. No cause is an engine that never takes it.
+const ENGINE_NOT_READY: [&str; 2] = ["attach_required", "daemon_unavailable"];
+
+fn not_ready_cause<'a>(reason: &str, detail: Option<&'a str>) -> Option<&'a str> {
+    detail.filter(|cause| reason == "engine_capability_missing" && ENGINE_NOT_READY.contains(cause))
+}
+
+/// The transient cause an `engine_capability_missing` refusal names, if it names one (#14358).
+pub fn engine_not_ready(outcome: &RemoteCommandOutcome) -> Option<&str> {
+    match outcome {
+        RemoteCommandOutcome::Refused { reason, detail } => {
+            not_ready_cause(reason, detail.as_deref())
+        }
+        _ => None,
+    }
+}
+
+/// The other device lists the session on a route that takes no delegated connections and holds no attach of this
+/// device to it: nothing ran, and the command runs once this device attaches again (#14358).
+pub fn attach_required(outcome: &RemoteCommandOutcome) -> bool {
+    engine_not_ready(outcome) == Some("attach_required")
+}
+
+/// [`engine_not_ready`] for a local API command outcome, whose cause is the refusal receipt's `reason`.
+pub fn command_not_ready(outcome: &CommandOutcome) -> Option<&str> {
+    if outcome.state != "engine_refused" {
+        return None;
+    }
+    not_ready_cause(
+        outcome.reason.as_deref().unwrap_or_default(),
+        outcome
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.get("reason"))
+            .and_then(Value::as_str),
+    )
+}
+
+fn not_ready_failure(device: &str, cause: &str) -> ThreadToolFailure {
+    thread_tool_failure(
+        "host_unavailable",
+        format!("Device {device} did not take the command now ({cause}); nothing ran there."),
+        if cause == "daemon_unavailable" {
+            "Start omo on that device, then retry."
+        } else {
+            "Retry in a few seconds."
+        },
+        Some(json!({
+            "device": device,
+            "reason": "engine_capability_missing",
+            "cause": cause,
+        })),
+    )
+}
+
 fn chain_count_limit_failure(device: &str) -> Box<ThreadToolFailure> {
     Box::new(thread_tool_failure(
         "chain_count_limit",
@@ -254,6 +310,9 @@ pub fn relay_outcome_failure(
     }
     if let Some(not_signed_in) = not_signed_in_failure(raw_reason, device) {
         return not_signed_in;
+    }
+    if let Some(cause) = engine_not_ready(outcome) {
+        return Box::new(not_ready_failure(device, cause));
     }
     match raw_reason {
         "capability_missing" => Box::new(thread_tool_failure(
@@ -360,6 +419,9 @@ pub fn outcome_failure(
         };
     }
 
+    if let Some(cause) = command_not_ready(outcome) {
+        return json!({ "kind": "error", "error": not_ready_failure(device, cause) });
+    }
     let reason = outcome.reason.clone().unwrap_or_default();
     match outcome.state.as_str() {
         "engine_refused" => match reason.as_str() {
@@ -440,6 +502,7 @@ pub fn outcome_failure(
             | "method_local_only"
             | "unsupported"
             | "engine_too_old"
+            | "engine_capability_missing"
             | "capability_missing" => remote_failure(
                 "unsupported",
                 format!("Device {device} cannot take this message ({reason})."),
@@ -792,6 +855,96 @@ mod tests {
         assert_eq!(
             relay_outcome_failure(&gone, "b").code.as_str(),
             "not_resumable"
+        );
+    }
+
+    fn capability_missing(detail: Option<&str>) -> RemoteCommandOutcome {
+        RemoteCommandOutcome::Refused {
+            reason: "engine_capability_missing".to_owned(),
+            detail: detail.map(str::to_owned),
+        }
+    }
+
+    // #14358: a cause that passes on its own (an attach the device does not count even after this device re-attached,
+    // no omo engine up there) is a retry, never an "update omo" unsupported device.
+    #[test]
+    fn an_engine_capability_missing_refusal_naming_a_transient_cause_is_host_unavailable() {
+        for cause in ["attach_required", "daemon_unavailable"] {
+            let failure = relay_outcome_failure(&capability_missing(Some(cause)), "b");
+            assert_eq!(failure.code.as_str(), "host_unavailable");
+            assert_eq!(
+                failure.details,
+                Some(
+                    json!({ "device": "b", "reason": "engine_capability_missing", "cause": cause })
+                )
+            );
+        }
+        assert_eq!(
+            relay_outcome_failure(&capability_missing(None), "b")
+                .code
+                .as_str(),
+            "unsupported"
+        );
+        assert_eq!(
+            relay_outcome_failure(&capability_missing(Some("engine_too_old")), "b")
+                .code
+                .as_str(),
+            "unsupported"
+        );
+        assert!(attach_required(&capability_missing(Some(
+            "attach_required"
+        ))));
+        assert!(!attach_required(&capability_missing(Some(
+            "daemon_unavailable"
+        ))));
+        assert!(!attach_required(&RemoteCommandOutcome::Refused {
+            reason: "unsupported".to_owned(),
+            detail: Some("attach_required".to_owned()),
+        }));
+    }
+
+    #[test]
+    fn a_command_refused_engine_capability_missing_names_its_cause_or_stays_unsupported() {
+        for cause in ["attach_required", "daemon_unavailable"] {
+            let failure = result_of(
+                &addr(),
+                "b",
+                &refused(
+                    "engine_capability_missing",
+                    Some(json!({ "reason": cause, "endpoint_kind": "tui" })),
+                ),
+                "prompt",
+                "start",
+                None,
+            );
+            assert_eq!(failure["error"]["code"], "host_unavailable");
+            assert_eq!(
+                failure["error"]["details"],
+                json!({ "device": "b", "reason": "engine_capability_missing", "cause": cause })
+            );
+        }
+        let bare = result_of(
+            &addr(),
+            "b",
+            &refused("engine_capability_missing", None),
+            "prompt",
+            "start",
+            None,
+        );
+        assert_eq!(bare["error"]["code"], "unsupported");
+        assert_eq!(
+            command_not_ready(&refused(
+                "engine_capability_missing",
+                Some(json!({ "reason": "attach_required" }))
+            )),
+            Some("attach_required")
+        );
+        assert_eq!(
+            command_not_ready(&refused(
+                "peer_unauthorized",
+                Some(json!({ "reason": "attach_required" }))
+            )),
+            None
         );
     }
 }
