@@ -28,13 +28,15 @@ await session.tabReturn(vault.tab_id)
 
 The app mutates its URL hash without updating the document title, so a signed-in vault can still
 report a sign-in title. A live session's `location.href` contains the app path and never the
-sign-in path. Read the URL from `tabList`, or `session.evaluate("location.href")`.
+sign-in path. Read the URL from `tabList`, or `session.evaluate("location.href", { context })` with a
+fresh `context` from `session.cooperate("sync")` (see the shared-control section of
+[../commands.md](../commands.md)).
 
 ## The browser may be shared
 
 Other automation may be driving the same window.
 
-- **Clear the search box before typing** (`fill(target, value, { clearBefore: true })`). It often
+- **Clear the search box before typing** (`fill(target, value, { clearBefore: true, context })`). It often
   holds someone else's query, and typing alone appends to it, returning confident results for the
   wrong search.
 - **Read the autocomplete listbox, not the results grid.** The grid holds whatever query was last
@@ -45,10 +47,12 @@ Other automation may be driving the same window.
 ## If it is locked
 
 ```js
-await session.requestHelp({ prompt: "Please unlock 1Password in this tab, then continue." })
+await tool.monitor({ description: "1Password unlocked", path: flag, event: "create" })   // subscribe first
+globalThis.help = session.requestHelp({ prompt: "Please unlock 1Password in this tab, then continue." })
+  .then((r) => Bun.write(flag, r.outcome), (e) => Bun.write(flag, `failed: ${e.message}`))
 ```
 
-Then read the page again.
+End the cell; when the event arrives, read the page again.
 
 ## Not in scope
 

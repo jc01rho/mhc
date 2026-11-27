@@ -212,8 +212,8 @@
     "browser": [
       {
         "path": "ATTRIBUTION.md",
-        "bytes": 1831,
-        "sha256": "53e5823290b03169b2b6a983e9cc39cafd40f30a1e5d668babca87f8f4df7be1",
+        "bytes": 2171,
+        "sha256": "d0ef32bf464a011718b50d60292d9e216d6f15523bf9fd9ad0cda2a1746ceb2d",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/ATTRIBUTION.md"
       },
       {
@@ -224,32 +224,32 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 9770,
-        "sha256": "f01edcd52a217579fb564015723efc0ab6bc3827f7f4434fee9f7ccae1b86144",
+        "bytes": 12972,
+        "sha256": "c3f5625f0646404723a88160910dae0804b4dc3fdd0fe1b81338c70681ad1dbd",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/SKILL.md"
       },
       {
         "path": "references/commands.md",
-        "bytes": 6608,
-        "sha256": "e03c4ce9730e790c997493de8395e860f62c8b3d851ce85e488b6e90d7385fde",
+        "bytes": 14907,
+        "sha256": "2f887606b012e4adbd04a58bc92b4eb14467edd14f2f380aa3573ca6f040a69f",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/commands.md"
       },
       {
         "path": "references/install.md",
-        "bytes": 6005,
-        "sha256": "8864e6ea361e9dbb4f8ca29bb584ad958c97d37008206f93d4499221f03d1e18",
+        "bytes": 7715,
+        "sha256": "7c33e7876c17abe8217c6c5ecc7c6a4af23ec20766930a715d74f9062d850104",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/install.md"
       },
       {
         "path": "references/owned-engine/README.md",
-        "bytes": 3489,
-        "sha256": "746ff831edb36659c98167cbc6c7f012f89684c40265b6d3b87d89cb1dd221dd",
+        "bytes": 3849,
+        "sha256": "92ab3f5592fe122b03d269ce339ccd7b6016a7bcbb86237fc911d273774d4b7b",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/owned-engine/README.md"
       },
       {
         "path": "references/owned-engine/frames-and-humans.md",
-        "bytes": 3670,
-        "sha256": "4071e64e85b10b8233f39b314f0d4b00c181d1a0fac23dfb48817a96c2cfaa2f",
+        "bytes": 4080,
+        "sha256": "6da5d727cef128812235c77f4568b71059361dd415d9e1fa08e3c976e07a48d8",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/owned-engine/frames-and-humans.md"
       },
       {
@@ -260,14 +260,14 @@
       },
       {
         "path": "references/owned-engine/network.md",
-        "bytes": 2990,
-        "sha256": "a8ee0cbec437b67e3a5e23a6a28889ea8a3667cc883024605f102d19d50d60a7",
+        "bytes": 3203,
+        "sha256": "14be51142054ef2ff5101f80886aacffd0bb14561b14e68620cc4dc9621806ac",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/owned-engine/network.md"
       },
       {
         "path": "references/recipes/1password.md",
-        "bytes": 2706,
-        "sha256": "322513d6736568320c7205235a5cf9f405c2c1e0f626127563d30951487d6dbf",
+        "bytes": 3097,
+        "sha256": "296791296ed2bd785bccf00b8cff44f7bf96fab23b138d3897f822fd4a51b1fd",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/references/recipes/1password.md"
       },
       {
@@ -302,8 +302,8 @@
       },
       {
         "path": "scripts/omowright.mjs",
-        "bytes": 1884,
-        "sha256": "d9ae60d8c8591ae66febf259067498c9f9fe6ce66ec81fa9b323b120a264a3b0",
+        "bytes": 2271,
+        "sha256": "f30c28d01e8bec603b13246179aaa3963b2765460ff7cd2d9359293b009baa52",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/browser/scripts/omowright.mjs"
       }
     ],
@@ -682,8 +682,8 @@
       },
       {
         "path": "references/tools/browser-qa.md",
-        "bytes": 4451,
-        "sha256": "abe3cb2de19eaad43b08676413c630935bc9e711cd924dcce4ef60dcbf824bd9",
+        "bytes": 4694,
+        "sha256": "2f93330e9b25fcb3e3114951ae685263c70248c1bb888976f3155a7e037ac365",
         "source": "lazycodex@75b01747:plugins/omo/skills/debugging/references/tools/browser-qa.md (MIT)"
       },
       {
@@ -4076,8 +4076,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 12061,
-        "sha256": "d1f2072bd2990c58e33a3f251ea68ed4bf6355d949a0874470bec73e2aa7353a",
+        "bytes": 12122,
+        "sha256": "80dbc542e0e3a4032cffb8da735c5eda3bdd0becd7da22d13b6be2138a89be5b",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/SKILL.md"
       },
       {
@@ -5096,8 +5096,8 @@
       },
       {
         "path": "references/browser-setup.md",
-        "bytes": 5279,
-        "sha256": "990918a5276510c783e95c068c062a2b958695c02fac083faf951de57f5e95f5",
+        "bytes": 5838,
+        "sha256": "86df429f3ebc11567ea0c96cc235623e0b9a9c4d2016e09bd129d23a5c4bd2d1",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/references/browser-setup.md"
       },
       {
