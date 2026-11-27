@@ -124,6 +124,7 @@ impl Ledger {
 
 enum Admission {
     Answer(Value),
+    WithoutReceipt,
     Run(Run),
 }
 
@@ -195,6 +196,13 @@ pub(crate) fn schema_refusal(error: &StoreError) -> Option<ThreadToolFailure> {
         [found, supported, ..] => Some(gateway_schema_refusal(*found, *supported)),
         _ => None,
     }
+}
+
+/// The tools a store newer than this build still answers without a receipt: a read that changes nothing and whose answer
+/// survives the missing backlog. The listing names why its backlog is absent (`read_ops.rs` `with_backlog`) instead of
+/// refusing, so the receipt must not turn that store's refusal into the call's answer.
+fn receipt_optional(name: &str) -> bool {
+    name == "thread_list"
 }
 
 /// The receipt note of a `thread_create` left uncertain (#14569): its first uncertain answer's message and details (the
@@ -306,6 +314,13 @@ impl ToolReceipts {
         }
         let run = match self.admit(name, call_id, caller_id, &args) {
             Admission::Answer(answer) => return answer,
+            // A listing a store newer than this build still answers runs unrecorded: the backlog is an optional detail
+            // of the listing and a receipt only replays an answer that a read never changes.
+            Admission::WithoutReceipt => {
+                let mut answer = body(None).await;
+                take_thrown(&mut answer);
+                return answer;
+            }
             Admission::Run(run) => run,
         };
         self.ledger().running.insert(run.key.clone());
@@ -369,6 +384,11 @@ impl ToolReceipts {
                 // failure `internal_error`.
                 let message = error.message();
                 let answer = if error.is_lock_wait_exceeded() {
+                    // The store gave up waiting for its lock, but its worker may still commit the row it was writing: the
+                    // key holds a recovery slot exactly as a lost reply does.
+                    self.ledger()
+                        .unanswered
+                        .insert(key.clone(), at + GATEWAY_RECEIPT_RETENTION_MS);
                     failure(
                         "overloaded",
                         format!(
@@ -378,6 +398,10 @@ impl ToolReceipts {
                         None,
                     )
                 } else if let Some(refusal) = schema_refusal(&error) {
+                    if receipt_optional(name) {
+                        self.ledger().release_admitting(&key);
+                        return Admission::WithoutReceipt;
+                    }
                     error_json(refusal)
                 } else {
                     // The slot passes to the key's recovery entry when the failure left one.
