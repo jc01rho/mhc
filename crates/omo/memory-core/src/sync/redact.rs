@@ -427,91 +427,132 @@ fn find_ascii(value: &[u16], needle: &str, from: usize) -> Option<usize> {
         .map(|index| index + from)
 }
 
-fn is_scheme_char(character: char) -> bool {
-    character.is_ascii_alphanumeric() || character == '+' || character == '.' || character == '-'
+/// The most UTF-16 code units each userinfo half may span, upstream's `{1,256}` / `{0,256}`.
+const URL_USERINFO_MAX_UNITS: usize = 256;
+
+fn ascii_unit(unit: u16) -> Option<u8> {
+    u8::try_from(unit).ok().filter(u8::is_ascii)
 }
 
-fn redact_url_userinfo(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut cursor = 0;
-    let _bytes = input.as_bytes();
+fn is_scheme_unit(unit: u16) -> bool {
+    ascii_unit(unit)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'.' | b'-'))
+}
 
-    while let Some(rel_idx) = input[cursor..].find("://") {
-        let scheme_delim_idx = cursor + rel_idx;
+fn is_scheme_first_unit(unit: u16) -> bool {
+    ascii_unit(unit).is_some_and(|byte| byte.is_ascii_alphabetic())
+}
 
-        let before_delim = &input[..scheme_delim_idx];
-        let mut scheme_start = scheme_delim_idx;
-        while scheme_start > 0 {
-            let prev_char = before_delim[..scheme_start].chars().next_back().unwrap();
-            if is_scheme_char(prev_char) {
-                scheme_start -= prev_char.len_utf8();
-            } else {
-                break;
-            }
-        }
+/// JavaScript `\s` over one UTF-16 code unit (a non-`u` regex reads code units).
+fn is_js_whitespace_unit(unit: u16) -> bool {
+    matches!(
+        unit,
+        0x09..=0x0D | 0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F
+            | 0x3000 | 0xFEFF
+    )
+}
 
-        let scheme_candidate = &input[scheme_start..scheme_delim_idx];
-        let valid_scheme = !scheme_candidate.is_empty()
-            && scheme_candidate
-                .chars()
-                .next()
-                .unwrap()
-                .is_ascii_alphabetic();
+fn scheme_separator(units: &[u16], from: usize) -> Option<usize> {
+    const NEEDLE: [u16; 3] = [b':' as u16, b'/' as u16, b'/' as u16];
+    units
+        .get(from..)?
+        .windows(NEEDLE.len())
+        .position(|window| window == NEEDLE)
+        .map(|index| index + from)
+}
 
-        if !valid_scheme {
-            out.push_str(&input[cursor..scheme_delim_idx + 3]);
-            cursor = scheme_delim_idx + 3;
-            continue;
-        }
+/// Reads one code unit and counts it, so a test can prove the scan's work is linear.
+fn counted_unit(units: &[u16], index: usize, reads: &mut usize) -> Option<u16> {
+    *reads += 1;
+    units.get(index).copied()
+}
 
-        let after_scheme_idx = scheme_delim_idx + 3;
-        let mut userinfo_end = None;
-        let mut colon_pos = None;
-
-        for (offset, character) in input[after_scheme_idx..].char_indices() {
-            let current_pos = after_scheme_idx + offset;
-            if character == '/' || character.is_whitespace() {
-                break;
-            }
-            if character == ':' && colon_pos.is_none() {
-                colon_pos = Some(current_pos);
-                continue;
-            }
-            if character == '@' {
-                userinfo_end = Some(current_pos);
-                break;
-            }
-        }
-
-        if let Some(at_idx) = userinfo_end {
-            let user_part = match colon_pos {
-                Some(c_idx) => &input[after_scheme_idx..c_idx],
-                None => &input[after_scheme_idx..at_idx],
-            };
-
-            if !user_part.is_empty() {
-                out.push_str(&input[cursor..scheme_start]);
-                out.push_str(&input[scheme_start..after_scheme_idx]);
-                if colon_pos.is_some() {
-                    out.push_str(MASK);
-                    out.push(':');
-                    out.push_str(MASK);
-                    out.push('@');
-                } else {
-                    out.push_str(MASK);
-                    out.push('@');
-                }
-                cursor = at_idx + 1;
-                continue;
-            }
-        }
-
-        out.push_str(&input[cursor..after_scheme_idx]);
-        cursor = after_scheme_idx;
+/// The end of the longest run from `from` (at most `URL_USERINFO_MAX_UNITS` units) that `admits`.
+fn userinfo_run_end(
+    units: &[u16],
+    from: usize,
+    reads: &mut usize,
+    admits: fn(u16) -> bool,
+) -> usize {
+    let mut end = from;
+    while end - from < URL_USERINFO_MAX_UNITS && counted_unit(units, end, reads).is_some_and(admits)
+    {
+        end += 1;
     }
+    end
+}
 
-    out.push_str(&input[cursor..]);
-    out
+/// Upstream's sticky `/([^/@\s:]{1,256})(?::([^/@\s]{0,256}))?@/y` at `at`: the end of the match and
+/// whether it carried a password. Neither class admits `@`, and the user class does not admit `:`,
+/// so the greedy runs never need to backtrack.
+fn url_userinfo_after_scheme(units: &[u16], at: usize, reads: &mut usize) -> Option<(usize, bool)> {
+    let user_end = userinfo_run_end(units, at, reads, |unit| {
+        !matches!(ascii_unit(unit), Some(b'/' | b'@' | b':')) && !is_js_whitespace_unit(unit)
+    });
+    if user_end == at {
+        return None;
+    }
+    match counted_unit(units, user_end, reads).and_then(ascii_unit) {
+        Some(b'@') => Some((user_end + 1, false)),
+        Some(b':') => {
+            let password_end = userinfo_run_end(units, user_end + 1, reads, |unit| {
+                !matches!(ascii_unit(unit), Some(b'/' | b'@')) && !is_js_whitespace_unit(unit)
+            });
+            (counted_unit(units, password_end, reads).and_then(ascii_unit) == Some(b'@'))
+                .then_some((password_end + 1, true))
+        }
+        _ => None,
+    }
+}
+
+/// Mask the `user:password@` of every scheme-carrying URL (upstream `maskUrlUserinfo`, #14864).
+///
+/// The scheme is matched backwards from each `://` instead of by a leading `[a-z][a-z0-9+.-]*`: a
+/// regex scheme can start at every letter of a long run and rescan the run each time, quadratic in
+/// the run's length. The walk back stops at the previous match's end, as the global regex's resume
+/// point did, and the scheme starts at the first letter of the run, which is the leftmost start the
+/// regex would have tried, so the matches are the same.
+pub fn mask_url_userinfo(value: &str) -> String {
+    let mut reads = 0;
+    mask_url_userinfo_counting(value, &mut reads)
+}
+
+fn mask_url_userinfo_counting(value: &str, reads: &mut usize) -> String {
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let mut redacted: Vec<u16> = Vec::with_capacity(units.len());
+    let mut cursor = 0;
+    let mut from = 0;
+    while let Some(separator) = scheme_separator(&units, from) {
+        let mut start = separator;
+        while start > cursor && counted_unit(&units, start - 1, reads).is_some_and(is_scheme_unit) {
+            start -= 1;
+        }
+        while start < separator
+            && !counted_unit(&units, start, reads).is_some_and(is_scheme_first_unit)
+        {
+            start += 1;
+        }
+        let userinfo = if start < separator {
+            url_userinfo_after_scheme(&units, separator + 3, reads)
+        } else {
+            None
+        };
+        let Some((end, has_password)) = userinfo else {
+            from = separator + 1;
+            continue;
+        };
+        redacted.extend_from_slice(&units[cursor..separator + 3]);
+        redacted.extend(MASK.encode_utf16());
+        if has_password {
+            redacted.push(u16::from(b':'));
+            redacted.extend(MASK.encode_utf16());
+        }
+        redacted.push(u16::from(b'@'));
+        cursor = end;
+        from = cursor;
+    }
+    redacted.extend_from_slice(&units[cursor..]);
+    String::from_utf16_lossy(&redacted)
 }
 
 static SCP_USERINFO: LazyLock<regress::Regex> = LazyLock::new(|| {
@@ -538,7 +579,11 @@ pub fn redact_url(value: &str) -> String {
     if value.is_empty() {
         return String::new();
     }
-    let step1 = redact_url_userinfo(value);
+    let step1 = if value.contains("://") {
+        mask_url_userinfo(value)
+    } else {
+        value.to_owned()
+    };
     let step2 = redact_scp_userinfo(&step1);
     redact_secret_like_material(&step2)
 }
