@@ -14,7 +14,7 @@ use maho_thread_address_core::{
 };
 use serde_json::{Value, json};
 
-use crate::args::{Delivery, Parsed, SessionArgs, Target, WakeValue, parse};
+use crate::args::{Delivery, Parsed, STDIN_TEXT, SessionArgs, Target, WakeValue, parse};
 use crate::context::RemoteContext;
 use crate::device::{
     candidate_lines, device_filter_target, enrich_listing_row, exit_code_of, non_empty,
@@ -23,8 +23,8 @@ use crate::device::{
 };
 use crate::exit::{RemoteExit, UsageError};
 use crate::render::{
-    control_lines, device_lines, device_name, person_next_action, session_lines, status_lines,
-    wake_lines,
+    control_lines, device_lines, device_name, escape_for_display, person_next_action,
+    session_lines, status_lines, wake_lines,
 };
 use crate::usage::{is_help_flag, is_verb, remote_usage, verb_usage};
 
@@ -85,13 +85,16 @@ pub async fn run_remote(ctx: &RemoteContext, args: &[String]) -> i32 {
     let parsed = match parse(args) {
         Ok(parsed) if is_verb(&parsed.command) => parsed,
         Ok(parsed) => {
-            ctx.err(&format!("mhc remote: unknown command {}", parsed.command));
+            ctx.err(&escape_for_display(&format!(
+                "mhc remote: unknown command {}",
+                parsed.command
+            )));
             ctx.err(&remote_usage());
             return RemoteExit::Usage.code();
         }
         Err(UsageError(message)) => {
             if !message.is_empty() {
-                ctx.err(&message);
+                ctx.err(&escape_for_display(&message));
             }
             ctx.err(&remote_usage());
             return RemoteExit::Usage.code();
@@ -131,9 +134,12 @@ pub fn report_failure(ctx: &RemoteContext, error: &LocalApiError, json: bool) ->
             .to_string(),
         );
     }
-    ctx.err(&format!("mhc remote: {}", error.reason));
+    ctx.err(&escape_for_display(&format!(
+        "mhc remote: {}",
+        error.reason
+    )));
     if let Some(action) = &error.action {
-        ctx.err(&person_next_action(action));
+        ctx.err(&escape_for_display(&person_next_action(action)));
     }
     match error.code.as_str() {
         "unsupported" | "service_disabled" | "signed_out" | "host_not_answering" => {
@@ -209,7 +215,10 @@ async fn run_on(ctx: &RemoteContext, client: &LocalApiClient, parsed: &Parsed) -
         _ => match &parsed.session {
             Some(session) => return session_verb(ctx, client, session, json).await,
             None => {
-                ctx.err(&format!("mhc remote: unknown command {}", parsed.command));
+                ctx.err(&escape_for_display(&format!(
+                    "mhc remote: unknown command {}",
+                    parsed.command
+                )));
                 return RemoteExit::Usage.code();
             }
         },
@@ -297,7 +306,9 @@ fn report_address_refusal(
             .to_string(),
         );
     }
-    ctx.err(&format!("mhc remote {verb}: {message}"));
+    ctx.err(&escape_for_display(&format!(
+        "mhc remote {verb}: {message}"
+    )));
     for line in candidate_lines(refusal.code, &refusal.details) {
         ctx.err(&line);
     }
@@ -354,9 +365,9 @@ async fn sessions(ctx: &RemoteContext, client: &LocalApiClient, parsed: &Parsed)
                 .to_string(),
             );
         }
-        ctx.err(&format!(
+        ctx.err(&escape_for_display(&format!(
             "mhc remote sessions: no device {query} on this account (see mhc remote devices)"
-        ));
+        )));
         return RemoteExit::Usage.code();
     }
     let unanswered = unanswered_devices(&devices, &listing.incomplete, &listing.devices);
@@ -648,15 +659,18 @@ async fn session_verb(
                     .to_string(),
                 );
             }
-            ctx.err(&format!("mhc remote {verb}: {message}"));
+            ctx.err(&escape_for_display(&format!(
+                "mhc remote {verb}: {message}"
+            )));
             for candidate in &candidates {
                 if let Some(thread) = candidate.get("thread").and_then(Value::as_str) {
                     let name = candidate.get("name").and_then(Value::as_str).unwrap_or("");
-                    if name.is_empty() {
-                        ctx.err(&format!("  {thread}"));
+                    let line = if name.is_empty() {
+                        format!("  {thread}")
                     } else {
-                        ctx.err(&format!("  {thread}  {name}"));
-                    }
+                        format!("  {thread}  {name}")
+                    };
+                    ctx.err(&escape_for_display(&line));
                 }
             }
             return RemoteExit::Failed.code();
@@ -671,9 +685,30 @@ async fn session_verb(
                     &json!({ "kind": "error", "code": error_code, "message": message }).to_string(),
                 );
             }
-            ctx.err(&format!("mhc remote {verb}: {message}"));
+            ctx.err(&escape_for_display(&format!(
+                "mhc remote {verb}: {message}"
+            )));
             return code;
         }
+    };
+    let record = if let SessionArgs::Send { text, delivery, .. } = session
+        && text == STDIN_TEXT
+    {
+        let stdin_text = ctx.read_stdin();
+        if stdin_text.is_empty() {
+            ctx.err(
+                "mhc remote send: stdin was empty; pipe the message text in, or pass it as an argument",
+            );
+            return RemoteExit::Usage.code();
+        }
+        let method = match delivery {
+            Delivery::Auto => "prompt",
+            Delivery::Steer => "steer",
+            Delivery::FollowUp => "follow_up",
+        };
+        json!({ "type": method, "message": stdin_text })
+    } else {
+        record
     };
     let attach = match client.attach(&resolved.device, &resolved.session).await {
         Ok(attach) => attach,
@@ -698,10 +733,10 @@ async fn session_verb(
                     .to_string(),
                 );
             }
-            ctx.err(&format!(
+            ctx.err(&escape_for_display(&format!(
                 "mhc remote close: {} {TURN_ACTIVE}; `mhc remote close {} --force` ends it anyway.",
                 resolved.label, resolved.label
-            ));
+            )));
             return RemoteExit::Failed.code();
         }
     }
@@ -714,7 +749,7 @@ async fn session_verb(
 }
 
 fn applied_line(verb: &str, session: &SessionArgs, label: &str, receipt: &Value) -> String {
-    match (verb, session) {
+    let raw = match (verb, session) {
         (
             "send",
             SessionArgs::Send {
@@ -735,9 +770,9 @@ fn applied_line(verb: &str, session: &SessionArgs, label: &str, receipt: &Value)
             format!("Nothing was running on {label}.")
         }
         ("interrupt", _) => format!("Interrupted {label}."),
-        ("close", _) if receipt["closed"] == false => format!("{label} was not open."),
         _ => format!("Closed {label}."),
-    }
+    };
+    escape_for_display(&raw)
 }
 
 fn report_outcome(
@@ -748,6 +783,41 @@ fn report_outcome(
     outcome: &CommandOutcome,
     json: bool,
 ) -> i32 {
+    // omo#13905: the shared close body answers a session its device does not hold as ok with closed:false. For the CLI
+    // that is a failed close: a script must never read an id or route miss as success while the session may still run.
+    if verb == "close"
+        && outcome.state == "engine_applied"
+        && outcome
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.get("closed"))
+            .and_then(Value::as_bool)
+            == Some(false)
+    {
+        let message = format!("{label} is not open on its device, so nothing was closed.");
+        let next_action = "Run mhc remote sessions to see the sessions each device holds, then close one by its address.";
+        if json {
+            ctx.out(
+                &json!({
+                    "kind": "error",
+                    "code": "not_found",
+                    "message": message,
+                    "next_action": next_action,
+                    "details": { "thread": label },
+                    "error": {
+                        "code": "not_found",
+                        "message": message,
+                        "next_action": next_action,
+                        "details": { "thread": label },
+                    },
+                })
+                .to_string(),
+            );
+        }
+        ctx.err(&escape_for_display(&format!("mhc remote close: {message}")));
+        ctx.err(next_action);
+        return RemoteExit::Failed.code();
+    }
     if json {
         ctx.out(
             &json!({
@@ -773,30 +843,31 @@ fn report_outcome(
             RemoteExit::Ok.code()
         }
         "engine_refused" => {
-            ctx.err(&match reason {
+            let line = match reason {
                 "route_unlisted" => format!(
                     "mhc remote {verb}: {label} is no longer listed on its device (it ended or moved); nothing was sent."
                 ),
                 "peer_unauthorized" => format!(
                     "mhc remote {verb}: remote control is off on that device (mhc remote control on, there)."
                 ),
-                "turn_conflict" | "not_steerable" => format!(
-                    "mhc remote {verb}: {label} refused the steer ({reason})."
-                ),
+                "turn_conflict" | "not_steerable" => {
+                    format!("mhc remote {verb}: {label} refused the steer ({reason}).")
+                }
                 other => format!("mhc remote {verb}: {label} refused it ({other})."),
-            });
+            };
+            ctx.err(&escape_for_display(&line));
             RemoteExit::Failed.code()
         }
         "not delivered: never_sent" | "not confirmed" => {
-            ctx.err(&format!(
+            ctx.err(&escape_for_display(&format!(
                 "mhc remote {verb}: nothing was sent: the device holding {label} did not answer. Try again."
-            ));
+            )));
             RemoteExit::Unavailable.code()
         }
         _ => {
-            ctx.err(&format!(
+            ctx.err(&escape_for_display(&format!(
                 "mhc remote {verb}: the outcome is unknown ({reason}); check mhc remote sessions before sending again."
-            ));
+            )));
             RemoteExit::Failed.code()
         }
     }

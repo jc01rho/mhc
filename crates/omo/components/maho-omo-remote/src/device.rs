@@ -224,11 +224,12 @@ pub fn candidate_lines(code: RefusalCode, details: &RefusalDetails) -> Vec<Strin
     candidates
         .iter()
         .map(|candidate| {
-            if candidate.name.is_empty() || candidate.name == candidate.device {
+            let line = if candidate.name.is_empty() || candidate.name == candidate.device {
                 format!("  {}", candidate.device)
             } else {
                 format!("  {}  {}", candidate.device, candidate.name)
-            }
+            };
+            crate::render::escape_for_display(&line)
         })
         .collect()
 }

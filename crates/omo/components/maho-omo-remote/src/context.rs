@@ -1,7 +1,8 @@
 //! What a verb runs against: the device service's state dir, this agent dir, output, and the unit host.
 
+use std::io::Read;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use device_service_core::cold_wake::{ColdWakeHost, ServicePlatform, SystemCommandRunner};
@@ -10,7 +11,23 @@ use device_service_core::local_api::{
     connect_local_api,
 };
 
+use crate::render::escape_for_display_keep_lf;
+
 pub type LineSink = Arc<dyn Fn(&str) + Send + Sync>;
+pub type StdinReader = Arc<dyn Fn() -> String + Send + Sync>;
+
+type StdinOverrides = Mutex<Vec<(PathBuf, StdinReader)>>;
+
+fn stdin_overrides() -> &'static StdinOverrides {
+    static OVERRIDES: OnceLock<StdinOverrides> = OnceLock::new();
+    OVERRIDES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn read_process_stdin() -> String {
+    let mut text = String::new();
+    let _ = std::io::stdin().read_to_string(&mut text);
+    text
+}
 
 #[derive(Clone)]
 pub struct RemoteContext {
@@ -82,10 +99,37 @@ impl RemoteContext {
                 .ok()
                 .map(|path| path.to_string_lossy().into_owned()),
             output: Arc::new(|line| println!("{line}")),
-            error: Arc::new(|line| eprintln!("{line}")),
+            error: Arc::new(|line| eprintln!("{}", escape_for_display_keep_lf(line))),
             now: Arc::new(now_ms),
             cold_wake,
             request_timeout: Duration::from_millis(REQUEST_TIMEOUT_MS),
+        }
+    }
+
+    /// Sets an injected stdin reader for `mhc remote send <target> -` (omo#13905) without changing
+    /// [`RemoteContext`]'s struct fields.
+    pub fn set_stdin_reader(&self, reader: StdinReader) {
+        let key = self.state_dir.clone();
+        let mut guard = stdin_overrides()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(entry) = guard.iter_mut().find(|(k, _)| *k == key) {
+            entry.1 = reader;
+        } else {
+            guard.push((key, reader));
+        }
+    }
+
+    pub fn read_stdin(&self) -> String {
+        let reader = stdin_overrides()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(k, _)| *k == self.state_dir)
+            .map(|(_, reader)| Arc::clone(reader));
+        match reader {
+            Some(reader) => reader(),
+            None => read_process_stdin(),
         }
     }
 

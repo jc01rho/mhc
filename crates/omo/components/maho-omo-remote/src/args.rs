@@ -4,6 +4,8 @@
 
 use crate::exit::UsageError;
 
+/// `mhc remote send <target> -`: the message is read from stdin (omo#13905).
+pub const STDIN_TEXT: &str = "-";
 pub const SESSION_VERBS: [&str; 5] = ["open", "send", "model", "interrupt", "close"];
 pub const ROW_STATES: [&str; 3] = ["running", "idle", "ended"];
 
