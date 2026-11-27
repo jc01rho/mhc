@@ -21,9 +21,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror = "=2.0.20"
-// The agentd client's link runs on its own current-thread runtime over TCP, so tokio is a real dependency here, not a
-// test-only one; every feature listed is one the link, the follow stream or the `tokio::select!` in it uses.
-tokio = { version = "=1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+# The agentd client's link runs on its own current-thread runtime over TCP, so tokio is a real dependency here, not a
+# test-only one; every feature listed is one the link, the follow stream or the `tokio::select!` in it uses.
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
