@@ -1,0 +1,535 @@
+//! Section 4.1 of the security design (#14945): threads.
+
+use super::types::{Cell, Cells, MatrixLine};
+use crate::behaviour_changes::ChangeId;
+
+pub const THREAD_LINES: &[MatrixLine] = &[
+    MatrixLine {
+        section: "4.1",
+        capability: "List, read, entries, get, wait, follow",
+        doc_row: None,
+        slug: "read",
+        rows: &[
+            "threads.list",
+            "threads.read",
+            "threads.entries",
+            "threads.get",
+            "threads.wait",
+            "threads.follow",
+        ],
+        no_row: None,
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::Allow { note: None },
+            script: Cell::Allow { note: None },
+            connector: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: Some(ChangeId::B5),
+                note: None,
+            },
+            session: Cell::Allow {
+                note: Some("the workspace is the default scope and not a boundary"),
+            },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: Some("unreachable today"),
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Read a delivery receipt",
+        doc_row: None,
+        slug: "receipt",
+        rows: &["threads.receipt"],
+        no_row: None,
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::Allow {
+                note: Some("own deliveries only"),
+            },
+            script: Cell::Allow {
+                note: Some("own deliveries only"),
+            },
+            connector: Cell::Allow {
+                note: Some("own deliveries only"),
+            },
+            session: Cell::Allow {
+                note: Some("own deliveries only"),
+            },
+            service: Cell::NotApplicable,
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "`self` as an address",
+        doc_row: None,
+        slug: "self-address",
+        rows: &["threads.read"],
+        no_row: None,
+        input: Some(r#"{"thread":"self"}"#),
+        root: None,
+        cells: Cells {
+            person: Cell::Refuse {
+                code: "caller_context_missing",
+                change: None,
+                note: None,
+            },
+            script: Cell::Refuse {
+                code: "caller_context_missing",
+                change: None,
+                note: None,
+            },
+            connector: Cell::Refuse {
+                code: "caller_context_missing",
+                change: None,
+                note: None,
+            },
+            session: Cell::Allow { note: None },
+            service: Cell::NotApplicable,
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "A send that is a reply: resolves only to the sender of the delivery it answers, by exact id or stated name, pinned to that sender's device; the reply grant widens only a scope refusal and only to that sender",
+        doc_row: None,
+        slug: "reply",
+        rows: &["threads.send"],
+        no_row: None,
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::NotApplicable,
+            script: Cell::NotApplicable,
+            connector: Cell::NotApplicable,
+            session: Cell::Allow { note: None },
+            service: Cell::NotApplicable,
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Fuzzy matching of a target",
+        doc_row: None,
+        slug: "fuzzy-target",
+        rows: &["threads.handoff"],
+        no_row: None,
+        input: Some(r#"{"thread":"stud"}"#),
+        root: None,
+        cells: Cells {
+            person: Cell::Refuse {
+                code: "not_found",
+                change: None,
+                note: Some("exact matching only"),
+            },
+            script: Cell::Refuse {
+                code: "not_found",
+                change: None,
+                note: Some("exact matching only"),
+            },
+            connector: Cell::Refuse {
+                code: "not_found",
+                change: None,
+                note: Some("exact matching only"),
+            },
+            session: Cell::Allow {
+                note: Some("for handoff only"),
+            },
+            service: Cell::NotApplicable,
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Send to a session on this device",
+        doc_row: None,
+        slug: "send-this-device",
+        rows: &["threads.send", "threads.sendAndFollow"],
+        no_row: None,
+        input: Some(r#"{"thread":"studio"}"#),
+        root: None,
+        cells: Cells {
+            person: Cell::Refuse {
+                code: "unsupported",
+                change: None,
+                note: Some("a person's own prompt goes through the terminal"),
+            },
+            script: Cell::Allow {
+                note: Some("as cli:<uid>, a delivery"),
+            },
+            connector: Cell::Refuse {
+                code: "unsupported",
+                change: None,
+                note: Some("connector_send: a connector client cannot send yet"),
+            },
+            session: Cell::Allow { note: None },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+        },
+        split: Some(
+            "a person's own prompt is R `unsupported` on the gateway leg and goes through the terminal",
+        ),
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Send to a session on another device",
+        doc_row: None,
+        slug: "send-another-device",
+        rows: &["threads.send", "threads.sendAndFollow"],
+        no_row: None,
+        input: Some(r#"{"thread":"laptop/studio"}"#),
+        root: None,
+        cells: Cells {
+            person: Cell::Allow {
+                note: Some(
+                    "the person's prompt; a script takes the person leg (section 3); a cli sender is refused on the relay",
+                ),
+            },
+            script: Cell::Allow {
+                note: Some(
+                    "the person's prompt; a script takes the person leg (section 3); a cli sender is refused on the relay",
+                ),
+            },
+            connector: Cell::Refuse {
+                code: "unsupported",
+                change: None,
+                note: Some("connector_send: a connector client cannot send yet"),
+            },
+            session: Cell::Allow {
+                note: Some("as a delivery"),
+            },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "A message to a session on the caller's own device through the remote client",
+        doc_row: None,
+        slug: "remote-client-own-device",
+        rows: &[],
+        no_row: Some(
+            "the remote client's sessions.send, not a root call: the root sends on this device through the thread core",
+        ),
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::Allow { note: None },
+            script: Cell::Allow { note: None },
+            connector: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+            session: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "`author` on a send",
+        doc_row: None,
+        slug: "author",
+        rows: &["threads.send", "threads.sendAndFollow"],
+        no_row: None,
+        input: Some(r#"{"author":{"platform_user_id":"u1","display":"Ada"}}"#),
+        root: None,
+        cells: Cells {
+            person: Cell::Refuse {
+                code: "invalid_arguments",
+                change: None,
+                note: None,
+            },
+            script: Cell::Refuse {
+                code: "invalid_arguments",
+                change: None,
+                note: None,
+            },
+            connector: Cell::Allow { note: None },
+            session: Cell::Refuse {
+                code: "invalid_arguments",
+                change: None,
+                note: None,
+            },
+            service: Cell::NotApplicable,
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Create or open a thread",
+        doc_row: None,
+        slug: "create",
+        rows: &["threads.create"],
+        no_row: None,
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::Allow {
+                note: Some("in the approval mode it names"),
+            },
+            script: Cell::Allow {
+                note: Some("in the approval mode it names"),
+            },
+            connector: Cell::Allow {
+                note: Some("keeping or narrowing its own mode"),
+            },
+            session: Cell::Allow {
+                note: Some("keeping or narrowing its own mode"),
+            },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Create or open a thread, wider than the caller's own approval mode",
+        doc_row: Some("Create or open a thread"),
+        slug: "create-wider-mode",
+        rows: &["threads.create"],
+        no_row: None,
+        input: Some(r#"{"permission_preset":"full-access"}"#),
+        root: None,
+        cells: Cells {
+            person: Cell::Allow {
+                note: Some("in the approval mode it names"),
+            },
+            script: Cell::Allow {
+                note: Some("in the approval mode it names"),
+            },
+            connector: Cell::Refuse {
+                code: "scope_denied",
+                change: None,
+                note: Some("permission_preset_wider"),
+            },
+            session: Cell::Refuse {
+                code: "scope_denied",
+                change: None,
+                note: Some("permission_preset_wider"),
+            },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Interrupt, close, set model, set reasoning, rename, archive, handoff",
+        doc_row: None,
+        slug: "control",
+        rows: &[
+            "threads.interrupt",
+            "threads.close",
+            "threads.setModel",
+            "threads.setReasoning",
+            "threads.rename",
+            "threads.archive",
+            "threads.handoff",
+        ],
+        no_row: None,
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::Allow { note: None },
+            script: Cell::Allow { note: None },
+            connector: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: Some(ChangeId::B5),
+                note: None,
+            },
+            session: Cell::Allow {
+                note: Some("on any thread the session can address"),
+            },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: Some("unreachable today"),
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Unload",
+        doc_row: None,
+        slug: "unload",
+        rows: &["threads.unload"],
+        no_row: None,
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::Allow { note: None },
+            script: Cell::Allow { note: None },
+            connector: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+            session: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Attach and answer a pending dialog",
+        doc_row: None,
+        slug: "attach",
+        rows: &["threads.attach"],
+        no_row: None,
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::Allow { note: None },
+            script: Cell::Allow { note: None },
+            connector: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+            session: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "Registering a store extension, calling one of its operations",
+        doc_row: None,
+        slug: "extension",
+        rows: &["threads.extensions.register", "threads.extensions.call"],
+        no_row: None,
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::Allow { note: None },
+            script: Cell::Allow { note: None },
+            connector: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+            session: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "A store extension's session-callable operation (`sessionOps`, `sessionCall`)",
+        doc_row: None,
+        slug: "session-op",
+        rows: &[
+            "threads.extensions.sessionOps",
+            "threads.extensions.sessionCall",
+        ],
+        no_row: None,
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::Refuse {
+                code: "caller_context_missing",
+                change: None,
+                note: Some("the caller is the one the engine resolved"),
+            },
+            script: Cell::Refuse {
+                code: "caller_context_missing",
+                change: None,
+                note: Some("the caller is the one the engine resolved"),
+            },
+            connector: Cell::Refuse {
+                code: "caller_context_missing",
+                change: None,
+                note: None,
+            },
+            session: Cell::Allow {
+                note: Some("only as itself"),
+            },
+            service: Cell::Refuse {
+                code: "caller_context_missing",
+                change: None,
+                note: None,
+            },
+        },
+        split: None,
+    },
+    MatrixLine {
+        section: "4.1",
+        capability: "A parked session's intake",
+        doc_row: None,
+        slug: "parked-intake",
+        rows: &[],
+        no_row: Some("the store worker's intake, not a root call"),
+        input: None,
+        root: None,
+        cells: Cells {
+            person: Cell::NotApplicable,
+            script: Cell::NotApplicable,
+            connector: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+            session: Cell::Allow { note: None },
+            service: Cell::Refuse {
+                code: "sender_not_allowed",
+                change: None,
+                note: None,
+            },
+        },
+        split: None,
+    },
+];
