@@ -92,7 +92,7 @@ mod tests {
         let messages: Vec<AgentMessage> = context
             .messages
             .into_iter()
-            .map(|value| maho_core::agent_session::session_message_from_value(value).expect("msg"))
+            .map(|value| serde_json::from_value::<AgentMessage>(value).expect("msg"))
             .collect();
 
         let replaced = replace_images_naming_tool(&messages, &text_only_model(), "look_at");
