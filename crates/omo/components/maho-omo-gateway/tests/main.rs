@@ -12,6 +12,8 @@ mod gateway_receipt_tests;
 mod gateway_schema_tests;
 #[path = "gateway_store_tests.rs"]
 mod gateway_store_tests;
+#[path = "intake_tests.rs"]
+mod intake_tests;
 #[path = "prompt_tests.rs"]
 mod prompt_tests;
 #[path = "remote_list_and_close_tests.rs"]

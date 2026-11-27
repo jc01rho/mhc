@@ -591,6 +591,55 @@ pub enum GatewayDeliveryResult {
     },
 }
 
+/// A delivery record another device's service attested, as the sender's relay leg writes it (`remote/relay-transport.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeSender {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeRecord {
+    pub session_id: String,
+    pub delivery_id: String,
+    pub text: String,
+    pub display_text: String,
+    pub sender: IntakeSender,
+    pub deliver_as: String,
+    pub chain_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IntakeOutcome {
+    Queued {
+        delivery_id: String,
+        row_id: String,
+        ledger_id: String,
+        queue_position: i64,
+        deduplicated: bool,
+    },
+    Busy,
+    Refused {
+        code: super::errors::ThreadErrorCode,
+        message: String,
+        details: Option<Value>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeRequest {
+    pub now: i64,
+    pub attested_device: String,
+    pub record: IntakeRecord,
+    pub provenance: Provenance,
+    pub target_session_kind: String,
+    pub chain_count_limit: Option<i64>,
+}
+
 /// A legacy mailbox item that can never be delivered; it is reported, not imported.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyMailboxSkip {

@@ -38,9 +38,11 @@ use super::schema::{
 };
 use super::types::{
     ClaimOutcome, ClaimRequest, DeliveryRow, DeliveryState, DeliveryTransition, EffectiveLane,
-    EnqueueOutcome, EnqueueRequest, GatewayStoreConfig, GatewayStoreEvent, GatewayStoreStats,
-    OutcomeRecord, ProcessIdentity, ReceiptOutcome, ReceiptRefusalReason, ReconcileOutcome,
-    ReconcileRequest, RecordOutcomeRequest, RefusalNotice, RefusalReason, StoredDeliveryEnvelope,
+    EnqueueOutcome, EnqueueRequest, EnvelopeOrigin, GatewayDeliveryMode, GatewayStoreConfig,
+    GatewayStoreEvent, GatewayStoreStats, IntakeOutcome, IntakeRecord, IntakeRequest,
+    OutcomeRecord, ProcessIdentity, ReceiptOutcome, ReceiptRef, ReceiptRefusalReason,
+    ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest, RefusalNotice, RefusalReason,
+    StoredDeliveryEnvelope,
 };
 use crate::paths::{gateway_database_path, gateway_inbox_directory, gateway_root_directory};
 
@@ -1018,6 +1020,7 @@ struct CausalPlacement {
 fn place_causally(
     ctx: &StoreContext,
     request: &EnqueueRequest,
+    inbound_hop: i64,
 ) -> Result<Result<CausalPlacement, EnqueueOutcome>, StoreError> {
     let placement = match &request.cause_delivery_id {
         Some(cause_id) => {
@@ -1049,14 +1052,14 @@ fn place_causally(
             via.push(request.sender_node.clone());
             CausalPlacement {
                 root_id: cause.root_id.clone(),
-                hop: cause.hop + 1,
+                hop: cause.hop.max(inbound_hop) + 1,
                 via,
                 new_root: false,
             }
         }
         None => CausalPlacement {
             root_id: new_id("root"),
-            hop: 1,
+            hop: inbound_hop + 1,
             via: vec![request.sender_node.clone()],
             new_root: true,
         },
@@ -1274,6 +1277,16 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 /// The sender half of a delivery.
 pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOutcome, StoreError> {
+    enqueue_with_hop(ctx, request, 0)
+}
+
+/// `enqueue` with the hops this device's record already carries: a delivery taken in from another device continues a
+/// chain that began elsewhere, so its row starts that many hops in (omo#13037, `inbound_hop`).
+fn enqueue_with_hop(
+    ctx: &StoreContext,
+    request: &EnqueueRequest,
+    inbound_hop: i64,
+) -> Result<EnqueueOutcome, StoreError> {
     let provenance = serde_json::to_value(&request.provenance).unwrap_or(Value::Null);
     if !is_provenance(&provenance) {
         return Ok(refused(
@@ -1356,7 +1369,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
             rollback_quietly(ctx);
             return Ok(full);
         }
-        let placement = match place_causally(ctx, request)? {
+        let placement = match place_causally(ctx, request, inbound_hop)? {
             Ok(placement) => placement,
             Err(refusal) => {
                 rollback_quietly(ctx);
@@ -1989,6 +2002,348 @@ pub fn abandon_receipt(
         )?;
         Ok(changed == 1)
     })
+}
+
+/// Takes in a record another device's service attested, for a session on this device that is not running (#13037 design
+/// 5.5). Every refusal happens before the commit; an accepted record is the enqueue transaction's row, receipt and
+/// inbox marker in one commit, its receipt completed with the answer so a repeat from the same device replays it.
+///
+/// The receipt is keyed by the attested device alone, like the ledger id, so the session a record claims cannot turn a
+/// repeated delivery id into a second delivery. A repeat whose receipt expired but whose row is still stored answers from
+/// that row (`answer_from_ledger_row`), which is what the receipt's argument hash would have answered.
+pub fn intake(ctx: &StoreContext, request: &IntakeRequest) -> Result<IntakeOutcome, StoreError> {
+    let record = &request.record;
+    let device = &request.attested_device;
+    if !is_durable_id(device)
+        || !is_durable_id(&record.delivery_id)
+        || !is_durable_id(&record.session_id)
+        || !(1..=i64::MAX).contains(&record.chain_count)
+    {
+        return Ok(intake_refused(
+            "invalid_arguments",
+            "The intake record is malformed.",
+            None,
+        ));
+    }
+    let sender_session = (record.sender.kind == "agent")
+        .then(|| record.sender.session_id.as_deref())
+        .flatten();
+    let Some(sender_session) = sender_session.filter(|session| is_durable_id(session)) else {
+        return Ok(intake_refused(
+            "unsupported",
+            "Only an agent sender can reach a session that is not running.",
+            Some(serde_json::json!({ "reason": "sender_not_allowed" })),
+        ));
+    };
+    if record.deliver_as != "followUp" {
+        return Ok(intake_refused(
+            "turn_conflict",
+            "A session that is not running has no turn to steer.",
+            Some(serde_json::json!({ "target": record.session_id })),
+        ));
+    }
+    if request.target_session_kind != "interactive" {
+        return Ok(intake_refused(
+            "not_resumable",
+            "A child or worker session is not started for a delivery.",
+            Some(serde_json::json!({ "reason": "not_wakeable" })),
+        ));
+    }
+    if let Some(limit) = request.chain_count_limit
+        && record.chain_count > limit
+    {
+        return Ok(intake_refused(
+            "unsupported",
+            "The delivery's chain is over this machine's chain limit.",
+            Some(serde_json::json!({
+                "reason": "chain_count_limit",
+                "chain_count": record.chain_count,
+                "limit": limit,
+            })),
+        ));
+    }
+    let ledger_id = format!("device:{device}/{}", record.delivery_id);
+    let principal = format!("device:{device}");
+    let actor = record
+        .sender
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(sender_session)
+        .to_owned();
+    let mut enqueue_request = EnqueueRequest {
+        provenance: request.provenance.clone(),
+        now: request.now,
+        delivery_id: new_id("delivery"),
+        target_durable_id: record.session_id.clone(),
+        sender_principal: principal.clone(),
+        rate_principal: Some(principal.clone()),
+        sender_node: format!("{principal}#session:{sender_session}"),
+        sender_turn: None,
+        cause_delivery_id: None,
+        claimed_root_id: None,
+        origin: EnvelopeOrigin::Session {
+            session: sender_session.to_owned(),
+        },
+        actor,
+        body: record.text.clone(),
+        mode: GatewayDeliveryMode::FollowUp,
+        expected_turn_id: None,
+        receipt: ReceiptRef {
+            idempotency_key: record.delivery_id.clone(),
+            args_hash: hash_args(&serde_json::json!({
+                "target": record.session_id,
+                "text": record.text,
+                "display_text": record.display_text,
+                "deliver_as": record.deliver_as,
+                "chain_count": record.chain_count,
+            })),
+        },
+        endpoint_kind: None,
+        collapse_key: None,
+    };
+    // A repeat whose receipt expired but whose row is still stored answers from that row: the receipt's argument hash
+    // would have answered the same, so the ledger key alone decides it.
+    if let Some(row) = ledger_row(ctx, &ledger_id)? {
+        return Ok(answer_from_ledger_row(ctx, &row, record, &ledger_id)?);
+    }
+    // The ledger row is looked up above, in the same snapshot, so the unique index is never met here; if another writer
+    // raced it, intake still answers from the row rather than let the raw constraint error out.
+    let outcome = match enqueue_with_hop(ctx, &enqueue_request, record.chain_count - 1) {
+        Ok(outcome) => outcome,
+        Err(StoreError::Sql(error)) if is_ledger_conflict(&error) => {
+            return match ledger_row(ctx, &ledger_id)? {
+                Some(row) => answer_from_ledger_row(ctx, &row, record, &ledger_id),
+                None => Err(StoreError::Sql(error)),
+            };
+        }
+        Err(error) => return Err(error),
+    };
+    match outcome {
+        EnqueueOutcome::Inserted {
+            row,
+            queue_position,
+        }
+        | EnqueueOutcome::Collapsed {
+            row,
+            queue_position,
+        } => {
+            let answer = intake_answer(record, &row, &ledger_id, queue_position);
+            mark_intake(
+                ctx,
+                request.now,
+                &principal,
+                &record.delivery_id,
+                &row.delivery_id,
+                &ledger_id,
+                record,
+                &answer,
+            )?;
+            Ok(IntakeOutcome::Queued {
+                delivery_id: record.delivery_id.clone(),
+                row_id: row.delivery_id.clone(),
+                ledger_id,
+                queue_position,
+                deduplicated: false,
+            })
+        }
+        EnqueueOutcome::Replay { result } => {
+            let parsed = serde_json::from_value::<IntakeOutcome>(result.clone()).unwrap_or(
+                IntakeOutcome::Refused {
+                    code: super::errors::ThreadErrorCode::parse("internal_error")
+                        .expect("a known code"),
+                    message: "The intake receipt held no answer.".to_owned(),
+                    details: None,
+                },
+            );
+            Ok(match parsed {
+                IntakeOutcome::Queued {
+                    delivery_id,
+                    row_id,
+                    ledger_id,
+                    queue_position,
+                    ..
+                } => IntakeOutcome::Queued {
+                    delivery_id,
+                    row_id,
+                    ledger_id,
+                    queue_position,
+                    deduplicated: true,
+                },
+                other => other,
+            })
+        }
+        EnqueueOutcome::Refused {
+            code,
+            message,
+            details,
+        } => {
+            // A prepared receipt of this key means an earlier intake committed its row and then stopped before it marked
+            // it: the row is this record's, so it is marked now and the repeat answers as the first one would.
+            if details.as_ref().is_none_or(Value::is_null)
+                && code.as_str() == "idempotency_in_progress"
+                && let Some(delivery_id) =
+                    receipt_delivery_id(ctx, &principal, &record.delivery_id)?
+                && let Some(row) = select_row(ctx, &delivery_id)?
+            {
+                let position = queue_position(ctx, &row)?;
+                let answer = intake_answer(record, &row, &ledger_id, position);
+                mark_intake(
+                    ctx,
+                    request.now,
+                    &principal,
+                    &record.delivery_id,
+                    &row.delivery_id,
+                    &ledger_id,
+                    record,
+                    &answer,
+                )?;
+                return Ok(IntakeOutcome::Queued {
+                    delivery_id: record.delivery_id.clone(),
+                    row_id: row.delivery_id.clone(),
+                    ledger_id,
+                    queue_position: position,
+                    deduplicated: true,
+                });
+            }
+            Ok(IntakeOutcome::Refused {
+                code,
+                message,
+                details,
+            })
+        }
+        EnqueueOutcome::Busy => Ok(IntakeOutcome::Busy),
+    }
+}
+
+/// The row an earlier intake stored under this ledger key, if it is still there.
+fn ledger_row(ctx: &StoreContext, ledger_id: &str) -> Result<Option<DeliveryRow>, StoreError> {
+    Ok(
+        select_rows(ctx, "ledger_id = ?", &[v_str(ledger_id)], None)?
+            .into_iter()
+            .next(),
+    )
+}
+
+fn is_ledger_conflict(error: &rusqlite::Error) -> bool {
+    let rusqlite::Error::SqliteFailure(failure, message) = error else {
+        return false;
+    };
+    failure.code == rusqlite::ErrorCode::ConstraintViolation
+        && message
+            .as_deref()
+            .is_some_and(|message| message.contains("deliveries.ledger_id"))
+}
+
+fn receipt_delivery_id(
+    ctx: &StoreContext,
+    principal: &str,
+    idempotency_key: &str,
+) -> Result<Option<String>, StoreError> {
+    let found = ctx.one(
+        "SELECT delivery_id FROM receipts WHERE principal = ? AND operation = 'deliver' AND idempotency_key = ?",
+        &[v_str(principal), v_str(idempotency_key)],
+    )?;
+    Ok(found
+        .as_ref()
+        .map(|row| row_str(row, "delivery_id"))
+        .filter(|delivery_id| !delivery_id.is_empty()))
+}
+
+/// A repeat of a delivery whose row is still stored after its receipt expired: answered from that row as the first
+/// answer was, with `deduplicated` set, when it carries what the row holds; any other content is an
+/// `idempotency_conflict`, as the receipt's argument hash would have answered.
+fn answer_from_ledger_row(
+    ctx: &StoreContext,
+    row: &DeliveryRow,
+    record: &IntakeRecord,
+    ledger_id: &str,
+) -> Result<IntakeOutcome, StoreError> {
+    let same = row.target_durable_id == record.session_id
+        && row.verbatim_text.as_deref() == Some(record.text.as_str())
+        && row.verbatim_display_text.as_deref() == Some(record.display_text.as_str())
+        && row.hop == record.chain_count
+        && row.envelope.origin.session_id()
+            == (record.sender.kind == "agent")
+                .then(|| record.sender.session_id.as_deref())
+                .flatten();
+    if !same {
+        return Ok(intake_refused(
+            "idempotency_conflict",
+            "This delivery id was already taken in with other content.",
+            Some(serde_json::json!({ "ledger_id": ledger_id })),
+        ));
+    }
+    Ok(IntakeOutcome::Queued {
+        delivery_id: record.delivery_id.clone(),
+        row_id: row.delivery_id.clone(),
+        ledger_id: ledger_id.to_owned(),
+        queue_position: queue_position(ctx, row)?,
+        deduplicated: true,
+    })
+}
+
+/// Marks the row this intake stored with its ledger key and verbatim text, and completes the receipt with the answer in
+/// the same commit, so a repeat from the same device replays it.
+fn mark_intake(
+    ctx: &StoreContext,
+    now: i64,
+    principal: &str,
+    idempotency_key: &str,
+    delivery_id: &str,
+    ledger_id: &str,
+    record: &IntakeRecord,
+    answer: &Value,
+) -> Result<(), StoreError> {
+    transaction(ctx, "intake_mark", || {
+        ctx.run(
+            "UPDATE deliveries SET ledger_id = ?, verbatim_text = ?, verbatim_display_text = ?, updated_at = ? WHERE delivery_id = ?",
+            &[
+                v_str(ledger_id),
+                v_str(&record.text),
+                v_str(&record.display_text),
+                v_i64(now),
+                v_str(delivery_id),
+            ],
+        )?;
+        ctx.run(
+            "UPDATE receipts SET status = 'completed', result = ?, updated_at = ? WHERE principal = ? AND operation = 'deliver' AND idempotency_key = ? AND status = 'prepared' AND owner_instance = ?",
+            &[
+                v_str(answer.to_string()),
+                v_i64(now),
+                v_str(principal),
+                v_str(idempotency_key),
+                v_str(&ctx.config.instance_id),
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+fn intake_answer(
+    record: &IntakeRecord,
+    row: &DeliveryRow,
+    ledger_id: &str,
+    queue_position: i64,
+) -> Value {
+    serde_json::json!({
+        "kind": "queued",
+        "delivery_id": record.delivery_id,
+        "row_id": row.delivery_id,
+        "ledger_id": ledger_id,
+        "queue_position": queue_position,
+        "deduplicated": false,
+    })
+}
+
+fn intake_refused(code: &str, message: &str, details: Option<Value>) -> IntakeOutcome {
+    IntakeOutcome::Refused {
+        code: super::errors::ThreadErrorCode::parse(code)
+            .unwrap_or_else(|| panic!("unknown thread error code: {code}")),
+        message: message.to_owned(),
+        details,
+    }
 }
 
 /// What a retained delivery receipt reports of its row, as application evidence (omo#14623). The caller holds the write

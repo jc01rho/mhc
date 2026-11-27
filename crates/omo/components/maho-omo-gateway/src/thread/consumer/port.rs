@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::thread::types::RefusalNotice;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryInboundEvent {
     pub command_id: String,
@@ -82,6 +84,12 @@ pub trait DeliveryServicePort: Send + Sync {
     fn drained(&self, pair: &DeliveryPendingPair) -> Result<DrainedReply, PortRefusal>;
     fn on_inbound(&self, listener: InboundListener) -> PortUnsubscribe;
     fn on_holds(&self, listener: HoldsListener) -> PortUnsubscribe;
+    /// The best-effort refusal notice a consumer sends back to the original sender's device (#14623 review M3); it is
+    /// negotiated by the device service, and a port that does not serve it keeps the default of answering nothing.
+    fn notice(&self, notice: &RefusalNotice) -> Result<(), PortRefusal> {
+        let _ = notice;
+        Ok(())
+    }
     /// `delivery.wake { enabled }` on this serving connection: the device's wake switch changed (A7.2.3).
     fn on_wake(&self, listener: WakeSwitchListener) -> PortUnsubscribe;
     /// Runs once the serving connection ended (the declaration ends with it); at once when it already has.
