@@ -1,5 +1,5 @@
 use maho_ext_prompt_preset::file_operations::{
-    FileMutationMode, build_file_operations_tuning, resolve_file_mutation_routing,
+    FileMutationMode, build_file_operations_tuning, format_tool_list, resolve_file_mutation_routing,
 };
 #[test]
 fn apply_patch_takes_precedence_over_edit_and_write() {
@@ -24,4 +24,11 @@ fn no_mutation_tools_has_no_routing() {
 fn unselected_file_tools_produce_no_tuning() {
     assert!(build_file_operations_tuning(&["eval".into()]).is_empty());
     assert!(!build_file_operations_tuning(&["read".into()]).is_empty());
+}
+#[test]
+fn tool_lists_are_backticked_and_joined_like_senpi() {
+    assert_eq!(format_tool_list(&[]), "");
+    assert_eq!(format_tool_list(&["edit"]), "`edit`");
+    assert_eq!(format_tool_list(&["edit", "write"]), "`edit` and `write`");
+    assert_eq!(format_tool_list(&["a", "b", "c"]), "`a`, `b` and `c`");
 }

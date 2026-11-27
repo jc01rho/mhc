@@ -1,3 +1,5 @@
+use crate::file_operations::{format_tool_list, resolve_file_mutation_routing};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionToolingDialect {
     Claude,
@@ -15,8 +17,8 @@ pub const EXECUTION_TOOLING_RULES: &[ExecutionToolingRule] = &[
     ExecutionToolingRule {
         id: "eval-routing-decision",
         concern: "code-cell-routing",
-        claude: "Sort a multi-call step before you write it: independent reads, searches, symbol lookups, and probes go into ONE `eval` cell together via `parallel(thunks)` - an extra read-only call in that wave is nearly free, a stale assumption costs the turn - while edits, side-effecting commands, deploys, approvals, and any call whose input is a result you have not seen yet run one at a time, each observed before the next.",
-        kimi: "Sort a multi-call step before you write it: put independent reads, searches, symbol lookups, and probes into one `eval` cell together with `parallel(thunks)`, and run edits, side-effecting commands, deploys, approvals, and any call that depends on a result you have not seen yet one at a time, looking at each result before the next.",
+        claude: "Sort a multi-call step before you write it: independent reads, searches, symbol lookups, and probes go into ONE `eval` cell via `parallel(thunks)` - an extra read-only call in that wave is nearly free, a stale assumption costs the turn - while edits[[ ({editTools}, not cell code)]], side-effecting commands, deploys, and approvals run one at a time, each observed before the next.",
+        kimi: "Sort a multi-call step before you write it: put independent reads, searches, symbol lookups, and probes into one `eval` cell with `parallel(thunks)`, and run edits[[ ({editTools}, not cell code)]], side-effecting commands, deploys, and approvals one at a time, looking at each result before the next.",
     },
     ExecutionToolingRule {
         id: "eval-evidence-return",
@@ -33,10 +35,39 @@ pub const EXECUTION_TOOLING_RULES: &[ExecutionToolingRule] = &[
     ExecutionToolingRule {
         id: "eval-stay-direct",
         concern: "code-cell-routing",
-        claude: "Call a tool directly only when one call is enough, the result decides the next call, semantic judgment sits between calls, or the action needs approval.",
-        kimi: "Use a direct tool call when one call is enough, when each result decides the next call, or when the action needs approval - then stop deliberating and make it.",
+        claude: "Call a tool directly only [[for {editTools} or ]]when one call is enough, the result decides the next call, semantic judgment sits between calls, or the action needs approval.",
+        kimi: "Use a direct tool call [[for {editTools} or ]]when one call is enough, when each result decides the next call, or when the action needs approval - then stop deliberating and make it.",
     },
 ];
+
+const EDIT_TOOLS_CLAUSE_OPEN: &str = "[[";
+const EDIT_TOOLS_CLAUSE_CLOSE: &str = "]]";
+
+/// The rule's wording for these tools: its `[[...]]` clause names the session's file-editing tools, or is dropped when
+/// the session offers none (senpi#7275).
+pub fn render_execution_tooling_directive(
+    rule: &ExecutionToolingRule,
+    tool_names: &[String],
+    dialect: ExecutionToolingDialect,
+) -> String {
+    let directive = match dialect {
+        ExecutionToolingDialect::Claude => rule.claude,
+        ExecutionToolingDialect::Kimi => rule.kimi,
+    };
+    let Some((before, rest)) = directive.split_once(EDIT_TOOLS_CLAUSE_OPEN) else {
+        return directive.to_owned();
+    };
+    let Some((body, after)) = rest.split_once(EDIT_TOOLS_CLAUSE_CLOSE) else {
+        return directive.to_owned();
+    };
+    let edit_tools = resolve_file_mutation_routing(tool_names).tools;
+    let clause = if edit_tools.is_empty() {
+        String::new()
+    } else {
+        body.replacen("{editTools}", &format_tool_list(&edit_tools), 1)
+    };
+    format!("{before}{clause}{after}")
+}
 
 pub fn build_execution_tooling_section(
     tool_names: &[String],
@@ -47,10 +78,7 @@ pub fn build_execution_tooling_section(
     }
     let body = EXECUTION_TOOLING_RULES
         .iter()
-        .map(|rule| match dialect {
-            ExecutionToolingDialect::Claude => rule.claude,
-            ExecutionToolingDialect::Kimi => rule.kimi,
-        })
+        .map(|rule| render_execution_tooling_directive(rule, tool_names, dialect))
         .collect::<Vec<_>>()
         .join("\n\n");
     match dialect {

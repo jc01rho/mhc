@@ -31,16 +31,21 @@ pub fn resolve_file_mutation_routing(tool_names: &[String]) -> FileMutationRouti
     }
 }
 
+/// senpi `formatToolList`: `a`, `a` and `b`, `a`, `b` and `c`.
+pub fn format_tool_list(tools: &[&str]) -> String {
+    let quoted: Vec<String> = tools.iter().map(|name| format!("`{name}`")).collect();
+    match quoted.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, init)) => format!("{} and {last}", init.join(", ")),
+    }
+}
+
 pub fn build_file_operations_tuning(tool_names: &[String]) -> String {
     let routing = resolve_file_mutation_routing(tool_names);
     let mut paragraphs = Vec::new();
     if routing.mode != FileMutationMode::None {
-        let quoted = routing
-            .tools
-            .iter()
-            .map(|name| format!("`{name}`"))
-            .collect::<Vec<_>>()
-            .join(" and ");
+        let quoted = format_tool_list(&routing.tools);
         paragraphs.push(format!("Use {quoted} for ALL file edits and creations. Do NOT write or modify files via bash heredoc (`cat >`, `echo > `), `sed -i`, `awk -i`, or inline `python`/`python3 -c` scripts."));
     }
     if tool_names.iter().any(|name| name == "read") {
