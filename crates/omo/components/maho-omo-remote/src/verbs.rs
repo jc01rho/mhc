@@ -9,8 +9,9 @@ use device_service_core::local_api::client::WakeSetting;
 use device_service_core::local_api::transport::is_service_not_running;
 use device_service_core::local_api::{CommandOutcome, LocalApiClient, LocalApiError};
 use maho_thread_address_core::{
-    AddressRefusal, KeyedRow, RefusalCode, ResolveDeviceOptions, SilentDevice, SilentReason,
-    devices_silent, is_id_prefix, normalize_name, resolve_device, row_address,
+    AddressRefusal, IdPrefixStep, KeyedRow, LadderMatch, LadderView, RefusalCode,
+    ResolveDeviceOptions, SilentDevice, SilentReason, devices_silent, match_thread, resolve_device,
+    row_address,
 };
 use serde_json::{Value, json};
 
@@ -406,40 +407,50 @@ enum TargetFailure {
 }
 
 fn match_session_rows<'a>(rows: &'a [Value], query: &str) -> Vec<&'a Value> {
-    let exact: Vec<&Value> = rows
+    // Build one LadderView per listing row (upstream resolve.ts viewOf), then run thread-address-core's match_thread:
+    // exact id > listing key / row identity key > alias > name > unique 8+ hex id prefix.
+    // mhc's remote client has no account alias registry (grep "alias" in maho-omo-remote -> none), so no row carries
+    // aliases; the alias step therefore never answers here.
+    // The views borrow the ids, keys and names owned below, which live to the end of this function.
+    let mut ids: Vec<String> = Vec::with_capacity(rows.len());
+    let mut keys_storage: Vec<Vec<String>> = Vec::with_capacity(rows.len());
+    let mut names: Vec<String> = Vec::with_capacity(rows.len());
+    for row in rows {
+        ids.push(non_empty(row, "durable_id").unwrap_or_default().to_owned());
+        let listing_key = text(row, "session_id");
+        let identity_key = row_identity_key(row);
+        let mut keys: Vec<String> = Vec::new();
+        if !listing_key.is_empty() {
+            keys.push(listing_key.to_owned());
+        }
+        if !identity_key.is_empty() && identity_key != listing_key {
+            keys.push(identity_key);
+        }
+        keys_storage.push(keys);
+        let unnamed = row.get("unnamed").and_then(Value::as_bool) == Some(true)
+            || non_empty(row, "title").is_none();
+        names.push(if unnamed {
+            String::new()
+        } else {
+            non_empty(row, "title").unwrap_or_default().to_owned()
+        });
+    }
+    let views: Vec<LadderView<'_>> = rows
         .iter()
-        .filter(|row| {
-            value_text(row, "session_id") == query
-                || value_text(row, "durable_id") == query
-                || row_identity_key(row) == query
+        .enumerate()
+        .map(|(index, _)| LadderView {
+            id: &ids[index],
+            keys: &keys_storage[index],
+            aliases: &[],
+            name: &names[index],
         })
         .collect();
-    if !exact.is_empty() {
-        return exact;
+    let hit = match_thread(&views, query, |_| true, IdPrefixStep::On);
+    match hit {
+        LadderMatch::One { index, .. } => vec![&rows[index]],
+        LadderMatch::Many { indices, .. } => indices.iter().map(|&i| &rows[i]).collect(),
+        LadderMatch::NoMatch => Vec::new(),
     }
-    let wanted = normalize_name(query);
-    if !wanted.is_empty() {
-        let named: Vec<&Value> = rows
-            .iter()
-            .filter(|row| {
-                non_empty(row, "title").is_some_and(|title| normalize_name(title) == wanted)
-            })
-            .collect();
-        if !named.is_empty() {
-            return named;
-        }
-    }
-    if is_id_prefix(query) {
-        let lower = query.to_ascii_lowercase();
-        return rows
-            .iter()
-            .filter(|row| {
-                non_empty(row, "durable_id")
-                    .is_some_and(|id| id.to_ascii_lowercase().starts_with(&lower))
-            })
-            .collect();
-    }
-    Vec::new()
 }
 
 async fn resolve_target(
@@ -872,3 +883,7 @@ fn report_outcome(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "verbs_resolve_tests.rs"]
+mod resolve_tests;
