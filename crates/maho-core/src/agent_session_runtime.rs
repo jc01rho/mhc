@@ -570,17 +570,6 @@ impl AgentSessionRuntime {
         Ok(())
     }
 
-    /// Binds a pre-acquired session hold directly without touching the holder record on disk
-    /// (senpi `new AgentSessionRuntime(..., sessionHold)`).
-    #[cfg(test)]
-    pub(crate) fn with_session_hold(
-        self,
-        hold: Option<crate::schedule::runner_lease::SessionHold>,
-    ) -> Self {
-        *self.lock_hold() = hold;
-        self
-    }
-
     /// senpi `setPromptSurface` (the runtime half): later replacements keep it.
     pub fn set_prompt_surface(&mut self, surface: maho_ext_api::PromptSurface) {
         self.prompt_surface = Some(surface);
@@ -3033,43 +3022,43 @@ mod tests {
         );
     }
 
-    // senpi rpc-session-registry.test.ts: "constructs a runtime around a passed-in hold without touching
-    // the holder record" and "takes the replacement runtime's session hold before the switched runtime
-    // releases its own".
+    // senpi rpc-session-registry.test.ts: "takes the replacement runtime's session hold before the
+    // switched runtime releases its own". The Rust runtime has no constructor parameter for a hold
+    // (senpi's `new AgentSessionRuntime(..., sessionHold)`); `set_holder_endpoint` and
+    // `apply_replacement` are the seams that take one, and one record per process is shared by both.
     #[tokio::test]
-    async fn constructs_a_runtime_around_a_passed_in_hold_without_publishing_a_second_record() {
-        let (_dir, runtime) = runtime_fixture().await;
-        assert!(
-            !runtime.has_session_hold(),
-            "an in-memory session is never held"
-        );
+    async fn a_session_hold_is_shared_by_every_holder_and_outlives_only_until_the_last_one() {
         let (_other_dir, _other_cwd, other_path) = other_project_session();
         let manager = crate::session_manager::SessionManager::open(&other_path, None, None, None)
             .expect("open the stored session");
         let session_id = manager.session_id().to_owned();
-        let hold = hold_runtime_session(&manager, None)
-            .expect("hold")
-            .expect("a stored session is held");
         let holders = crate::schedule::runner_lease::session_holders_dir(
             std::path::Path::new(&other_path),
             &session_id,
         )
         .expect("holders dir");
         let record = holders.join(format!("{}.json", std::process::id()));
+        let count_records = || {
+            std::fs::read_dir(&holders)
+                .expect("holders")
+                .filter_map(Result::ok)
+                .count()
+        };
+
+        // A speculative runtime and the host that claims it ask for the same hold: one record, never two.
+        let first = hold_runtime_session(&manager, None)
+            .expect("hold")
+            .expect("a stored session is held");
+        let second = hold_runtime_session(&manager, None)
+            .expect("hold")
+            .expect("a stored session is held");
         assert!(record.exists());
+        assert_eq!(count_records(), 1);
 
-        // Built around the hold the caller took: the runtime publishes no second record for it.
-        let mut runtime = runtime.with_session_hold(Some(hold));
-        assert!(runtime.has_session_hold());
-        let published = std::fs::read_dir(&holders)
-            .expect("holders")
-            .filter_map(Result::ok)
-            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-            .count();
-        assert_eq!(published, 1);
-
-        runtime.release_session_hold();
-        assert!(!runtime.has_session_hold());
+        drop(first);
+        assert!(record.exists(), "one reference is still held");
+        drop(second);
+        drop(manager);
         assert!(!record.exists());
     }
 
