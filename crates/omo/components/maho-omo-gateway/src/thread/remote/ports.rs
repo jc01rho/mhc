@@ -204,6 +204,17 @@ pub trait RemoteSessionsPort: Send + Sync {
         Box::pin(async { RemoteLookupOutcome::Unavailable })
     }
 
+    /// omo#14748: one single-probe locate sent only while no other locate of this port is in flight, holding every
+    /// other lookup back meanwhile, bounded by `timeout_ms`. `None` when this port cannot ask a device alone.
+    fn lookup_alone(
+        &self,
+        _device: String,
+        _durable_id: String,
+        _timeout_ms: i64,
+    ) -> BoxFuture<Option<RemoteLookupOutcome>> {
+        Box::pin(async { None })
+    }
+
     /// omo#13037: this device's own service can make the single probe (read from its connection; no round trip).
     fn can_lookup(&self) -> BoxFuture<bool> {
         Box::pin(async { false })
@@ -438,6 +449,7 @@ pub fn row_state(row: &RemoteSessionRow) -> ThreadState {
     thread_state(
         row.archived,
         row.state != "ended" && row.source != Some(RowSource::Cache),
+        false,
         Some(row.state.as_str()),
     )
 }

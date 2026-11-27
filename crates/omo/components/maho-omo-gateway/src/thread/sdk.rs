@@ -1,7 +1,7 @@
-//! The gateway SDK: sends and reports over one store, for a CLI or a connector.
+//! The gateway SDK: sends over one store, for a CLI or a connector.
 //!
 //! Upstream counterpart: `thread/sdk.ts`. A send resolves sender provenance in the sender's own
-//! runtime and reports whether an armed completion wake reached its target.
+//! runtime, and a send that queued for a parked session wakes it as an agent's `thread_send` does.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -10,15 +10,11 @@ use serde_json::Value;
 
 use super::adapter::BoxFuture;
 use super::engine::{GatewayDeliverRequest, GatewayEngine};
-use super::errors::ThreadToolFailure;
 use super::provenance_resolver::{ProvenanceRuntime, ProvenanceWorkspace, resolve_provenance};
-use super::relay::{GatewayRelay, RelayResult};
+use super::same_device_wake::SameDeviceWake;
 use super::store_api::GatewayStoreApi;
 use super::store_extensions::{
     DeclaredSessionOp, SessionCaller, StoreExtensionRegistration, StoreExtensionResult,
-};
-use super::store_relay_ops::{
-    BindInput, BindingRecord, RelayOutcome, ReportOpRequest, ReportOpResult,
 };
 use super::types::{GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender, Provenance};
 
@@ -30,8 +26,10 @@ pub struct ThreadSdkOptions {
     pub user: String,
     pub store: Arc<dyn GatewayStoreApi>,
     pub engine: GatewayEngine,
-    pub relay: GatewayRelay,
     pub workspaces: Option<Vec<ProvenanceWorkspace>>,
+    /// The local transport's same-device wake (omo#14972): the CLI and the gateway's seat sends wake a parked
+    /// session through it, as an agent's `thread_send` does. `None` answers a queued send as it queued.
+    pub same_device_wake: Option<SameDeviceWake>,
 }
 
 /// The sender's own provenance, resolved once per send in the sender's runtime.
@@ -97,35 +95,12 @@ impl ThreadSdk {
                 resolve: options.engine.options().resolve.clone(),
                 now: options.engine.options().now.clone(),
             });
-            engine.deliver(request).await
+            let result = engine.deliver(request).await;
+            match &options.same_device_wake {
+                Some(wake) => wake.after_send(result),
+                None => result,
+            }
         })
-    }
-
-    pub fn report(&self, request: &ReportOpRequest) -> RelayResult<ReportOpResult> {
-        self.options.relay.report(request)
-    }
-
-    pub fn bind(&self, input: &BindInput) -> RelayResult<BindingRecord> {
-        self.options.relay.bind(input)
-    }
-
-    pub fn unbind(
-        &self,
-        binding_id: &str,
-        expected_revision: i64,
-    ) -> RelayResult<(BindingRecord, bool, Vec<String>)> {
-        self.options.relay.unbind(binding_id, expected_revision)
-    }
-
-    pub fn rebind(
-        &self,
-        binding_id: &str,
-        expected_revision: i64,
-        session_durable_id: &str,
-    ) -> RelayResult<(BindingRecord, Vec<String>)> {
-        self.options
-            .relay
-            .rebind(binding_id, expected_revision, session_durable_id)
     }
 
     pub fn register_store_extension(
@@ -162,35 +137,6 @@ impl ThreadSdk {
         self.options
             .store
             .extension_session_await(name, op, args, caller, self.options.store.now())
-    }
-
-    /// The session settled: armed completions become outbox rows.
-    pub fn settle(
-        &self,
-        session_durable_id: &str,
-        outcome: &str,
-        through_arm_seq: Option<i64>,
-    ) -> RelayResult<Vec<(String, i64)>> {
-        self.options
-            .relay
-            .settle(session_durable_id, outcome, through_arm_seq)
-    }
-}
-
-/// A report the caller retries is refused with the same failure a relay reports.
-pub fn report_failure(refusal: RelayOutcome<ReportOpResult>) -> Option<ThreadToolFailure> {
-    match refusal {
-        RelayOutcome::Ok { .. } => None,
-        RelayOutcome::Refused {
-            code,
-            message,
-            details,
-        } => Some(super::errors::thread_tool_failure(
-            code.as_str(),
-            message,
-            "Call thread_bindings and retry after checking the binding.",
-            details,
-        )),
     }
 }
 

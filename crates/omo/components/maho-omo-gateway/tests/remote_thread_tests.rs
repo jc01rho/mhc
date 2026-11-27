@@ -72,7 +72,7 @@ fn remote_addresses_are_device_slash_session_and_nothing_else() {
 async fn thread_send_routes_device_addresses_to_the_port_and_keeps_local_ones() {
     let port = Arc::new(RecordingPort::default());
     let tools = with_remote_thread_tools(
-        vec![local_tool("thread_send"), local_tool("thread_report")],
+        vec![local_tool("thread_send"), local_tool("thread_read")],
         Arc::clone(&port) as Arc<dyn RemoteThreadPort>,
     );
     let send = tools
@@ -111,11 +111,11 @@ async fn thread_send_routes_device_addresses_to_the_port_and_keeps_local_ones() 
     assert_eq!(collapse["error"]["code"], "unsupported");
     assert_eq!(collapse["error"]["details"]["field"], "collapse_key");
 
-    let report = tools
+    let read = tools
         .iter()
-        .find(|tool| tool.name == "thread_report")
-        .expect("thread_report");
-    let untouched = (report.execute)("c3", json!({ "thread": "laptop/s1" })).await;
+        .find(|tool| tool.name == "thread_read")
+        .expect("thread_read");
+    let untouched = (read.execute)("c3", json!({ "thread": "laptop/s1" })).await;
     assert_eq!(
         untouched["local"], "laptop/s1",
         "other tools are left as they were"

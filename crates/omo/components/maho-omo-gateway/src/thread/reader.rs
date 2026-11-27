@@ -26,6 +26,8 @@ pub enum ReadSource<'a> {
     Jsonl {
         path: &'a Path,
         live_host_present: bool,
+        /// A tool read pages the visible messages; a raw transcript consumer pages every entry.
+        messages_view: bool,
     },
 }
 
@@ -159,6 +161,7 @@ fn decode_cursor(raw: &str) -> Option<Cursor> {
     let version = parts.next()?;
     let revision = parts.next()?.to_owned();
     let (count, hash) = revision.split_once('.')?;
+    let hash = hash.strip_suffix(".m").unwrap_or(hash);
     if count.is_empty()
         || !count.chars().all(|c| c.is_ascii_digit())
         || hash.is_empty()
@@ -185,6 +188,20 @@ fn decode_cursor(raw: &str) -> Option<Cursor> {
 
 fn fail(code: &str, message: impl Into<String>, next_action: &str) -> Box<ThreadToolFailure> {
     Box::new(thread_tool_failure(code, message, next_action, None))
+}
+
+/// A session file interleaves messages with bookkeeping (the header, model and thinking changes, names): only a
+/// message entry's user, assistant or tool-result payload is transcript.
+fn durable_message(entry: &Value) -> Option<Value> {
+    if entry.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    let message = entry.get("message").filter(|message| message.is_object())?;
+    matches!(
+        message.get("role").and_then(Value::as_str),
+        Some("user" | "assistant" | "toolResult")
+    )
+    .then(|| message.clone())
 }
 
 /// The JSONL file's object lines; a line that is not a JSON object is skipped, never fatal.
@@ -237,11 +254,12 @@ pub fn read_transcript(
             )
         })?),
     };
-    let (entries, source_kind, source_incomplete) = match source {
-        ReadSource::Live(entries) => (entries.to_vec(), ThreadReadSource::LiveHost, false),
+    let (entries, source_kind, source_incomplete, messages_view) = match source {
+        ReadSource::Live(entries) => (entries.to_vec(), ThreadReadSource::LiveHost, false, false),
         ReadSource::Jsonl {
             path,
             live_host_present,
+            messages_view,
         } => {
             let Some(entries) = load_jsonl(path) else {
                 return Err(fail(
@@ -250,10 +268,21 @@ pub fn read_transcript(
                     "Call thread_list (tool.thread_list() in an eval cell) to get a current thread value, then read that thread instead.",
                 ));
             };
-            (entries, ThreadReadSource::SessionJsonl, !live_host_present)
+            (
+                entries,
+                ThreadReadSource::SessionJsonl,
+                !live_host_present,
+                messages_view,
+            )
         }
     };
-    let revision = revision_of(&entries);
+    // Positions in a visible-message window cannot resume a raw-entry cursor (or the reverse); both views still
+    // invalidate on any change to the whole file, bookkeeping included.
+    let revision = if messages_view {
+        format!("{}.m", revision_of(&entries))
+    } else {
+        revision_of(&entries)
+    };
     if cursor
         .as_ref()
         .is_some_and(|cursor| cursor.revision() != revision)
@@ -264,6 +293,11 @@ pub fn read_transcript(
             "Re-read the thread without a cursor to restart from a current revision.",
         ));
     }
+    let entries: Vec<Value> = if messages_view {
+        entries.iter().filter_map(durable_message).collect()
+    } else {
+        entries
+    };
     let slice = |items: Vec<Value>, truncated: bool, next_cursor: Option<String>| TranscriptSlice {
         source: source_kind,
         source_incomplete,
@@ -362,11 +396,62 @@ mod tests {
             ReadSource::Jsonl {
                 path: Path::new("/nonexistent/maho-thread-reader.jsonl"),
                 live_host_present: false,
+                messages_view: false,
             },
             None,
             None,
         )
         .expect_err("missing file");
         assert_eq!(missing.code.as_str(), "not_found");
+    }
+
+    #[test]
+    fn a_messages_view_pages_only_visible_messages_and_refuses_a_raw_entry_cursor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("session.jsonl");
+        let mut lines = vec![json!({ "type": "session", "id": "dur-1", "cwd": "/work" })];
+        for index in 0..70 {
+            lines.push(json!({ "type": "model_change", "id": format!("m{index}") }));
+            lines.push(json!({
+                "type": "message",
+                "id": format!("u{index}"),
+                "message": { "role": "user", "content": format!("message {index}") },
+            }));
+        }
+        let content = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, content).expect("write");
+        let jsonl = |messages_view: bool| ReadSource::Jsonl {
+            path: &path,
+            live_host_present: false,
+            messages_view,
+        };
+        let messages = read_transcript(jsonl(true), None, None).expect("messages view");
+        assert_eq!(messages.items.len(), THREAD_TAIL_DEFAULT_ITEMS);
+        assert!(
+            messages
+                .items
+                .iter()
+                .all(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        );
+        assert_eq!(
+            messages.items.last().and_then(|item| item.get("content")),
+            Some(&json!("message 69"))
+        );
+        let raw = read_transcript(jsonl(false), Some(1), None).expect("raw view");
+        let raw_cursor = raw.next_cursor.expect("raw cursor");
+        let refused = read_transcript(jsonl(true), Some(1), Some(&raw_cursor)).expect_err("stale");
+        assert_eq!(refused.code.as_str(), "cursor_stale");
+        let paged = read_transcript(jsonl(true), Some(1), None).expect("one message");
+        let cursor = paged.next_cursor.expect("messages cursor");
+        let older = read_transcript(jsonl(true), Some(1), Some(&cursor)).expect("older message");
+        assert_eq!(
+            older.items.first().and_then(|item| item.get("content")),
+            Some(&json!("message 68"))
+        );
     }
 }

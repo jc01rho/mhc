@@ -1,12 +1,7 @@
-//! The thread component: it wires the store, engine, relay, drain and tools of one session.
+//! The thread component: it wires the store, engine, drain and tools of one session.
 //!
 //! Upstream counterpart: `thread/component.ts`.
 
-pub type LocateCallback = Arc<
-    dyn Fn(&str) -> super::adapter::BoxFuture<Option<super::adapter::GatewayEndpointRef>>
-        + Send
-        + Sync,
->;
 pub type NotifyCallback = Option<Arc<dyn Fn(&str) + Send + Sync>>;
 use std::sync::Arc;
 
@@ -15,7 +10,6 @@ use serde_json::Value;
 use super::adapter::SessionRuntimePort;
 use super::drain::{InboxDrain, InboxDrainOptions};
 use super::engine::{GatewayEngine, GatewayEngineOptions, GatewayResolve};
-use super::relay::{GatewayRelay, GatewayRelayOptions};
 use super::store_api::GatewayStoreApi;
 use super::tools::{
     ThreadSendAs, ThreadTool, ThreadToolsOptions, build_extension_tools, create_thread_send_as,
@@ -32,7 +26,6 @@ pub struct GatewayThreadComponentOptions {
     pub caller_provenance: Arc<dyn Fn() -> super::types::Provenance + Send + Sync>,
     pub resolve: GatewayResolve,
     pub endpoints: super::adapter::GatewayEndpointPort,
-    pub locate: LocateCallback,
     pub notify: NotifyCallback,
     pub log: NotifyCallback,
     /// The host surface the session-control tools read; `None` answers them `host_unavailable`.
@@ -42,12 +35,11 @@ pub struct GatewayThreadComponentOptions {
     pub remote: Option<Arc<dyn super::control::locate::RemoteControlLocator>>,
 }
 
-/// One session's gateway: its drain, its relay and the tools its model calls.
+/// One session's gateway: its drain and the tools its model calls.
 #[derive(Clone)]
 pub struct GatewayThreadComponent {
     pub store: Arc<dyn GatewayStoreApi>,
     pub engine: GatewayEngine,
-    pub relay: GatewayRelay,
     pub drain: Arc<InboxDrain>,
     pub tools: Vec<ThreadTool>,
     pub send_as: ThreadSendAs,
@@ -74,13 +66,6 @@ pub fn create_gateway_thread_component_with_alerts(
         resolve: options.resolve.clone(),
         now: None,
     });
-    let relay = GatewayRelay::new(GatewayRelayOptions {
-        store: options.store.clone(),
-        engine: engine.clone(),
-        endpoints: options.endpoints.clone(),
-        locate: options.locate.clone(),
-        now: None,
-    });
     let drain = Arc::new(InboxDrain::new(InboxDrainOptions {
         store: options.store.clone(),
         runtime: options.runtime.clone(),
@@ -96,7 +81,6 @@ pub fn create_gateway_thread_component_with_alerts(
     let tool_options = Arc::new(ThreadToolsOptions {
         store: options.store.clone(),
         engine: engine.clone(),
-        relay: relay.clone(),
         caller_session_id: options.caller_session_id.clone(),
         caller_name: options.caller_name.clone(),
         caller_provenance: options.caller_provenance.clone(),
@@ -159,7 +143,6 @@ pub fn create_gateway_thread_component_with_alerts(
         log: options.log.clone(),
         store: options.store.clone(),
         engine,
-        relay,
         drain,
         tools,
         send_as,
@@ -404,7 +387,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tool_set_covers_send_report_and_bindings() {
+    fn the_tool_set_covers_send_and_control_and_no_binding_tool_is_reachable() {
         let store: Arc<dyn GatewayStoreApi> = super::super::store::create_gateway_store(
             super::super::store::GatewayStoreOptions::new(
                 std::env::temp_dir()
@@ -451,7 +434,6 @@ mod tests {
                 })
             }),
             endpoints: super::super::adapter::GatewayEndpointPort::inert(),
-            locate: Arc::new(|_| Box::pin(async { None })),
             notify: None,
             log: None,
             host: None,
@@ -467,12 +449,6 @@ mod tests {
         for expected in [
             "thread_send",
             "thread_handoff",
-            "thread_report",
-            "thread_bind",
-            "thread_bindings",
-            "thread_outbox",
-            "thread_outbox_ack",
-            "thread_answer",
             "thread_list",
             "thread_read",
             "thread_interrupt",
@@ -484,6 +460,17 @@ mod tests {
             "thread_create",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
+        }
+        for removed in [
+            "thread_report",
+            "thread_bind",
+            "thread_bindings",
+            "thread_outbox",
+            "thread_outbox_ack",
+            "thread_answer",
+        ] {
+            assert!(!names.contains(&removed), "{removed} is still reachable");
+            assert!(component.execute(removed, "call-1", Value::Null).is_none());
         }
         assert!(
             component

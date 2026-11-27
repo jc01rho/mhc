@@ -51,7 +51,8 @@ pub fn live_row(
             .clone()
             .or_else(|| Some(created_at.clone())),
     };
-    let settled = held && !session.archived;
+    let opening = session.status == Some(HostSessionStatus::Opening);
+    let settled = held && !opening && !session.archived;
     let detail = activity_detail(
         settled,
         session.activity.as_deref(),
@@ -67,7 +68,7 @@ pub fn live_row(
         } else {
             ThreadStatus::Resumable
         },
-        state: thread_state(session.archived, held, session.activity.as_deref()),
+        state: thread_state(session.archived, held, opening, session.activity.as_deref()),
         model: session.model.clone(),
         activity: detail.activity,
         error_code: detail.error_code,
@@ -89,7 +90,11 @@ pub fn live_row(
         surface: entry
             .and_then(|entry| entry.surface)
             .map(|surface| surface.as_str().to_owned()),
-        controls: Some(session.controls.clone()),
+        controls: Some(if opening {
+            Vec::new()
+        } else {
+            session.controls.clone()
+        }),
         error_note: None,
         skills: None,
     };
@@ -110,7 +115,7 @@ pub fn degraded_row(entry: &AddressEntry) -> ThreadResultSummary {
         name: String::new(),
         unnamed: None,
         status: ThreadStatus::Resumable,
-        state: thread_state(entry.archived, false, None),
+        state: thread_state(entry.archived, false, false, None),
         model: None,
         activity: None,
         error_code: None,
@@ -203,6 +208,19 @@ mod tests {
         assert!(row.link.contains("Builder"));
         assert_eq!(row.engine_version.as_deref(), Some("2026.11.1"));
         assert_eq!(row.state, ThreadState::Idle);
+    }
+
+    #[test]
+    fn a_session_its_engine_is_still_opening_is_opening_with_no_controls_and_no_activity() {
+        let mut opening = session("running", None);
+        opening.status = Some(HostSessionStatus::Opening);
+        opening.controls = vec!["prompt".to_owned()];
+        let row = live_row(&opening, None, "2026-11-01T00:00:00.000Z");
+        assert_eq!(row.state, ThreadState::Opening);
+        assert_eq!(row.status, ThreadStatus::Live);
+        assert_eq!(row.controls, Some(Vec::new()));
+        assert_eq!(row.activity, None);
+        assert_eq!(row.waiting_on, None);
     }
 
     #[test]

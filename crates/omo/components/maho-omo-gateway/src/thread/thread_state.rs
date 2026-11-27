@@ -11,15 +11,23 @@ use super::contracts_state::{
     ThreadActivity, ThreadModel, ThreadRetryWait, ThreadRetryWaitReason, ThreadState,
 };
 
-/// The archived flag wins; a thread no engine holds is `inactive`; otherwise the engine's activity, where a queued or
-/// approval-waiting thread is mid-turn (running) and a failed turn has ended (idle). A field an older engine does not
-/// report reads as not archived and idle.
-pub fn thread_state(archived: bool, held: bool, activity: Option<&str>) -> ThreadState {
+/// The archived flag wins; a thread no engine holds is `inactive`; a held thread its engine is still opening is
+/// `opening`; otherwise the engine's activity, where a queued or approval-waiting thread is mid-turn (running) and a
+/// failed turn has ended (idle). A field an older engine does not report reads as not archived and idle.
+pub fn thread_state(
+    archived: bool,
+    held: bool,
+    opening: bool,
+    activity: Option<&str>,
+) -> ThreadState {
     if archived {
         return ThreadState::Archived;
     }
     if !held {
         return ThreadState::Inactive;
+    }
+    if opening {
+        return ThreadState::Opening;
     }
     match activity {
         Some("running" | "queued" | "awaiting_approval") => ThreadState::Running,
@@ -103,6 +111,16 @@ pub fn retry_wait(running: bool, waiting: Option<&Value>) -> Option<ThreadRetryW
     })
 }
 
+/// omo-relay-spec #314: a holder version is an opaque, nonempty string of at most 128 UTF-16 code units (a Rust
+/// string is always well-formed); anything else is unknown and shown as nothing.
+const ENGINE_VERSION_MAX_UNITS: usize = 128;
+
+pub fn holder_version(value: Option<&Value>) -> Option<String> {
+    let version = value?.as_str()?;
+    (!version.is_empty() && version.encode_utf16().count() <= ENGINE_VERSION_MAX_UNITS)
+        .then(|| version.to_owned())
+}
+
 /// A reported model, when it is exactly a non-empty provider and id.
 pub fn thread_model(value: Option<&Value>) -> Option<ThreadModel> {
     let value = value?;
@@ -130,26 +148,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_holder_version_is_a_nonempty_string_of_at_most_128_utf16_units() {
+        let at_limit = "x".repeat(128);
+        let over = "x".repeat(129);
+        assert_eq!(
+            holder_version(Some(&Value::from("2026.11.19-3"))).as_deref(),
+            Some("2026.11.19-3")
+        );
+        assert_eq!(
+            holder_version(Some(&Value::from(at_limit.clone()))),
+            Some(at_limit)
+        );
+        assert_eq!(holder_version(Some(&Value::from(over))), None);
+        assert_eq!(holder_version(Some(&Value::from(""))), None);
+        assert_eq!(holder_version(Some(&Value::from(7))), None);
+        assert_eq!(holder_version(Some(&Value::Null)), None);
+        assert_eq!(holder_version(None), None);
+        let wide = "\u{1f600}".repeat(65);
+        assert_eq!(holder_version(Some(&Value::from(wide))), None);
+    }
+
+    #[test]
     fn the_archived_flag_wins_then_holding_then_activity() {
         assert_eq!(
-            thread_state(true, true, Some("running")),
+            thread_state(true, true, false, Some("running")),
             ThreadState::Archived
         );
         assert_eq!(
-            thread_state(false, false, Some("running")),
+            thread_state(false, false, false, Some("running")),
             ThreadState::Inactive
         );
         for running in ["running", "queued", "awaiting_approval"] {
             assert_eq!(
-                thread_state(false, true, Some(running)),
+                thread_state(false, true, false, Some(running)),
                 ThreadState::Running
             );
         }
         assert_eq!(
-            thread_state(false, true, Some("errored")),
+            thread_state(false, true, false, Some("errored")),
             ThreadState::Idle
         );
-        assert_eq!(thread_state(false, true, None), ThreadState::Idle);
+        assert_eq!(thread_state(false, true, false, None), ThreadState::Idle);
+        assert_eq!(
+            thread_state(false, true, true, Some("running")),
+            ThreadState::Opening
+        );
+        assert_eq!(
+            thread_state(false, false, true, None),
+            ThreadState::Inactive
+        );
+        assert_eq!(thread_state(true, true, true, None), ThreadState::Archived);
     }
 
     #[test]
@@ -248,7 +296,8 @@ mod tests {
     fn the_default_listing_leaves_archived_threads_out() {
         let shown = listed_states(None);
         assert!(!shown.contains(&ThreadState::Archived));
-        assert_eq!(shown.len(), 3);
+        assert!(shown.contains(&ThreadState::Opening));
+        assert_eq!(shown.len(), 4);
         let asked = listed_states(Some(&[ThreadState::Archived]));
         assert_eq!(
             asked.into_iter().collect::<Vec<_>>(),

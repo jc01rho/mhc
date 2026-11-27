@@ -111,6 +111,7 @@ fn carrier_over(
         memory_floor: knobs.memory_floor.clone(),
         schedule,
         on_event,
+        on_error: None,
     })
 }
 

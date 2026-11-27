@@ -145,6 +145,15 @@ impl RemoteSessionsPort for ClosedRowsPort {
         self.inner.lookup(device, durable_id)
     }
 
+    fn lookup_alone(
+        &self,
+        device: String,
+        durable_id: String,
+        timeout_ms: i64,
+    ) -> BoxFuture<Option<RemoteLookupOutcome>> {
+        self.inner.lookup_alone(device, durable_id, timeout_ms)
+    }
+
     fn can_lookup(&self) -> BoxFuture<bool> {
         self.inner.can_lookup()
     }

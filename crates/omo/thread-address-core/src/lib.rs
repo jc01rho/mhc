@@ -7,6 +7,7 @@
 //! no message names a tool, so a caller words every refusal itself.
 
 pub mod device;
+pub mod ladder;
 pub mod listing;
 pub mod name;
 pub mod parse;
@@ -14,6 +15,7 @@ pub mod refusals;
 pub mod row;
 
 pub use device::{DeviceRef, DeviceResolution, DeviceRoster, ResolveDeviceOptions, resolve_device};
+pub use ladder::{IdPrefixStep, LadderMatch, LadderStep, LadderView, match_thread};
 pub use listing::{DeviceListing, ListingRound, device_listing};
 pub use name::normalize_name;
 pub use parse::{

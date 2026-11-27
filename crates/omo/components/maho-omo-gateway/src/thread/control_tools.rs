@@ -389,8 +389,8 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                     "state": {
                         "type": "array",
                         "minItems": 1,
-                        "items": { "type": "string", "enum": ["running", "idle", "inactive", "archived"] },
-                        "description": "Thread states to list: running, idle, inactive (no engine holds it) or archived; the default lists every state but archived.",
+                        "items": { "type": "string", "enum": ["opening", "running", "idle", "inactive", "archived"] },
+                        "description": "Thread states to list: opening (not yet ready for controls), running, idle, inactive (no engine holds it) or archived; the default lists every state but archived.",
                     },
                 }),
                 &[],

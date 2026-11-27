@@ -5,11 +5,13 @@
 
 use serde::{Deserialize, Serialize};
 
-/// `running` (a turn in flight), `idle` (an engine holds it, no turn), `inactive` (its session file exists but no engine
-/// holds it) or `archived` (its session file carries the archived flag, whatever else holds).
+/// `opening` (the local engine lists it but cannot attach yet), `running` (a turn in flight), `idle` (an engine holds it,
+/// no turn), `inactive` (its session file exists but no engine holds it) or `archived` (its session file carries the
+/// archived flag, whatever else holds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadState {
+    Opening,
     Running,
     Idle,
     Inactive,
@@ -17,10 +19,17 @@ pub enum ThreadState {
 }
 
 impl ThreadState {
-    pub const ALL: [Self; 4] = [Self::Running, Self::Idle, Self::Inactive, Self::Archived];
+    pub const ALL: [Self; 5] = [
+        Self::Opening,
+        Self::Running,
+        Self::Idle,
+        Self::Inactive,
+        Self::Archived,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Opening => "opening",
             Self::Running => "running",
             Self::Idle => "idle",
             Self::Inactive => "inactive",

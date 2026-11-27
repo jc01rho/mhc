@@ -359,7 +359,6 @@ impl SeatHarness {
                     })
                 }),
                 endpoints: GatewayEndpointPort::inert(),
-                locate: Arc::new(|_| Box::pin(async { None })),
                 notify: None,
                 log: None,
                 host: None,

@@ -22,6 +22,7 @@ use maho_omo_gateway::thread::result::{result_from_row, result_from_row_with_wai
 use maho_omo_gateway::thread::same_device_wake::{
     SameDeviceCarrier, SameDeviceWake, SameDeviceWakeOptions,
 };
+use maho_omo_gateway::thread::sdk::{ThreadSdk, ThreadSdkOptions};
 use maho_omo_gateway::thread::session_wait_types::{
     QueuedWaitingOn, QueuedWaitingOnKind, SessionWaitKind, SessionWaitWrite,
 };
@@ -211,6 +212,48 @@ fn same_device_switch_controls_wake_request_and_offline_reason() {
         };
         assert_eq!(*carried.lock().expect("carried"), expected_carried);
     }
+}
+
+/// omo#14972: a parked session is woken by a send from the CLI or the gateway's seat sends, as by an agent's
+/// thread_send; a process with no carrier records the wake for the device's running carrier.
+#[test]
+fn an_sdk_send_to_a_parked_interactive_session_requests_its_wake() {
+    let h = WakeHarness::new();
+    write_session_file(&h.sessions(), "t", &json!({}), "--tmp-project--");
+    let sdk = ThreadSdk::new(ThreadSdkOptions {
+        agent_dir: h.dir.path().to_string_lossy().into_owned(),
+        cwd: "/tmp/project".into(),
+        env: BTreeMap::new(),
+        uid: 501,
+        user: "qa-user".into(),
+        store: h.store.clone(),
+        engine: local_engine(h.store.clone()),
+        workspaces: None,
+        same_device_wake: Some(SameDeviceWake::new(SameDeviceWakeOptions {
+            store: h.store.clone(),
+            sessions_directory: h.sessions(),
+            enabled: Arc::new(|_| true),
+            carrier: None,
+        })),
+    });
+    match block_on(sdk.send("t", "wake up", None)) {
+        GatewayDeliveryResult::Ok { delivery, .. } => assert_eq!(
+            delivery,
+            GatewayDeliveryDelivery::QueuedOffline {
+                queue_position: 1,
+                reason: Some("wake_unavailable".into()),
+            }
+        ),
+        other => panic!("unexpected result: {other:?}"),
+    }
+    let woken = h.store.woken().list().expect("list");
+    assert_eq!(
+        woken
+            .iter()
+            .map(|row| (row.durable_id.as_str(), row.state))
+            .collect::<Vec<_>>(),
+        vec![("t", WokenSessionState::Requested)]
+    );
 }
 
 #[test]

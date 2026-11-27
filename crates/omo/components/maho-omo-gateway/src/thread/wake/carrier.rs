@@ -26,13 +26,13 @@ use super::engine_state::{EngineView, read_engine_state};
 use super::memory_headroom::WAKE_MEMORY_FLOOR_BYTES;
 use super::session_target::{WakeSessionKind, WakeTarget, resolve_wake_target};
 use crate::thread::constants::WAKE_LEASE_MS;
+use crate::thread::delivery_ledger::ledger_device;
 pub use crate::thread::intake_admission::AdmitIntake;
 use crate::thread::intake_admission::IntakeAdmission;
 use crate::thread::session_wait_types::{SessionWaitKind, SessionWaitWrite, wait_blocks_delivery};
 use crate::thread::store::SqliteGatewayStore;
 use crate::thread::store_api::GatewayStoreApi;
 use crate::thread::store_ops::StoreError;
-use crate::thread::store_woken_ops::ledger_device;
 use crate::thread::woken_types::{
     WakeRetryOutcome, WakeStartOutcome, WakeTakeOverOutcome, WokenSessionFence, WokenSessionState,
 };
@@ -63,6 +63,7 @@ pub type Switch = Arc<dyn Fn() -> bool + Send + Sync>;
 pub type MemoryProbe = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 pub type MemoryFloor = Arc<dyn Fn() -> u64 + Send + Sync>;
 pub type CarrierEventListener = Arc<dyn Fn(&CarrierEvent) + Send + Sync>;
+pub type CarrierErrorListener = Arc<dyn Fn(&CarrierError) + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CarrierWakeOutcome {
@@ -186,6 +187,8 @@ pub struct CarrierOptions {
     pub memory_floor: Option<MemoryFloor>,
     pub schedule: Schedule,
     pub on_event: Option<CarrierEventListener>,
+    /// A wake, takeover or look the carrier tends by itself failed; the row stays and the next sweep tries it again.
+    pub on_error: Option<CarrierErrorListener>,
 }
 
 struct Carried {
@@ -371,6 +374,12 @@ impl CarrierInner {
                 durable_id: durable_id.to_owned(),
                 outcome: outcome.clone(),
             });
+        }
+    }
+
+    fn report(&self, error: &CarrierError) {
+        if let Some(listener) = &self.options.on_error {
+            listener(error);
         }
     }
 
@@ -592,8 +601,10 @@ impl CarrierInner {
         let durable_id = durable_id.to_owned();
         let _ = (self.options.schedule)(
             Box::new(move || {
-                if let Some(inner) = weak.upgrade() {
-                    let _ = inner.evaluate(&durable_id);
+                if let Some(inner) = weak.upgrade()
+                    && let Err(error) = inner.evaluate(&durable_id)
+                {
+                    inner.report(&error);
                 }
             }),
             0,
@@ -716,7 +727,7 @@ impl CarrierInner {
             let Some(admit) = &self.options.admit_intake else {
                 return Ok(Allowance::Open);
             };
-            if admit(device) == IntakeAdmission::Admitted {
+            if admit(device.as_str()) == IntakeAdmission::Admitted {
                 return Ok(Allowance::Open);
             }
         }
@@ -956,17 +967,24 @@ impl CarrierInner {
         let rows = store.woken().list()?;
         for row in &rows {
             if self.carried_entry(&row.durable_id).is_some() {
-                let _ = self.evaluate(&row.durable_id);
-                continue;
-            }
-            if row.state == WokenSessionState::Requested {
-                if row.next_attempt_at.is_none_or(|at| at <= now) {
-                    let _ = self.serial(&row.durable_id, || self.wake_now(&row.durable_id));
+                if let Err(error) = self.evaluate(&row.durable_id) {
+                    self.report(&error);
                 }
                 continue;
             }
-            if row.lease_expires_at.is_some_and(|at| at <= now) {
-                let _ = self.serial(&row.durable_id, || self.take_over(&row.durable_id));
+            if row.state == WokenSessionState::Requested {
+                if row.next_attempt_at.is_none_or(|at| at <= now)
+                    && let Err(error) =
+                        self.serial(&row.durable_id, || self.wake_now(&row.durable_id))
+                {
+                    self.report(&error);
+                }
+                continue;
+            }
+            if row.lease_expires_at.is_some_and(|at| at <= now)
+                && let Err(error) = self.serial(&row.durable_id, || self.take_over(&row.durable_id))
+            {
+                self.report(&error);
             }
         }
         let has_rows = !rows.is_empty();
@@ -978,14 +996,20 @@ impl CarrierInner {
         if self.stopped.load(Ordering::SeqCst) {
             return;
         }
-        let Ok(rows) = self.options.store.woken().list() else {
-            return;
+        let rows = match self.options.store.woken().list() {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.report(&CarrierError::from(error));
+                return;
+            }
         };
         if rows.is_empty() {
             return;
         }
-        if self.sweep_now().unwrap_or(false) {
-            self.arm();
+        match self.sweep_now() {
+            Ok(true) => self.arm(),
+            Ok(false) => {}
+            Err(error) => self.report(&error),
         }
     }
 
@@ -1024,7 +1048,11 @@ impl CarrierInner {
         // A sweep that failed still had work to tend: the timer stays armed for the next tick (A3.1.4).
         match self.sweep_now() {
             Ok(false) => {}
-            Ok(true) | Err(_) => self.arm(),
+            Ok(true) => self.arm(),
+            Err(error) => {
+                self.report(&error);
+                self.arm();
+            }
         }
     }
 

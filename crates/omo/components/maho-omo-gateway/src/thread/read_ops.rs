@@ -331,6 +331,7 @@ fn read_degraded(
         ReadSource::Jsonl {
             path: Path::new(&path),
             live_host_present: false,
+            messages_view: true,
         },
         max_bytes,
         cursor,
@@ -338,25 +339,10 @@ fn read_degraded(
         Ok(slice) => slice,
         Err(failure) => return error_json(*failure),
     };
-    // A session file interleaves messages with bookkeeping (the header, model and thinking changes, names): only
-    // message entries are transcript, rendered with the live path's roles.
-    let messages: Vec<Value> = slice
-        .items
-        .iter()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
-        .filter_map(|item| item.get("message"))
-        .filter(|message| {
-            matches!(
-                message.get("role").and_then(Value::as_str),
-                Some("user" | "assistant" | "toolResult")
-            )
-        })
-        .cloned()
-        .collect();
     ok_json(&ThreadReadOk {
         thread: thread_id.to_owned(),
         link: thread_link(thread_id, &title),
-        items: items_of(&messages),
+        items: items_of(&slice.items),
         truncated: slice.truncated,
         next_cursor: slice.next_cursor,
         source: slice.source,
