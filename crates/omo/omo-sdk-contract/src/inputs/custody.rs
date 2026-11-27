@@ -129,10 +129,39 @@ fn parses<T: serde::de::DeserializeOwned>(input: &Value) -> bool {
     serde_json::from_value::<T>(input.clone()).is_ok()
 }
 
+/// Whether `call` is one of the credential-bearing calls [`custody_input_accepts`] decides.
+pub fn is_custody_input(call: &str) -> bool {
+    matches!(
+        call,
+        "account.credentials.handOver"
+            | "account.keys.init"
+            | "account.keys.status"
+            | "engine.auth.check"
+            | "engine.auth.credentials"
+            | "engine.auth.apiKey"
+            | "engine.auth.bearerToken"
+            | "engine.trust.ensure"
+            | "mcp.oauth.login"
+            | "mcp.oauth.logout"
+            | "mcp.oauth.status"
+    )
+}
+
 /// Whether `input` is inside the input shape of the credential-bearing call `call`. A call whose input carries a
 /// handle or a callback (`account.adopt`, `account.signIn`, `sync.enable`, `sync.recover`) and an unknown call
-/// accept no JSON value.
+/// accept no JSON value. A field is absent or a value: TypeBox's `Type.Optional` never admits an explicit `null`, so a
+/// null-valued key refuses the input here too, as serde's `Option` alone would not.
 pub fn custody_input_accepts(call: &str, input: &Value) -> bool {
+    // A struct deserializes from a JSON array too, positionally; a call's input is an object.
+    if !input.is_object() {
+        return false;
+    }
+    if input
+        .as_object()
+        .is_some_and(|object| object.values().any(Value::is_null))
+    {
+        return false;
+    }
     match call {
         "account.credentials.handOver" => parses::<AccountCredentialsHandOver>(input),
         "account.keys.init" | "account.keys.status" => input.is_object(),
