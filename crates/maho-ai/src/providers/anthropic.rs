@@ -254,8 +254,12 @@ mod tests {
         assert_eq!(result.auth.api_key.as_deref(), Some("oat"));
     }
 
+    // senpi#7391: a Claude OAuth token from ANTHROPIC_OAUTH_TOKEN goes out as a plain API key: the request is built
+    // with it instead of being refused first.
     #[tokio::test]
-    async fn oauth_token_from_env_is_refused_before_a_messages_request() {
+    async fn oauth_token_from_env_is_sent_as_a_plain_api_key() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
         let token = ["sk-ant", "oat01", "test-only"].join("-");
         let signal = crate::utils::abort::AbortController::new().signal();
         let result = anthropic_api_key_auth()
@@ -263,23 +267,33 @@ mod tests {
             .await
             .expect("resolve")
             .expect("configured");
+        assert_eq!(result.auth.api_key.as_deref(), Some(token.as_str()));
         let mut model = crate::providers::all::get_builtin_models("anthropic")
             .into_iter()
             .next()
             .expect("Anthropic model");
-        // No network even if the refusal regresses.
+        // Nothing listens here; the request is built and then fails to connect.
         model.base_url = "http://127.0.0.1:0".into();
         let mut options = SimpleStreamOptions::default();
         options.stream.request.api_key = result.auth.api_key;
         options.stream.request.max_retries = Some(0);
+        let built = std::sync::Arc::new(AtomicBool::new(false));
+        let observed = built.clone();
+        options.stream.request.on_payload = Some(std::sync::Arc::new(move |_, _, _| {
+            observed.store(true, Ordering::Relaxed);
+            None
+        }));
         let stream = stream_simple_anthropic(&model, &Context::default(), Some(options));
         let message = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
             .await
-            .expect("refusal must settle")
-            .expect("error result");
-        assert_eq!(message.stop_reason, crate::types::StopReason::Error);
-        let detail = message.error_message.expect("refusal detail");
-        assert!(detail.contains("/login anthropic-subscription"), "{detail}");
+            .expect("request must settle")
+            .expect("assistant message");
+        let detail = message.error_message.unwrap_or_default();
+        assert!(
+            !detail.contains("/login anthropic-subscription"),
+            "{detail}"
+        );
         assert!(!detail.contains(&token));
+        assert!(built.load(Ordering::Relaxed));
     }
 }
