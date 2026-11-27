@@ -11,7 +11,6 @@ use serde_json::{Map, Value};
 
 use super::adapter::{
     BoxFuture, EndpointLiveness, GatewayEndpointPort, GatewayEndpointRef, ReleaseSessionReply,
-    UiAnswer, UiAnswerReply,
 };
 use super::address_book::{AddressBookHost, DiskSession, HostListSessions, read_disk_session};
 use super::attachment_fence::{FenceOutcome, RpcTransport, fenced_command};
@@ -401,8 +400,7 @@ impl LiveThreadSurface {
         });
         let wake_surface = surface.clone();
         let release_surface = surface.clone();
-        let liveness_surface = surface.clone();
-        let respond_surface = surface;
+        let liveness_surface = surface;
         GatewayEndpointPort {
             wake: Arc::new(move |endpoint, delivery_ids| {
                 let surface = wake_surface.clone();
@@ -487,49 +485,6 @@ impl LiveThreadSurface {
                             EndpointLiveness::Dead
                         }
                         Err(_) => EndpointLiveness::LiveUnresponsive,
-                    }
-                })
-            })),
-            respond_ui: Some(Arc::new(move |endpoint, answer: UiAnswer| {
-                let surface = respond_surface.clone();
-                Box::pin(async move {
-                    let session_id = if endpoint.kind == GatewayEndpointKind::RpcHost {
-                        surface.routing_id_of(&endpoint).await.ok().flatten()
-                    } else {
-                        endpoint.routing_id.clone()
-                    };
-                    if endpoint.kind == GatewayEndpointKind::RpcHost && session_id.is_none() {
-                        return UiAnswerReply::Refused {
-                            error: "unknown_session".to_owned(),
-                        };
-                    }
-                    let command = serde_json::json!({
-                        "type": "extension_ui_response",
-                        "sessionId": session_id,
-                        "uiRequestId": answer.ui_request_id,
-                        "fields": answer.fields,
-                    });
-                    match surface
-                        .fenced(
-                            &endpoint.socket,
-                            command,
-                            Some(&endpoint.durable_session_id),
-                        )
-                        .await
-                    {
-                        Ok(frame)
-                            if frame.get("success").and_then(Value::as_bool) == Some(true) =>
-                        {
-                            UiAnswerReply::Delivered
-                        }
-                        Ok(frame) => UiAnswerReply::Refused {
-                            error: frame
-                                .get("error")
-                                .and_then(Value::as_str)
-                                .unwrap_or("invalid_response")
-                                .to_owned(),
-                        },
-                        Err(error) => UiAnswerReply::Refused { error },
                     }
                 })
             })),

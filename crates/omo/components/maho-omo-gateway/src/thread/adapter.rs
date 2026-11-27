@@ -11,8 +11,6 @@ pub type ReleaseSessionCallback = Option<
             + Sync,
     >,
 >;
-pub type RespondUiCallback =
-    Option<Arc<dyn Fn(GatewayEndpointRef, UiAnswer) -> BoxFuture<UiAnswerReply> + Send + Sync>>;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -213,22 +211,6 @@ impl ReleaseSessionReply {
     }
 }
 
-/// `fields` is the answer in the shape its request kind reads.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiAnswer {
-    pub ui_request_id: String,
-    pub fields: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "delivered")]
-pub enum UiAnswerReply {
-    #[serde(rename = "true")]
-    Delivered,
-    #[serde(rename = "false")]
-    Refused { error: String },
-}
-
 /// Sender side: reaching another session's endpoint.
 #[derive(Clone)]
 pub struct GatewayEndpointPort {
@@ -237,7 +219,6 @@ pub struct GatewayEndpointPort {
     pub release_session: ReleaseSessionCallback,
     pub classify_liveness:
         Option<Arc<dyn Fn(GatewayEndpointRef) -> BoxFuture<EndpointLiveness> + Send + Sync>>,
-    pub respond_ui: RespondUiCallback,
 }
 
 impl GatewayEndpointPort {
@@ -255,7 +236,6 @@ impl GatewayEndpointPort {
             }),
             release_session: None,
             classify_liveness: None,
-            respond_ui: None,
         }
     }
 }
@@ -298,6 +278,14 @@ pub enum DeliverySender {
     },
 }
 
+/// senpi `whenIdle`: `queue` puts a delivery to an idle session in its `deliverAs` queue without starting a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WhenIdle {
+    Start,
+    Queue,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdmitExternalMessageInput {
     pub delivery_id: String,
@@ -305,6 +293,8 @@ pub struct AdmitExternalMessageInput {
     pub deliver_as: GatewayDeliveryMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_turn_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_idle: Option<WhenIdle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<DeliverySender>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

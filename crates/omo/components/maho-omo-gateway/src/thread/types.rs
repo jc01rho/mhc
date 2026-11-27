@@ -492,12 +492,17 @@ pub enum OutcomeRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_kind: Option<String>,
         turn_epoch: i64,
+        /// The lane the admission actually took, when it differs from the one claimed (decided again at admission).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode_effective: Option<EffectiveLane>,
     },
     Applied {
         admission_kind: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_kind: Option<String>,
         turn_epoch: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode_effective: Option<EffectiveLane>,
     },
     Requeue,
     Refused {

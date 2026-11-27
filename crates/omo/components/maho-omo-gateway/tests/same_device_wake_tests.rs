@@ -431,9 +431,10 @@ fn drain_intake_admission_admits_and_refuses_by_device_and_caches_per_pass() {
     assert_eq!(
         *admitted.lock().expect("admitted"),
         vec![
-            "device:dev-ok/d-ok-1".to_owned(),
             "device:dev-ok/d-ok-2".to_owned(),
-        ]
+            "device:dev-ok/d-ok-1".to_owned(),
+        ],
+        "the row that would start the idle session is admitted after the row that joins its start"
     );
     assert!(
         pass.outcomes.contains(&(

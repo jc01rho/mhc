@@ -792,7 +792,6 @@ mod tests {
                 }),
                 release_session: None,
                 classify_liveness: None,
-                respond_ui: None,
             },
             resolve: Arc::new(|_, _| {
                 Box::pin(async {

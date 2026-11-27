@@ -1879,18 +1879,21 @@ pub fn record_outcome(
                 admission_kind,
                 wait_kind,
                 turn_epoch,
+                mode_effective,
             }
             | OutcomeRecord::Applied {
                 admission_kind,
                 wait_kind,
                 turn_epoch,
+                mode_effective,
             } => {
                 ctx.run(
-                    "UPDATE deliveries SET admission_kind = ?, wait_kind = ?, turn_epoch = ?, updated_at = ? WHERE delivery_id = ?",
+                    "UPDATE deliveries SET admission_kind = ?, wait_kind = ?, turn_epoch = ?, mode_effective = COALESCE(?, mode_effective), updated_at = ? WHERE delivery_id = ?",
                     &[
                         v_str(admission_kind.clone()),
                         v_opt_str(wait_kind.as_deref()),
                         v_i64(*turn_epoch),
+                        v_opt_str(mode_effective.map(EffectiveLane::as_str)),
                         v_i64(request.now),
                         v_str(&row.delivery_id),
                     ],

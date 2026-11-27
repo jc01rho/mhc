@@ -170,6 +170,7 @@ mod tests {
                     admission_kind: "queued".into(),
                     wait_kind: None,
                     turn_epoch: 1,
+                    mode_effective: None,
                 },
             ),
             (
@@ -178,6 +179,7 @@ mod tests {
                     admission_kind: "started".into(),
                     wait_kind: None,
                     turn_epoch: 1,
+                    mode_effective: None,
                 },
             ),
         ] {
