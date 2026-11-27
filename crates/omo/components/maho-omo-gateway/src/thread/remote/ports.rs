@@ -449,6 +449,7 @@ pub fn row_state(row: &RemoteSessionRow) -> ThreadState {
     thread_state(
         row.archived,
         row.state != "ended" && row.source != Some(RowSource::Cache),
+        false,
         Some(row.state.as_str()),
     )
 }

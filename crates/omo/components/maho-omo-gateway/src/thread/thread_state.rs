@@ -11,15 +11,23 @@ use super::contracts_state::{
     ThreadActivity, ThreadModel, ThreadRetryWait, ThreadRetryWaitReason, ThreadState,
 };
 
-/// The archived flag wins; a thread no engine holds is `inactive`; otherwise the engine's activity, where a queued or
-/// approval-waiting thread is mid-turn (running) and a failed turn has ended (idle). A field an older engine does not
-/// report reads as not archived and idle.
-pub fn thread_state(archived: bool, held: bool, activity: Option<&str>) -> ThreadState {
+/// The archived flag wins; a thread no engine holds is `inactive`; a held thread its engine is still opening is
+/// `opening`; otherwise the engine's activity, where a queued or approval-waiting thread is mid-turn (running) and a
+/// failed turn has ended (idle). A field an older engine does not report reads as not archived and idle.
+pub fn thread_state(
+    archived: bool,
+    held: bool,
+    opening: bool,
+    activity: Option<&str>,
+) -> ThreadState {
     if archived {
         return ThreadState::Archived;
     }
     if !held {
         return ThreadState::Inactive;
+    }
+    if opening {
+        return ThreadState::Opening;
     }
     match activity {
         Some("running" | "queued" | "awaiting_approval") => ThreadState::Running,
@@ -163,24 +171,33 @@ mod tests {
     #[test]
     fn the_archived_flag_wins_then_holding_then_activity() {
         assert_eq!(
-            thread_state(true, true, Some("running")),
+            thread_state(true, true, false, Some("running")),
             ThreadState::Archived
         );
         assert_eq!(
-            thread_state(false, false, Some("running")),
+            thread_state(false, false, false, Some("running")),
             ThreadState::Inactive
         );
         for running in ["running", "queued", "awaiting_approval"] {
             assert_eq!(
-                thread_state(false, true, Some(running)),
+                thread_state(false, true, false, Some(running)),
                 ThreadState::Running
             );
         }
         assert_eq!(
-            thread_state(false, true, Some("errored")),
+            thread_state(false, true, false, Some("errored")),
             ThreadState::Idle
         );
-        assert_eq!(thread_state(false, true, None), ThreadState::Idle);
+        assert_eq!(thread_state(false, true, false, None), ThreadState::Idle);
+        assert_eq!(
+            thread_state(false, true, true, Some("running")),
+            ThreadState::Opening
+        );
+        assert_eq!(
+            thread_state(false, false, true, None),
+            ThreadState::Inactive
+        );
+        assert_eq!(thread_state(true, true, true, None), ThreadState::Archived);
     }
 
     #[test]
@@ -279,7 +296,8 @@ mod tests {
     fn the_default_listing_leaves_archived_threads_out() {
         let shown = listed_states(None);
         assert!(!shown.contains(&ThreadState::Archived));
-        assert_eq!(shown.len(), 3);
+        assert!(shown.contains(&ThreadState::Opening));
+        assert_eq!(shown.len(), 4);
         let asked = listed_states(Some(&[ThreadState::Archived]));
         assert_eq!(
             asked.into_iter().collect::<Vec<_>>(),

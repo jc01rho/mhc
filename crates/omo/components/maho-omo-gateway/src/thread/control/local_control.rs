@@ -305,6 +305,7 @@ impl SessionControl for LocalControl {
         let listed_running = thread_state(
             self.session.archived,
             true,
+            false,
             self.session.activity.as_deref(),
         ) == ThreadState::Running;
         let (port, session_id) = self.routed();
