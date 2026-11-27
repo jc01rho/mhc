@@ -7,7 +7,11 @@ use std::time::Duration;
 
 use futures::Stream;
 
-pub const RESPONSES_COMPLETION_GRACE_MS: u64 = 60_000;
+// owner, 2026-11-27: raised from 60s to 120s. A gemini route through the Responses API kept emitting
+// its output items and then left `response.completed` more than 60s out, so three turns in a row
+// ended as model errors although every item had already arrived. The wait starts only once every
+// output item is finalized, so a longer grace cannot hold a stream that is still producing.
+pub const RESPONSES_COMPLETION_GRACE_MS: u64 = 120_000;
 
 pub fn format_responses_completion_stall(grace_ms: u64) -> String {
     format!(
@@ -156,8 +160,8 @@ mod tests {
     #[test]
     fn stall_error_message_matches_the_ts_format() {
         assert_eq!(
-            format_responses_completion_stall(60_000),
-            "Provider stream stalled after the last output item: response.completed timed out after 60000ms"
+            format_responses_completion_stall(RESPONSES_COMPLETION_GRACE_MS),
+            "Provider stream stalled after the last output item: response.completed timed out after 120000ms"
         );
     }
 
