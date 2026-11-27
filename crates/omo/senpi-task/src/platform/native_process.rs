@@ -93,7 +93,7 @@ mod darwin {
 
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
-    struct MachTimebaseInfo {
+    pub(super) struct MachTimebaseInfo {
         pub(super) numer: u32,
         pub(super) denom: u32,
     }
