@@ -2,7 +2,7 @@
 
 Source range: `69a1863a457` (`v5.1.83`) .. `8dbccd12842f` (`v5.1.84`)
 Upstream paths: `packages/{omo-config-core,model-core,get-worker,claude-code-compat-core,lsp-core,telemetry-core,utils}`, `omo-senpi` components `{agent-home,telemetry,native-badge,claim-receipt,feedback,ultrawork,skill-pointers}`, skills `ultrawork`, `mass-ulw`, `shared-skills`, `skills-loader-core` (28 non-merge commits in 14 rows)
-mhc counterparts: `crates/omo/telemetry-core`, `crates/omo/components/maho-omo-{telemetry,feedback}`, `crates/omo/get-worker`, `crates/maho-ultrawork`, `crates/omo/maho-omo/src/ultrawork_gpt.md`, `assets/omo-latest/skills`
+mhc counterparts: `crates/omo/telemetry-core`, `crates/omo/components/maho-omo-{telemetry,feedback}`, `crates/omo/get-worker`, `crates/maho-ultrawork`, `crates/omo/maho-omo/src/ultrawork_gpt.md`, `assets/omo-latest/skills`, `assets/omo-latest/{manifest.json,stage-omowright-runtime.mjs}`, `tools/package-native.mjs`
 
 `omo-config-core`, `model-core`, `claude-code-compat-core`, `lsp-core`, `native-badge`, `claim-receipt`, `skill-pointers` and `skills-loader-core` have no functional change in this range (the only `omo-config-core` edits are TypeScript strictness in `cb743c97ea`).
 
@@ -10,11 +10,11 @@ mhc counterparts: `crates/omo/telemetry-core`, `crates/omo/components/maho-omo-{
 
 | verdict | count |
 |---|---:|
-| port | 5 |
+| port | 6 |
 | ported | 1 |
 | gap | 0 |
 | n/a | 7 |
-| blocked | 1 |
+| blocked | 0 |
 | **total** | **14** |
 
 ## Per-PR verdicts
@@ -34,9 +34,10 @@ mhc counterparts: `crates/omo/telemetry-core`, `crates/omo/components/maho-omo-{
 | `d0b2a31508` | n/a | Regenerates `generated-directive.ts`, the TypeScript build embed of the two directive files; mhc embeds `core.md` and `ultrawork_gpt.md` with `include_str!`. |
 | `cbc5e9737c` (#15044) | n/a | Folds the `dag-library` skill into `mass-ulw/references/library.md` and drops `dag-library` from `BUILTIN_SKILL_NAMES`. mhc retired `mass-ulw` (`assets/omo-latest/manifest.json` `retired`) and ships its own clean-room `dag-library` skill, so the skill set and `maho-omo-telemetry` `BUILTIN_SKILL_NAMES` keep `dag-library`. The `omo-relay` `ports.ts` `opening` state in the same range already landed with the omo-sdk track. |
 | `90f5745fdb`, `61ffd67e1b`, `a1f4bf81e8`, `719757d860`, `baf89a6ae8` (programming skill) | port | MIT bytes from the lazycodex marketplace sync v5.1.84 (`code-yeongyu/lazycodex@ebf7c57`, delta over `fb10b41`), which mhc's copy equalled before: `assets/omo-latest/skills/programming/SKILL.md` (cut to the axioms, smells and gates), `references/{go,python,rust,typescript}/README.md` (per-language tables moved in, Python naive-primitive and annotation rules, thread and process pool rules), `references/python/error-handling.md` and `references/typescript/error-handling.md` (`using`, `await using`, `AsyncDisposableStack`, `AsyncExitStack`); `assets/omo-latest/manifest.json` bytes, sha256 and source; `tools/check-skill-refs.mjs` reports 0 unresolved references. |
-| `a160f55ea5`, `9ae70c3e1a`, `9bdd640262`, `3dda9ef757` (browser skill) | blocked | These document the omowright 0.3.4 / BrowserSkill 0.5 engine (shared control, per-policy `expect` reasons, waiting on a page state, token-budget reads) across `browser/**`, `ultimate-browsing`, `visual-qa/references/browser-setup.md` and `debugging/references/tools/browser-qa.md`. The browser engine runtime is materialized from the omowright commit pinned in `assets/omo-latest/manifest.json` `browserRuntime`, `tools/package-native.mjs` and `stage-omowright-runtime.mjs` (`293ca500`, runtime 0.3.2); the docs and the runtime must move together, and a runtime bump can only be verified by a release packaging run. Landing the docs alone would describe commands the staged engine does not have. |
+| `a160f55ea5`, `9ae70c3e1a`, `9bdd640262`, `3dda9ef757` (browser skill) | port | Docs: `assets/omo-latest/skills/browser/SKILL.md` and `references/commands.md` (BrowserSkill 0.5 shared-control contract, per-policy `expect` reasons, `waitForElement`, `read`/`observe` token-budget reads, first-navigate recovery), `references/install.md` (doctor state table), `references/owned-engine/{README,frames-and-humans,network}.md`, `references/recipes/1password.md`, `ATTRIBUTION.md`, `ultimate-browsing/SKILL.md`, `visual-qa/references/browser-setup.md` and `debugging/references/tools/browser-qa.md`, with `manifest.json` bytes and sha256. `browser/SKILL.md`, `commands.md` and `install.md` are a three-way merge over the clean-room base, so the `OMO_BROWSER_ENGINE` policy and the typed guard errors stay (see `MIT-SKILLS.md`). Runtime: `manifest.json` `browserRuntime` pins omowright v0.3.4 (`d3b1a5d3c4`, what the release `bun.lock` resolves) instead of `293ca500`; `stage-omowright-runtime.mjs` resolves the checkout layout `src/index.ts`, `src/index.js`, `dist/index.js` (omowright 0.3.x is TypeScript) and stages and digests omowright's `LICENSE`; `tools/package-native.mjs` requires and hashes that file (new self-test case); `skills/browser/scripts/omowright.mjs` resolves a `node_modules/omowright` checkout in the same order. Not ported: `references/desktop.md` and the `connectBuiltinBrowser()` table row of `9bdd640262`: OmO Desktop's built-in browser was removed from the clean-room guard (`browser/CLEANROOM.md` R1) and `OMO_BROWSER_ENGINE=builtin` hands the browser to the host's own tools. `crates/maho-browser`: no change. The 0.3.3/0.3.4 engine changes are the BrowserSkill 0.5 client (`src/bsk/**`), fill/type error redaction (Rust `fill` goes through `Input.insertText`, so no error quotes the value) and agent-tab emulation, none of which the crate ports; its parity pin (`PINS.md` omowright `a019fdf`) stays. |
 
 ## Notes
 
 - Skill documents under `assets/omo-latest/skills` are MIT (lazycodex-based or clean-room); no SUL skill text was copied. The ultrawork behavior changes were restated in fresh prose, and only the SUL crate `maho-omo` carries the upstream GPT directive bytes.
 - Shared files touched: none of the root `Cargo.toml`, `Cargo.lock`, `scripts/ci-shard.py` or `PINS.md`.
+- The browser skill row was recorded `blocked` by the first pass (the docs and the engine runtime must move together). The follow-up track `browser-omowright` (2026-11-27) closed it with the runtime pin, the stager and the docs in one change.
