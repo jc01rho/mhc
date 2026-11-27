@@ -534,7 +534,23 @@ pub async fn run_eval_cell(
         let settles_as_result = capacity_cancelled.load(std::sync::atomic::Ordering::SeqCst)
             || session_disposed.load(std::sync::atomic::Ordering::SeqCst);
         let final_result = match result {
-            Ok(result) => handler.builder.finalize(&result).await,
+            Ok(mut result) => {
+                if result["ok"] != true
+                    && result["error"]["code"].as_str() == Some("js_cell_parse_error")
+                    && handler.builder.state.input.language == super::types::EvalLanguage::Js
+                    && matches!(
+                        super::magic_cells::parse_magic_cell(&handler.builder.state.input.code),
+                        Ok(None)
+                    )
+                {
+                    let message = super::js_cell_parse_message::js_cell_parse_message(
+                        &handler.builder.state.input.code,
+                        result["error"]["message"].as_str().unwrap_or(""),
+                    );
+                    result["error"]["message"] = serde_json::Value::String(message);
+                }
+                handler.builder.finalize(&result).await
+            }
             Err(error) if settles_as_result => handler.builder.finalize_cancellation(&error).await,
             Err(error) => Err(error),
         };

@@ -123,8 +123,8 @@
       "path": "kernels/js/worker-runtime.js",
       "status": "patched",
       "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
-      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting; cells bound to the kernel Bun via bindKernelBun; tool.defined()/tool.undefine() wired as upstream 4998e97f58",
-      "sha256": "909b35274cf7272db1855e5c528d82ff2823d6d37b5530afe88f51aa84aa0152",
+      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting; cells bound to the kernel Bun via bindKernelBun; tool.defined()/tool.undefine() wired as upstream 4998e97f58; compile-time SyntaxError tagged js_cell_parse_error (senpi#7201)",
+      "sha256": "6e7125a8e79556649f8a04a73d8aa7287df07b7eb2c3cea029ba21fb91720e16",
       "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
       "divergence": "port gap predating this release range (unchanged upstream between f2354d970 and 59d58cee5): cell require/createRequire (worker-require.js, f61208eee8), shadowed-global user scope (d34a1867a3), stable prelude source URL (b755c442d2), release() split for stopped cells (5d68b2faf9, 14d8a35324), injected process-group marker (worker-cwd.js INJECTED_GROUP, 7bb160e2bf), %load source file names (1d37a776bd), completion handles (f56aebf74f) and kernelTools.enabled=false (92eb8db6ac) are not ported; packages.install lives in the local-module-loader prelude; mhc owns worker memory collection here and adds handles.js wait()/handle(). Later upstream change b4e76ace01 is after the senpi pin 59d58cee5 (v2026.10.27-2)"
     },

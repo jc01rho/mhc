@@ -41,6 +41,8 @@ mod detached_notification_queue;
 mod display_code;
 #[path = "eval_execution_event.rs"]
 mod eval_execution_event;
+#[path = "eval_js_parse_diagnostic.rs"]
+mod eval_js_parse_diagnostic;
 #[path = "eval_model_context.rs"]
 mod eval_model_context;
 #[path = "eval_notifier.rs"]
