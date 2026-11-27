@@ -7,11 +7,14 @@ Verdicts: `port` ported in this round, `ported` already in mhc, `golden` regener
 | ledger | port | ported | golden | gap | n/a | total |
 |---|---|---|---|---|---|---|
 | [ai](ai.md) | 1 | 0 | 0 | 0 | 0 | 1 |
+| [boot-instant](boot-instant.md) | 3 | 1 | 0 | 1 | 1 | 6 |
 | [catalog](catalog.md) | 0 | 0 | 3 | 0 | 0 | 3 |
 | [codemode](codemode.md) | 1 | 0 | 0 | 0 | 1 | 2 |
 | [lead](lead.md) | 0 | 0 | 0 | 0 | 25 | 25 |
+| [look-at](look-at.md) | 1 | 1 | 0 | 1 | 1 | 4 |
+| [machine-ops](machine-ops.md) | 1 | 0 | 0 | 0 | 0 | 1 |
 | [prompt-preset](prompt-preset.md) | 1 | 0 | 0 | 0 | 0 | 1 |
 | [rpc](rpc.md) | 2 | 0 | 0 | 1 | 3 | 6 |
-| **total** | **5** | **0** | **3** | **1** | **29** | **38** |
+| **total** | **10** | **2** | **3** | **3** | **31** | **49** |
 
 Pins: this round changes neither `PINS.md` nor the CI `SENPI_PIN` (lead-owned). The CI `SENPI_PIN`, which must equal `tools/golden/pin.mjs` `SENPI_PIN`, needs to become `47333c26cdba96631d64317284a06ca6e0aab68e` (v2026.11.23) when the lead bumps the parity pin.
