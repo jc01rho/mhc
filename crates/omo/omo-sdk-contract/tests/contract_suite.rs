@@ -111,10 +111,11 @@ fn plant_at(answer: &Value, path: &str, value: &str) -> Value {
     for (index, raw) in steps.iter().enumerate() {
         let name = raw.trim_end_matches("[]");
         let last = index + 1 == steps.len();
-        if !cursor.is_object() {
-            *cursor = json!({});
+        let current = cursor;
+        if !current.is_object() {
+            *current = json!({});
         }
-        let object = cursor.as_object_mut().expect("an object on the path");
+        let object = current.as_object_mut().expect("an object on the path");
         if raw.ends_with("[]") {
             let list = object.entry(name).or_insert_with(|| json!([{}]));
             if list.as_array().is_none_or(Vec::is_empty) {
@@ -123,6 +124,7 @@ fn plant_at(answer: &Value, path: &str, value: &str) -> Value {
             cursor = list.get_mut(0).expect("the first element");
         } else if last {
             object.insert(name.to_string(), json!(value));
+            break;
         } else {
             let next = object.entry(name).or_insert_with(|| json!({}));
             if !next.is_object() {
