@@ -1,7 +1,66 @@
-//! Port of `remote-render.ts`: the human forms of `mhc remote`; every verb also prints its value as
-//! JSON with `--json`.
+//! Port of `remote-render.ts` and `bin/lib/display-escape.js`: the human forms of `mhc remote`;
+//! every verb also prints its value as JSON with `--json`.
 
 use serde_json::Value;
+
+/// Unicode general categories Cc (`char::is_control`), Cf, Zl and Zp. With `keep_line_feeds`,
+/// `U+000A` stays raw for multi-line output while `\r` and every other control/format/separator
+/// character is escaped.
+pub fn unsafe_for_display(character: char, keep_line_feeds: bool) -> bool {
+    if keep_line_feeds && character == '\n' {
+        return false;
+    }
+    character.is_control()
+        || matches!(
+            character as u32,
+            0x00ad
+                | 0x0600..=0x0605
+                | 0x061c
+                | 0x06dd
+                | 0x070f
+                | 0x0890..=0x0891
+                | 0x08e2
+                | 0x180e
+                | 0x200b..=0x200f
+                | 0x2028..=0x202e
+                | 0x2060..=0x2064
+                | 0x2066..=0x206f
+                | 0xfeff
+                | 0xfff9..=0xfffb
+                | 0x110bd
+                | 0x110cd
+                | 0x13430..=0x1343f
+                | 0x1bca0..=0x1bca3
+                | 0x1d173..=0x1d17a
+                | 0xe0001
+                | 0xe0020..=0xe007f
+        )
+}
+
+fn escape_display(text: &str, keep_line_feeds: bool) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if !unsafe_for_display(character, keep_line_feeds) {
+            escaped.push(character);
+            continue;
+        }
+        let code = character as u32;
+        if code > 0xffff {
+            escaped.push_str(&format!("\\u{{{code:x}}}"));
+        } else {
+            escaped.push_str(&format!("\\u{code:04x}"));
+        }
+    }
+    escaped
+}
+
+pub fn escape_for_display(text: &str) -> String {
+    escape_display(text, false)
+}
+
+pub fn escape_for_display_keep_lf(text: &str) -> String {
+    escape_display(text, true)
+}
 
 pub fn state_label(state: &str) -> &str {
     match state {
@@ -23,7 +82,11 @@ pub fn state_label(state: &str) -> &str {
     }
 }
 
-pub fn render_table(header: &[&str], rows: &[Vec<String>]) -> Vec<String> {
+pub fn render_table(header: &[&str], shown_rows: &[Vec<String>]) -> Vec<String> {
+    let rows: Vec<Vec<String>> = shown_rows
+        .iter()
+        .map(|row| row.iter().map(|cell| escape_for_display(cell)).collect())
+        .collect();
     let widths: Vec<usize> = header
         .iter()
         .enumerate()
@@ -92,6 +155,34 @@ pub fn person_next_action(text: &str) -> String {
     }
 }
 
+/// A typed refusal as the lines a person reads on stderr: the message, the next action, then any candidates.
+pub fn refusal_lines(message: &str, next_action: &str, candidates: &[String]) -> Vec<String> {
+    let mut lines = vec![
+        escape_for_display(&format!("mhc remote: {message}")),
+        escape_for_display(&person_next_action(next_action)),
+    ];
+    lines.extend(candidates.iter().map(|line| escape_for_display(line)));
+    lines
+}
+
+/// `mhc remote open --prompt` whose session opened but whose first prompt was not delivered.
+pub fn undelivered_prompt_lines(label: &str, message: &str, next_action: &str) -> Vec<String> {
+    vec![
+        escape_for_display(&format!(
+            "mhc remote: opened {label}, but its first prompt was not delivered: {message}"
+        )),
+        escape_for_display(&format!(
+            "{next_action} Send it again with mhc remote send {label} <text>."
+        )),
+    ]
+}
+
+pub fn session_ended_line(device: &str, end: &str) -> String {
+    escape_for_display(&format!(
+        "mhc remote: the session on {device} ended before its turn settled ({end})."
+    ))
+}
+
 pub fn status_lines(
     status: &Value,
     service_version: &str,
@@ -127,7 +218,7 @@ pub fn status_lines(
     rows.extend(local.iter().cloned());
     let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     rows.into_iter()
-        .map(|(label, value)| format!("{label:width$}  {value}"))
+        .map(|(label, value)| escape_for_display(&format!("{label:width$}  {value}")))
         .collect()
 }
 
@@ -206,10 +297,10 @@ pub fn session_lines(
             .map(|device| device_name(devices, device))
             .collect();
         lines.push(String::new());
-        lines.push(format!(
+        lines.push(escape_for_display(&format!(
             "Not answered, rows may be missing or cached: {}",
             names.join(", ")
-        ));
+        )));
     }
     lines
 }

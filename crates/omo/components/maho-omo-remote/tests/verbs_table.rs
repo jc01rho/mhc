@@ -15,6 +15,7 @@ pub(crate) struct FakeHost {
     pub(crate) sessions: Mutex<Vec<HostSession>>,
     records: Mutex<Vec<(String, Value)>>,
     pub(crate) streaming: Mutex<bool>,
+    pub(crate) close_applied: Mutex<Option<bool>>,
 }
 
 impl FakeHost {
@@ -88,7 +89,14 @@ impl SessionHost for FakeHost {
             HostCommandOutcome::Applied(match record["type"].as_str() {
                 Some("get_state") => json!({ "state": { "isStreaming": streaming } }),
                 Some("abort") => json!({ "aborted": streaming }),
-                Some("close_session") => json!({ "closed": true }),
+                Some("close_session") => {
+                    let closed = self
+                        .close_applied
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .unwrap_or(true);
+                    json!({ "closed": closed })
+                }
                 _ => json!({ "disposition": "started" }),
             })
         })
@@ -342,6 +350,71 @@ async fn the_verbs_answer_through_two_devices() {
             "close_session"
         ]
     );
+
+    *beta_host
+        .close_applied
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(false);
+    assert_eq!(
+        run_remote(&ctx, &argv(&["close", "beta/b1", "--force", "--json"])).await,
+        1,
+        "a close that closed nothing exits 1 (#13905)"
+    );
+    let not_closed = captured.json();
+    assert_eq!(not_closed["kind"], "error");
+    assert_eq!(not_closed["code"], "not_found");
+    *beta_host
+        .close_applied
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
+
+    let stdin_message = "--first line\nzweite Zeile, 한국어\n";
+    ctx.set_stdin_reader(Arc::new(move || stdin_message.to_owned()));
+    assert_eq!(
+        run_remote(
+            &ctx,
+            &argv(&["send", "beta/b1", "-", "--no-wait", "--json"])
+        )
+        .await,
+        0
+    );
+    assert_eq!(captured.json()["kind"], "ok");
+
+    ctx.set_stdin_reader(Arc::new(String::new));
+    assert_eq!(
+        run_remote(&ctx, &argv(&["send", "beta/b1", "-", "--no-wait"])).await,
+        2,
+        "empty stdin is a usage error (#13905)"
+    );
+    captured.take();
+
+    let unsafe_target = "beta/s\u{001b}[31m\u{202e}x";
+    assert_eq!(
+        run_remote(&ctx, &argv(&["interrupt", unsafe_target, "--json"])).await,
+        1
+    );
+    let json_err = captured.json();
+    assert_eq!(json_err["kind"], "error");
+    assert!(
+        json_err.to_string().contains("\u{202e}")
+            || json_err["message"]
+                .as_str()
+                .is_some_and(|msg| !msg.contains("\\u202e")),
+        "--json output is not double-escaped by display escaping"
+    );
+    assert_eq!(
+        run_remote(&ctx, &argv(&["interrupt", unsafe_target])).await,
+        1
+    );
+    let (human_out, human_err) = captured.take();
+    for line in human_out.iter().chain(human_err.iter()) {
+        assert!(
+            !line
+                .chars()
+                .any(|ch| maho_omo_remote::render::unsafe_for_display(ch, false)),
+            "human output escaped unsafe chars: {line:?}"
+        );
+    }
 
     beta_host
         .sessions

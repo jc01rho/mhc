@@ -45,7 +45,7 @@ const USAGE_ENTRIES: [(&[&str], &str); 14] = [
     ),
     (
         &["send"],
-        "  send <session> <text> [--steer|--follow-up] [--no-wait]\n                                           send a message; returns once the session took it.\n                                           Name the session <device>/<session>, or by its id alone.",
+        "  send <session> <text|-> [--steer|--follow-up] [--no-wait]\n                                           send a message; returns once the session took it.\n                                           Name the session <device>/<session>, or by its id alone.",
     ),
     (
         &["model"],

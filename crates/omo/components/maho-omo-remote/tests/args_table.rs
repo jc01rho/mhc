@@ -1,4 +1,4 @@
-use maho_omo_remote::args::{Delivery, SessionArgs, Target, WakeValue, parse};
+use maho_omo_remote::args::{Delivery, STDIN_TEXT, SessionArgs, Target, WakeValue, parse};
 use maho_omo_remote::command::command_argv;
 use maho_omo_remote::exit::UsageError;
 use maho_omo_remote::rpc_host::{action_of, host_session, outcome_of};
@@ -42,6 +42,10 @@ fn session_verbs_parse_their_targets_and_options() {
     let model = parse(&argv(&["model", "box/s2", "openai/gpt-5"])).expect("model");
     assert!(
         matches!(model.session, Some(SessionArgs::Model { ref model, .. }) if model == "openai/gpt-5")
+    );
+    let send_stdin = parse(&argv(&["send", "laptop/s1", "-"])).expect("send stdin");
+    assert!(
+        matches!(send_stdin.session, Some(SessionArgs::Send { ref text, .. }) if text == STDIN_TEXT)
     );
 }
 
@@ -112,6 +116,7 @@ fn usage_lists_every_verb_and_each_verb_has_its_entry() {
                 .is_some_and(|line| line.contains(verb))
         );
     }
+    assert!(verb_usage("send").contains("<text|->"));
 }
 
 #[test]
