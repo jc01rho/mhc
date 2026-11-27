@@ -69,17 +69,18 @@ pub enum ParsedAddress {
     },
 }
 
-fn is_drive_letter(part: &str) -> bool {
+/// A drive prefix (`C:`), with or without a path after it: `C:/x` and the drive-relative `C:dir/x` are both paths (#12867).
+fn has_drive_prefix(part: &str) -> bool {
     let mut characters = part.chars();
     matches!(
-        (characters.next(), characters.next(), characters.next()),
-        (Some(letter), Some(':'), None) if letter.is_ascii_alphabetic()
+        (characters.next(), characters.next()),
+        (Some(letter), Some(':')) if letter.is_ascii_alphabetic()
     )
 }
 
 /// The one reading of an address text (design section 2). `<device>/<thread>` splits on its single `/` unless the text
-/// is a path: a first part starting with `.` or `~`, a drive letter, or a `.jsonl` file. Any other text is a bare
-/// address. A thread name may contain `/` itself, so the resolver still tries the whole text when the device reading
+/// is a path: a first part starting with `.` or `~`, a drive prefix, any backslash, or a `.jsonl` file. Any other text
+/// is a bare address. A thread name may contain `/` itself, so the resolver still tries the whole text when the device reading
 /// misses.
 pub fn parse_address(input: &str) -> ParsedAddress {
     let text = input.trim();
@@ -96,7 +97,8 @@ pub fn parse_address(input: &str) -> ParsedAddress {
         || thread.is_empty()
         || thread.contains('/')
         || text.to_ascii_lowercase().ends_with(".jsonl")
-        || is_drive_letter(device)
+        || text.contains('\\')
+        || has_drive_prefix(device)
         || device.starts_with(['.', '~'])
     {
         return bare();

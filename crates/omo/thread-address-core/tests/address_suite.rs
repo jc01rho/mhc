@@ -1,12 +1,13 @@
-//! Upstream counterpart: `parse.test.ts`, `row.test.ts`, `device.test.ts`.
+//! Upstream counterpart: `parse.test.ts`, `row.test.ts`, `device.test.ts`, `ladder.test.ts`.
 
 use std::sync::Arc;
 
 use maho_thread_address_core::{
-    DeviceListing, DeviceResolution, DeviceRoster, DeviceRow, KeyedRow, MergeRow, NamedRow,
-    ParsedAddress, RefusalCode, RefusalDetails, ResolveDeviceOptions, SessionRef, format_address,
-    id_shaped, is_id_prefix, listing_key, merge_rows, normalize_name, parse_address,
-    resolve_device, row_address, row_key, row_name, same_session,
+    DeviceListing, DeviceResolution, DeviceRoster, DeviceRow, IdPrefixStep, KeyedRow, LadderMatch,
+    LadderView, MergeRow, NamedRow, ParsedAddress, RefusalCode, RefusalDetails,
+    ResolveDeviceOptions, SessionRef, format_address, id_shaped, is_id_prefix, listing_key,
+    match_thread, merge_rows, normalize_name, parse_address, resolve_device, row_address, row_key,
+    row_name, same_session,
 };
 
 fn bare(text: &str) -> ParsedAddress {
@@ -37,6 +38,10 @@ fn parse_address_names_self_a_bare_address_or_a_device_and_a_thread() {
         ("./x", bare("./x")),
         ("~/x", bare("~/x")),
         ("C:/x", bare("C:/x")),
+        ("C:\\a/b", bare("C:\\a/b")),
+        ("\\\\srv\\share/x", bare("\\\\srv\\share/x")),
+        ("dir\\sub/x", bare("dir\\sub/x")),
+        ("C:dir/x", bare("C:dir/x")),
         ("dir/x.jsonl", bare("dir/x.jsonl")),
     ];
     for (text, expected) in cases {
@@ -402,5 +407,162 @@ fn an_exact_id_resolves_only_that_id() {
     assert_eq!(
         refusal_of(resolve_device(&roster, "c0ffee5a1d2b3c4d", exact)).code,
         RefusalCode::DeviceOffline
+    );
+}
+
+struct LadderRow {
+    label: &'static str,
+    id: &'static str,
+    keys: Vec<String>,
+    aliases: Vec<String>,
+    name: &'static str,
+    scoped: Option<bool>,
+}
+
+fn ladder_row(label: &'static str, id: &'static str, name: &'static str) -> LadderRow {
+    LadderRow {
+        label,
+        id,
+        keys: Vec::new(),
+        aliases: Vec::new(),
+        name,
+        scoped: None,
+    }
+}
+
+fn ladder_rows() -> Vec<LadderRow> {
+    vec![
+        LadderRow {
+            keys: vec!["rk-live".to_owned()],
+            aliases: vec!["Lane-A".to_owned()],
+            ..ladder_row("live", "0aa00001-0000-4000-8000-000000000001", "Alpha")
+        },
+        LadderRow {
+            keys: vec!["0aa00001-0000-4000-8000-000000000001".to_owned()],
+            ..ladder_row("keyed", "0bb00001-0000-4000-8000-000000000001", "beta")
+        },
+        LadderRow {
+            scoped: Some(true),
+            ..ladder_row("twinA", "0cc00001-0000-4000-8000-000000000001", "shared")
+        },
+        LadderRow {
+            scoped: Some(false),
+            ..ladder_row("twinB", "0cc00001-ffff-4000-8000-000000000002", "shared")
+        },
+        ladder_row("copy", "0cc00001-0000-4000-8000-000000000001", ""),
+        ladder_row(
+            "aliasNamed",
+            "0dd00001-0000-4000-8000-000000000001",
+            "lane-a",
+        ),
+    ]
+}
+
+fn ladder_answer(text: &str, scope_names: bool, id_prefix: IdPrefixStep<'_>) -> String {
+    let rows = ladder_rows();
+    let views: Vec<LadderView<'_>> = rows
+        .iter()
+        .map(|row| LadderView {
+            id: row.id,
+            keys: &row.keys,
+            aliases: &row.aliases,
+            name: row.name,
+        })
+        .collect();
+    let named = |index: usize| !scope_names || rows[index].scoped != Some(false);
+    match match_thread(&views, text, named, id_prefix) {
+        LadderMatch::NoMatch => "none".to_owned(),
+        LadderMatch::One { step, index } => format!("{}:{}", step.as_str(), rows[index].label),
+        LadderMatch::Many { step, indices } => format!(
+            "{}:{}",
+            step.as_str(),
+            indices
+                .iter()
+                .map(|index| rows[*index].label)
+                .collect::<Vec<_>>()
+                .join("+")
+        ),
+    }
+}
+
+#[test]
+fn match_thread_reads_exact_id_then_session_id_then_alias_then_name_then_a_unique_id_prefix() {
+    let cases = [
+        (
+            "an exact id beats the same text as another row's listing key",
+            "0aa00001-0000-4000-8000-000000000001",
+            "id:live",
+        ),
+        ("a listing key", "rk-live", "session_id:live"),
+        (
+            "an alias beats a name that normalizes to the same text",
+            "lane-a",
+            "alias:live",
+        ),
+        (
+            "a name, NFKC and case folded",
+            "\u{ff21}\u{ff2c}\u{ff30}\u{ff28}\u{ff21}",
+            "name:live",
+        ),
+        (
+            "one id held by two rows: both answer, the caller decides",
+            "0cc00001-0000-4000-8000-000000000001",
+            "id:twinA+copy",
+        ),
+        ("a name two rows share", "shared", "name:twinA+twinB"),
+        ("a unique 8+ hex id prefix", "0bb00001", "id_prefix:keyed"),
+        (
+            "a prefix counts each thread id once",
+            "0cc00001-0",
+            "id_prefix:twinA",
+        ),
+        ("a prefix shorter than 8 characters", "0bb0000", "none"),
+        (
+            "an 8+ hex prefix two thread ids share: both answer",
+            "0cc00001",
+            "id_prefix:twinA+twinB",
+        ),
+        ("empty text", "", "none"),
+        ("nothing", "nowhere", "none"),
+    ];
+    for (case, text, expected) in cases {
+        assert_eq!(
+            ladder_answer(text, false, IdPrefixStep::On),
+            expected,
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn a_name_scope_limits_only_the_name_step() {
+    assert_eq!(
+        ladder_answer("shared", true, IdPrefixStep::On),
+        "name:twinA"
+    );
+    assert_eq!(
+        ladder_answer(
+            "0cc00001-ffff-4000-8000-000000000002",
+            true,
+            IdPrefixStep::On
+        ),
+        "id:twinB"
+    );
+    assert_eq!(
+        ladder_answer("0cc00001-f", true, IdPrefixStep::On),
+        "id_prefix:twinB"
+    );
+}
+
+#[test]
+fn the_id_prefix_step_switched_off_or_excluding_one_id_answers_nothing_for_that_id() {
+    assert_eq!(ladder_answer("0bb00001", false, IdPrefixStep::Off), "none");
+    assert_eq!(
+        ladder_answer(
+            "0bb00001",
+            false,
+            IdPrefixStep::Exclude("0bb00001-0000-4000-8000-000000000001")
+        ),
+        "none"
     );
 }
