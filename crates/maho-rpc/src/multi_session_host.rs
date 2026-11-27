@@ -289,6 +289,15 @@ impl OpenRefusal {
         }
     }
 }
+/// An `open_session { forkFrom }` this host cannot fork (omo #13031). The code is also the wire `error`, which is where a
+/// client reads the reason.
+fn fork_refusal(source: &str, code: &str, detail: String) -> OpenRefusal {
+    OpenRefusal::with_data(
+        format!("{code}: {source}"),
+        code,
+        serde_json::json!({ "reason": code, "forkFrom": source, "detail": detail }),
+    )
+}
 /// A sessionless request in flight, until dropped.
 struct SessionlessGuard<'a>(&'a std::sync::atomic::AtomicUsize);
 impl Drop for SessionlessGuard<'_> {
@@ -916,6 +925,7 @@ impl HostCore {
             crate::host_capabilities::UNLOAD_SESSION_CAPABILITY,
             crate::host_capabilities::UNLOAD_REFUSE_DELIVERIES_CAPABILITY,
             crate::host_capabilities::FIND_SESSION_CAPABILITY,
+            crate::host_capabilities::OPEN_SESSION_FORK_CAPABILITY,
             DETACH_CONNECTION_CAPABILITY,
             MEMORY_WRITE_DENY_CAPABILITY,
             MEMORY_WRITE_DENY_EFFECTS_CAPABILITY,
@@ -2927,6 +2937,7 @@ impl HostCore {
     ) -> Result<serde_json::Value, OpenRefusal> {
         let crate::rpc_types::RpcCommandBody::OpenSession {
             session_path,
+            fork_from,
             cwd,
             provider,
             model_id,
@@ -3035,6 +3046,12 @@ impl HostCore {
                 "provider and modelId must be given together".to_owned(),
             ));
         }
+        if fork_from.is_some() && (session_path.is_some() || attach_only) {
+            return Err(invalid(
+                "forkFrom opens a new session copied from another; sessionPath and expectedHostInstance name a session to open as it is"
+                    .to_owned(),
+            ));
+        }
         if let Some(reason) =
             crate::rpc_input_validation::retry_fallback_error(retry_fallback.as_ref())
         {
@@ -3088,9 +3105,32 @@ impl HostCore {
                 crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
             )));
         }
-        let profile = crate::session_registry::RpcSessionLaunchProfile {
+        // omo #13031 (`open_session_fork`): the source is one of this host's sessions, named by its durable id and found
+        // the way `find_session` finds it; a fork that names no folder starts in the source's.
+        let fork_source = match fork_from.as_deref() {
+            Some(source) => {
+                let hosted = self.list_rows(true).await;
+                let found = crate::host_session_find::find_fork_source(
+                    self.options.agent_dir.as_path(),
+                    source,
+                    &hosted,
+                )
+                .await
+                .map_err(|refusal| fork_refusal(source, refusal.code, refusal.detail))?;
+                Some(found)
+            }
+            None => None,
+        };
+        let fork_cwd = fork_source
+            .as_ref()
+            .map(|(_, source_cwd)| source_cwd.clone())
+            .filter(|source_cwd| !source_cwd.is_empty());
+        let mut profile = crate::session_registry::RpcSessionLaunchProfile {
             runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
-                cwd: cwd.clone().unwrap_or_else(|| self.options.cwd.clone()),
+                cwd: cwd
+                    .clone()
+                    .or(fork_cwd)
+                    .unwrap_or_else(|| self.options.cwd.clone()),
                 permission_preset: permission_preset.clone(),
                 creation_model: provider.clone().zip(model_id.clone()),
                 initial_thinking_level: thinking_level.clone(),
@@ -3141,9 +3181,24 @@ impl HostCore {
                 serde_json::json!({"cwd": open_cwd}),
             ));
         }
+        let forked = match (fork_from.as_deref(), fork_source) {
+            (Some(source), Some((source_path, _))) => {
+                let path = self
+                    .fork_session_file(source, source_path, &profile)
+                    .await?;
+                profile.session_path = Some(path.clone());
+                Some(path)
+            }
+            _ => None,
+        };
         let opened = self
             .open_admitted(connection, profile, retain, overlay, attach_only)
             .await;
+        if opened.is_err()
+            && let Some(path) = forked.as_deref()
+        {
+            self.discard_unopened_fork(path).await;
+        }
         // senpi `open`: a successful open of a path drops any park record for it, so a later successor does not
         // reopen a session a client already took back.
         if opened.is_ok()
@@ -3152,6 +3207,63 @@ impl HostCore {
             crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
         }
         opened
+    }
+    /// The new session file an `open_session { forkFrom }` opens (omo #13031): the source's entries copied under a new
+    /// header (senpi `SessionManager.forkFrom`, as its `session-move/copy.ts` writes a copy) into the folder this host
+    /// keeps the open's cwd sessions in, under the open's durable id when it names one. A source whose file holds no
+    /// session to copy is refused `fork_source_not_found`.
+    async fn fork_session_file(
+        &self,
+        source: &str,
+        source_path: String,
+        profile: &crate::session_registry::RpcSessionLaunchProfile,
+    ) -> Result<String, OpenRefusal> {
+        // Checked here, not left to the session manager, which panics on an id it would not accept.
+        crate::session_registry::validate_profile_paths(profile)
+            .map_err(|error| OpenRefusal::from_registry(&error))?;
+        let cwd = profile.runtime.cwd.clone();
+        let agent_dir = self.options.agent_dir.to_string_lossy().into_owned();
+        let options = maho_core::session_manager::NewSessionOptions {
+            id: profile.durable_session_id.clone(),
+            ..Default::default()
+        };
+        let forked = tokio::task::spawn_blocking(move || {
+            let dir = maho_core::session_manager::get_default_session_dir_path(&cwd, &agent_dir);
+            maho_core::session_manager::SessionManager::fork_from(
+                &source_path,
+                &cwd,
+                Some(&dir),
+                Some(options),
+            )
+            .and_then(|manager| {
+                manager
+                    .session_file()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "Cannot fork: the fork has no session file".to_owned())
+            })
+        })
+        .await
+        .map_err(|error| OpenRefusal::plain(error.to_string()))?;
+        forked.map_err(|detail| {
+            fork_refusal(
+                source,
+                crate::host_session_find::RPC_ERROR_FORK_SOURCE_NOT_FOUND,
+                detail,
+            )
+        })
+    }
+    /// A fork whose open was refused started nothing on this host: its file goes, so a retry under the same durable id
+    /// forks again instead of leaving a second file that carries it. A file a session holds after all is kept.
+    async fn discard_unopened_fork(&self, path: &str) {
+        let key = crate::session_path_key::canonical_session_path(std::path::Path::new(path));
+        let held = self.list_rows(true).await.iter().any(|row| {
+            row["sessionPath"].as_str().is_some_and(|hosted| {
+                crate::session_path_key::canonical_session_path(std::path::Path::new(hosted)) == key
+            })
+        });
+        if !held && let Err(error) = tokio::fs::remove_file(path).await {
+            eprintln!("senpi rpc host: an unopened fork's session file {path} was kept: {error}");
+        }
     }
     fn speculative_profile_key(
         cwd: &str,
@@ -6767,6 +6879,104 @@ mod handoff_tests {
             core.advertised_capabilities()
                 .iter()
                 .any(|capability| capability == "find_session")
+        );
+    }
+    // omo #13031 (`open_session_fork`): `forkFrom` names a session of this host by its durable id; the open copies its file
+    // into a new one under the open's durable id and opens that, leaving the source as it was. A source no file of this
+    // host carries is refused typed, a fork cannot also name a file to open, and the capability is advertised.
+    #[tokio::test]
+    async fn open_session_fork_from_opens_a_copy_of_a_session_this_host_holds() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let folder = std::path::PathBuf::from(
+            maho_core::session_manager::get_default_session_dir_path(&cwd, &cwd),
+        );
+        std::fs::create_dir_all(&folder).unwrap();
+        let source_id = "0197f6e4-4cf9-7f44-a2d8-f8f7f49ee9e5";
+        let fork_id = "0197f6e4-4cf9-7f44-a2d8-f8f7f49ee9f1";
+        let unknown_id = "0197f6e4-4cf9-7f44-a2d8-f8f7f49ee9d7";
+        let source = folder.join(format!("2026-11-11T00-00-00-000Z_{source_id}.jsonl"));
+        let header = serde_json::json!({"type":"session","version":3,"id":source_id,"timestamp":"2026-11-11T00:00:00.000Z","cwd":cwd});
+        let message = serde_json::json!({"type":"message","id":"u1","parentId":null,"timestamp":"2026-11-11T00:00:01.000Z","message":{"role":"user","content":"remember 42","timestamp":1}});
+        let source_text = format!("{header}\n{message}\n");
+        std::fs::write(&source, &source_text).unwrap();
+
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","forkFrom":source_id,"durableSessionId":fork_id})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let opened = reply_to(&mut client, "o").await;
+        assert_eq!(opened["success"], true, "{opened}");
+        let fork = std::fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.to_string_lossy()
+                    .ends_with(&format!("_{fork_id}.jsonl"))
+            })
+            .expect("the fork is a new file in the source's folder");
+        let entries: Vec<serde_json::Value> = std::fs::read_to_string(&fork)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(entries[0]["type"], "session");
+        assert_eq!(entries[0]["id"], fork_id);
+        assert!(
+            entries[0]["parentSession"]
+                .as_str()
+                .is_some_and(|parent| parent.ends_with(&format!("_{source_id}.jsonl"))),
+            "{}",
+            entries[0]
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["message"]["content"] == "remember 42")
+        );
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), source_text);
+        let rows = core.list_rows(true).await;
+        assert!(
+            rows.iter().any(|row| row["durableSessionId"] == fork_id),
+            "{rows:?}"
+        );
+
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"n","type":"open_session","forkFrom":unknown_id}).to_string(),
+        )
+        .await
+        .unwrap();
+        let refused = reply_to(&mut client, "n").await;
+        assert_eq!(refused["success"], false, "{refused}");
+        assert_eq!(refused["error"], "fork_source_not_local");
+        assert_eq!(refused["errorCode"], "fork_source_not_local");
+        assert_eq!(refused["errorData"]["forkFrom"], unknown_id);
+
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"b","type":"open_session","forkFrom":source_id,"sessionPath":source})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let both = reply_to(&mut client, "b").await;
+        assert_eq!(both["success"], false, "{both}");
+        assert!(
+            both["error"]
+                .as_str()
+                .is_some_and(|error| error.starts_with("invalid_launch_profile")),
+            "{both}"
+        );
+        assert!(
+            core.advertised_capabilities()
+                .iter()
+                .any(|capability| capability == "open_session_fork")
         );
     }
     #[test]

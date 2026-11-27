@@ -28,6 +28,9 @@ pub const SUBSCRIPTION_LIMITS_CAPABILITY: &str = "subscription_limits";
 pub const RESOLVE_PATH_CAPABILITY: &str = "resolve_path";
 /// `find_session`: which session file of this host carries a durable id, read-only (senpi#6429).
 pub const FIND_SESSION_CAPABILITY: &str = "find_session";
+/// `open_session { forkFrom }`: the open copies one of this host's sessions into a new one instead of starting blank
+/// (omo #13031, which names it senpi#7085; senpi has no counterpart yet).
+pub const OPEN_SESSION_FORK_CAPABILITY: &str = "open_session_fork";
 const TOOL_RUNTIME_PREFIX: &str = "tool_runtime:";
 const PLACEMENT_PREFIX: &str = "placement:";
 
@@ -142,8 +145,9 @@ pub fn multi_session_host_capabilities(
         crate::effect_record::EFFECT_LEDGER_CAPABILITY,
         SUBSCRIPTION_LIMITS_CAPABILITY,
         RESOLVE_PATH_CAPABILITY,
-        // Every multi-session host keeps the agent directory whose session files this looks in.
+        // Every multi-session host keeps the agent directory whose session files this looks in, and forks from.
         FIND_SESSION_CAPABILITY,
+        OPEN_SESSION_FORK_CAPABILITY,
         crate::rpc_types::STEER_WHEN_IDLE_CAPABILITY,
         "continue_from_leaf",
         "eval_cells",
@@ -322,6 +326,7 @@ mod tests {
             SUBSCRIPTION_LIMITS_CAPABILITY,
             RESOLVE_PATH_CAPABILITY,
             FIND_SESSION_CAPABILITY,
+            OPEN_SESSION_FORK_CAPABILITY,
             crate::custom_capability::ACCOUNT_RESET_CAPABILITY,
             crate::rpc_types::SESSION_MODEL_SCOPE_CAPABILITY,
         ] {

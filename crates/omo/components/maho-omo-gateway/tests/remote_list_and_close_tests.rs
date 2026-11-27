@@ -79,6 +79,8 @@ struct ScriptedRemote {
     lookup_replies: Mutex<VecDeque<RemoteLookupOutcome>>,
     command_replies: Mutex<VecDeque<RemoteCommandOutcome>>,
     sent_commands: Mutex<Vec<(String, String, Value, SessionCommandOptions)>>,
+    endpoint_replies: Mutex<VecDeque<RemoteCommandOutcome>>,
+    sent_endpoint: Mutex<Vec<(String, Value)>>,
     device_listing_calls: Mutex<usize>,
     wake_enabled: Mutex<bool>,
     lookup_enabled: Mutex<bool>,
@@ -102,6 +104,8 @@ impl ScriptedRemote {
             lookup_replies: Mutex::new(VecDeque::new()),
             command_replies: Mutex::new(VecDeque::new()),
             sent_commands: Mutex::new(Vec::new()),
+            endpoint_replies: Mutex::new(VecDeque::new()),
+            sent_endpoint: Mutex::new(Vec::new()),
             device_listing_calls: Mutex::new(0),
             wake_enabled: Mutex::new(true),
             lookup_enabled: Mutex::new(true),
@@ -233,6 +237,17 @@ impl RemoteSessionsPort for ScriptedRemote {
     fn can_wake(&self) -> BoxFuture<bool> {
         let enabled = *lock(&self.wake_enabled);
         Box::pin(async move { enabled })
+    }
+
+    fn endpoint_command(&self, device: String, rpc: Value) -> BoxFuture<RemoteCommandOutcome> {
+        lock(&self.sent_endpoint).push((device, rpc));
+        let next = lock(&self.endpoint_replies).pop_front().unwrap_or_else(|| {
+            RemoteCommandOutcome::Refused {
+                reason: "unsupported".to_owned(),
+                detail: None,
+            }
+        });
+        Box::pin(async move { next })
     }
 
     fn session_command(
@@ -1028,4 +1043,89 @@ fn thread_create_for_live_remote_thread_sends_prompt_without_opening_and_support
     };
     assert_eq!(remote_ctrl.thread_id(), B_ID);
     assert_eq!(remote_ctrl.device(), Some("b"));
+}
+
+// thread-remote.test.ts / thread-create-fork.test.ts (#13031) on device b: whether b's engine forks is asked of b's engine
+// endpoint (an observing get_protocol_info) and nothing else reaches b. An engine that does not fork, or does not answer,
+// is refused unsupported naming b's source; one that forks stays refused, since this build cannot carry an open to b.
+#[test]
+fn thread_create_fork_on_b_reads_only_bs_capabilities_and_opens_nothing_there() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cwd = dir.path().join("app");
+    std::fs::create_dir_all(&cwd).expect("mkdir");
+    let cwd_str = cwd.to_string_lossy().into_owned();
+    let remote = ScriptedRemote::new(
+        vec![RemoteDevice {
+            device: "b".to_owned(),
+            label: "Laptop".to_owned(),
+            online: true,
+            platform: Some("darwin".to_owned()),
+            kind: Some("laptop".to_owned()),
+            last_seen_ms: Some(1_700_000_000_000),
+        }],
+        vec![RemoteSessionRow {
+            device: "b".to_owned(),
+            session_id: "rk-b".to_owned(),
+            durable_id: Some(B_ID.to_owned()),
+            title: "Remote Live".to_owned(),
+            project: "/work/b".to_owned(),
+            path: "/work/b".to_owned(),
+            state: "idle".to_owned(),
+            updated_ms: 1_000,
+            ..RemoteSessionRow::default()
+        }],
+    );
+    let local = local_session(LOCAL_ID, &cwd_str);
+    let view = ThreadHostView {
+        hosts: vec![AddressBookHost {
+            socket: local.socket.clone(),
+            list_sessions: Some(HostListSessions::ok(vec![local.host_session()])),
+            endpoint_kind: Some(GatewayEndpointKind::RpcHost),
+            alive: Some(true),
+            reason: None,
+            legacy: false,
+        }],
+        sessions: vec![local],
+        disk: Vec::new(),
+    };
+    let component = make_component(&dir, None, view, cwd_str, remote.clone());
+    let protocol_info = |capabilities: Value| RemoteCommandOutcome::Ok {
+        response: json!({ "success": true, "data": { "capabilities": capabilities } }),
+        local: false,
+        located: None,
+    };
+
+    *lock(&remote.endpoint_replies) = VecDeque::from([protocol_info(json!(["unload_session"]))]);
+    let refused = run(&component, "thread_create", json!({ "fork_from": B_ID }));
+    assert_eq!(refused["kind"], "error", "{refused}");
+    assert_eq!(refused["error"]["code"], "unsupported");
+    assert_eq!(
+        refused["error"]["details"],
+        json!({ "reason": "fork_unsupported", "thread": B_ID, "device": "b" })
+    );
+    let asked: Vec<(String, Value)> = lock(&remote.sent_endpoint)
+        .iter()
+        .map(|(device, rpc)| (device.clone(), rpc["type"].clone()))
+        .collect();
+    assert_eq!(asked, vec![("b".to_owned(), json!("get_protocol_info"))]);
+    assert_eq!(lock(&remote.sent_endpoint)[0].1["observe"], true);
+
+    let silent = run(&component, "thread_create", json!({ "fork_from": B_ID }));
+    assert_eq!(
+        silent["error"]["details"]["reason"], "fork_unsupported",
+        "{silent}"
+    );
+
+    *lock(&remote.endpoint_replies) = VecDeque::from([protocol_info(json!([
+        "unload_session",
+        "open_session_fork"
+    ]))]);
+    let forking = run(&component, "thread_create", json!({ "fork_from": B_ID }));
+    assert_eq!(forking["error"]["code"], "unsupported", "{forking}");
+    assert_eq!(
+        forking["error"]["details"],
+        json!({ "reason": "relay_session_host_unsupported", "device": "b" })
+    );
+    assert_eq!(lock(&remote.sent_endpoint).len(), 3);
+    assert!(lock(&remote.sent_commands).is_empty());
 }

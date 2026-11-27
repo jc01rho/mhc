@@ -189,6 +189,9 @@ pub trait SessionHost: Send + Sync {
     /// The device that opens; `None` when it is this one.
     fn device(&self) -> Option<&str>;
     fn visible(&self) -> BoxFuture<ControlResult<Vec<ThreadAddressEntry>>>;
+    /// Whether that device's engine forks on `open_session { forkFrom }` (capability `open_session_fork`, #13031). An
+    /// engine without it opens a blank session instead, so thread_create refuses `fork_from` there before any open.
+    fn forks(&self) -> BoxFuture<ControlResult<bool>>;
     fn open(
         &self,
         request: SessionOpenRequest,

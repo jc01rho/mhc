@@ -225,6 +225,17 @@ pub trait RemoteSessionsPort: Send + Sync {
         Box::pin(async { false })
     }
 
+    /// Sends one RPC record to `device`'s engine endpoint, naming no session (upstream `endpointCommand`): an observing
+    /// read such as `get_protocol_info` (#13031). The default sends nothing.
+    fn endpoint_command(&self, _device: String, _rpc: Value) -> BoxFuture<RemoteCommandOutcome> {
+        Box::pin(async {
+            RemoteCommandOutcome::Refused {
+                reason: "unsupported".to_owned(),
+                detail: None,
+            }
+        })
+    }
+
     /// Sends one session-scoped RPC record to `session_id` on `device`.
     fn session_command(
         &self,

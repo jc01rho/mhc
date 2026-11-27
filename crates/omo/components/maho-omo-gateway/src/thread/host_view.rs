@@ -151,6 +151,11 @@ pub trait ThreadHost: Send + Sync {
     ) -> BoxFuture<Result<ThreadHostSession, String>> {
         Box::pin(async { Err("unsupported:open_session".to_owned()) })
     }
+    /// The operator endpoint's own `get_protocol_info` capabilities (an observing read, #13031); a host that cannot read
+    /// them answers none.
+    fn capabilities(&self) -> BoxFuture<Result<Vec<String>, String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 }
 
 #[cfg(test)]

@@ -10,8 +10,8 @@ Counts computed programmatically from the per-PR rows below.
 
 | verdict | rows |
 |---|---:|
-| port | 18 |
-| gap | 2 |
+| port | 19 |
+| gap | 1 |
 | n/a | 8 |
 | blocked | 0 |
 | ported | 0 |
@@ -46,7 +46,7 @@ Every one of the 48 non-merge commits in the range that touch these paths is nam
 | `6de23b79b2` | port | `component.rs` test `the_tool_set_covers_send_and_control_and_no_binding_tool_is_reachable` asserts none of the six binding tools is listed or executable. |
 | `a130d78c73` | port | `contracts_state.rs` `ThreadState::Opening`; `thread_state.rs` `thread_state(archived, held, opening, activity)`; `thread_row.rs` `live_row`: a session whose engine lists it `opening` is `opening`, with no controls, no activity and no retry wait; `control_tools.rs` `thread_list` takes `opening`. Tests in `thread_state.rs` and `thread_row.rs`. The `thread_close` refusal `session_opening` is `control/locate.ts` (thread-gateway). |
 | `572e5a6a39` | port | `reader.rs` `ReadSource::Jsonl { messages_view }`: a tool read pages the visible messages (revision suffixed `.m`, so a raw-entry cursor is stale there and the reverse); `read_ops.rs` `read_degraded` reads that view. Test: `a_messages_view_pages_only_visible_messages_and_refuses_a_raw_entry_cursor`. |
-| #13031 `aef88019f8`, `90dc3fef61`, `07060a225b` | gap | `fork_from` on an engine that advertises `open_session_fork` is decided in the control legs (`control/local-open.ts`, `session-host.ts`, `relay-session-host.ts`, thread-gateway); the root half is only `ThreadHost.capabilities`, which has no reader in mhc until those legs land. |
+| #13031 `aef88019f8`, `90dc3fef61`, `07060a225b` | port | The root half: `host_view.rs` `ThreadHost::capabilities` (defaulted; a host that cannot read them answers none) and `live_surface.rs` `LiveThreadSurface::capabilities` (the operator endpoint's observing `get_protocol_info`). The control legs that read it (`SessionHost::forks`, `fork_refusal`, the fork decision) are the thread-gateway row and the relay leg's capability read the thread-remote row; the engine that advertises `open_session_fork` is `maho-rpc` `multi_session_host.rs` (`open_session { forkFrom }`: one of the host's sessions, found as `find_session` finds it (`host_session_find.rs` `find_fork_source`), is copied into a new session file with `SessionManager::fork_from` under the open's durable id and opened; `open_session_fork` is advertised; a source no file of the host carries is refused `fork_source_not_local`, one with no single readable file `fork_source_not_found`), `rpc_types.rs` `fork_from`, `host_capabilities.rs` `OPEN_SESSION_FORK_CAPABILITY`. Tests: `tests/thread_create_tests.rs` `a_fork_on_an_engine_that_forks_opens_with_the_source_and_answers_a_new_thread`, `a_source_the_forking_engine_does_not_hold_is_not_found_with_the_engines_reason`. |
 | `4caaa6d488` | n/a | The SDK half refuses a non-object request: `ThreadSdk` takes typed Rust arguments and has no `list`, so there is no untyped request to refuse. The v15 binding-table drop is gateway schema (thread-gateway). |
 | `bf4633eb06` | n/a | Rewinds a TS migration fixture of `extension-tools.test.ts` past v15; no Rust module changes. |
 | `da19e1d32d`, `0635bcfac0` | n/a | Formatting and unused imports of a TS merge; no semantics. |
@@ -70,5 +70,5 @@ New or changed cases (no sleeps; each asserts machine-read values):
 
 ## Left for sibling tracks
 
-- thread-gateway: the fork legs of #13031 (`fork_from` on an engine advertising `open_session_fork`, which no mhc engine advertises), `session_opening` on `thread_close`, the relay row's `waiting`/`engine_version` (#14278), and the gateway half of the binding removal (relay engine, `store_relay_ops.rs`, schema v15/v16 drop).
+- thread-gateway: `session_opening` on `thread_close`, the relay row's `waiting`/`engine_version` (#14278), and the gateway half of the binding removal (relay engine, `store_relay_ops.rs`, schema v15/v16 drop).
 - thread-remote: `reopen-parked.ts` (#14799), the device-service lookup gate behind `lookup_alone` (#14748).

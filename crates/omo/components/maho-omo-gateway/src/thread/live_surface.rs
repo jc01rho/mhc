@@ -786,6 +786,32 @@ impl ThreadHost for LiveThreadSurface {
         })
     }
 
+    fn capabilities(&self) -> BoxFuture<Result<Vec<String>, String>> {
+        let transport = self.transport.clone();
+        let socket = self.legacy.clone();
+        Box::pin(async move {
+            let frame = transport
+                .request(
+                    &socket,
+                    serde_json::json!({ "type": "get_protocol_info", "observe": true }),
+                    None,
+                )
+                .await?;
+            let info = data_record(&frame, "get_protocol_info")?;
+            Ok(info
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default())
+        })
+    }
+
     fn session_port(&self, session: &ThreadHostSession) -> Arc<dyn SessionCommandPort> {
         let mut terminal_commands: std::collections::BTreeSet<String> = TUI_READ_COMMANDS
             .iter()

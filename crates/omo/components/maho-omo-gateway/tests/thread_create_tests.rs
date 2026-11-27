@@ -97,6 +97,7 @@ struct FakeHost {
     names: Arc<Mutex<Vec<(String, String)>>>,
     open_failure: Mutex<Option<String>>,
     lose_reply: Mutex<bool>,
+    capabilities: Mutex<Vec<String>>,
 }
 
 impl ThreadHost for FakeHost {
@@ -174,6 +175,11 @@ impl ThreadHost for FakeHost {
             return Box::pin(async { Err("connection closed".to_owned()) });
         }
         Box::pin(async move { Ok(session) })
+    }
+
+    fn capabilities(&self) -> BoxFuture<Result<Vec<String>, String>> {
+        let capabilities = self.capabilities.lock().expect("capabilities").clone();
+        Box::pin(async move { Ok(capabilities) })
     }
 }
 
@@ -292,6 +298,7 @@ fn fixture() -> Fixture {
         names: Arc::new(Mutex::new(Vec::new())),
         open_failure: Mutex::new(None),
         lose_reply: Mutex::new(false),
+        capabilities: Mutex::new(Vec::new()),
     });
     let surface = FakeSurface {
         operation_id: "call:call-1".to_owned(),
@@ -740,6 +747,50 @@ fn another_device_a_fork_and_a_worktree_are_refused_before_anything_opens() {
         "worktree_unsupported"
     );
     assert!(opens(&fixture).is_empty());
+}
+
+// thread-create-fork.test.ts (#13031): an engine that advertises open_session_fork forks on open_session { forkFrom }; the
+// create sends it the source and answers the fork, a new thread, never a refusal and never a blank session.
+#[test]
+fn a_fork_on_an_engine_that_forks_opens_with_the_source_and_answers_a_new_thread() {
+    let fixture = fixture();
+    *fixture.host.capabilities.lock().expect("capabilities") =
+        vec!["unload_session".to_owned(), "open_session_fork".to_owned()];
+
+    let forked = run(&fixture, json!({ "fork_from": LOCAL }));
+
+    assert_eq!(forked["kind"], "ok", "{forked}");
+    assert_eq!(forked["thread"], derived_id());
+    assert_ne!(forked["thread"], LOCAL);
+    let opened = opens(&fixture);
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].0["forkFrom"], LOCAL);
+    assert_eq!(opened[0].0["durableSessionId"], derived_id());
+}
+
+// thread-create-fork.test.ts (#13031), on this device: a source the forking engine does not hold is refused not_found with
+// the engine's reason, naming the device that holds the source as the way out.
+#[test]
+fn a_source_the_forking_engine_does_not_hold_is_not_found_with_the_engines_reason() {
+    let fixture = fixture();
+    *fixture.host.capabilities.lock().expect("capabilities") = vec!["open_session_fork".to_owned()];
+    *fixture.host.open_failure.lock().expect("failure") =
+        Some("thread RPC request failed: \"fork_source_not_local\"".to_owned());
+
+    let refused = run(&fixture, json!({ "fork_from": EXITED }));
+
+    assert_eq!(failure_code(&refused), "not_found");
+    assert_eq!(
+        refused["error"]["details"],
+        json!({ "reason": "fork_source_not_local", "thread": EXITED })
+    );
+    assert!(
+        refused["error"]["next_action"]
+            .as_str()
+            .is_some_and(|next| next.contains("device that holds its source")),
+        "{refused}"
+    );
+    assert_eq!(opens(&fixture)[0].0["forkFrom"], EXITED);
 }
 
 #[test]

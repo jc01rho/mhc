@@ -34,6 +34,11 @@ const READERS: usize = 16;
 pub const RPC_ERROR_FIND_SESSION_UNSUPPORTED: &str = "find_session_unsupported";
 pub const RPC_ERROR_FIND_SESSION_TOO_MANY: &str = "find_session_too_many";
 const RPC_ERROR_INVALID_ARGUMENT: &str = "invalid_argument";
+/// `open_session { forkFrom }` names a session no file of this host carries: it lives on another device or in another
+/// agent directory (omo #13031).
+pub const RPC_ERROR_FORK_SOURCE_NOT_LOCAL: &str = "fork_source_not_local";
+/// `open_session { forkFrom }` names a session this host has no one readable file of to fork (omo #13031).
+pub const RPC_ERROR_FORK_SOURCE_NOT_FOUND: &str = "fork_source_not_found";
 
 /// More session files than one lookup may walk (senpi `FindSessionTooManyError`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +62,13 @@ struct Candidate {
     session_path: String,
     cwd: String,
     open: bool,
+}
+
+/// What one lookup by durable id found among this host's session files.
+enum Lookup {
+    Unknown,
+    Found(Candidate),
+    Ambiguous,
 }
 
 /// The file's first line, read whole or not at all; anything that is not a session header is not a candidate.
@@ -166,7 +178,7 @@ async fn find_session_file(
     durable_session_id: &str,
     hosted: &[Value],
     limit: usize,
-) -> Result<Value, TooMany> {
+) -> Result<Lookup, TooMany> {
     let files = session_files(agent_dir, limit).await?;
     let suffix = format!("_{durable_session_id}.jsonl");
     let named: Vec<PathBuf> = files
@@ -214,12 +226,63 @@ async fn find_session_file(
     }
     let mut found = by_path.into_values();
     Ok(match (found.next(), found.next()) {
-        (None, _) => json!({"unknown": true}),
-        (Some(only), None) => {
+        (None, _) => Lookup::Unknown,
+        (Some(only), None) => Lookup::Found(only),
+        (Some(_), Some(_)) => Lookup::Ambiguous,
+    })
+}
+
+fn lookup_data(lookup: Lookup) -> Value {
+    match lookup {
+        Lookup::Unknown => json!({"unknown": true}),
+        Lookup::Found(only) => {
             json!({"found": {"sessionPath": only.session_path, "cwd": only.cwd, "open": only.open}})
         }
-        (Some(_), Some(_)) => json!({"ambiguous": true}),
-    })
+        Lookup::Ambiguous => json!({"ambiguous": true}),
+    }
+}
+
+/// Why `open_session { forkFrom }` has no session file to fork: `code` is the open's refusal and `detail` what the
+/// lookup saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkSourceRefusal {
+    pub code: &'static str,
+    pub detail: String,
+}
+
+/// The session file `open_session { forkFrom }` forks (omo #13031, capability `open_session_fork`) and the folder its
+/// header names, found the way `find_session` finds one. An id no file of this host carries is `fork_source_not_local`;
+/// an id two files carry, or a host with more files than one lookup walks, leaves no one file to fork
+/// (`fork_source_not_found`).
+pub async fn find_fork_source(
+    agent_dir: &Path,
+    durable_session_id: &str,
+    hosted: &[Value],
+) -> Result<(String, String), ForkSourceRefusal> {
+    match find_session_file(
+        agent_dir,
+        durable_session_id,
+        hosted,
+        FIND_SESSION_FILE_LIMIT,
+    )
+    .await
+    {
+        Ok(Lookup::Found(only)) => Ok((only.session_path, only.cwd)),
+        Ok(Lookup::Unknown) => Err(ForkSourceRefusal {
+            code: RPC_ERROR_FORK_SOURCE_NOT_LOCAL,
+            detail: format!("No session file of this host carries {durable_session_id}."),
+        }),
+        Ok(Lookup::Ambiguous) => Err(ForkSourceRefusal {
+            code: RPC_ERROR_FORK_SOURCE_NOT_FOUND,
+            detail: format!(
+                "More than one session file of this host carries {durable_session_id}, so none is forked."
+            ),
+        }),
+        Err(too_many) => Err(ForkSourceRefusal {
+            code: RPC_ERROR_FORK_SOURCE_NOT_FOUND,
+            detail: too_many.detail(),
+        }),
+    }
 }
 
 fn envelope(command: &Value) -> Map<String, Value> {
@@ -279,7 +342,7 @@ async fn find_session_within(
         );
     };
     match find_session_file(agent_dir, durable_session_id, hosted, limit).await {
-        Ok(data) => answer(command, data),
+        Ok(lookup) => answer(command, lookup_data(lookup)),
         Err(too_many) => refusal(command, RPC_ERROR_FIND_SESSION_TOO_MANY, &too_many.detail()),
     }
 }
@@ -603,6 +666,40 @@ mod tests {
         let answered = find_session(Some(temp.path()), &[], &request(json!(ID))).await;
 
         assert_eq!(answered["data"], json!({"unknown": true}));
+    }
+
+    // omo #13031: the fork source is the one file `find_session` would answer; an id no file carries is not local, and
+    // an id two files carry leaves no one file to fork.
+    #[tokio::test]
+    async fn a_fork_source_is_the_one_file_carrying_the_id_and_anything_else_is_refused_typed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = session_dir(temp.path(), "--a--");
+        let file = write_session_file(&dir, ID, "2026-11-11T00-00-00-000Z");
+
+        assert_eq!(
+            find_fork_source(temp.path(), ID, &[]).await,
+            Ok((
+                file.to_string_lossy().into_owned(),
+                dir.to_string_lossy().into_owned()
+            ))
+        );
+        assert_eq!(
+            find_fork_source(temp.path(), OTHER_ID, &[])
+                .await
+                .map_err(|refusal| refusal.code),
+            Err(RPC_ERROR_FORK_SOURCE_NOT_LOCAL)
+        );
+        write_session_file(
+            &session_dir(temp.path(), "--b--"),
+            ID,
+            "2026-11-11T01-00-00-000Z",
+        );
+        assert_eq!(
+            find_fork_source(temp.path(), ID, &[])
+                .await
+                .map_err(|refusal| refusal.code),
+            Err(RPC_ERROR_FORK_SOURCE_NOT_FOUND)
+        );
     }
 
     // A session header without a cwd names an empty folder, as senpi answers it.

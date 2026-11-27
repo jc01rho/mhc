@@ -8,10 +8,10 @@ mhc counterparts: `crates/omo/components/maho-omo-remote`, `crates/omo/component
 
 | verdict | count |
 |---|---:|
-| port | 4 |
+| port | 5 |
 | ported | 0 |
 | blocked | 5 |
-| gap | 1 |
+| gap | 0 |
 | n/a | 3 |
 | **total** | **13** |
 
@@ -34,7 +34,7 @@ already sends commands: the attach pool and the gateway's `DeviceServicePort`.
 | #14799 `thread_read`/`thread_send` reopen a session another device parked (`283011ad26`) | blocked | `reopen-parked.ts` needs `find_session` (`holderView`, `sessionFileOf`) and `open_session` through `RelaySessionHost`; `thread/control/plan_create.rs` still refuses those remote opens because `mhc-relayd` carries neither RPC. |
 | #14623 remote delivery receipts and #14278-era reconcile of queued delivery outcomes (`351df3416c`, `30411b35be`, `1e5ecd91a9`, `abf5e307ac`) | port | `thread/remote/receipt.rs` `read_receipt` reads and reconciles through the gateway store members now ported (`store_tool_receipts.rs` `remote_receipt`, `store_ops.rs` `receipt_outcome`, `store_tool_receipts.rs` `reconcile_remote_receipt`) and answers `ThreadReceiptOk`. Tests: `tests/gateway_receipt_tests.rs` `a_receipt_read_reports_the_callers_own_delivery_to_exactly_that_thread`, `a_receipt_read_of_a_remote_send_reports_the_outcome_its_retained_receipt_holds`. The `RemoteSessionsPort.receipt` leg (`get_delivery_outcome` to the peer) is answered by the consumer once a live device-service port exists, which stays this track's blocked item. |
 | #14278 another device's `thread_list` rows carry the holder's retry wait and engine version (`ad364fb654`) | blocked | The fields are copied by the live device-service listing adapter (`remote/port/device-service.ts` `listing`), which mhc does not have; `device-service-core` already carries `waiting`/`engine_version` on its listing rows (v5.1.83 device-service track). |
-| #13031 / senpi#7085 `fork_from` forks on an engine that advertises `open_session_fork` (`aef88019f8`) | gap | No mhc engine or session host advertises `open_session_fork` (no symbol in the tree), so `thread/control/plan_create.rs` keeps the `fork_unsupported` refusal and its wording, which stays true for mhc. Missing subsystem: engine fork-on-open. |
+| #13031 / senpi#7085 `fork_from` forks on an engine that advertises `open_session_fork` (`aef88019f8`) | port | The relay leg's decision and capability read: `thread/control/plan_create.rs` resolves the source across the account and, for a source on device b, asks b's engine endpoint for an observing `get_protocol_info` (`relay_forks` over the new defaulted `RemoteSessionsPort::endpoint_command`, which `remote/closed_rows.rs` forwards); an engine that does not list `open_session_fork`, or does not answer, is refused `fork_unsupported` naming b, as upstream. Only the open on b itself stays refused (`relay_session_host_unsupported`): `mhc-relayd` carries no remote `open_session` (there is no `RelaySessionHost` open), so the fork on b and `openRefusal`'s fork arm have no reply to read. This device's engine forks (`maho-rpc` `open_session { forkFrom }`, see thread-gateway's row). Test: `tests/remote_list_and_close_tests.rs` `thread_create_fork_on_b_reads_only_bs_capabilities_and_opens_nothing_there`. |
 | retain buffered output from the identified active send (`25dc4d8220`) | blocked | `followRemote` streams a remote attach's records; mhc's `thread/remote/remote_ops.rs` has no attach-stream follow because `mhc-relayd` has no attach event stream. |
 | #14091 closing a remote client releases its per-connection sessions ports (`182c5aa2c4`) | blocked | mhc's `RemoteClient` owns no per-connection sessions port to release; `AttachPool::close` already ends held attaches. The `onClose` hook arrives with the live device-service port. |
 | #14305 U8 `sessions.resolve` on the shared thread-part ladder (`a5f001273f`) | port | `maho-omo-remote` `verbs.rs` `match_session_rows` resolves through `thread-address-core` `match_thread` (`LadderView`): exact id, then the listing or row identity key, alias, name, and an 8+ hex prefix. Tests: `verbs_resolve_tests.rs` (7 cases). |

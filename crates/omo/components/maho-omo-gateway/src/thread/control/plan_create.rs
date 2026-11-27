@@ -2,9 +2,10 @@
 //!
 //! Upstream counterpart: `thread/remote/plan-create.ts` (`planCreate`, its `remote === undefined` branches), the folder and
 //! fork steps of `remote/cross-device.ts` `planCreate`, and `existingHere` of `control/create.ts`. An id opens that session
-//! (answered without an open when it is live already); no id creates here, a fork is refused until the engine forks on
-//! open (#13031). Placement is the only step that reads the device; this device has no account, so a `device` is refused
-//! `host_unavailable` and an alias is only the thread's local name.
+//! (answered without an open when it is live already); no id creates here; a fork opens on the engine that holds its
+//! source, when that engine forks on open (#13031, decided in `create.rs` for this device). Placement is the only step
+//! that reads the device; this device has no account, so a `device` is refused `host_unavailable` and an alias is only
+//! the thread's local name.
 
 use std::path::Path;
 
@@ -18,7 +19,8 @@ use crate::thread::addressing::{ThreadAddressEntry, to_thread_address_entries};
 use crate::thread::contracts_create_params::ThreadCreateInput;
 use crate::thread::contracts_results::{ThreadResultSummary, ThreadStatus};
 use crate::thread::errors::{ThreadToolFailure, thread_tool_failure};
-use crate::thread::remote::ports::{RemoteThreadSurface, row_status};
+use crate::thread::remote::ports::{RemoteCommandOutcome, RemoteThreadSurface, row_status};
+use crate::thread::remote::remote_ops::reply_data;
 use crate::thread::thread_row::opened_result;
 
 use super::create_folder::place_folder;
@@ -26,7 +28,7 @@ use super::locate::{RemoteControlLocator, ThreadCall, send_address_book};
 use super::operations::error_json;
 use super::port::SessionOpenRequest;
 use super::relay_session_host::displayed_thread;
-use super::session_host::session_summary;
+use super::session_host::{OPEN_SESSION_FORK, session_summary};
 
 /// The fields of an open that placement decides.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -231,11 +233,54 @@ fn relay_host_unsupported(
     )))
 }
 
+/// `fork_from` on an engine that does not fork on open (#13031): an open carrying it would start a blank thread, so it is
+/// refused before anything opens, naming the source and the device that holds it when that is another one.
+pub fn fork_unsupported(source: &str, device: Option<&str>) -> Value {
+    let mut details = serde_json::Map::new();
+    details.insert("reason".to_owned(), json!("fork_unsupported"));
+    details.insert("thread".to_owned(), json!(source));
+    if let Some(device) = device {
+        details.insert("device".to_owned(), json!(device));
+    }
+    error_json(thread_tool_failure(
+        "unsupported",
+        "fork_from cannot fork here: this engine opens a blank session instead of a fork, so no thread was created.",
+        "Update omo on the device that holds the source so its engine forks, or create the thread without fork_from and hand it the source's context with thread_send; thread_read reads the source (tool.thread_send() and tool.thread_read() in an eval cell).",
+        Some(Value::Object(details)),
+    ))
+}
+
+/// Whether `device`'s engine forks on open (`relay-session-host.ts` `forks`): asked of that device's engine endpoint, as
+/// every capability is (an observing read); an engine that does not answer is taken not to fork.
+async fn relay_forks(remote: &RemoteThreadSurface, device: &str) -> bool {
+    let info = remote
+        .sessions
+        .endpoint_command(
+            device.to_owned(),
+            json!({ "type": "get_protocol_info", "observe": true }),
+        )
+        .await;
+    let RemoteCommandOutcome::Ok { response, .. } = info else {
+        return false;
+    };
+    reply_data(&response)
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|names| {
+            names
+                .iter()
+                .any(|name| name.as_str() == Some(OPEN_SESSION_FORK))
+        })
+}
+
 /// thread_create under A3: an id or alias OPENS that session wherever it is (never with a device) - answered without an
 /// open when it is live there already (#14335); no id creates on this device; a fork is created on its source's device.
 /// When a `RemoteThreadSurface` is attached, live threads on another device resolve via `resolve_address` and return
 /// `already_live(displayed_thread(...))` so a create with a prompt sends to them; opening a non-live remote session or
-/// creating/forking on another device remains refused until `RelaySessionHost` `open_session`/`find_session` lands.
+/// creating on another device remains refused until `RelaySessionHost` `open_session`/`find_session` lands. A fork whose
+/// source is on another device asks that device's engine whether it forks: one that does not is refused
+/// `fork_unsupported`, as upstream; one that does stays refused `relay_session_host_unsupported`, the open this build
+/// cannot carry there.
 pub async fn plan_create(
     call: &ThreadCall,
     value: &ThreadCreateInput,
@@ -367,27 +412,40 @@ pub async fn plan_create(
                 }
             }
         } else if let Some(fork_from) = value.fork_from.as_deref() {
-            if let Ok(hit) = resolve_across_account(call, remote, fork_from, caller_id).await
-                && let ResolvedWhere::Device { row } = hit.where_
-            {
-                return relay_host_unsupported(
-                    format!(
-                        "Forking a thread on remote device {} needs RelaySessionHost and remote open_session RPCs, which are not wired on this build.",
-                        row.device
-                    ),
-                    "Fork the thread on that device.",
-                    Some(&row.device),
-                );
-            }
-            CreatePlan::Open {
-                request: OpenFields {
-                    cwd: value.cwd.clone(),
-                    session_path: None,
-                    fork_from: Some(fork_from.to_owned()),
+            let hit = match resolve_across_account(call, remote, fork_from, caller_id).await {
+                Ok(hit) => hit,
+                Err(failure) => return CreatePlan::done(error_json(failure)),
+            };
+            match hit.where_ {
+                ResolvedWhere::Device { row } => {
+                    // The far engine forks by the id it knows the source under: its durable id (the listing key is
+                    // the relay's).
+                    let source = row
+                        .durable_id
+                        .clone()
+                        .unwrap_or_else(|| row.session_id.clone());
+                    if !relay_forks(remote, &row.device).await {
+                        return CreatePlan::done(fork_unsupported(&source, Some(&row.device)));
+                    }
+                    return relay_host_unsupported(
+                        format!(
+                            "Forking a thread on remote device {} needs RelaySessionHost and remote open_session RPCs, which are not wired on this build.",
+                            row.device
+                        ),
+                        "Fork the thread on that device.",
+                        Some(&row.device),
+                    );
+                }
+                ResolvedWhere::Here { .. } => CreatePlan::Open {
+                    request: OpenFields {
+                        cwd: value.cwd.clone(),
+                        session_path: None,
+                        fork_from: Some(hit.thread),
+                    },
+                    creates: true,
+                    previous_name: None,
+                    local_alias,
                 },
-                creates: true,
-                previous_name: None,
-                local_alias,
             }
         } else if let Some(device) = value.device.as_deref() {
             return relay_host_unsupported(
@@ -439,20 +497,7 @@ pub async fn plan_create(
         }
     };
     let plan = place_folder(plan, value.worktree.as_ref(), caller_cwd);
-    let (fork_from, creates) = match &plan {
-        CreatePlan::Open {
-            request, creates, ..
-        } => (request.fork_from.clone(), *creates),
-        CreatePlan::Done { .. } => (None, false),
-    };
-    if let Some(source) = fork_from {
-        return CreatePlan::done(error_json(thread_tool_failure(
-            "unsupported",
-            "fork_from cannot fork yet: the engine opens a blank session instead of a fork, so no thread was created.",
-            "Create the thread without fork_from and hand it the source's context with thread_send; thread_read reads the source (tool.thread_send() and tool.thread_read() in an eval cell).",
-            Some(json!({ "reason": "fork_unsupported", "thread": source })),
-        )));
-    }
+    let creates = matches!(plan, CreatePlan::Open { creates: true, .. });
     if creates && value.worktree.is_some() {
         return CreatePlan::done(error_json(thread_tool_failure(
             "unsupported",
