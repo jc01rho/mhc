@@ -548,6 +548,10 @@ pub enum RpcCommandBody {
     OpenSession {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_path: Option<String>,
+        /// `open_session_fork` (omo #13031): the durable id of one of this host's sessions; the open starts a new
+        /// session copied from it instead of a blank one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fork_from: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1398,6 +1402,21 @@ mod tests {
                 attended: Some(Value::Bool(false)),
                 ..
             }
+        ));
+        assert_eq!(serde_json::to_value(command).unwrap(), value);
+    }
+    #[test]
+    fn open_session_carries_the_fork_source_as_fork_from() {
+        let value =
+            json!({"type":"open_session","forkFrom":"0197f6e4-4cf9-7f44-a2d8-f8f7f49ee9e5"});
+        let command: RpcCommand = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(
+            &command.body,
+            RpcCommandBody::OpenSession {
+                fork_from: Some(source),
+                session_path: None,
+                ..
+            } if source == "0197f6e4-4cf9-7f44-a2d8-f8f7f49ee9e5"
         ));
         assert_eq!(serde_json::to_value(command).unwrap(), value);
     }
