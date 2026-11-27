@@ -97,6 +97,8 @@ pub fn live_row(
         }),
         error_note: None,
         skills: None,
+        worktree: None,
+        warnings: None,
     };
     let name = entry
         .and_then(|entry| entry.name.clone())
@@ -135,6 +137,8 @@ pub fn degraded_row(entry: &AddressEntry) -> ThreadResultSummary {
         controls: None,
         error_note: entry.error_note.clone(),
         skills: None,
+        worktree: None,
+        warnings: None,
     };
     row_named(row, entry.name.as_deref(), entry.title.as_deref())
 }

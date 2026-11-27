@@ -10,7 +10,8 @@ use crate::thread::adapter::BoxFuture;
 
 use super::ports::{
     RemoteCommandOutcome, RemoteDevice, RemoteListing, RemoteLocateOutcome, RemoteLookupOutcome,
-    RemoteSessionRow, RemoteSessionsPort, RemoteThreadSurface, RowSource, SessionCommandOptions,
+    RemoteSessionRow, RemoteSessionsPort, RemoteThreadSurface, RemoteWatchHandlers,
+    RemoteWatchOptions, RemoteWatchOutcome, RowSource, SessionCommandOptions,
 };
 
 #[derive(Debug, Clone)]
@@ -197,6 +198,25 @@ impl RemoteSessionsPort for ClosedRowsPort {
             },
         );
         self.inner.reopened(row, key);
+    }
+
+    fn read(
+        &self,
+        device: String,
+        session_id: String,
+        tail: usize,
+    ) -> BoxFuture<RemoteCommandOutcome> {
+        self.inner.read(device, session_id, tail)
+    }
+
+    fn watch(
+        &self,
+        device: String,
+        session_id: String,
+        handlers: RemoteWatchHandlers,
+        options: RemoteWatchOptions,
+    ) -> BoxFuture<RemoteWatchOutcome> {
+        self.inner.watch(device, session_id, handlers, options)
     }
 }
 

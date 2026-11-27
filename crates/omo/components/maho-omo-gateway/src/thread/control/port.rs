@@ -18,6 +18,7 @@ use crate::thread::contracts_state::ThreadModel;
 use crate::thread::errors::{ThreadToolFailure, thread_tool_failure};
 use crate::thread::model_match::ModelChoice;
 use crate::thread::thread_state::thread_model;
+use crate::thread::worktree::thread_worktree::{ThreadWorktree, WorktreeRequest};
 
 use super::interrupt::InterruptOutcome;
 
@@ -173,10 +174,19 @@ pub struct SessionOpenRequest {
     pub provider: Option<String>,
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
+    pub worktree: Option<WorktreeRequest>,
     pub durable_session_id: Option<String>,
     /// The session a device reopens by, for a reopen carried to another device's engine (`mhc.session.open { session }`):
     /// this device's own opens never name one, they name the file to resume.
     pub remote_session: Option<String>,
+}
+
+/// Request to adopt a session another device opened under the id a create derived from its idempotency key (#14560, #14569).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionAdoptRequest {
+    pub durable_session_id: String,
+    pub name: Option<String>,
+    pub worktree: Option<ThreadWorktree>,
 }
 
 /// Host-only hints for `SessionHost::open`, never forwarded on the engine's `open_session` frame.
@@ -200,6 +210,20 @@ pub trait SessionHost: Send + Sync {
         request: SessionOpenRequest,
         options: SessionOpenOptions,
     ) -> BoxFuture<ControlResult<ThreadResultSummary>>;
+
+    /// Whether this host can adopt a session an earlier run under the same key made on another device (#14560).
+    fn supports_adopt(&self) -> bool {
+        false
+    }
+
+    /// Adopts a session on another device listed under the id a create derived from its idempotency key (#14560, #14569).
+    fn adopt(
+        &self,
+        _request: SessionAdoptRequest,
+        _options: SessionOpenOptions,
+    ) -> BoxFuture<ControlResult<Option<ThreadResultSummary>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 #[cfg(test)]

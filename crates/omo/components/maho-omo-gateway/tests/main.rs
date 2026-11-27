@@ -18,6 +18,8 @@ mod gateway_store_tests;
 mod intake_tests;
 #[path = "prompt_tests.rs"]
 mod prompt_tests;
+#[path = "remote_consumers_tests.rs"]
+mod remote_consumers_tests;
 #[path = "remote_list_and_close_tests.rs"]
 mod remote_list_and_close_tests;
 #[path = "remote_thread_tests.rs"]

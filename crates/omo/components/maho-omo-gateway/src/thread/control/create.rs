@@ -1,12 +1,7 @@
 //! The one create body.
 //!
-//! Upstream counterpart: `thread/control/create.ts` (`createThread`) for a new, an existing or a forked thread on this
-//! device (#12884): the shape checks, then placement (the only step that reads the device), then the name checked against
-//! the threads this device sees, then one open through the `SessionHost` - a created session starting in its creator's
-//! approval mode - then the creator record, the alias, and the first prompt. An existing thread that is live already is
-//! answered from placement (`deduplicated`), so no second open reaches it - but its prompt, when one was given, is sent to
-//! it and the create answers that delivery (#14335). Another device, the account alias registry and the tool receipts a
-//! retry reads (`retrying`) are the surface's: see `docs/omo-sync/v5.1.83/thread-control.md`.
+//! Upstream counterpart: `thread/control/create.ts` (`createThread`) for a new, an existing or a forked thread, here or
+//! on another device (#12884, #14060, #14560, #14569).
 
 use std::sync::Arc;
 
@@ -24,6 +19,8 @@ use crate::thread::errors::{
 use crate::thread::initial_skills::{InitialSkillsCheck, check_initial_skills};
 use crate::thread::store_extension_session_ops::UNKNOWN_CALLER;
 use crate::thread::thread_row::opened_result;
+use crate::thread::tool_receipts::{note_cause, uncertain_failure};
+use crate::thread::worktree::thread_worktree::ThreadWorktree;
 
 use super::create_launch::{CreateLaunch, create_launch};
 use super::local_session_host::{LocalSessionHost, workspace_note};
@@ -33,13 +30,12 @@ use super::plan_create::{
     CreatePlan, LocalExisting, existing_here, file_open, fork_unsupported, plan_create,
 };
 use super::port::{
-    ControlError, ControlResult, SessionHost, SessionOpenOptions, SessionOpenRequest,
+    ControlError, ControlResult, SessionAdoptRequest, SessionHost, SessionOpenOptions,
+    SessionOpenRequest,
 };
 use super::prompt_start::PromptStart;
 use super::session_host::created_thread_id;
 
-/// The longest untyped rename error kept as `local_name_unavailable_reason`, in code points; longer ones end in an
-/// ellipsis.
 const RENAME_REASON_MAX_CHARS: usize = 300;
 
 /// A create's first prompt as the one send path takes it.
@@ -57,8 +53,7 @@ pub struct Retrying {
     pub error_note: Option<String>,
 }
 
-/// Why the first prompt's delivery threw instead of answering: the gateway store is at a schema this build does not read
-/// (`gatewaySchemaRefusal`), or any other store or connection failure.
+/// Why the first prompt's delivery threw instead of answering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptDeliveryError {
     SchemaTooNew { found: i64, supported: i64 },
@@ -67,24 +62,17 @@ pub enum PromptDeliveryError {
 
 /// What a create needs from the surface that runs it (the agent tools or the thread SDK).
 pub trait CreateSurface: Send + Sync {
-    /// The call's idempotency key: a new thread on this device is created under an id derived from it (#14060).
     fn operation_id(&self) -> &str;
     fn caller_id(&self) -> &str;
-    /// The creator's own approval mode, which a created thread cannot exceed; `None` when it is unknown.
     fn permission_preset(&self) -> Option<String>;
     fn retrying(&self) -> Option<Retrying>;
-    /// A fresh host view, for finding again a thread this create already made.
     fn view(&self) -> BoxFuture<ControlResult<ThreadCall>>;
-    /// Sends the first prompt to the thread the create made, as the surface's own sender, with the creator's authority.
-    /// A typed refusal is the `Ok` answer's `error` branch; `Err` is a delivery that threw.
     fn deliver_prompt(
         &self,
         send: CreatePromptSend,
         idempotency_key: String,
     ) -> BoxFuture<Result<Value, PromptDeliveryError>>;
-    /// Waits, bounded by the call's budget, for the first prompt's gateway delivery on this device to start a turn.
     fn await_prompt_start(&self, delivery_id: String) -> BoxFuture<Result<PromptStart, String>>;
-    /// Records that `creator` made `created` (a session op's `caller_created_target` reads it).
     fn record_creation(&self, creator: &str, created: &str) -> Result<(), String>;
 }
 
@@ -127,17 +115,22 @@ fn put(result: &mut Value, key: &str, field: Value) {
     }
 }
 
-fn uncertain_failure(note: Option<&str>) -> Value {
-    error_json(thread_tool_failure(
-        "idempotency_uncertain",
-        "The earlier operation may have been delivered.",
-        "Read the target transcript before deciding whether to retry.",
-        note.map(|note| json!({ "error_note": note })),
-    ))
+/// The worktree an uncertain create's first answer kept (its receipt note, `uncertain_note`), when it names a whole one (#14569).
+pub fn kept_worktree(note: Option<&str>) -> Option<ThreadWorktree> {
+    let note = note?;
+    let details = note_cause(note).details?;
+    let wt = details.get("worktree")?.as_object()?;
+    let text = |key: &str| wt.get(key).and_then(Value::as_str).map(str::to_owned);
+    Some(ThreadWorktree {
+        path: text("path")?,
+        branch: text("branch")?,
+        base: text("base")?,
+        repository: text("repository")?,
+        setup_session_left_open: text("setup_session_left_open"),
+    })
 }
 
-/// The create for a new, an existing or a forked thread: every answer is data, `Err` is a failure of the leg itself
-/// (`ControlError::Transport`).
+/// The create for a new, an existing or a forked thread: every answer is data, `Err` is a failure of the leg itself.
 pub async fn create_thread(
     call: &ThreadCall,
     value: &ThreadCreateInput,
@@ -187,14 +180,22 @@ async fn create_inner(
         )));
     }
     let caller_id = surface.caller_id().to_owned();
-    if let Some(retrying) = surface.retrying() {
+    let retrying = surface.retrying();
+    let mut retries_elsewhere = false;
+    if retrying.is_some() {
         let derived = created_thread_id(&caller_id, surface.operation_id());
         let found = existing_here(call, &derived, &caller_id).await;
-        if !matches!(found, LocalExisting::Live(_) | LocalExisting::File { .. }) {
-            return Ok(uncertain_failure(retrying.error_note.as_deref()));
-        }
+        retries_elsewhere = !matches!(found, LocalExisting::Live(_) | LocalExisting::File { .. });
     }
-    let Made { result, opened } = create_made(call, value, surface, launch).await?;
+    let Made { result, opened } = create_made(
+        call,
+        value,
+        surface,
+        launch,
+        retrying.as_ref(),
+        retries_elsewhere,
+    )
+    .await?;
     if value.prompt.is_none() {
         let mut answered = result;
         if is_ok(&answered) {
@@ -221,9 +222,13 @@ async fn create_made(
     value: &ThreadCreateInput,
     surface: &dyn CreateSurface,
     launch: CreateLaunch,
+    retrying: Option<&Retrying>,
+    retries_elsewhere: bool,
 ) -> ControlResult<Made> {
     let caller_id = surface.caller_id().to_owned();
     let operation_id = surface.operation_id().to_owned();
+    let still_uncertain = || uncertain_failure(retrying.and_then(|r| r.error_note.as_deref()));
+    let first_worktree = kept_worktree(retrying.and_then(|r| r.error_note.as_deref()));
     let skills = value
         .skills
         .as_deref()
@@ -249,9 +254,12 @@ async fn create_made(
         to_thread_address_entries(&call.book),
         call.now.clone(),
     );
-    let (request, creates, previous_name, local_alias) =
+    let (request, creates, previous_name, reopened_id, local_alias) =
         match plan_create(call, value, &caller_id).await {
             CreatePlan::Done { result, thread } => {
+                if retries_elsewhere {
+                    return Ok(Made::answer(still_uncertain()));
+                }
                 let opened = if is_ok(&result) {
                     thread.map(|thread| *thread)
                 } else {
@@ -263,12 +271,10 @@ async fn create_made(
                 request,
                 creates,
                 previous_name,
+                reopened_id,
                 local_alias,
-            } => (request, creates, previous_name, local_alias),
+            } => (request, creates, previous_name, reopened_id, local_alias),
         };
-    // #13031: an engine that does not fork on open would start a blank thread for an open carrying forkFrom, so the fork
-    // is refused before anything opens (`cross-device.ts` `planCreate`, `plan.host.forks()`). An open placement sent past
-    // this device asks that device's engine, not this one's.
     let device_host: Option<Arc<dyn SessionHost>> = request.remote.as_deref().and_then(|device| {
         call.remote
             .as_deref()
@@ -278,6 +284,9 @@ async fn create_made(
         Some(host) => host.as_ref(),
         None => &host,
     };
+    if retries_elsewhere && (!creates || !opener.supports_adopt()) {
+        return Ok(Made::answer(still_uncertain()));
+    }
     if let Some(source) = request.fork_from.as_deref()
         && !opener.forks().await?
     {
@@ -295,19 +304,32 @@ async fn create_made(
             .or_else(|| value.alias.as_deref().map(|alias| alias.trim().to_owned()))
     };
     let created_id = creates.then(|| created_thread_id(&caller_id, &operation_id));
-    let earlier = match created_id.as_deref() {
-        Some(id) => Some(existing_here(call, id, &caller_id).await),
-        None => None,
+    let earlier = if opener.device().is_none() {
+        match created_id.as_deref() {
+            Some(id) => Some(existing_here(call, id, &caller_id).await),
+            None => None,
+        }
+    } else {
+        None
     };
     let deduplicated = matches!(
         earlier,
         Some(LocalExisting::Live(_) | LocalExisting::File { .. })
     );
-    if creates
+    let checks_name_before_open = creates || opener.device().is_some();
+    if checks_name_before_open
         && !deduplicated
         && let Some(wanted) = name.as_deref()
     {
-        let visible = opener.visible().await?;
+        let visible: Vec<ThreadAddressEntry> = opener
+            .visible()
+            .await?
+            .into_iter()
+            .filter(|t| {
+                Some(t.thread_id.as_str()) != reopened_id.as_deref()
+                    && Some(t.thread_id.as_str()) != created_id.as_deref()
+            })
+            .collect();
         if let Err(conflict) = check_name_conflict(&visible, wanted) {
             return Ok(Made::answer(error_json(*conflict)));
         }
@@ -317,11 +339,19 @@ async fn create_made(
     } else {
         name.clone().or(previous_name)
     };
+    let open_name = if creates {
+        name.clone()
+    } else if opener.device().is_none() {
+        None
+    } else {
+        kept.clone()
+    };
     let mut open = SessionOpenRequest {
         cwd: request.cwd.clone(),
         session_path: request.session_path.clone(),
         fork_from: request.fork_from.clone(),
-        name: if creates { name.clone() } else { None },
+        name: open_name.clone(),
+        worktree: creates.then(|| value.worktree.clone()).flatten(),
         durable_session_id: created_id.clone(),
         remote_session: request.remote_session.clone(),
         ..SessionOpenRequest::default()
@@ -346,6 +376,27 @@ async fn create_made(
             )
             .await?
         }
+        _ if retries_elsewhere => {
+            let Some(id) = created_id.clone() else {
+                return Ok(Made::answer(still_uncertain()));
+            };
+            let found = opener
+                .adopt(
+                    SessionAdoptRequest {
+                        durable_session_id: id,
+                        name: open_name,
+                        worktree: first_worktree,
+                    },
+                    SessionOpenOptions {
+                        confirm_reach: true,
+                    },
+                )
+                .await?;
+            match found {
+                Some(thread) => thread,
+                None => return Ok(Made::answer(still_uncertain())),
+            }
+        }
         _ => match opener
             .open(
                 open,
@@ -357,6 +408,9 @@ async fn create_made(
         {
             Ok(thread) => thread,
             Err(ControlError::Transport(message)) => {
+                if opener.device().is_some() {
+                    return Err(ControlError::Transport(message));
+                }
                 match reopened(surface, &host, created_id.as_deref(), &caller_id).await? {
                     Some(found) => found,
                     None => return Err(ControlError::Transport(message)),
@@ -374,8 +428,10 @@ async fn create_made(
     }
     let recorded = if creates {
         record_creator(call, surface, &caller_id, created)?
-    } else {
+    } else if opener.device().is_none() {
         keep_name(surface, opener, created, kept.as_deref(), &thread.thread).await?
+    } else {
+        created
     };
     let mut answered = recorded;
     if let Some(reason) = local_alias
@@ -390,7 +446,6 @@ async fn create_made(
     })
 }
 
-/// The thread an earlier run of this create made, found again when the open threw after the host made the session.
 async fn reopened(
     surface: &dyn CreateSurface,
     host: &LocalSessionHost,
@@ -416,8 +471,6 @@ async fn reopened(
     }
 }
 
-/// thread_create records its creator (the engine-resolved caller) once the host opened the session; a session op's
-/// `caller_created_target` reads it.
 fn record_creator(
     call: &ThreadCall,
     surface: &dyn CreateSurface,
@@ -449,9 +502,6 @@ fn record_creator(
     Ok(created)
 }
 
-/// A reopened thread keeps its name (#14274). The engine resumes a session file without the name its listing showed, so
-/// the name given at reopen, else the one the thread had, is set again through thread_rename's path. A name that cannot
-/// be set is a warning on the reopened thread, never an error: it runs.
 async fn keep_name(
     surface: &dyn CreateSurface,
     host: &dyn SessionHost,
@@ -494,10 +544,6 @@ async fn keep_name(
     Ok(created)
 }
 
-/// Names a thread the create already made, through the same path thread_rename takes (the name check against the
-/// device's threads, then the located control's `set_name`). Answers the refusing code instead of failing, because the
-/// thread exists either way: a rename that fails with no typed refusal answers `host_unavailable` with the error's message
-/// as `reason`, so the failure stays traceable.
 async fn name_created_thread(
     surface: &dyn CreateSurface,
     thread_id: &str,
@@ -541,10 +587,6 @@ async fn name_created_thread(
     }
 }
 
-/// Delivers a create's `prompt` to the thread it just made, through the surface's one send path (#13410), under a key
-/// derived from the create's own: a replayed create answers its stored result, so the prompt is sent once per key. The
-/// target is the created thread itself, never a lookup by name, so a listing that has not caught up yet cannot answer
-/// not_found (#13001).
 async fn first_prompt(
     thread: &ThreadResultSummary,
     value: &ThreadCreateInput,
@@ -588,11 +630,6 @@ fn sent_prompt(sent: Value, thread_id: &str) -> FirstPrompt {
     FirstPrompt::Sent(prompt)
 }
 
-/// The thread exists from here on: a delivery that throws (a store or connection failure, not a typed refusal) is the
-/// prompt's outcome, never the create's, so the caller still gets the thread it made. A store schema this binary does not
-/// know refuses typed here too (#13927): the generic refusal says "nothing was sent or changed" and "restart this
-/// session"; neither holds for a create whose thread exists, so this keeps the code and details but says what actually
-/// happened and what to do. The binary's schema comes first and the store's second (#14228).
 fn undelivered_prompt(thread_id: &str, error: PromptDeliveryError) -> ThreadToolFailure {
     match error {
         PromptDeliveryError::SchemaTooNew { found, supported } => {
@@ -623,15 +660,6 @@ fn undelivered_prompt(thread_id: &str, error: PromptDeliveryError) -> ThreadTool
     }
 }
 
-/// A created thread runs its first prompt, or the create fails (the held-thread report: an ok create whose prompt sat
-/// queued for hours with nobody told). A prompt the send answered started or steered stands. So does one the thread
-/// admitted to its queue (behind a turn, a question or a hold), answered with what it waits on: it runs after that, and a
-/// resend would deliver it twice (#14363 review M1). So does one stored for a session that is woken with it: it runs when
-/// the wake does, with a next_action not to send it again (#14363 delta review L1). A prompt not yet admitted is waited
-/// for, bounded by the call's budget, until its row is admitted. A prompt no device stored or admitted answers
-/// `prompt_not_started`, which names the thread, the delivery and its last state: the thread exists, so the recovery is a
-/// read and a send to it, never another create. A delivery that failed outright stays the prompt's own error on the ok
-/// create.
 async fn prompt_that_ran(
     prompt: FirstPrompt,
     thread: &ThreadResultSummary,
@@ -701,19 +729,17 @@ async fn prompt_that_ran(
             );
             return Ok(PromptOutcome::Prompt(Value::Object(prompt)));
         }
-        Some(PromptStart::Queued { waiting_on }) => {
-            let position = if kind == "queued" {
-                delivery
-                    .get("queue_position")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(1)
-            } else {
-                1
-            };
+        Some(PromptStart::Queued {
+            waiting_on: waited_wait,
+        }) => {
+            let position = delivery
+                .get("queue_position")
+                .and_then(Value::as_i64)
+                .unwrap_or(1);
             let mut queued = Map::new();
             queued.insert("kind".to_owned(), json!("queued"));
             queued.insert("queue_position".to_owned(), json!(position));
-            if let Some(wait) = waiting_on {
+            if let Some(wait) = waited_wait {
                 queued.insert(
                     "waiting_on".to_owned(),
                     serde_json::to_value(wait).unwrap_or(Value::Null),
@@ -722,36 +748,35 @@ async fn prompt_that_ran(
             prompt.insert("delivery".to_owned(), Value::Object(queued));
             return Ok(PromptOutcome::Prompt(Value::Object(prompt)));
         }
-        _ => {}
+        Some(PromptStart::NotStarted { .. }) | None => {}
     }
     let state = match &waited {
-        Some(PromptStart::NotStarted { state }) => state.clone(),
-        _ => kind.clone(),
+        Some(PromptStart::NotStarted { state }) => state.as_str(),
+        _ => kind.as_str(),
     };
-    let waiting_text = waiting_kind
-        .map(|wait| format!(", waiting on its {wait}"))
-        .unwrap_or_default();
+    let wait_note = waiting_kind
+        .as_deref()
+        .map_or_else(String::new, |kind| format!(", waiting on its {kind}"));
+    let thread_id = thread.thread.as_str();
     let mut details = Map::new();
-    details.insert("thread".to_owned(), json!(thread.thread));
+    details.insert("thread".to_owned(), json!(thread_id));
     if let Some(device) = &thread.device {
         details.insert("device".to_owned(), json!(device));
     }
-    if let Some(id) = &delivery_id {
+    if let Some(id) = delivery_id {
         details.insert("delivery_id".to_owned(), json!(id));
     }
     details.insert("state".to_owned(), json!(state));
-    if let Some(wait) = &waiting_on {
-        details.insert("waiting_on".to_owned(), wait.clone());
+    if let Some(waiting_on) = waiting_on {
+        details.insert("waiting_on".to_owned(), waiting_on);
     }
     Ok(PromptOutcome::NotStarted(Box::new(thread_tool_failure(
         "prompt_not_started",
         format!(
-            "Thread {} was created{where_text}, but its first prompt did not start a turn (its delivery is {state}{waiting_text}).",
-            thread.thread
+            "Thread {thread_id} was created{where_text}, but its first prompt did not start a turn (its delivery is {state}{wait_note})."
         ),
         format!(
-            "The thread exists: read it with thread_read (tool.thread_read({{ thread }}) in an eval cell) to see whether the prompt ran, then send the prompt again with thread_send to {} (tool.thread_send({{ thread, message }}) in an eval cell) if it did not. Do not create the thread again.",
-            thread.thread
+            "The thread exists: read it with thread_read (tool.thread_read({{ thread }}) in an eval cell) to see whether the prompt ran, then send the prompt again with thread_send to {thread_id} (tool.thread_send({{ thread, message }}) in an eval cell) if it did not. Do not create the thread again."
         ),
         Some(Value::Object(details)),
     ))))

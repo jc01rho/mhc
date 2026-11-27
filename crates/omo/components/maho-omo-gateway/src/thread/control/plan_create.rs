@@ -1,11 +1,7 @@
-//! Where a thread_create lands, on this device.
+//! Where a `thread_create` lands, on this device or another.
 //!
-//! Upstream counterpart: `thread/remote/plan-create.ts` (`planCreate`, its `remote === undefined` branches), the folder and
-//! fork steps of `remote/cross-device.ts` `planCreate`, and `existingHere` of `control/create.ts`. An id opens that session
-//! (answered without an open when it is live already); no id creates here; a fork opens on the engine that holds its
-//! source, when that engine forks on open (#13031, decided in `create.rs` for this device). Placement is the only step
-//! that reads the device; this device has no account, so a `device` is refused `host_unavailable` and an alias is only
-//! the thread's local name.
+//! Upstream counterpart: `thread/remote/plan-create.ts`, the folder and fork steps of `remote/cross-device.ts`
+//! `planCreate`, and `existingHere` of `control/create.ts`.
 
 use std::path::Path;
 
@@ -13,7 +9,8 @@ use maho_thread_address_core::{HERE, ParsedAddress, parse_address};
 use serde_json::{Value, json};
 
 use crate::thread::address::{
-    ResolveContext, ResolveOptions as AddressResolveOptions, ResolvedWhere, ladder, resolve_address,
+    ResolveContext, ResolveOptions as AddressResolveOptions, ResolvedWhere, ladder,
+    resolve_address, target_device,
 };
 use crate::thread::addressing::{ThreadAddressEntry, to_thread_address_entries};
 use crate::thread::contracts_create_params::ThreadCreateInput;
@@ -22,7 +19,7 @@ use crate::thread::errors::{ThreadToolFailure, thread_tool_failure};
 use crate::thread::remote::ports::{
     RemoteCommandOutcome, RemoteThreadSurface, row_folder, row_status,
 };
-use crate::thread::remote::remote_ops::reply_data;
+use crate::thread::remote::remote_ops::{remote_ready, reply_data};
 use crate::thread::thread_row::opened_result;
 
 use super::create_folder::place_folder;
@@ -38,15 +35,13 @@ pub struct OpenFields {
     pub cwd: Option<String>,
     pub session_path: Option<String>,
     pub fork_from: Option<String>,
-    /// The account device whose engine opens, when placement sent the open past this device (agentd).
+    /// The account device whose engine opens, when placement sent the open past this device.
     pub remote: Option<String>,
     /// The session that device reopens by, for a reopen of a thread it holds and this one does not.
     pub remote_session: Option<String>,
 }
 
-/// What this device answers for an existing thread named to thread_create: it is live here, or its session file is here,
-/// or neither. `name` is the name the thread had, so a reopen keeps it (#14274); `cwd` is the folder its session records,
-/// which the reopen names so the engine does not probe the file's path on its loop (#14296).
+/// What this device answers for an existing thread named to `thread_create`.
 #[derive(Debug)]
 pub enum LocalExisting {
     Live(Box<ThreadResultSummary>),
@@ -59,14 +54,14 @@ pub enum LocalExisting {
 }
 
 /// `Open`: the host opens `request` (`creates` is false for an existing thread's file); `Done`: a refusal, or an existing
-/// thread that is live already and needs no open (`deduplicated`), with the thread a create with a prompt sends it to
-/// (#14335).
+/// thread that is live already and needs no open (`deduplicated`).
 #[derive(Debug)]
 pub enum CreatePlan {
     Open {
         request: OpenFields,
         creates: bool,
         previous_name: Option<String>,
+        reopened_id: Option<String>,
         local_alias: Option<&'static str>,
     },
     Done {
@@ -101,9 +96,6 @@ fn already_live(thread: Box<ThreadResultSummary>) -> CreatePlan {
 }
 
 /// An existing thread this device is asked to open: live in the view, a session file the address book names, or neither.
-/// Resolved among this device's book only (no account): placement already chose this device. This runs the resolver's
-/// exact ladder the way `resolve_address` does without an account: a `here/<thread>` address asks this device's book for
-/// the thread part alone.
 pub async fn existing_here(call: &ThreadCall, address: &str, caller_id: &str) -> LocalExisting {
     let book_for = |part: &str| -> Vec<ThreadAddressEntry> {
         to_thread_address_entries(&send_address_book(call, part, true))
@@ -163,8 +155,7 @@ pub async fn existing_here(call: &ThreadCall, address: &str, caller_id: &str) ->
     }
 }
 
-/// The open of a session file here: it names the folder the file records, so the engine resumes it there without probing
-/// the file's path on its loop, a probe that fails open_failed on a loaded host (#14296).
+/// The open of a session file here: it names the folder the file records (#14296).
 pub fn file_open(session_path: &str, cwd: Option<&str>) -> SessionOpenRequest {
     SessionOpenRequest {
         session_path: Some(session_path.to_owned()),
@@ -190,6 +181,7 @@ async fn open_here(call: &ThreadCall, address: &str, caller_id: &str) -> CreateP
             },
             creates: false,
             previous_name: name,
+            reopened_id: None,
             local_alias: None,
         },
     }
@@ -240,8 +232,7 @@ fn relay_host_unsupported(
     )))
 }
 
-/// `fork_from` on an engine that does not fork on open (#13031): an open carrying it would start a blank thread, so it is
-/// refused before anything opens, naming the source and the device that holds it when that is another one.
+/// `fork_from` on an engine that does not fork on open (#13031).
 pub fn fork_unsupported(source: &str, device: Option<&str>) -> Value {
     let mut details = serde_json::Map::new();
     details.insert("reason".to_owned(), json!("fork_unsupported"));
@@ -257,8 +248,6 @@ pub fn fork_unsupported(source: &str, device: Option<&str>) -> Value {
     ))
 }
 
-/// Whether `device`'s engine forks on open (`relay-session-host.ts` `forks`): asked of that device's engine endpoint, as
-/// every capability is (an observing read); an engine that does not answer is taken not to fork.
 async fn relay_forks(remote: &RemoteThreadSurface, device: &str) -> bool {
     let info = remote
         .sessions
@@ -280,14 +269,6 @@ async fn relay_forks(remote: &RemoteThreadSurface, device: &str) -> bool {
         })
 }
 
-/// thread_create under A3: an id or alias OPENS that session wherever it is (never with a device) - answered without an
-/// open when it is live there already (#14335); no id creates on this device; a fork is created on its source's device.
-/// When a `RemoteThreadSurface` is attached, live threads on another device resolve via `resolve_address` and return
-/// `already_live(displayed_thread(...))` so a create with a prompt sends to them; opening a non-live remote session,
-/// creating on another device and forking there are carried to a device the locator opens on (agentd, `mhc.session.open`)
-/// and stay refused `relay_session_host_unsupported` for a device it reaches only through the relay. A fork whose
-/// source is on another device asks that device's engine whether it forks: one that does not is refused
-/// `fork_unsupported`, as upstream.
 pub async fn plan_create(
     call: &ThreadCall,
     value: &ThreadCreateInput,
@@ -423,11 +404,13 @@ pub async fn plan_create(
                             Some(&row.device),
                         );
                     }
+                    let previous_name = (!row.title.is_empty()).then(|| row.title.clone());
+                    let reopened_id = row.durable_id.clone().filter(|id| !id.is_empty());
                     return CreatePlan::Open {
                         request: OpenFields {
                             cwd: Some(row_folder(&row).to_owned())
                                 .filter(|folder| folder != "unknown"),
-                            session_path: None,
+                            session_path: row.session_file.clone(),
                             fork_from: None,
                             remote: Some(row.device.clone()),
                             remote_session: Some(
@@ -437,7 +420,8 @@ pub async fn plan_create(
                             ),
                         },
                         creates: false,
-                        previous_name: None,
+                        previous_name,
+                        reopened_id,
                         local_alias: None,
                     };
                 }
@@ -449,14 +433,10 @@ pub async fn plan_create(
             };
             match hit.where_ {
                 ResolvedWhere::Device { row } => {
-                    // The far engine forks by the id it knows the source under: its durable id (the listing key is
-                    // the relay's).
                     let source = row
                         .durable_id
                         .clone()
                         .unwrap_or_else(|| row.session_id.clone());
-                    // An agentd device answers its own capability (`capabilities` in its listing); the relay path
-                    // asks the engine endpoint. Either way a device that does not fork is refused as upstream does.
                     let forks = match call
                         .remote
                         .as_deref()
@@ -506,6 +486,7 @@ pub async fn plan_create(
                         },
                         creates: true,
                         previous_name: None,
+                        reopened_id: None,
                         local_alias,
                     };
                 }
@@ -518,35 +499,72 @@ pub async fn plan_create(
                     },
                     creates: true,
                     previous_name: None,
+                    reopened_id: None,
                     local_alias,
                 },
             }
         } else if let Some(device) = value.device.as_deref() {
-            if call
+            // Resolve typed device name/prefix/id through the account roster unless it is a direct peer id on the locator.
+            let target_id = if call
                 .remote
                 .as_deref()
-                .and_then(|remote| remote.session_host(device))
-                .is_none()
+                .and_then(|loc| loc.session_host(device))
+                .is_some()
             {
-                return relay_host_unsupported(
-                    format!(
-                        "Creating a new thread on remote device {device} needs a device this build can open sessions on (agentd); this device reaches it only through the relay, which cannot open one there."
-                    ),
-                    "Create the thread on that device directly.",
-                    Some(device),
-                );
-            }
-            CreatePlan::Open {
-                request: OpenFields {
-                    cwd: value.cwd.clone(),
-                    session_path: None,
-                    fork_from: None,
-                    remote: Some(device.to_owned()),
-                    remote_session: None,
+                Some(device.to_owned())
+            } else {
+                if let Err(refusal) = remote_ready(remote).await {
+                    return CreatePlan::done(error_json(crate::thread::address::as_failure(
+                        &refusal,
+                    )));
+                }
+                match target_device(remote, device).await {
+                    Ok(id) => id,
+                    Err(failure) => return CreatePlan::done(error_json(failure)),
+                }
+            };
+            match target_id {
+                None => CreatePlan::Open {
+                    request: OpenFields {
+                        cwd: value.cwd.clone().or_else(|| caller_cwd.map(str::to_owned)),
+                        session_path: None,
+                        fork_from: None,
+                        ..OpenFields::default()
+                    },
+                    creates: true,
+                    previous_name: None,
+                    reopened_id: None,
+                    local_alias,
                 },
-                creates: true,
-                previous_name: None,
-                local_alias,
+                Some(resolved_device) => {
+                    if call
+                        .remote
+                        .as_deref()
+                        .and_then(|loc| loc.session_host(&resolved_device))
+                        .is_none()
+                    {
+                        return relay_host_unsupported(
+                            format!(
+                                "Creating a new thread on remote device {resolved_device} needs a device this build can open sessions on (agentd); this device reaches it only through the relay, which cannot open one there."
+                            ),
+                            "Create the thread on that device directly.",
+                            Some(&resolved_device),
+                        );
+                    }
+                    CreatePlan::Open {
+                        request: OpenFields {
+                            cwd: value.cwd.clone(),
+                            session_path: None,
+                            fork_from: None,
+                            remote: Some(resolved_device),
+                            remote_session: None,
+                        },
+                        creates: true,
+                        previous_name: None,
+                        reopened_id: None,
+                        local_alias,
+                    }
+                }
             }
         } else {
             CreatePlan::Open {
@@ -558,6 +576,7 @@ pub async fn plan_create(
                 },
                 creates: true,
                 previous_name: None,
+                reopened_id: None,
                 local_alias,
             }
         }
@@ -587,13 +606,21 @@ pub async fn plan_create(
                 },
                 creates: true,
                 previous_name: None,
+                reopened_id: None,
                 local_alias: value.alias.as_ref().map(|_| "no_remote"),
             }
         }
     };
     let plan = place_folder(plan, value.worktree.as_ref(), caller_cwd);
-    let creates = matches!(plan, CreatePlan::Open { creates: true, .. });
-    if creates && value.worktree.is_some() {
+    let creates_here = matches!(
+        &plan,
+        CreatePlan::Open {
+            creates: true,
+            request,
+            ..
+        } if request.remote.is_none()
+    );
+    if creates_here && value.worktree.is_some() {
         return CreatePlan::done(error_json(thread_tool_failure(
             "unsupported",
             "worktree cannot be created yet: this build does not make git worktrees for a new thread, so no thread was created.",

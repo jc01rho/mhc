@@ -108,7 +108,37 @@ pub fn folder_failure(
     thread_tool_failure(code, message, next_action, Some(Value::Object(merged)))
 }
 
-/// The reason a filesystem error stands for, when it names one: a missing path, or one the user may not use.
+pub fn git_failure_reason(stderr: &str) -> &'static str {
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("no space left on device") {
+        "no_space"
+    } else if lower.contains("permission denied")
+        || lower.contains("operation not permitted")
+        || lower.contains("read-only file system")
+    {
+        "permission_denied"
+    } else if lower.contains("already checked out")
+        || lower.contains("is already used by worktree")
+        || lower.contains("already used by worktree")
+    {
+        "branch_checked_out"
+    } else if lower.contains("a branch named ") && lower.contains(" already exists") {
+        "branch_exists"
+    } else if lower.contains("already exists") {
+        "worktree_path_exists"
+    } else if lower.contains("not a git repository") {
+        "not_a_git_repo"
+    } else if lower.contains("invalid reference")
+        || lower.contains("not a valid object name")
+        || lower.contains("unknown revision")
+    {
+        "base_not_found"
+    } else {
+        "git_failed"
+    }
+}
+
+/// `errnoReason`: the folder-failure reason for an OS filesystem error when it is one the table names.
 pub fn io_reason(error: &std::io::Error) -> Option<&'static str> {
     match error.kind() {
         std::io::ErrorKind::NotFound => Some("folder_missing"),

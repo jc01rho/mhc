@@ -36,7 +36,10 @@ pub use account::{
     read_account, read_roster, roster_account,
 };
 pub use bare::{BareResolved, device_name_of, listed_entry, resolve_bare};
-pub use device::{AccountDevice, AccountDevices, device_rows, resolve_account_device};
+pub use device::{
+    AccountDevice, AccountDevices, TypedDeviceResolved, device_rows, resolve_account_device,
+    resolve_typed_device, target_device,
+};
 pub use holder::{RemoteTarget, holder_target};
 pub use ladder::{LadderResult, ladder};
 pub use on_device::resolve_on_device;

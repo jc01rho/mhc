@@ -1,8 +1,8 @@
 //! The folder a new thread is created in, settled before anything opens.
 //!
-//! Upstream counterpart: `thread/remote/create-folder.ts` (`placeFolder`), for a create on this device: a relative
-//! `cwd` (and `~`) resolves against the caller's folder, and a worktree needs a repository folder, so it is refused
-//! when none is known. An open of an existing thread is left as it is.
+//! Upstream counterpart: `thread/remote/create-folder.ts` (`placeFolder`). A relative `cwd` (and `~`) resolves
+//! against the caller's folder on this device, and is refused on another device, whose folders this device cannot see;
+//! a worktree needs a repository folder, so it is refused when none is known. An open of an existing thread is left as it is.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -18,6 +18,15 @@ fn home_directory() -> Option<String> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| home.to_string_lossy().into_owned())
+}
+
+fn absolute_on_any_device(path: &str) -> bool {
+    path.starts_with('/')
+        || path.starts_with("\\")
+        || (path.len() >= 3
+            && path.as_bytes()[0].is_ascii_alphabetic()
+            && path.as_bytes()[1] == b':'
+            && matches!(path.as_bytes()[2], b'/' | b'\\'))
 }
 
 /// `path.resolve(base, relative)`: joined, then `.` and `..` folded away; an empty `base` is the process folder.
@@ -45,45 +54,65 @@ pub fn place_folder(
     worktree: Option<&WorktreeRequest>,
     caller_cwd: Option<&str>,
 ) -> CreatePlan {
-    let (mut request, previous_name, local_alias) = match plan {
+    let (mut request, previous_name, reopened_id, local_alias) = match plan {
         CreatePlan::Open {
             request,
             creates: true,
             previous_name,
+            reopened_id,
             local_alias,
-        } => (request, previous_name, local_alias),
+        } => (request, previous_name, reopened_id, local_alias),
         other => return other,
     };
-    if let Some(asked) = request.cwd.clone()
-        && !Path::new(&asked).is_absolute()
-    {
-        let home = match asked.strip_prefix('~') {
-            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
-                home_directory().map(|home| format!("{home}{rest}"))
+    let here = request.remote.is_none();
+    if let Some(asked) = request.cwd.clone() {
+        if here && !Path::new(&asked).is_absolute() {
+            let home = match asked.strip_prefix('~') {
+                Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                    home_directory().map(|home| format!("{home}{rest}"))
+                }
+                _ => None,
+            };
+            if home.is_none() && caller_cwd.is_none() {
+                return CreatePlan::done(error_json(folder_failure(
+                    "relative_path",
+                    format!("cwd {asked} is relative and the caller's folder is unknown."),
+                    Some(json!({ "path": asked })),
+                )));
             }
-            _ => None,
-        };
-        if home.is_none() && caller_cwd.is_none() {
+            let resolved = home.unwrap_or_else(|| resolve_path(caller_cwd.unwrap_or(""), &asked));
+            request.cwd = Some(resolved);
+        } else if !here && !absolute_on_any_device(&asked) {
+            let device = request.remote.as_deref().unwrap_or_default();
             return CreatePlan::done(error_json(folder_failure(
                 "relative_path",
-                format!("cwd {asked} is relative and the caller's folder is unknown."),
-                Some(json!({ "path": asked })),
+                format!("cwd {asked} must be an absolute folder of device {device}."),
+                Some(json!({ "path": asked, "device": device })),
             )));
         }
-        let resolved = home.unwrap_or_else(|| resolve_path(caller_cwd.unwrap_or(""), &asked));
-        request.cwd = Some(resolved);
     }
     if worktree.is_some() && request.cwd.is_none() {
+        let (message, details) = match request.remote.as_deref() {
+            None => (
+                "A worktree needs the repository folder and the caller's folder is unknown; pass cwd.".to_owned(),
+                None,
+            ),
+            Some(device) => (
+                format!("A worktree on device {device} needs its repository folder there; pass cwd."),
+                Some(json!({ "device": device })),
+            ),
+        };
         return CreatePlan::done(error_json(folder_failure(
             "relative_path",
-            "A worktree needs the repository folder and the caller's folder is unknown; pass cwd.",
-            None,
+            message,
+            details,
         )));
     }
     CreatePlan::Open {
         request,
         creates: true,
         previous_name,
+        reopened_id,
         local_alias,
     }
 }
@@ -101,6 +130,7 @@ mod tests {
             },
             creates: true,
             previous_name: None,
+            reopened_id: None,
             local_alias: None,
         }
     }
@@ -165,6 +195,7 @@ mod tests {
             },
             creates: false,
             previous_name: Some("kept".into()),
+            reopened_id: None,
             local_alias: None,
         };
         let placed = place_folder(reopening, None, None);

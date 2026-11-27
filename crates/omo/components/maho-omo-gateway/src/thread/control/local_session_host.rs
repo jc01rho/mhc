@@ -438,6 +438,8 @@ mod tests {
             controls: None,
             error_note: None,
             skills: None,
+            worktree: None,
+            warnings: None,
         };
         let root = inside.path().to_string_lossy().into_owned();
         assert!(workspace_note(&thread(inside.path()), &root).is_empty());

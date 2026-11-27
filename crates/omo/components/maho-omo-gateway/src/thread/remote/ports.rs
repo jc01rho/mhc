@@ -120,6 +120,100 @@ pub enum RemoteLocateOutcome {
     Refused { reason: String },
 }
 
+/// An admitted locate whose fence stayed closed for one lookup cap (#14748 review round 6 & 7): nothing was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LookupFenceRefused;
+
+impl std::fmt::Display for LookupFenceRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("lookup_fence_timeout")
+    }
+}
+
+impl std::error::Error for LookupFenceRefused {}
+
+/// The state of a remote session as `get_state` reports it to a watch (`session-state.ts`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteSessionState {
+    pub status: String,
+    pub session_id: String,
+    pub durable_session_id: Option<String>,
+    pub current_turn_id: Option<String>,
+}
+
+/// One status transition reported by a remote session watch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteStatusChange {
+    pub from: Option<String>,
+    pub to: String,
+    pub derived: bool,
+    pub cause: Option<String>,
+}
+
+/// One fresh `get_state` resync reported by a remote session watch after a snapshot, backlog or re-attach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteResync {
+    pub from: Option<String>,
+    pub state: RemoteSessionState,
+    pub settled_turns: Vec<String>,
+    pub restarted: bool,
+}
+
+pub type WatchRecordHandler = Arc<dyn Fn(&Value) -> Result<(), String> + Send + Sync>;
+pub type WatchStatusHandler = Arc<dyn Fn(&RemoteStatusChange) -> Result<(), String> + Send + Sync>;
+pub type WatchResyncHandler = Arc<dyn Fn(&RemoteResync) -> Result<(), String> + Send + Sync>;
+pub type WatchLostHandler = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+/// Listeners for a remote session watch. Returning `Err` from any handler ends that watch with `listener_failed`.
+#[derive(Clone)]
+pub struct RemoteWatchHandlers {
+    pub record: WatchRecordHandler,
+    pub status: Option<WatchStatusHandler>,
+    pub resynced: Option<WatchResyncHandler>,
+    pub lost: Option<WatchLostHandler>,
+}
+
+impl RemoteWatchHandlers {
+    pub fn record_only<F>(record: F) -> Self
+    where
+        F: Fn(&Value) + Send + Sync + 'static,
+    {
+        Self {
+            record: Arc::new(move |value| {
+                record(value);
+                Ok(())
+            }),
+            status: None,
+            resynced: None,
+            lost: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RemoteWatchOptions {
+    pub baseline: bool,
+}
+
+/// One running remote session watch (`remote-watch.ts`).
+pub struct RemoteSessionWatch {
+    pub initial: Option<RemoteSessionState>,
+    pub ended: BoxFuture<String>,
+    pub stop: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl RemoteSessionWatch {
+    pub fn stop(&self) {
+        (self.stop)();
+    }
+}
+
+/// Outcome of starting a remote session watch.
+pub enum RemoteWatchOutcome {
+    Ok { watch: RemoteSessionWatch },
+    Refused { reason: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AliasHolder {
     pub session_id: String,
@@ -262,6 +356,36 @@ pub trait RemoteSessionsPort: Send + Sync {
 
     /// Stamps a reopened session's new listing key until a newer snapshot arrives (`closed-rows.ts`).
     fn reopened(&self, _row: &RemoteSessionRow, _key: &str) {}
+
+    /// Reads the trailing `tail` visible transcript entries of `session_id` on `device` (`mhc.session.read`).
+    fn read(
+        &self,
+        _device: String,
+        _session_id: String,
+        _tail: usize,
+    ) -> BoxFuture<RemoteCommandOutcome> {
+        Box::pin(async {
+            RemoteCommandOutcome::Refused {
+                reason: "unsupported".to_owned(),
+                detail: None,
+            }
+        })
+    }
+
+    /// Follows `session_id` on `device` across attach drops, engine restarts and backlogs (`remote-watch.ts`).
+    fn watch(
+        &self,
+        _device: String,
+        _session_id: String,
+        _handlers: RemoteWatchHandlers,
+        _options: RemoteWatchOptions,
+    ) -> BoxFuture<RemoteWatchOutcome> {
+        Box::pin(async {
+            RemoteWatchOutcome::Refused {
+                reason: "unsupported".to_owned(),
+            }
+        })
+    }
 }
 
 /// The account service's alias registry (`alias-port.v1`).
