@@ -183,8 +183,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    fn options(enabled: Arc<AtomicBool>) -> SenpiTelemetryOptions {
+    fn options(enabled: Arc<AtomicBool>, state_dir: &Path) -> SenpiTelemetryOptions {
+        crate::telemetry_test_support::seed_consent(state_dir);
         SenpiTelemetryOptions {
+            state_dir: Some(state_dir.to_path_buf()),
             env: Some(
                 [("POSTHOG_API_KEY".to_string(), "fixture-key".to_string())]
                     .into_iter()
@@ -198,8 +200,9 @@ mod tests {
 
     #[test]
     fn consent_is_cached_and_a_withdrawal_drops_queued_events_once() {
+        let dir = tempfile::tempdir().unwrap();
         let enabled = Arc::new(AtomicBool::new(true));
-        let consent = NativeConsent::new(&options(Arc::clone(&enabled)));
+        let consent = NativeConsent::new(&options(Arc::clone(&enabled), dir.path()));
         consent.set_cwd(Path::new("/repo"));
         assert!(consent.is_consented(false));
         enabled.store(false, Ordering::SeqCst);
@@ -218,8 +221,9 @@ mod tests {
 
     #[test]
     fn the_scope_carries_the_writer_config_selection() {
+        let dir = tempfile::tempdir().unwrap();
         let enabled = Arc::new(AtomicBool::new(true));
-        let mut options = options(enabled);
+        let mut options = options(enabled, dir.path());
         options
             .env
             .as_mut()
@@ -244,7 +248,8 @@ mod tests {
     fn the_writer_selection_judges_the_record() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&seen);
-        let mut options = options(Arc::new(AtomicBool::new(true)));
+        let dir = tempfile::tempdir().unwrap();
+        let mut options = options(Arc::new(AtomicBool::new(true)), dir.path());
         options.is_config_enabled = Some(Arc::new(move |_| {
             observed.lock().unwrap().push(());
             true
@@ -266,7 +271,7 @@ mod tests {
     fn an_opted_out_session_hashes_to_the_sentinel() {
         let dir = tempfile::tempdir().unwrap();
         let enabled = Arc::new(AtomicBool::new(false));
-        let consent = NativeConsent::new(&options(enabled));
+        let consent = NativeConsent::new(&options(enabled, dir.path()));
         consent.set_cwd(Path::new("/repo"));
         assert_eq!(
             consent.hash_session("raw", dir.path()),
@@ -278,7 +283,7 @@ mod tests {
     #[test]
     fn an_opted_in_session_hashes_with_the_salt() {
         let dir = tempfile::tempdir().unwrap();
-        let consent = NativeConsent::new(&options(Arc::new(AtomicBool::new(true))));
+        let consent = NativeConsent::new(&options(Arc::new(AtomicBool::new(true)), dir.path()));
         consent.set_cwd(Path::new("/repo"));
         let hash = consent.hash_session("raw", dir.path());
         assert_eq!(hash.len(), 64);

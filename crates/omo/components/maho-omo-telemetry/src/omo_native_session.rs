@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::account_inventory::{EngineTables, read_connected_accounts};
 use crate::index::{SenpiTelemetryOptions, get_senpi_telemetry_state_dir};
+use crate::omo_native_consent_marker::is_omo_native_consent_accepted;
 use crate::product_identity::{
     EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_SCHEMA_VERSION, OmoNativeAttributionInput,
     create_omo_native_product_config, get_omo_native_attribution, get_omo_native_state_dir,
@@ -240,7 +241,8 @@ fn env_of(options: &SenpiTelemetryOptions) -> telemetry_core::TelemetryEnv {
         .unwrap_or_else(|| std::env::vars().collect())
 }
 
-/// The one enablement decision: the env opt-out matrix plus the omo config gate for the event's cwd.
+/// The one enablement decision: the env opt-out matrix, the omo config gate for the event's cwd, and the recorded
+/// first-run consent answer in the state directory (omo #14920 wave B).
 pub fn is_omo_native_telemetry_enabled(
     options: &SenpiTelemetryOptions,
     cwd: Option<&Path>,
@@ -254,6 +256,19 @@ pub fn is_omo_native_telemetry_enabled(
             ),
         )
         && config_enabled(options, cwd, env)
+        && is_omo_native_consent_accepted(&consent_state_dir(options, env))
+}
+
+/// Where the first-run answer lives: the component's state directory, which is `get_omo_native_state_dir(env)`
+/// unless a caller injected one.
+pub fn consent_state_dir(
+    options: &SenpiTelemetryOptions,
+    env: &telemetry_core::TelemetryEnv,
+) -> PathBuf {
+    options
+        .state_dir
+        .clone()
+        .unwrap_or_else(|| get_omo_native_state_dir(env))
 }
 
 /// The persisted half of consent: the telemetry setting in the config files, for a scope's cwd. Environment

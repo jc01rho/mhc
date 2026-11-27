@@ -813,6 +813,7 @@ mod tests {
     ) {
         std::fs::write(home.join("models.json"), "{\"providers\":{}}").unwrap();
         std::fs::write(home.join("settings.json"), "{}").unwrap();
+        seed_consent(&home.join("native"));
         let messages = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&messages);
         let options = SenpiTelemetryOptions {
@@ -1165,7 +1166,8 @@ mod tests {
         component.register(&mut api);
         dispatch(&api, start(), &context(t.path(), "s")).await;
         assert!(messages.lock().unwrap().is_empty());
-        assert!(!t.path().join("native").exists());
+        assert!(!t.path().join("native/session-id-salt").exists());
+        assert!(!t.path().join("native/session-summary").exists());
     }
 
     #[tokio::test]

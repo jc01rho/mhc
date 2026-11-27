@@ -45,10 +45,13 @@ impl ModelRegistry for Models {
         Box::pin(async { Ok(None) })
     }
 }
+pub type ConfirmQuestions = Arc<std::sync::Mutex<Vec<(String, String)>>>;
 #[derive(Default)]
 struct Ui {
     notifications: Arc<std::sync::Mutex<Vec<String>>>,
     fail_notification: bool,
+    confirm_answer: bool,
+    questions: ConfirmQuestions,
 }
 impl ExtensionUi for Ui {
     fn select<'a>(
@@ -61,11 +64,16 @@ impl ExtensionUi for Ui {
     }
     fn confirm<'a>(
         &'a self,
-        _: &'a str,
-        _: &'a str,
+        title: &'a str,
+        message: &'a str,
         _: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, bool> {
-        Box::pin(async { false })
+        self.questions
+            .lock()
+            .unwrap()
+            .push((title.to_string(), message.to_string()));
+        let answer = self.confirm_answer;
+        Box::pin(async move { answer })
     }
     fn input<'a>(
         &'a self,
@@ -143,8 +151,23 @@ pub fn context_with_notifications(
     ctx.ui = Arc::new(Ui {
         notifications: Arc::clone(&notifications),
         fail_notification: false,
+        ..Default::default()
     });
     (ctx, notifications)
+}
+pub fn context_with_confirm(
+    home: &Path,
+    id: &str,
+    answer: bool,
+) -> (ExtensionContext, ConfirmQuestions) {
+    let mut ctx = context(home, id);
+    let questions = ConfirmQuestions::default();
+    ctx.ui = Arc::new(Ui {
+        confirm_answer: answer,
+        questions: Arc::clone(&questions),
+        ..Default::default()
+    });
+    (ctx, questions)
 }
 pub fn context_with_failing_notifications(
     home: &Path,
@@ -155,6 +178,7 @@ pub fn context_with_failing_notifications(
     ctx.ui = Arc::new(Ui {
         notifications: Arc::clone(&notifications),
         fail_notification: true,
+        ..Default::default()
     });
     (ctx, notifications)
 }
@@ -176,6 +200,13 @@ pub async fn dispatch(api: &ExtensionApi, mut event: ExtensionEvent, ctx: &Exten
             (handler)(&mut event, ctx).await.unwrap();
         }
     }
+}
+pub fn seed_consent(state_dir: &Path) {
+    crate::omo_native_consent_marker::record_omo_native_consent(
+        state_dir,
+        crate::omo_native_consent_marker::ConsentAnswer::Accepted,
+    )
+    .unwrap();
 }
 pub fn env(home: &Path) -> telemetry_core::TelemetryEnv {
     BTreeMap::from([
