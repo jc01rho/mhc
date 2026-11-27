@@ -47,6 +47,7 @@ pub mod provenance_resolver;
 pub mod read_item;
 pub mod read_ops;
 pub mod reader;
+pub mod registration;
 pub mod remote;
 pub mod reply_permission;
 pub mod reply_target;

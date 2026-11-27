@@ -133,6 +133,7 @@ pub(crate) fn the_registered_loop_component_never_reports_itself_inactive() {
         state_dir: std::env::temp_dir().join("omo-state"),
         env: std::collections::BTreeMap::new(),
         facts_read_only_bootstrap: false,
+        thread_host: Default::default(),
     };
     let loop_component = omo_components(slot("task"), slot("memory"), &loop_options)
         .into_iter()

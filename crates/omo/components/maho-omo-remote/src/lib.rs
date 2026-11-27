@@ -21,6 +21,7 @@ pub mod exit;
 pub mod render;
 pub mod rpc_host;
 pub mod sync_status;
+pub mod thread_host;
 pub mod usage;
 pub mod verbs;
 
