@@ -11,6 +11,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::constants::WAKE_LEASE_MS;
+use super::delivery_ledger::ledger_device;
 use super::session_wait_types::{
     DrainedMark, IntakeMark, IntakePair, OpenIntakeSession, QueuedWaitingOn, QueuedWaitingOnKind,
     SessionWaitKind, SessionWaitState, SessionWaitWrite, SessionWork, wait_blocks_delivery,
@@ -31,16 +32,6 @@ pub const WAKE_RETRY_DELAY_MS: i64 = 10_000;
 pub const WAKE_MAX_ATTEMPTS: i64 = 3;
 
 const WOKEN_COLUMNS: &str = "durable_id, session_file, host_instance, state, requested_at, opened_at, first_waiting_at, lease_owner, lease_expires_at, generation, attempts, next_attempt_at";
-
-/// The sender's device as an intake row's ledger id names it (`device:<device>/<id>`), when it does.
-pub fn ledger_device(ledger_id: &str) -> Option<&str> {
-    let rest = ledger_id.strip_prefix("device:")?;
-    let cut = rest.find('/')?;
-    if cut == 0 {
-        return None;
-    }
-    Some(&rest[..cut])
-}
 
 fn identity_json(identity: &ProcessIdentity) -> String {
     serde_json::to_string(identity).unwrap_or_else(|_| "null".to_owned())
@@ -675,8 +666,7 @@ pub fn open_intake_sessions(ctx: &StoreContext) -> Result<Vec<OpenIntakeSession>
             continue;
         }
         let device = row_opt_str(&row, "device").or_else(|| {
-            row_opt_str(&row, "ledger_id")
-                .and_then(|ledger_id| ledger_device(&ledger_id).map(str::to_owned))
+            row_opt_str(&row, "ledger_id").and_then(|ledger_id| ledger_device(&ledger_id))
         });
         let devices = sessions
             .entry(row_str(&row, "target_durable_id"))

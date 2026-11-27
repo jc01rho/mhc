@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::store_woken_ops::ledger_device;
+use super::delivery_ledger::ledger_device;
 use super::types::DeliveryRow;
 
 pub type AdmitIntake = Arc<dyn Fn(&str) -> IntakeAdmission + Send + Sync>;
@@ -62,11 +62,11 @@ impl IntakeAdmissionPass {
         let Some(admit) = &self.admit else {
             return IntakeVerdict::Skip;
         };
-        let answer = if let Some(cached) = self.answers.get(device) {
+        let answer = if let Some(cached) = self.answers.get(&device) {
             *cached
         } else {
-            let fetched = admit(device);
-            self.answers.insert(device.to_owned(), fetched);
+            let fetched = admit(device.as_str());
+            self.answers.insert(device, fetched);
             fetched
         };
         match answer {

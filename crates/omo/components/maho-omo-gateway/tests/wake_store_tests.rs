@@ -3,14 +3,13 @@
 
 use maho_omo_gateway::paths::gateway_wake_marker_path;
 use maho_omo_gateway::thread::constants::WAKE_LEASE_MS;
+use maho_omo_gateway::thread::delivery_ledger::ledger_device;
 use maho_omo_gateway::thread::session_wait_types::{
     DrainedMark, IntakeMark, IntakePair, OpenIntakeSession, QueuedWaitingOn, QueuedWaitingOnKind,
     SessionWaitKind, SessionWaitWrite, SessionWork,
 };
 use maho_omo_gateway::thread::store_api::GatewayStoreApi;
-use maho_omo_gateway::thread::store_woken_ops::{
-    WAKE_MAX_ATTEMPTS, WAKE_RETRY_DELAY_MS, ledger_device,
-};
+use maho_omo_gateway::thread::store_woken_ops::{WAKE_MAX_ATTEMPTS, WAKE_RETRY_DELAY_MS};
 use maho_omo_gateway::thread::types::{ClaimOutcome, ClaimRequest, EffectiveLane, RefusalReason};
 use maho_omo_gateway::thread::woken_types::{
     LostLease, WakeRetryOutcome, WakeStartOutcome, WakeTakeOverOutcome, WokenSessionFence,
@@ -370,8 +369,8 @@ fn given_four_rows_past_requested_when_two_stores_start_a_fifth_and_a_sixth_then
 
 #[test]
 fn given_ledger_ids_when_their_device_is_read_then_only_a_named_device_counts() {
-    assert_eq!(ledger_device("device:dev-b/d-1"), Some("dev-b"));
+    assert_eq!(ledger_device("device:dev-b/d-1").as_deref(), Some("dev-b"));
     assert_eq!(ledger_device("device:/d-1"), None);
-    assert_eq!(ledger_device("device:dev-b"), None);
+    assert_eq!(ledger_device("device:dev-b").as_deref(), Some("dev-b"));
     assert_eq!(ledger_device("d-1"), None);
 }
