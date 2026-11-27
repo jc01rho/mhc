@@ -23,6 +23,7 @@ use super::address_book::AddressEntry;
 use super::contracts_results::ThreadStatus;
 use super::errors::{ThreadToolFailure, thread_tool_failure};
 use super::remote::ports::{RemoteSessionRow, keyed};
+use maho_thread_address_core::{IdPrefixStep, LadderMatch, LadderStep, LadderView, match_thread};
 
 pub const AMBIGUOUS_CANDIDATE_LIMIT: usize = 10;
 
@@ -326,10 +327,16 @@ fn not_found(target: &str, scope: &str, visible: &[&ThreadAddressEntry]) -> Box<
     )
 }
 
-fn has_unfoldable_control(value: &str) -> bool {
-    value
-        .chars()
-        .any(|character| matches!(character, '\u{0}'..='\u{8}' | '\u{e}'..='\u{1f}' | '\u{7f}'))
+/// The whitespace controls (tab, line feed, vertical tab, form feed, carriage return) fold into a space in the name
+/// comparison; every other control character, C1 included, is refused. Format characters stay addressable (#13304).
+fn has_control_character(value: &str) -> bool {
+    value.chars().any(|character| {
+        character.is_control() && !matches!(character, '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
+    })
+}
+
+fn picked<'e>(entries: &'e [ThreadAddressEntry], indices: &[usize]) -> Vec<&'e ThreadAddressEntry> {
+    indices.iter().map(|index| &entries[*index]).collect()
 }
 
 /// Resolves a thread address (durable id, session id, or unique name, then a unique id prefix) against the entries the
@@ -339,7 +346,7 @@ pub fn resolve_target(
     target: &str,
     options: &ResolveOptions<'_>,
 ) -> Result<(ThreadAddressEntry, TargetResolution), Box<ThreadToolFailure>> {
-    if has_unfoldable_control(target) {
+    if has_control_character(target) {
         return Err(address_error(
             "invalid_arguments",
             "The thread address contains control characters.",
@@ -357,102 +364,137 @@ pub fn resolve_target(
         ));
     }
     let mut judge = WorkspaceJudge::default();
-    if let Some(hit) = entries.iter().find(|entry| entry.thread_id == target) {
-        return scoped_id_hit(hit, options, &mut judge, TargetResolution::Id);
-    }
-    let session_hits: Vec<&ThreadAddressEntry> = entries
-        .iter()
-        .filter(|entry| entry.session_ids.iter().any(|id| id.as_str() == target))
-        .collect();
-    if let [hit] = session_hits.as_slice() {
-        return scoped_id_hit(hit, options, &mut judge, TargetResolution::Id).map_err(|error| {
-            if error.code.as_str() == "scope_denied" {
-                address_error(
-                    "scope_denied",
-                    format!(
-                        "Thread {} (session id \"{target}\") exists outside this workspace.",
-                        hit.thread_id
-                    ),
-                    "Call thread_list with all_scope (tool.thread_list({ all_scope: true }) in an eval cell) and pass that thread, or target a thread in this workspace.",
-                    None,
-                )
-            } else {
-                error
-            }
-        });
-    }
-    if session_hits.len() > 1 {
-        return Err(address_error(
-            "ambiguous_target",
-            format!(
-                "{} visible threads share the session id \"{target}\".",
-                session_hits.len()
-            ),
-            "Call thread_list (tool.thread_list() in an eval cell) and pass the exact thread value of the intended thread.",
-            Some(&session_hits),
-        ));
-    }
-    if let Some(hit) = entries.iter().find(|entry| {
-        entry
-            .aliases
-            .iter()
-            .any(|alias| normalize_thread_name(alias) == normalized)
-    }) {
-        return Ok((hit.clone(), TargetResolution::Alias));
-    }
     let caller_root = options.caller_workspace_root.trim();
-    let visible: Vec<&ThreadAddressEntry> = if options.all_scope {
-        entries.iter().collect()
-    } else {
-        if caller_root.is_empty() {
+    // The steps are thread-address-core's ladder (match_thread), shared with the remote client's sessions.resolve; this
+    // function adds this device's workspace scope and words the outcome. A thread on another device belongs to the
+    // account, not to a workspace of this device: it stays visible (decision 0027).
+    let views: Vec<LadderView<'_>> = entries
+        .iter()
+        .map(|entry| LadderView {
+            id: &entry.thread_id,
+            keys: &entry.session_ids,
+            aliases: &entry.aliases,
+            name: &entry.name,
+        })
+        .collect();
+    let id_prefix = match (options.id_prefix, options.exclude_from_prefix) {
+        (false, _) => IdPrefixStep::Off,
+        (true, None) => IdPrefixStep::On,
+        (true, Some(excluded)) => IdPrefixStep::Exclude(excluded),
+    };
+    let hit = match_thread(
+        &views,
+        target,
+        |index| {
+            let entry = &entries[index];
+            options.all_scope
+                || entry.row.is_some()
+                || (!caller_root.is_empty() && judge.same_workspace(&entry.cwd, caller_root))
+        },
+        id_prefix,
+    );
+    match &hit {
+        LadderMatch::One {
+            step: LadderStep::Id,
+            index,
+        } => return scoped_id_hit(&entries[*index], options, &mut judge, TargetResolution::Id),
+        LadderMatch::Many {
+            step: LadderStep::Id,
+            indices,
+        } => {
+            return scoped_id_hit(
+                &entries[indices[0]],
+                options,
+                &mut judge,
+                TargetResolution::Id,
+            );
+        }
+        LadderMatch::One {
+            step: LadderStep::SessionId,
+            index,
+        } => {
+            let entry = &entries[*index];
+            return scoped_id_hit(entry, options, &mut judge, TargetResolution::Id).map_err(|error| {
+                if error.code.as_str() == "scope_denied" {
+                    address_error(
+                        "scope_denied",
+                        format!(
+                            "Thread {} (session id \"{target}\") exists outside this workspace.",
+                            entry.thread_id
+                        ),
+                        "Call thread_list with all_scope (tool.thread_list({ all_scope: true }) in an eval cell) and pass that thread, or target a thread in this workspace.",
+                        None,
+                    )
+                } else {
+                    error
+                }
+            });
+        }
+        LadderMatch::Many {
+            step: LadderStep::SessionId,
+            indices,
+        } => {
+            let session_hits = picked(entries, indices);
             return Err(address_error(
-                "caller_context_missing",
-                "Scoped address resolution needs the caller's workspace root, which this call did not provide.",
-                "Set all_scope to address every workspace, or call thread_list (tool.thread_list() in an eval cell) from a session that knows its workspace.",
-                None,
+                "ambiguous_target",
+                format!(
+                    "{} visible threads share the session id \"{target}\".",
+                    session_hits.len()
+                ),
+                "Call thread_list (tool.thread_list() in an eval cell) and pass the exact thread value of the intended thread.",
+                Some(&session_hits),
             ));
         }
-        entries
-            .iter()
-            .filter(|entry| entry.row.is_some() || judge.same_workspace(&entry.cwd, caller_root))
-            .collect()
-    };
-    let named: Vec<&ThreadAddressEntry> = visible
-        .iter()
-        .copied()
-        .filter(|entry| normalize_thread_name(&entry.name) == normalized)
-        .collect();
-    if let [hit] = named.as_slice() {
-        return Ok(((*hit).clone(), TargetResolution::Name));
+        LadderMatch::One {
+            step: LadderStep::Alias,
+            index,
+        } => return Ok((entries[*index].clone(), TargetResolution::Alias)),
+        _ => {}
     }
-    if named.len() > 1 {
+    if !options.all_scope && caller_root.is_empty() {
         return Err(address_error(
-            "ambiguous_target",
-            format!(
-                "{} visible threads share the name \"{target}\".",
-                named.len()
-            ),
-            "Call thread_list (tool.thread_list() in an eval cell) and pass the exact thread value of the intended thread.",
-            Some(&named),
+            "caller_context_missing",
+            "Scoped address resolution needs the caller's workspace root, which this call did not provide.",
+            "Set all_scope to address every workspace, or call thread_list (tool.thread_list() in an eval cell) from a session that knows its workspace.",
+            None,
         ));
     }
-    if options.id_prefix && maho_thread_address_core::is_id_prefix(target) {
-        let prefix = target.to_lowercase();
-        let mut prefixed: Vec<&ThreadAddressEntry> = Vec::new();
-        for entry in entries {
-            if Some(entry.thread_id.as_str()) != options.exclude_from_prefix
-                && entry.thread_id.to_lowercase().starts_with(&prefix)
-                && !prefixed
-                    .iter()
-                    .any(|seen| seen.thread_id == entry.thread_id)
-            {
-                prefixed.push(entry);
-            }
+    match &hit {
+        LadderMatch::One {
+            step: LadderStep::Name,
+            index,
+        } => return Ok((entries[*index].clone(), TargetResolution::Name)),
+        LadderMatch::Many {
+            step: LadderStep::Name,
+            indices,
+        } => {
+            let named = picked(entries, indices);
+            return Err(address_error(
+                "ambiguous_target",
+                format!(
+                    "{} visible threads share the name \"{target}\".",
+                    named.len()
+                ),
+                "Call thread_list (tool.thread_list() in an eval cell) and pass the exact thread value of the intended thread.",
+                Some(&named),
+            ));
         }
-        if let [hit] = prefixed.as_slice() {
-            return scoped_id_hit(hit, options, &mut judge, TargetResolution::IdPrefix);
+        LadderMatch::One {
+            step: LadderStep::IdPrefix,
+            index,
+        } => {
+            return scoped_id_hit(
+                &entries[*index],
+                options,
+                &mut judge,
+                TargetResolution::IdPrefix,
+            );
         }
-        if prefixed.len() > 1 {
+        LadderMatch::Many {
+            step: LadderStep::IdPrefix,
+            indices,
+        } => {
+            let prefixed = picked(entries, indices);
             return Err(address_error(
                 "ambiguous_target",
                 format!(
@@ -463,7 +505,16 @@ pub fn resolve_target(
                 Some(&prefixed),
             ));
         }
+        _ => {}
     }
+    let visible: Vec<&ThreadAddressEntry> = entries
+        .iter()
+        .filter(|entry| {
+            options.all_scope
+                || entry.row.is_some()
+                || judge.same_workspace(&entry.cwd, caller_root)
+        })
+        .collect();
     if !options.all_scope {
         let out_of_scope: Vec<&ThreadAddressEntry> = entries
             .iter()
@@ -505,7 +556,7 @@ pub fn check_name_conflict(
     entries: &[ThreadAddressEntry],
     name: &str,
 ) -> Result<(), Box<ThreadToolFailure>> {
-    if has_unfoldable_control(name) {
+    if has_control_character(name) {
         return Err(address_error(
             "invalid_arguments",
             "The thread name contains control characters.",
@@ -760,6 +811,69 @@ mod tests {
             )),
             "invalid_arguments"
         );
+    }
+
+    #[test]
+    fn a_typed_reference_holding_a_control_character_other_than_whitespace_is_refused_unechoed() {
+        let entries = [
+            entry("t-1", "ab", "/nonexistent/a"),
+            entry("t-2", "a b", "/nonexistent/a"),
+        ];
+        for control in [
+            '\u{0}', '\u{7}', '\u{1b}', '\u{1f}', '\u{7f}', '\u{80}', '\u{9b}', '\u{9f}',
+        ] {
+            let typed = format!("a{control}b");
+            let refused = resolve_target(&entries, &typed, &scoped("/nonexistent/a"))
+                .expect_err("a control character is refused");
+            assert_eq!(refused.code.as_str(), "invalid_arguments", "{control:?}");
+            assert_eq!(
+                refused.message, "The thread address contains control characters.",
+                "{control:?}"
+            );
+            assert!(!refused.next_action.contains(&typed), "{control:?}");
+            let named =
+                check_name_conflict(&entries, &typed).expect_err("a control character in a name");
+            assert_eq!(
+                named.message, "The thread name contains control characters.",
+                "{control:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_whitespace_control_folds_into_a_space_and_a_format_character_stays_addressable() {
+        let entries = [
+            entry("t-1", "ab", "/nonexistent/a"),
+            entry("t-2", "a b", "/nonexistent/a"),
+            entry("f-1", "a\u{200b}b", "/nonexistent/a"),
+            entry("f-2", "\u{202e}lane", "/nonexistent/a"),
+            entry("p-1", "payments lane", "/nonexistent/a"),
+        ];
+        for control in ['\t', '\n', '\u{b}', '\u{c}', '\r'] {
+            assert_eq!(
+                code(resolve_target(
+                    &entries,
+                    &format!("a{control}b"),
+                    &scoped("/nonexistent/a")
+                )),
+                "t-2",
+                "{control:?}"
+            );
+        }
+        assert_eq!(
+            code(resolve_target(
+                &entries,
+                "  Payments\tLANE  ",
+                &scoped("/nonexistent/a")
+            )),
+            "p-1"
+        );
+        for (name, id) in [("a\u{200b}b", "f-1"), ("\u{202e}lane", "f-2")] {
+            assert_eq!(
+                code(resolve_target(&entries, name, &scoped("/nonexistent/a"))),
+                id
+            );
+        }
     }
 
     #[test]
