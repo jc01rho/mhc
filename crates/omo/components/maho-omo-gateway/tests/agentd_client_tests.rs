@@ -138,8 +138,16 @@ impl FakeAgentd {
                     let id = frame.get("id").and_then(Value::as_str).unwrap_or_default();
                     let op = frame.get("op").and_then(Value::as_str).unwrap_or_default();
                     let args = frame.get("args").cloned().unwrap_or(Value::Null);
-                    let reply = (self.answer)(op, &args)
-                        .unwrap_or_else(|| Reply::Error(format!("unsupported:{op}")));
+                    let validation_error = if op == "mhc.session.open" {
+                        crate::validate_open_args(&args).err()
+                    } else {
+                        None
+                    };
+                    let reply = match validation_error {
+                        Some(error) => Reply::Error(error),
+                        None => (self.answer)(op, &args)
+                            .unwrap_or_else(|| Reply::Error(format!("unsupported:{op}"))),
+                    };
                     let answer = match reply {
                         Reply::Data(data) => {
                             json!({ "t": "res", "id": id, "ok": true, "data": data })
@@ -533,8 +541,10 @@ fn an_open_asks_the_device_for_the_engines_own_field_names_and_answers_the_threa
         .find(|frame| frame.get("op").and_then(Value::as_str) == Some("mhc.session.open"))
         .expect("the open frame");
     assert_eq!(open["args"]["launch"]["cwd"], json!("/work/app"));
-    assert_eq!(open["args"]["launch"]["modelId"], json!("gpt-6"));
+    assert_eq!(open["args"]["launch"]["model"], json!("openai/gpt-6"));
     assert_eq!(open["args"]["launch"]["name"], json!("child"));
+    assert!(open["args"]["launch"].get("modelId").is_none());
+    assert!(open["args"]["launch"].get("provider").is_none());
     assert!(open["args"].get("session").is_none());
 }
 
@@ -574,10 +584,41 @@ fn a_reopen_names_the_session_that_device_holds_and_a_fork_names_its_source() {
         .collect();
     assert_eq!(opens.len(), 2);
     assert_eq!(opens[0]["args"]["session"], json!("dur-1"));
-    assert_eq!(opens[0]["args"]["launch"]["forkFrom"], Value::Null);
+    assert!(opens[0]["args"].get("fork_from").is_none());
+    assert!(opens[0]["args"]["launch"].get("forkFrom").is_none());
+    assert!(opens[0]["args"]["launch"].get("session").is_none());
     assert_eq!(opens[1]["args"]["fork_from"], json!("dur-1"));
-    assert_eq!(opens[1]["args"]["launch"]["forkFrom"], json!("dur-1"));
+    assert!(opens[1]["args"]["launch"].get("forkFrom").is_none());
     assert!(opens[1]["args"].get("session").is_none());
+}
+
+#[test]
+fn a_non_contract_launch_key_is_refused_invalid_request_by_the_strict_daemon() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let daemon = FakeAgentd::start(|op, _args| {
+        (op == "mhc.session.open").then(|| Reply::Data(json!({ "session_id": "rk-2" })))
+    });
+    let client = client(&daemon, dir.path());
+
+    for bad_launch in [
+        json!({ "forkFrom": "dur-1" }),
+        json!({ "sessionPath": "/tmp/s.jsonl" }),
+        json!({ "modelId": "gpt-6" }),
+        json!({ "durableSessionId": "dur-1" }),
+        json!({ "cwd": "relative" }),
+    ] {
+        let err = block_on(client.call(
+            "b",
+            "mhc.session.open",
+            json!({ "launch": bad_launch }),
+            Duration::from_secs(5),
+        ))
+        .expect_err("non-contract launch key must be refused");
+        assert!(
+            matches!(err, AgentdError::Refused { ref reason, .. } if reason == "invalid_request"),
+            "for {bad_launch}: {err:?}"
+        );
+    }
 }
 
 #[test]

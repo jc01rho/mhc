@@ -184,8 +184,16 @@ impl FakeAgentd {
                         .to_owned();
                     let op = frame.get("op").and_then(Value::as_str).unwrap_or_default();
                     let args = frame.get("args").cloned().unwrap_or(Value::Null);
-                    let reply = (self.answer)(op, &args)
-                        .unwrap_or_else(|| Reply::Error(format!("unsupported:{op}")));
+                    let validation_error = if op == "mhc.session.open" {
+                        crate::validate_open_args(&args).err()
+                    } else {
+                        None
+                    };
+                    let reply = match validation_error {
+                        Some(error) => Reply::Error(error),
+                        None => (self.answer)(op, &args)
+                            .unwrap_or_else(|| Reply::Error(format!("unsupported:{op}"))),
+                    };
                     self.dispatch_reply(id, reply)?;
                 }
                 "ping" => {
@@ -795,9 +803,6 @@ fn open_commands(daemon: &FakeAgentd) -> Vec<Value> {
 
 fn create_opens(daemon: &FakeAgentd) -> Vec<Value> {
     open_commands(daemon)
-        .into_iter()
-        .filter(|c| c["args"]["launch"].get("durableSessionId").is_some())
-        .collect()
 }
 
 fn rpc_commands(daemon: &FakeAgentd, rpc_type: &str) -> Vec<Value> {
@@ -1217,9 +1222,11 @@ async fn thread_create_survives_lost_open_reply_on_the_spot_and_on_same_key_retr
     // 1. Adopted on the spot when b lists the derived id immediately after the open reply is lost
     {
         let dir = tempfile::tempdir().expect("tempdir");
+        let id = created_thread_id(CALLER, "remote-lost-1");
+        let id_for_open = id.clone();
         let opened_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let opened_id_ans = Arc::clone(&opened_id);
-        let daemon = FakeAgentd::start(move |op, cmd_args| match op {
+        let daemon = FakeAgentd::start(move |op, _cmd_args| match op {
             "mhc.sessions.list" => {
                 let sessions = match lock(&opened_id_ans).clone() {
                     Some(id) => vec![json!({
@@ -1236,12 +1243,7 @@ async fn thread_create_survives_lost_open_reply_on_the_spot_and_on_same_key_retr
                 Some(Reply::Data(json!({ "sessions": sessions })))
             }
             "mhc.session.open" => {
-                let dur = cmd_args["launch"]
-                    .get("durableSessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                *lock(&opened_id_ans) = Some(dur);
+                *lock(&opened_id_ans) = Some(id_for_open.clone());
                 Some(Reply::Silence)
             }
             "mhc.session.command" => Some(Reply::Data(json!({
@@ -1256,7 +1258,6 @@ async fn thread_create_survives_lost_open_reply_on_the_spot_and_on_same_key_retr
                 .with_call_timeout(Duration::from_millis(60)),
         );
         let component = build_component(dir.path(), client);
-        let id = created_thread_id(CALLER, "remote-lost-1");
         let result = run_tool(
             &component,
             "thread_create",
@@ -1275,11 +1276,13 @@ async fn thread_create_survives_lost_open_reply_on_the_spot_and_on_same_key_retr
     // third call under same key replays with deduplicated: true and sends nothing new.
     {
         let dir = tempfile::tempdir().expect("tempdir");
+        let id = created_thread_id(CALLER, "remote-lost-2");
+        let id_for_open = id.clone();
         let opened_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let opened_id_ans = Arc::clone(&opened_id);
         let fail_next_list = Arc::new(AtomicBool::new(false));
         let fail_next_list_ans = Arc::clone(&fail_next_list);
-        let daemon = FakeAgentd::start(move |op, cmd_args| match op {
+        let daemon = FakeAgentd::start(move |op, _cmd_args| match op {
             "mhc.sessions.list" => {
                 if fail_next_list_ans.swap(false, Ordering::Relaxed) {
                     return Some(Reply::Error("list_failed".to_owned()));
@@ -1299,12 +1302,7 @@ async fn thread_create_survives_lost_open_reply_on_the_spot_and_on_same_key_retr
                 Some(Reply::Data(json!({ "sessions": sessions })))
             }
             "mhc.session.open" => {
-                let dur = cmd_args["launch"]
-                    .get("durableSessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                *lock(&opened_id_ans) = Some(dur);
+                *lock(&opened_id_ans) = Some(id_for_open.clone());
                 fail_next_list_ans.store(true, Ordering::Relaxed);
                 Some(Reply::Silence)
             }
@@ -1326,7 +1324,6 @@ async fn thread_create_survives_lost_open_reply_on_the_spot_and_on_same_key_retr
             "prompt": "build it",
             "idempotency_key": "remote-lost-2",
         });
-        let id = created_thread_id(CALLER, "remote-lost-2");
 
         let first = run_tool(&component, "thread_create", args.clone()).await;
         assert_eq!(first["kind"], "error", "{first}");
@@ -1355,11 +1352,13 @@ async fn thread_create_lost_reply_m4_refuses_cached_or_unreachable_and_round2_m4
     // #14623 review M4: cached snapshot or unreachable session stays idempotency_uncertain
     for (cached, unreachable) in [(true, false), (false, true), (true, true)] {
         let dir = tempfile::tempdir().expect("tempdir");
+        let idempotency_key = format!("remote-lost-m4-{cached}-{unreachable}");
+        let id_for_open = created_thread_id(CALLER, &idempotency_key);
         let opened_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let opened_id_ans = Arc::clone(&opened_id);
         let fail_next_list = Arc::new(AtomicBool::new(false));
         let fail_next_list_ans = Arc::clone(&fail_next_list);
-        let daemon = FakeAgentd::start(move |op, cmd_args| match op {
+        let daemon = FakeAgentd::start(move |op, _cmd_args| match op {
             "mhc.sessions.list" => {
                 if fail_next_list_ans.swap(false, Ordering::Relaxed) {
                     return Some(Reply::Error("list_failed".to_owned()));
@@ -1381,12 +1380,7 @@ async fn thread_create_lost_reply_m4_refuses_cached_or_unreachable_and_round2_m4
                 Some(Reply::Data(json!({ "sessions": sessions })))
             }
             "mhc.session.open" => {
-                let dur = cmd_args["launch"]
-                    .get("durableSessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                *lock(&opened_id_ans) = Some(dur);
+                *lock(&opened_id_ans) = Some(id_for_open.clone());
                 fail_next_list_ans.store(true, Ordering::Relaxed);
                 Some(Reply::Silence)
             }
@@ -1414,7 +1408,7 @@ async fn thread_create_lost_reply_m4_refuses_cached_or_unreachable_and_round2_m4
         let args = json!({
             "device": "studio",
             "name": "lost-m4",
-            "idempotency_key": format!("remote-lost-m4-{cached}-{unreachable}"),
+            "idempotency_key": idempotency_key,
         });
         let first = run_tool(&component, "thread_create", args.clone()).await;
         assert_eq!(first["error"]["code"], "idempotency_uncertain", "{first}");
@@ -1426,13 +1420,14 @@ async fn thread_create_lost_reply_m4_refuses_cached_or_unreachable_and_round2_m4
     // #14623 review round 2 M4: first sees route_unlisted, then request_timeout -> stays idempotency_uncertain
     {
         let dir = tempfile::tempdir().expect("tempdir");
+        let id_for_open = created_thread_id(CALLER, "remote-lost-mixed-2");
         let opened_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let opened_id_ans = Arc::clone(&opened_id);
         let fail_next_list = Arc::new(AtomicBool::new(false));
         let fail_next_list_ans = Arc::clone(&fail_next_list);
         let cmd_count = Arc::new(AtomicUsize::new(0));
         let cmd_count_ans = Arc::clone(&cmd_count);
-        let daemon = FakeAgentd::start(move |op, cmd_args| match op {
+        let daemon = FakeAgentd::start(move |op, _cmd_args| match op {
             "mhc.sessions.list" => {
                 if fail_next_list_ans.swap(false, Ordering::Relaxed) {
                     return Some(Reply::Error("list_failed".to_owned()));
@@ -1452,12 +1447,7 @@ async fn thread_create_lost_reply_m4_refuses_cached_or_unreachable_and_round2_m4
                 Some(Reply::Data(json!({ "sessions": sessions })))
             }
             "mhc.session.open" => {
-                let dur = cmd_args["launch"]
-                    .get("durableSessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                *lock(&opened_id_ans) = Some(dur);
+                *lock(&opened_id_ans) = Some(id_for_open.clone());
                 fail_next_list_ans.store(true, Ordering::Relaxed);
                 Some(Reply::Silence)
             }
@@ -1511,6 +1501,9 @@ async fn thread_create_same_key_recovery_14569_keeps_worktree_first_cause_and_un
     {
         let dir = tempfile::tempdir().expect("tempdir");
         let repo = init_git_repo(dir.path());
+        let repo_for_open = repo.clone();
+        let expected_id = created_thread_id(CALLER, "remote-lost-wt");
+        let expected_id_open = expected_id.clone();
         let far_root = dir.path().join("far-wt");
         std::fs::create_dir_all(&far_root).expect("mkdir far-wt");
         let far_root_str = std::fs::canonicalize(&far_root)
@@ -1541,11 +1534,10 @@ async fn thread_create_same_key_recovery_14569_keeps_worktree_first_cause_and_un
                 Some(Reply::Data(json!({ "sessions": sessions })))
             }
             "mhc.session.open" => {
-                if let Some(dur) = cmd_args["launch"]
-                    .get("durableSessionId")
-                    .and_then(Value::as_str)
+                if cmd_args["launch"].get("cwd").and_then(Value::as_str)
+                    != Some(repo_for_open.as_str())
                 {
-                    *lock(&opened_id_ans) = Some(dur.to_owned());
+                    *lock(&opened_id_ans) = Some(expected_id_open.clone());
                     fail_next_list_ans.store(true, Ordering::Relaxed);
                     return Some(Reply::Silence);
                 }
@@ -1601,9 +1593,15 @@ async fn thread_create_same_key_recovery_14569_keeps_worktree_first_cause_and_un
 
         let retry = run_tool(&component, "thread_create", args).await;
         assert_eq!(retry["kind"], "ok", "{retry}");
-        assert_eq!(retry["thread"], created_thread_id(CALLER, "remote-lost-wt"));
+        assert_eq!(retry["thread"], expected_id);
         assert_eq!(retry["worktree"]["branch"], "far-lost");
-        assert_eq!(create_opens(&daemon).len(), 1);
+        let thread_opens: Vec<Value> = create_opens(&daemon)
+            .into_iter()
+            .filter(|c| {
+                c["args"]["launch"].get("cwd").and_then(Value::as_str) != Some(repo.as_str())
+            })
+            .collect();
+        assert_eq!(thread_opens.len(), 1);
     }
 
     // 2. When b ignores the derived id and reply is lost, retries name first_cause (#14569)
@@ -1641,6 +1639,8 @@ async fn thread_create_same_key_recovery_14569_keeps_worktree_first_cause_and_un
     // 3. Adopted session that b's route never lists is unloaded by the routing id b's engine names, and receipt stays uncertain (#14569)
     {
         let dir = tempfile::tempdir().expect("tempdir");
+        let id = created_thread_id(CALLER, "remote-lost-unrouted");
+        let id_for_open = id.clone();
         let opened_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let opened_id_ans = Arc::clone(&opened_id);
         let fail_next_list = Arc::new(AtomicBool::new(false));
@@ -1671,12 +1671,7 @@ async fn thread_create_same_key_recovery_14569_keeps_worktree_first_cause_and_un
                 Some(Reply::Data(json!({ "sessions": sessions })))
             }
             "mhc.session.open" => {
-                let dur = cmd_args["launch"]
-                    .get("durableSessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                *lock(&opened_id_ans) = Some(dur);
+                *lock(&opened_id_ans) = Some(id_for_open.clone());
                 fail_next_list_ans.store(true, Ordering::Relaxed);
                 Some(Reply::Silence)
             }
@@ -1718,7 +1713,6 @@ async fn thread_create_same_key_recovery_14569_keeps_worktree_first_cause_and_un
             "name": "lost-unrouted",
             "idempotency_key": "remote-lost-unrouted",
         });
-        let id = created_thread_id(CALLER, "remote-lost-unrouted");
 
         let first = run_tool(&component, "thread_create", args.clone()).await;
         assert_eq!(first["error"]["code"], "idempotency_uncertain", "{first}");
@@ -1738,5 +1732,104 @@ async fn thread_create_same_key_recovery_14569_keeps_worktree_first_cause_and_un
         let third = run_tool(&component, "thread_create", args).await;
         assert_eq!(third["error"]["code"], "idempotency_uncertain", "{third}");
         assert_eq!(create_opens(&daemon).len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn thread_create_fork_from_through_agentd_sends_strict_contract_launch_keys() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let daemon = FakeAgentd::start(|op, cmd_args| match op {
+        "mhc.sessions.list" => Some(Reply::Data(json!({
+            "sessions": [{
+                "session_id": "rk-src-1",
+                "durable_id": "dur-src-1",
+                "title": "source",
+                "project": "app",
+                "path": "/work/src",
+                "state": "idle",
+                "updated_ms": 1_000,
+            }],
+            "capabilities": ["engine", "open_session_fork"],
+        }))),
+        "mhc.session.locate" => {
+            let asked = cmd_args
+                .get("session")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let sid = if asked == "dur-fork-2" {
+                "rk-fork-2"
+            } else {
+                "rk-src-1"
+            };
+            Some(Reply::Data(json!({
+                "found": true,
+                "row": { "session_id": sid },
+            })))
+        }
+        "mhc.session.open" => Some(Reply::Data(json!({
+            "session_id": "rk-fork-2",
+            "durable_id": "dur-fork-2",
+            "stream": "mhc-session:rk-fork-2",
+            "started": true,
+            "forked": true,
+        }))),
+        "mhc.session.command" => Some(Reply::Data(json!({
+            "state": "engine_applied",
+            "receipt": { "isStreaming": false },
+        }))),
+        _ => None,
+    });
+    let client = Arc::new(
+        AgentdClient::with_peers("test-node", vec![make_peer("b", &daemon, dir.path())])
+            .with_peer_label("b", "studio"),
+    );
+    let component = build_component(dir.path(), client);
+
+    let created = run_tool(
+        &component,
+        "thread_create",
+        json!({
+            "fork_from": "dur-src-1",
+            "name": "forked-child",
+            "cwd": "/work/fork",
+            "model": "openai/gpt-6",
+            "reasoning": "high",
+            "permission_preset": "ask",
+            "skills": ["programming"],
+        }),
+    )
+    .await;
+    assert_eq!(created["kind"], "ok", "{created}");
+    assert_eq!(created["device"], "b");
+
+    let opens = open_commands(&daemon);
+    assert_eq!(opens.len(), 1);
+    let args = &opens[0]["args"];
+    assert_eq!(args["fork_from"], json!("dur-src-1"));
+    assert!(args.get("session").is_none());
+    assert_eq!(args["launch"]["cwd"], json!("/work/fork"));
+    assert_eq!(args["launch"]["model"], json!("openai/gpt-6"));
+    assert_eq!(args["launch"]["thinking_level"], json!("high"));
+    assert_eq!(args["launch"]["permission_preset"], json!("ask"));
+    assert_eq!(args["launch"]["name"], json!("forked-child"));
+    assert_eq!(
+        args["launch"]["context"]["initial_skills"],
+        json!("[\"programming\"]")
+    );
+    for forbidden in [
+        "forkFrom",
+        "sessionPath",
+        "durableSessionId",
+        "modelId",
+        "thinkingLevel",
+        "permissionPreset",
+        "provider",
+        "initialSkills",
+        "session",
+    ] {
+        assert!(
+            args["launch"].get(forbidden).is_none(),
+            "unexpected launch key {forbidden}: {args}"
+        );
     }
 }
