@@ -107,7 +107,6 @@ fn errno_code(error: &io::Error) -> &'static str {
         io::ErrorKind::NotFound => "ENOENT",
         io::ErrorKind::NotADirectory => "ENOTDIR",
         io::ErrorKind::PermissionDenied => "EACCES",
-        io::ErrorKind::FilesystemLoop => "ELOOP",
         _ => "EIO",
     }
 }
