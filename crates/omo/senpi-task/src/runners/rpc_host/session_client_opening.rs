@@ -2,13 +2,29 @@
 //! (`HostSessionOpenInput.spawnedBy` / `toWireOpen`) and `open-session.ts` (`rpcChildAncestry`).
 //!
 //! The mhc assembly builds the `open_session` JSON itself (maho-cli `task_host.rs`); it calls
-//! [`with_spawned_by`] on that request with the host's `get_protocol_info` engine version.
+//! [`with_spawned_by`] on that request with the host's `get_protocol_info` engine version, and binds
+//! the connection it dialed through the [`BindClient`] its owner handed it.
+
+use std::sync::Arc;
 
 use serde_json::Value;
 
+use super::host_command_dispatch::HostRpcClient;
+use super::session_wire::host_session_detached_error;
+use crate::host::HostError;
 use crate::runners::child_ancestry::rpc_child_ancestry;
 use crate::runners::engine_spawned_by::engine_accepts_spawned_by;
 use crate::runners::types::RpcRunnerSpec;
+
+/// `SessionOpeningPorts.bindClient`: an open hands the connection it has just dialed to its owner.
+/// `false` means the owner was released while that connection was still dialing: the open must stop
+/// the connection and end with [`released_while_dialing`]. `None` unbinds after a failed open.
+pub type BindClient = Arc<dyn Fn(Option<Arc<dyn HostRpcClient>>) -> bool + Send + Sync>;
+
+/// `HostSessionDetachedError("open_session")`: how an open ends once its owner was released.
+pub fn released_while_dialing() -> HostError {
+    host_session_detached_error("open_session")
+}
 
 /// Adds the child's ancestry to an `open_session` request. No capability names `spawnedBy`, so the
 /// host's engine version decides; an unproven host opens the child without ancestry (logged).

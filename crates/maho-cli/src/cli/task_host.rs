@@ -103,7 +103,8 @@ impl HostAssembly {
                     break;
                 }
                 if handle.heartbeat().is_err() {
-                    let input = assembly.reattach_input(spec.clone());
+                    let attempts = Arc::new(session_client_connection::InFlightOpens::default());
+                    let input = assembly.reattach_input(spec.clone(), attempts.clone());
                     let socket = match assembly.recorded_socket(&spec) {
                         Ok(socket) => socket,
                         Err(error) => {
@@ -118,6 +119,11 @@ impl HostAssembly {
                     ) {
                         Ok(true) => {}
                         result => {
+                            // A bound that ran out can leave an attempt dialing. Ending that open before the child is
+                            // declared lost keeps it from reopening a session a respawn now owns.
+                            if let Err(error) = attempts.detach_all() {
+                                eprintln!("task host recovery open detach failed: {error}");
+                            }
                             handle.transport_lost(format!("host recovery exhausted: {result:?}"));
                             break;
                         }
@@ -131,6 +137,7 @@ impl HostAssembly {
     fn reattach_input(
         &self,
         spec: senpi_task::runners::types::RpcRunnerSpec,
+        attempts: Arc<session_client_connection::InFlightOpens>,
     ) -> reattach_port::ReattachPortInput {
         let admission = self.clone();
         let ensure = self.clone();
@@ -155,6 +162,7 @@ impl HostAssembly {
                     session_context::build_child_context(&spec),
                     socket.into(),
                     path.into(),
+                    &attempts,
                 )
                 .map(|(port, opened, _)| (port, opened.session))
                 .map_err(|e| e.to_string())
@@ -272,7 +280,8 @@ impl HostAssembly {
             .map_err(|e| error(format!("store_index_unavailable: {e}")))
         })
     }
-    /// Reattach keeps today's fallback behaviour; a fresh start decides by the policy gate
+    /// Reattach keeps today's fallback behaviour and registers its open with the recovery that started
+    /// it, so an abandoned recovery can end it; a fresh start decides by the policy gate
     /// (`open_with_policy`).
     pub fn open(
         &self,
@@ -280,8 +289,9 @@ impl HostAssembly {
         context: session_context::ChildSessionContext,
         socket: String,
         path: String,
+        attempts: &Arc<session_client_connection::InFlightOpens>,
     ) -> OpenedHostResult {
-        self.open_with_policy(spec, context, socket, path, false)
+        self.open_with_policy(spec, context, socket, path, false, Some(attempts))
     }
     pub fn open_with_policy(
         &self,
@@ -290,7 +300,11 @@ impl HostAssembly {
         socket: String,
         path: String,
         designated_chain_only: bool,
+        attempts: Option<&Arc<session_client_connection::InFlightOpens>>,
     ) -> OpenedHostResult {
+        let owner = Arc::new(session_client_connection::HostSessionClient::default());
+        let bind_client = owner.begin_open();
+        let _in_flight = attempts.map(|attempts| attempts.register(&owner));
         let mut context = context;
         if let Some((_, key)) = maho_rpc::host_endpoints::parse_shard_socket(&socket) {
             context.context.insert("shard_key".into(), key);
@@ -322,6 +336,12 @@ impl HostAssembly {
                 }
                 let client=Arc::new(maho_rpc::rpc_client::RpcClient::from_stream(socket_client.into_stream().map_err(error)?,Default::default()));
                 let live=connection::LiveClient::new(client.clone(),runtime.clone(),turn);
+                // The owner was released while this open dialed (a recovery gave up on it): stop the connection and open nothing.
+                let bound: Arc<dyn host_command_dispatch::HostRpcClient>=live.clone();
+                if !bind_client(Some(bound)) {
+                    client.stop().await;
+                    return Err(HostSessionOpenError::from(session_client_opening::released_while_dialing()));
+                }
                 let mut spec=spec.clone();
                 if let Some(reference)=spec.model.as_deref() {
                     let decorators=maho_omo_task::planner_explicit_pin::split_model_decorators(reference);
@@ -338,7 +358,7 @@ impl HostAssembly {
                 } else if let (Some(model),Some(chain))=(&spec.model,&spec.fallback_models)
                     && !chain.is_empty(){request["retryFallback"]=json!({"modelFallback":true,"fallbackChains":{(model):chain}});}
                 if let Some(reasoning)=spec.reasoning.as_ref().or(spec.variant.as_ref()){request["thinkingLevel"]=reasoning.clone().into();}
-                let opened=match client.open_session(request).await {Ok(opened)=>opened,Err(cause)=>{client.stop().await;return Err(open_error_from_rpc_cause(cause, &path));}};
+                let opened=match client.open_session(request).await {Ok(opened)=>opened,Err(cause)=>{bind_client(None);client.stop().await;return Err(open_error_from_rpc_cause(cause, &path));}};
                 let routing_id=client.session_id().ok_or_else(||error("host open returned no routing ID"))?;
                 let watch=live.clone();
                 let port=Arc::new(session_client_connection::SessionClientConnection::new(routing_id.clone(),live.clone(),live.clone()).with_turn_watcher(Arc::new(move ||watch.watch())));
@@ -348,7 +368,7 @@ impl HostAssembly {
                     attached:opened["attached"]==true,durable_session_id:None,reported_model:None,
                 },Arc::new(move ||outcome.outcome()) as Arc<dyn Fn()->senpi_task::runners::RunnerOutcome+Send+Sync>))
             }
-            #[cfg(not(unix))] {let _=(spec,agent_dir,runtime,socket,path,context,turn,designated_chain_only);Err(HostSessionOpenError::Host { message: "host runner unavailable on Windows".into() })}
+            #[cfg(not(unix))] {let _=(spec,agent_dir,runtime,socket,path,context,turn,designated_chain_only,bind_client);Err(HostSessionOpenError::Host { message: "host runner unavailable on Windows".into() })}
         })
     }
 }
@@ -544,7 +564,7 @@ fn build_host_runner(
                 .to_string_lossy()
                 .into_owned()
             });
-            open_assembly.open_with_policy(spec, context, socket, path, designated_chain_only)
+            open_assembly.open_with_policy(spec, context, socket, path, designated_chain_only, None)
         }),
     };
     ProductionHostRunner {
