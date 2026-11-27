@@ -460,6 +460,8 @@ mod tests {
     async fn every_overdue_grace_period_records_an_alarm_and_re_arms_until_the_child_exits() {
         let temp = tempfile::tempdir().unwrap();
         let daemon_dir = temp.path().join("daemon");
+        // The launch creates the endpoint dir before any record is written (senpi#5090).
+        std::fs::create_dir_all(&daemon_dir).unwrap();
         let dir = daemon_dir.clone();
         let running = Arc::new(AtomicBool::new(true));
         let drain = SupervisorDrain::new(

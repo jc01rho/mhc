@@ -31,12 +31,13 @@ pub fn record_host_crash(daemon_dir: &Path, record: &Value) {
 }
 fn append_and_prune(daemon_dir: &Path, record: &Value) -> Result<(), std::io::Error> {
     #[cfg(unix)]
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let mut directory = fs::DirBuilder::new();
-    directory.recursive(true);
-    #[cfg(unix)]
-    directory.mode(0o700);
-    directory.create(daemon_dir)?;
+    use std::os::unix::fs::OpenOptionsExt;
+    // senpi#5090: the writer annotates existing storage and never creates it. Storage removal is final: a record whose
+    // endpoint dir is already gone (the owner cleaned the sandbox, `host gc` reaped the endpoint) is dropped instead of
+    // recreating the deleted tree. The launch creates the dir before any live writer exists.
+    if !daemon_dir.exists() {
+        return Ok(());
+    }
     let path = host_crash_record_file(daemon_dir);
     let mut options = OpenOptions::new();
     options.create(true).append(true);
@@ -116,6 +117,24 @@ mod tests {
         let file = dir.path().join("file");
         fs::write(&file, "x").unwrap();
         record_host_crash(&file.join("daemon"), &json!({"at":"fixed"}));
+    }
+    // senpi#5090: a terminal record annotates existing daemon state and never creates it.
+    #[test]
+    fn a_record_for_a_removed_endpoint_is_dropped_and_recreates_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let agent_dir = root.path().join("agent");
+        let daemon_dir = agent_dir.join("rpc-host-daemon");
+        fs::create_dir_all(&daemon_dir).unwrap();
+        note_child_exit(&daemon_dir, None, Some("SIGTERM"), 0, 902_233);
+        assert_eq!(read_host_crash_records(&daemon_dir).len(), 1);
+
+        fs::remove_dir_all(&agent_dir).unwrap();
+        note_child_exit(&daemon_dir, None, Some("SIGTERM"), 0, 902_233);
+        record_host_crash(&daemon_dir, &json!({"at":"fixed"}));
+
+        assert!(!agent_dir.exists());
+        assert!(!daemon_dir.exists());
+        assert!(read_host_crash_records(&daemon_dir).is_empty());
     }
     #[test]
     fn torn_final_line_is_skipped() {
