@@ -174,7 +174,11 @@ fn component(
 }
 
 fn run(component: &GatewayThreadComponent, name: &str, args: Value) -> Value {
-    block_on(component.execute(name, "call-1", args).expect("tool"))
+    let call_id = format!(
+        "call-{}",
+        super::NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    );
+    block_on(component.execute(name, &call_id, args).expect("tool"))
 }
 
 fn keys(value: &Value, found: &mut Vec<String>) {

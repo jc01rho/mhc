@@ -70,6 +70,7 @@ pub mod store_woken_ops;
 pub mod store_worker;
 pub mod thread_row;
 pub mod thread_state;
+pub mod tool_receipts;
 pub mod tools;
 pub mod types;
 pub mod wake;

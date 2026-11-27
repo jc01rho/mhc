@@ -268,7 +268,81 @@ pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> 
 
     tools.extend(super::control_tools::create_control_tools(&options));
     tools.push(super::create_tool::thread_create_tool(&options));
+    receipted(tools, &options)
+}
+
+/// Every tool but the two sends records its call under an idempotency key before it runs (`tool_receipts.rs`); a send owns
+/// its idempotency in the gateway engine's receipt, written in the delivery's own transaction.
+fn receipted(tools: Vec<ThreadTool>, options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool> {
+    let store: Arc<dyn super::tool_receipts::ToolReceiptStore> = Arc::new(options.store.clone());
+    let receipts = super::tool_receipts::ToolReceipts::new(store);
+    let caller = options.caller_session_id.clone();
+    let create_options = options.clone();
     tools
+        .into_iter()
+        .map(|tool| {
+            if tool.name == "thread_send" || tool.name == "thread_handoff" {
+                return tool;
+            }
+            let receipts = receipts.clone();
+            let caller = caller.clone();
+            let name = tool.name.clone();
+            if name == "thread_create" {
+                let create_options = create_options.clone();
+                return ThreadTool {
+                    execute: Arc::new(move |call_id: &str, args: Value| {
+                        let receipts = receipts.clone();
+                        let caller = caller.clone();
+                        let create_options = create_options.clone();
+                        let call_id = call_id.to_owned();
+                        Box::pin(async move {
+                            let caller_id = (caller)();
+                            let key = call_id.clone();
+                            let passed = args.clone();
+                            receipts
+                                .execute("thread_create", &key, &caller_id, args, move |retrying| {
+                                    let options = create_options.clone();
+                                    let call_id = call_id.clone();
+                                    let args = passed.clone();
+                                    Box::pin(async move {
+                                        super::create_tool::create_body(
+                                            options, call_id, args, retrying,
+                                        )
+                                        .await
+                                    })
+                                })
+                                .await
+                        })
+                    }),
+                    ..tool
+                };
+            }
+            let inner = tool.execute.clone();
+            ThreadTool {
+                execute: Arc::new(move |call_id: &str, args: Value| {
+                    let receipts = receipts.clone();
+                    let inner = inner.clone();
+                    let caller = caller.clone();
+                    let name = name.clone();
+                    let call_id = call_id.to_owned();
+                    Box::pin(async move {
+                        let caller_id = (caller)();
+                        let key = call_id.clone();
+                        let passed = args.clone();
+                        receipts
+                            .execute(&name, &key, &caller_id, args, move |_retrying| {
+                                let inner = inner.clone();
+                                let call_id = call_id.clone();
+                                let args = passed.clone();
+                                Box::pin(async move { (inner)(call_id.as_str(), args).await })
+                            })
+                            .await
+                    })
+                }),
+                ..tool
+            }
+        })
+        .collect()
 }
 
 /// The tools a session's registered extension ops add: `ext_<extension>_<toolName>`, each waiting on

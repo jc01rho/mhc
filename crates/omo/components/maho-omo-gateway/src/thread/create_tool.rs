@@ -2,8 +2,8 @@
 //!
 //! Upstream counterpart: the `create` tool of `thread/tools.ts`. It parses the call, reads this device once, and runs the one
 //! create body (`control/create.rs`) under the call's budget; its first prompt goes through the same send path
-//! `thread_send` takes. The tool-receipt wrapper (`toolReceiptBegin` / `toolReceiptSettle`) is not ported, so a call under a
-//! key already used is answered by the create's own id derived from the key (#14060), not by a stored result.
+//! `thread_send` takes. The tool-receipt wrapper (`tool_receipts.rs`) runs this body under the call's idempotency key, so
+//! a create whose open may have made its thread is retried as the recovery it is (`retrying`, omo#14060).
 
 use std::sync::Arc;
 
@@ -64,6 +64,7 @@ struct ToolCreateSurface {
     options: Arc<ThreadToolsOptions>,
     operation_id: String,
     caller_id: String,
+    retrying: Option<Retrying>,
 }
 
 async fn deliver_remote_prompt(
@@ -208,7 +209,7 @@ impl CreateSurface for ToolCreateSurface {
     }
 
     fn retrying(&self) -> Option<Retrying> {
-        None
+        self.retrying.clone()
     }
 
     fn view(&self) -> BoxFuture<ControlResult<ThreadCall>> {
@@ -291,7 +292,12 @@ impl CreateSurface for ToolCreateSurface {
     }
 }
 
-async fn create_body(options: Arc<ThreadToolsOptions>, call_id: String, args: Value) -> Value {
+pub(crate) async fn create_body(
+    options: Arc<ThreadToolsOptions>,
+    call_id: String,
+    args: Value,
+    retrying: Option<Retrying>,
+) -> Value {
     let input = match ThreadCreateInput::parse(&args) {
         Ok(input) => input,
         Err(failure) => return error_json(*failure),
@@ -310,6 +316,7 @@ async fn create_body(options: Arc<ThreadToolsOptions>, call_id: String, args: Va
         caller_id: (options.caller_session_id)(),
         options: options.clone(),
         operation_id,
+        retrying,
     };
     let deadline = call_budget::now_ms() + call_budget::TOOL_CALL_BUDGET_MS;
     finish(call_budget::with_call_deadline(deadline, create_thread(&call, &input, &surface)).await)
@@ -325,7 +332,7 @@ pub fn thread_create_tool(options: &Arc<ThreadToolsOptions>) -> ThreadTool {
         execute: Arc::new(move |call_id: &str, args: Value| -> BoxFuture<Value> {
             let options = options.clone();
             let call_id = call_id.to_owned();
-            Box::pin(create_body(options, call_id, args))
+            Box::pin(create_body(options, call_id, args, None))
         }),
     }
 }

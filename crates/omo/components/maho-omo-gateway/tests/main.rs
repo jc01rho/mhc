@@ -1,6 +1,11 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+use std::sync::atomic::AtomicU64;
+
+/// Each tool call in these modules takes its own call id, so no two calls share a receipt key.
+pub(crate) static NEXT_CALL: AtomicU64 = AtomicU64::new(1);
+
 #[path = "gateway_receipt_tests.rs"]
 mod gateway_receipt_tests;
 #[path = "gateway_schema_tests.rs"]
@@ -25,6 +30,8 @@ mod store_extension_tests;
 mod thread_control_tests;
 #[path = "thread_create_tests.rs"]
 mod thread_create_tests;
+#[path = "tool_receipts_tests.rs"]
+mod tool_receipts_tests;
 #[path = "wake_carrier_tests.rs"]
 mod wake_carrier_tests;
 #[path = "wake_pending_sweep_tests.rs"]

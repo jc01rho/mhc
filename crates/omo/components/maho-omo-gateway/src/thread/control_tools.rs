@@ -37,9 +37,16 @@ const SELF_OR_THREAD: &str = "Thread to act on. Omit or pass self for this sessi
 const ALL_SCOPE: &str = "Address threads in every workspace on this machine instead of only the caller's workspace; left unset, an exact id from another workspace returns scope_denied.";
 const ROUTE_TO_TASK: &str = "; to spawn a child task instead, use task.";
 const DELIVERY_ID_MAX_CHARS: usize = 128;
+const IDEMPOTENCY_KEY: &str = "Caller-chosen key that makes a retried call return the earlier result instead of repeating the side effect; reusing the key with different arguments returns idempotency_conflict.";
 
-/// A transport failure as the call's answer.
+/// A transport failure as the call's answer, carrying the message it was thrown with so the call's receipt settles
+/// uncertain under it, as a throw's does upstream.
 pub fn transport_failure(message: &str) -> Value {
+    let answer = mapped_transport_failure(message);
+    super::tool_receipts::thrown(answer, message)
+}
+
+fn mapped_transport_failure(message: &str) -> Value {
     if let Some(socket) = message.strip_prefix("host_unavailable:") {
         return error_json(thread_tool_failure(
             "host_unavailable",
@@ -416,6 +423,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                         "items": { "type": "string", "enum": ["opening", "running", "idle", "inactive", "archived"] },
                         "description": "Thread states to list: opening (not yet ready for controls), running, idle, inactive (no engine holds it) or archived; the default lists every state but archived.",
                     },
+                    "idempotency_key": { "type": "string", "description": IDEMPOTENCY_KEY },
                 }),
                 &[],
             ),
@@ -432,6 +440,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                     "cursor": { "type": "string", "description": "Opaque cursor from an earlier thread_read (tool.thread_read() in an eval cell) to page the older messages of a truncated read; a transcript that moved past it returns cursor_stale." },
                     "max_bytes": { "type": "integer", "minimum": 1, "maximum": THREAD_READ_MAX_BYTES, "description": "Byte budget for the returned transcript slice, default 131072 and capped at 1048576; a longer transcript returns truncated with next_cursor." },
                     "all_scope": { "type": "boolean", "description": ALL_SCOPE },
+                    "idempotency_key": { "type": "string", "description": IDEMPOTENCY_KEY },
                 }),
                 &["thread"],
             ),
@@ -446,6 +455,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                     "thread": { "type": "string", "description": ADDRESS },
                     "turn_id": { "type": "string", "description": "Running turn to stop, defaulting to the newest running turn; interrupting an idle thread returns success with interrupted false." },
                     "all_scope": { "type": "boolean", "description": ALL_SCOPE },
+                    "idempotency_key": { "type": "string", "description": IDEMPOTENCY_KEY },
                 }),
                 &["thread"],
             ),
@@ -462,6 +472,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                     "force": { "type": "boolean", "description": "Close even when the thread has messages it has not read yet; they are dropped and listed in dropped_deliveries." },
                     "graceful": { "type": "boolean", "description": "Let the running turn end instead of stopping it; new messages are refused and unread ones go back to their senders. Monitors, loops and the goal stop cleanly. Also closes a terminal's thread, which then exits." },
                     "wait_ms": { "type": "integer", "minimum": 1, "maximum": 600_000, "description": "How long a graceful close waits for the turn (default 30000, cut to what the call has left)." },
+                    "idempotency_key": { "type": "string", "description": IDEMPOTENCY_KEY },
                 }),
                 &[],
             ),
@@ -477,6 +488,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                     "name": { "type": "string", "minLength": 1, "maxLength": 200, "description": "New display label for the thread; the thread keeps its id as its address, and a label already used by another visible thread returns name_conflict." },
                     "alias": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Alias for the thread. With no account alias registry it becomes the thread's local name instead (unless name is set) and the result carries alias_scope \"local\"." },
                     "all_scope": { "type": "boolean", "description": ALL_SCOPE },
+                    "idempotency_key": { "type": "string", "description": IDEMPOTENCY_KEY },
                 }),
                 &[],
             ),
@@ -492,6 +504,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                     "model": { "type": "string", "minLength": 1, "description": "Model to switch the thread to, as provider/id, an exact model id, or a case-insensitive fragment of the id or display name, resolved against the target's catalog. Append a thinking level such as :max to apply it after switching. No match returns model_not_found with the available list; an absent provider adds details.reason = provider_not_configured and lists the target's available providers. Several matches return model_ambiguous with candidates." },
                     "provider": { "type": "string", "description": "Restricts resolution to one provider when the fragment alone would match models from several providers." },
                     "all_scope": { "type": "boolean", "description": ALL_SCOPE },
+                    "idempotency_key": { "type": "string", "description": IDEMPOTENCY_KEY },
                 }),
                 &["thread", "model"],
             ),
@@ -507,6 +520,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                     "level": { "type": "string", "enum": THINKING_LEVELS, "description": "Thinking level to apply; a level the thread's active model cannot run returns thinking_level_unsupported with the supported list and leaves the thread unchanged." },
                     "scope": { "type": "string", "enum": ["session", "turn"], "description": "session (default) or turn; either changes only this thread's level and never the level the device remembers for the model." },
                     "all_scope": { "type": "boolean", "description": ALL_SCOPE },
+                    "idempotency_key": { "type": "string", "description": IDEMPOTENCY_KEY },
                 }),
                 &["thread", "level"],
             ),
@@ -521,6 +535,7 @@ pub fn create_control_tools(options: &Arc<ThreadToolsOptions>) -> Vec<ThreadTool
                     "thread": { "type": "string", "description": ADDRESS },
                     "archived": { "type": "boolean", "description": "true (the default) archives the thread, so thread_list (tool.thread_list() in an eval cell) hides it unless state includes archived; false unarchives it." },
                     "all_scope": { "type": "boolean", "description": ALL_SCOPE },
+                    "idempotency_key": { "type": "string", "description": IDEMPOTENCY_KEY },
                 }),
                 &["thread"],
             ),
