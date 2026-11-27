@@ -3,8 +3,8 @@
 use std::fs;
 use std::path::Path;
 
-/// Measured size of the authored core contract (13,894 bytes) plus the 10% ceiling.
-const CORE_CAP_BYTES: usize = 15_283;
+/// Measured size of the authored core contract (15,348 bytes after the omo v5.1.84 behavior update) plus the 10% ceiling.
+const CORE_CAP_BYTES: usize = 16_883;
 /// Per-reference budget for the on-demand modules.
 const REFERENCE_CAP_BYTES: usize = 6_000;
 const FORBIDDEN_TOKENS: [&str; 3] = ["HOP to", "omo-agent-toolkit", "script/qa/"];
