@@ -9,10 +9,14 @@ pub mod attach_pool;
 pub mod closed_rows;
 pub mod cross_device;
 pub mod device_service;
+pub mod lookup_gate;
 pub mod outcome;
 pub mod ports;
 pub mod receipt;
 pub mod remote_ops;
+pub mod remote_watch;
+pub mod session_state;
+pub mod watch_queue;
 
 use std::sync::Arc;
 

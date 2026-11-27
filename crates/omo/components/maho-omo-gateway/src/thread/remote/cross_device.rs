@@ -417,6 +417,8 @@ mod tests {
             controls: None,
             error_note: None,
             skills: None,
+            worktree: None,
+            warnings: None,
         }
     }
 

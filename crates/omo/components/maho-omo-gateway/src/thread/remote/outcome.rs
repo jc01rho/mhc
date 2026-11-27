@@ -278,6 +278,26 @@ fn chain_count_limit_failure(device: &str) -> Box<ThreadToolFailure> {
     ))
 }
 
+/// A refused record sent to another device's engine endpoint (`endpointCommand`: an open, a `find_session`).
+/// A `route_unlisted` there names the endpoint, not a session: the engine went away before the record reached it (omo#14233).
+pub fn endpoint_outcome_failure(
+    outcome: &RemoteCommandOutcome,
+    device: &str,
+) -> Box<ThreadToolFailure> {
+    if matches!(outcome, RemoteCommandOutcome::Refused { reason, .. } if reason == "route_unlisted")
+    {
+        return Box::new(thread_tool_failure(
+            "host_unavailable",
+            format!(
+                "Device {device} no longer lists the engine it named (route_unlisted); nothing was sent there."
+            ),
+            "Retry; if it repeats, restart omo on that device.",
+            Some(json!({ "device": device, "reason": "route_unlisted" })),
+        ));
+    }
+    relay_outcome_failure(outcome, device)
+}
+
 /// Maps a [`RemoteCommandOutcome`] failure (`Refused` / `Uncertain`) into a [`ThreadToolFailure`], escaping any
 /// free-form reason text from the other device (#13304, `thread/remote/outcome.ts` `outcomeFailure`).
 pub fn relay_outcome_failure(

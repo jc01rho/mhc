@@ -31,7 +31,7 @@ use super::port::{
     SESSION_ONLY_THINKING_SCOPE, SessionControl, SessionHost, SessionModelState, refuse,
     session_model_state,
 };
-use super::relay_session_host::displayed_thread;
+use super::relay_session_host::{create_relay_session_host, displayed_thread};
 
 fn is_thinking_unsupported(reason: &str) -> bool {
     reason == "thinking_level_unsupported"
@@ -464,6 +464,7 @@ impl SessionControl for RelayControl {
 pub struct RelayControlLocator {
     remote: Arc<RemoteThreadSurface>,
     agentd: Option<Arc<AgentdClient>>,
+    relay_host: bool,
 }
 
 impl RelayControlLocator {
@@ -471,12 +472,19 @@ impl RelayControlLocator {
         Self {
             remote: with_closed_rows(remote),
             agentd: None,
+            relay_host: false,
         }
     }
 
     /// The same locator, opening on the devices whose peer entry names an agentd daemon.
     pub fn with_agentd(mut self, agentd: Arc<AgentdClient>) -> Self {
         self.agentd = Some(agentd);
+        self
+    }
+
+    /// Enables `RelaySessionHost` over `remote` for every device the surface reaches.
+    pub fn with_relay_session_host(mut self) -> Self {
+        self.relay_host = true;
         self
     }
 
@@ -487,11 +495,19 @@ impl RelayControlLocator {
 
 impl RemoteControlLocator for RelayControlLocator {
     fn session_host(&self, device: &str) -> Option<Arc<dyn SessionHost>> {
-        let client = self.agentd.as_ref()?;
-        if !client.reaches(device) {
-            return None;
+        if let Some(client) = self.agentd.as_ref()
+            && client.reaches(device)
+        {
+            return Some(Arc::new(AgentdSessionHost::new(Arc::clone(client), device)));
         }
-        Some(Arc::new(AgentdSessionHost::new(Arc::clone(client), device)))
+        if self.relay_host {
+            return Some(Arc::new(create_relay_session_host(
+                Arc::clone(&self.remote),
+                device,
+                None,
+            )));
+        }
+        None
     }
     fn locate(
         &self,

@@ -79,9 +79,11 @@ and the solo-probe gate (#14748), `mhc.session.open` for a reopen and a fork (#1
 with its chunked parts, `mhc.session.follow` with seq/ack/resume (#14091, `25dc4d8220`), and
 `mhc.delivery.push`/`mhc.delivery.outcome` (#14623). A device with no `agentd` entry keeps the relay path unchanged;
 `mhc-relayd` is not removed, so the six names above stay the gap for that path and the row stays `blocked` for it.
-What is still unwritten on the agentd path: the transcript read op (`mhc.session.read` is named in the contract but no
-mhc caller sends it; `thread_read` still reads a row from its session file), the consumer of the follow stream
-(`remote_ops.rs` has no `followRemote` loop), and the fence, admission and remote-session-watch rules of the live port.
+The `remote-consumers` track (`docs/omo-sync/v5.1.84/remote-consumers.md`) closes the remaining consumer legs on the
+agentd path: `AgentdPorts::read` sends `mhc.session.read`, `remote_ops.rs` `follow_remote` consumes `AgentdFollow`
+and `mhc.session.read` with the `25dc4d8220` buffered-output retention rule, `lookup_gate.rs` and `remote_watch.rs`
+implement the #14748 fence, admission and watch-recovery rules over `AgentdPorts`, and `relay_session_host.rs` /
+`AgentdSessionHost` implement `SessionHost::adopt`, remote worktree setup/cleanup and #14623 review M5 unload confirmation.
 
 ## F — `fork_from` on an engine advertising `open_session_fork`: `port` (fork track)
 
