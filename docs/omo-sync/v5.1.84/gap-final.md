@@ -11,9 +11,8 @@ Counts computed from the slice rows below (E and F are the two rows this track h
 
 | verdict | slices |
 |---|---:|
-| port | 3 |
+| port | 4 |
 | ported | 1 |
-| see `thread-core.md` (reply grant) | 1 |
 | gap | 1 |
 | blocked | 1 |
 | **total** | **7** |
@@ -24,7 +23,7 @@ Counts computed from the slice rows below (E and F are the two rows this track h
 |---|---|---|---|
 | tool receipts | #14623 `351df3416c`, `a77765fca0`, `abf5e307ac`, `1e5ecd91a9`; #14569 `cdc0aa9720`; #14560 `877fe926ec` local half | port | `crates/omo/components/maho-omo-gateway` `src/thread/tool_receipts.rs`, `create_tool.rs`, `remote/receipt.rs`, `store_tool_receipts.rs`; `tests/tool_receipts_tests.rs`, `tests/gateway_receipt_tests.rs` |
 | consumer and intake | #14623 `dde26d7b4c`, `1e5ecd91a9`; #13037 design 5.4–5.5 | port | `src/thread/consumer/delivery_consumer.rs` (`create_delivery_consumer`), `src/thread/store_ops.rs` (`intake`), `store_api.rs`, `store.rs`; `tests/intake_tests.rs` |
-| reply grant | #14541 `8409382654`, #14542 `ca85fc8b51` | see `thread-core.md` | `crates/omo/components/maho-omo-gateway` `src/thread/` |
+| reply grant | #14541 `8409382654`, #14542 `ca85fc8b51` | port | `src/thread/reply_permission.rs`, `src/thread/reply_target.rs`, `src/thread/run_context.rs`, `src/thread/tools.rs` `reply_delivery_target`; `tests/reply_scope_tests.rs` |
 | resolve | #14305 `a5f001273f` | port | `crates/omo/components/maho-omo-remote` `src/verbs.rs`, `verbs_resolve_tests.rs` |
 | sdk | #14948 `bb8b61313a`, `5d2e861f2f` | ported | `crates/omo/omo-sdk-contract` `src/calls.rs`, `src/shape.rs`, `src/results/root.rs`, `tests/root_calls.rs`; see `parity.d/5184s.md` and `docs/omo-sync/v5.1.84/omo-sdk.md` |
 
