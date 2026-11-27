@@ -19,7 +19,7 @@ use crate::thread::contracts_results::ThreadResultSummary;
 use crate::thread::control::port::{
     ControlError, ControlResult, SessionHost, SessionOpenOptions, SessionOpenRequest, refuse,
 };
-use crate::thread::control::session_host::opened_thread;
+use crate::thread::control::session_host::{OPEN_SESSION_FORK, opened_thread};
 use crate::thread::host_view::ThreadHostSession;
 use crate::thread::remote::address_book::relay_address_entry;
 use crate::thread::remote::attach_pool::{AttachTransport, AttachedClient};
@@ -721,6 +721,18 @@ impl SessionHost for AgentdSessionHost {
                     Some(json!({ "device": device, "reason": error })),
                 )),
             }
+        })
+    }
+
+    fn forks(&self) -> BoxFuture<ControlResult<bool>> {
+        let client = Arc::clone(&self.client);
+        let device = self.device.clone();
+        Box::pin(async move {
+            Ok(client
+                .capabilities(&device)
+                .await
+                .iter()
+                .any(|name| name == OPEN_SESSION_FORK))
         })
     }
 

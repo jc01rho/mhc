@@ -339,10 +339,15 @@ impl AgentdLink {
                 let _ = sender.send(Err(AgentdError::Timeout));
             }
         }
-        shared.resend.retain(|frame| {
+        let sent = std::mem::take(&mut shared.resend);
+        let mut keep = Vec::new();
+        for frame in sent {
             let id = frame.get("id").and_then(Value::as_str).unwrap_or_default();
-            shared.waiters.contains_key(id)
-        });
+            if shared.waiters.contains_key(id) {
+                keep.push(frame);
+            }
+        }
+        shared.resend = keep;
     }
 
     async fn serve_connection(
