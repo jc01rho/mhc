@@ -20,9 +20,9 @@ use std::time::Duration;
 use omo_config_core::ResolvedSessionWakeSettings;
 
 use super::carrier::{
-    AdmitIntake, CancelScheduled, Carrier, CarrierError, CarrierEvent, CarrierEventListener,
-    CarrierOptions, CarrierWakeOutcome, CwdSwitch, EnsureHost, MemoryFloor, MemoryProbe, Schedule,
-    ScheduledRun, Switch, WakeLimit, create_carrier,
+    AdmitIntake, CancelScheduled, Carrier, CarrierError, CarrierErrorListener, CarrierEvent,
+    CarrierEventListener, CarrierOptions, CarrierWakeOutcome, CwdSwitch, EnsureHost, MemoryFloor,
+    MemoryProbe, Schedule, ScheduledRun, Switch, WakeLimit, create_carrier,
 };
 use super::carrier_connection::CarrierConnect;
 use super::consumer_start::{
@@ -384,6 +384,14 @@ fn start_running(input: ThreadWakeStart) -> Option<Arc<RunningThreadWake>> {
             }
         })
     };
+    let on_error: CarrierErrorListener = {
+        let warn = warn.clone();
+        Arc::new(move |error: &CarrierError| {
+            warn(&format!(
+                "thread wake: the carrier's sweep failed and retries at its next tick: {error}"
+            ));
+        })
+    };
     let carrier = create_carrier(CarrierOptions {
         store: store.clone(),
         sessions_directory: sessions_directory.clone(),
@@ -402,6 +410,7 @@ fn start_running(input: ThreadWakeStart) -> Option<Arc<RunningThreadWake>> {
         memory_floor: Some(default_memory_floor()),
         schedule: schedule.clone(),
         on_event: Some(on_event),
+        on_error: Some(on_error),
     });
     let inner = Arc::new(RuntimeInner {
         carrier,
@@ -428,7 +437,13 @@ fn start_running(input: ThreadWakeStart) -> Option<Arc<RunningThreadWake>> {
 
 impl RuntimeInner {
     fn wake(&self, durable_id: &str) -> Result<(), CarrierError> {
-        let outcome = self.carrier.wake(durable_id)?;
+        // Every caller (a send, the consumer, the pending sweep) answers its sender without waiting on this wake, so the
+        // failure is reported here; the requested row stays and the carrier's sweep tries it again.
+        let outcome = self.carrier.wake(durable_id).inspect_err(|error| {
+            (self.warn)(&format!(
+                "thread wake: {durable_id} was not woken and is retried by the sweep: {error}"
+            ));
+        })?;
         // The rows a close settled during this wake leave drained marks no carry ending will report (omo#14273
         // follow-up, #14383).
         if outcome == CarrierWakeOutcome::NothingQueued {
