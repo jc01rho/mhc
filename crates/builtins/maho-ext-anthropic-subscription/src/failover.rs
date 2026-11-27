@@ -1537,6 +1537,7 @@ mod tests {
             messages: vec![maho_ai::types::Message::User(maho_ai::types::UserMessage {
                 content: maho_ai::types::UserContent::Text("check".into()),
                 timestamp,
+                client_message_id: None,
             })],
             ..Default::default()
         };

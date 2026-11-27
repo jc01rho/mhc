@@ -170,6 +170,7 @@ async fn a_transcript_system_message_exposes_its_tools_to_claude_code() {
             Message::User(UserMessage {
                 content: UserContent::Text("hello".into()),
                 timestamp: 1,
+                client_message_id: None,
             }),
         ],
         ..Default::default()

@@ -2925,6 +2925,7 @@ mod tests {
             env_key: None,
             env_var_name: None,
             stored_revision: None,
+            material_revision: None,
         };
         let (_, _, work, _work_link) =
             prepare_slot_request(&models, &model, &slot("work"), Default::default())
