@@ -62,7 +62,7 @@
 // source path and sha256 are recorded.
 //
 // The browser skill's engine runtime (upstream `skills/browser/runtime/omowright/`: the bundled
-// omowright entry, its page bundle and the materializer manifest) is build-materialized and never
+// omowright entry, its page bundle, omowright's own LICENSE and the materializer manifest) is build-materialized and never
 // committed, so the selected latest staging REQUIRES --omowright-runtime <dir> and records the
 // runtime's own manifest identity (omowright version, source digest, immutable commit) plus the
 // sha256 of every staged runtime file. A content-only `browser` tree is refused: without the
@@ -102,7 +102,7 @@ import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -151,7 +151,7 @@ const MIT_LSP_DAEMON_NAME = `mhc-lsp${EXE_SUFFIX}`;
 const BROWSER_SKILL_NAME = "browser";
 const BROWSER_RUNTIME_REL_DIR = "runtime/omowright";
 const BROWSER_RUNTIME_MANIFEST = "manifest.json";
-const BROWSER_RUNTIME_FILES = ["index.js", "page-bundle.js", BROWSER_RUNTIME_MANIFEST];
+const BROWSER_RUNTIME_FILES = ["index.js", "page-bundle.js", "LICENSE", BROWSER_RUNTIME_MANIFEST];
 const BROWSER_RUNTIME_TARGET_DIR = `${SKILLS_DIR}/${BROWSER_SKILL_NAME}/${BROWSER_RUNTIME_REL_DIR}`;
 
 // The repository-owned latest asset overlay, relative to the repository root. It is read only by
@@ -1679,7 +1679,7 @@ async function selfTest() {
 		const runtimeOverlaySkills = join(runtimeOverlayRoot, SKILLS_DIR);
 		await mkdir(join(runtimeOverlaySkills, BROWSER_SKILL_NAME), { recursive: true });
 		await writeFile(join(runtimeOverlaySkills, BROWSER_SKILL_NAME, "SKILL.md"), `# ${BROWSER_SKILL_NAME}\nlatest\n`);
-		const omowrightCommit = "293ca5002cbd4c8b0c104c5934683385ef7e0d3a";
+		const omowrightCommit = "d3b1a5d3c49b28fb670fec2d8b5b8e18bfd6756c";
 		const runtimeOverlayCommit = "e".repeat(40);
 		const writeRuntimeOverlay = async (extra = {}) => {
 			await writeFile(
@@ -1707,9 +1707,10 @@ async function selfTest() {
 		const writeRuntime = async (extra = {}) => {
 			await writeFile(join(runtimeDir, "index.js"), "export const connectBrowserSkill = () => 'fixture-session';\n");
 			await writeFile(join(runtimeDir, "page-bundle.js"), "(function(){ globalThis.__omowright = { fixture: true } })();\n");
+			await writeFile(join(runtimeDir, "LICENSE"), "MIT License\n\nCopyright (c) fixture\n");
 			await writeFile(
 				join(runtimeDir, BROWSER_RUNTIME_MANIFEST),
-				`${JSON.stringify({ name: "omowright", version: "0.0.0-fixture", commit: omowrightCommit, sourceDigest: "a".repeat(64), files: { "index.js": "b".repeat(64), "page-bundle.js": "c".repeat(64) }, ...extra }, null, 2)}\n`,
+				`${JSON.stringify({ name: "omowright", version: "0.0.0-fixture", commit: omowrightCommit, sourceDigest: "a".repeat(64), files: { "index.js": "b".repeat(64), "page-bundle.js": "c".repeat(64), LICENSE: "d".repeat(64) }, ...extra }, null, 2)}\n`,
 			);
 		};
 		await writeRuntimeOverlay();
@@ -1727,6 +1728,9 @@ async function selfTest() {
 		await rm(join(runtimeDir, "page-bundle.js"));
 		await expectReject("a runtime directory missing a staged file is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-short-runtime"), repoRoot: repo, latestAssets: runtimeOverlayRoot, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME), omowrightRuntime: runtimeDir }), "missing page-bundle.js");
 		await writeRuntime();
+		await rm(join(runtimeDir, "LICENSE"));
+		await expectReject("a runtime directory without omowright's LICENSE is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-no-license-runtime"), repoRoot: repo, latestAssets: runtimeOverlayRoot, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME), omowrightRuntime: runtimeDir }), "missing LICENSE");
+		await writeRuntime();
 		await writeRuntime({ commit: "f".repeat(40) });
 		await expectReject("a runtime materialized from a different omowright commit is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-foreign-runtime"), repoRoot: repo, latestAssets: runtimeOverlayRoot, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME), omowrightRuntime: runtimeDir }), "not the overlay-declared commit");
 		await writeRuntime();
@@ -1738,6 +1742,43 @@ async function selfTest() {
 		await writeFile(join(runtimeDroppedDir, MANIFEST_NAME), `${JSON.stringify(runtimeDropped, null, 2)}\n`);
 		const runtimeDroppedResult = await verify(runtimeDroppedDir);
 		check("a declared runtime file missing from the manifest is rejected", !runtimeDroppedResult.ok && runtimeDroppedResult.errors.some((error) => error.includes("browser runtime file is not in the hashed manifest") && error.includes("index.js")));
+
+		// --- omowright stager: the checkout layout it bundles, the LICENSE it ships, the identity it proves ---
+		// The release workflows run the stager on a git checkout of the pinned commit. omowright 0.3.x keeps
+		// TypeScript sources there, older releases JavaScript, a package built for its `exports` only `dist/`;
+		// sources win over the build and `.ts` over `.js`.
+		const stager = await import(pathToFileURL(join(realRepo, LATEST_ASSETS_DIR, "stage-omowright-runtime.mjs")).href);
+		const omowrightFixture = async (name, files) => {
+			const dir = join(root, `omowright-${name}`);
+			for (const [relPath, content] of Object.entries({ "package.json": `${JSON.stringify({ name: "omowright", version: "9.9.9" })}\n`, LICENSE: "MIT License\n", ...files })) {
+				await mkdir(dirname(join(dir, relPath)), { recursive: true });
+				await writeFile(join(dir, relPath), content);
+			}
+			await gitRun(["-C", dir, "init", "-q"]);
+			await gitRun(["-C", dir, "add", "-A"]);
+			await gitRun(["-C", dir, "-c", "user.email=fixture@example.com", "-c", "user.name=fixture", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"]);
+			return { dir, commit: await gitHead(dir) };
+		};
+		const stagerOptions = (source, name) => ({ sourceRoot: source.dir, targetDir: join(root, `stager-${name}`, "omowright"), identity: source.commit, bunExecutable: process.execPath });
+		const layoutEntry = (layout) => `export const layout = ${JSON.stringify(layout)};\n`;
+		const tsFiles = { "src/index.ts": layoutEntry("ts"), "src/core.ts": "export {};\n", "src/page-bundle.js": "// page world\n" };
+		const jsFiles = { "src/index.js": layoutEntry("js"), "src/core.js": "export {};\n", "src/page-bundle.js": "// page world\n" };
+		const distFiles = { "dist/index.js": layoutEntry("dist"), "dist/page-bundle.js": "// built page world\n" };
+		const stageFixture = async (name, files) => {
+			const source = await omowrightFixture(name, files);
+			const staged = await stager.stageOmowrightRuntime(stagerOptions(source, name));
+			return { source, staged, bundle: await readFile(join(staged.targetDir, "index.js"), "utf8") };
+		};
+		const allLayouts = await stageFixture("all", { ...tsFiles, ...jsFiles, ...distFiles });
+		check("the stager bundles the TypeScript entry before JavaScript sources and the built dist", allLayouts.bundle.includes('"ts"') && !allLayouts.bundle.includes('"js"') && !allLayouts.bundle.includes('"dist"'));
+		check("the stager falls back to JavaScript sources", (await stageFixture("js", jsFiles)).bundle.includes('"js"'));
+		check("the stager falls back to a built dist", (await stageFixture("dist", distFiles)).bundle.includes('"dist"'));
+		const stagedManifest = JSON.parse(await readFile(join(allLayouts.staged.targetDir, "manifest.json"), "utf8"));
+		check("the stager ships omowright's LICENSE and records its hash and the commit", (await readFile(join(allLayouts.staged.targetDir, "LICENSE"), "utf8")) === "MIT License\n" && stagedManifest.files.LICENSE === (await sha256(join(allLayouts.staged.targetDir, "LICENSE"))) && stagedManifest.commit === allLayouts.source.commit);
+		const unlicensed = await omowrightFixture("unlicensed", tsFiles);
+		await rm(join(unlicensed.dir, "LICENSE"));
+		await expectReject("the stager refuses an omowright without a LICENSE", stager.stageOmowrightRuntime(stagerOptions(unlicensed, "unlicensed")), "no LICENSE");
+		await expectReject("the stager refuses a checkout that is not the declared commit", stager.stageOmowrightRuntime({ ...stagerOptions(allLayouts.source, "foreign"), identity: "f".repeat(40) }), "not the declared commit");
 
 		// MIT profile: only MIT executables and notices, and a default (omo) payload is refused.
 		const mitBin = join(root, "mit-bin");

@@ -62,19 +62,21 @@
     "sourceDir": "runtime/browser/omowright",
     "materializer": "assets/omo-latest/stage-omowright-runtime.mjs",
     "upstreamMaterializer": "packages/shared-skills/stage-omowright-runtime.mjs",
-    "upstreamMaterializerCommit": "455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b",
+    "upstreamMaterializerCommit": "a7c9fc4212fae5239e76a93245f7414782450507",
     "files": [
       "index.js",
       "page-bundle.js",
+      "LICENSE",
       "manifest.json"
     ],
     "dependency": {
       "name": "omowright",
-      "spec": "github:code-yeongyu/omowright#293ca5002cbd4c8b0c104c5934683385ef7e0d3a",
-      "commit": "293ca5002cbd4c8b0c104c5934683385ef7e0d3a",
-      "declaredIn": "oh-my-opencode root package.json devDependencies at 455dee62…"
+      "spec": "github:code-yeongyu/omowright#d3b1a5d3c49b28fb670fec2d8b5b8e18bfd6756c",
+      "commit": "d3b1a5d3c49b28fb670fec2d8b5b8e18bfd6756c",
+      "version": "0.3.4",
+      "declaredIn": "oh-my-openagent root package.json devDependencies at v5.1.84 (8dbccd128…): omowright ^0.3.4, bun.lock 0.3.4; mhc pins the commit of the omowright v0.3.4 tag"
     },
-    "note": "The browser skill's engine runtime is build-materialized, never committed (see runtime/.gitignore), exactly as upstream gitignores skills/browser/runtime/omowright/. `--skill-source latest` requires --omowright-runtime <dir> and refuses a content-only browser tree; the staged manifest records this identity plus each runtime file's sha256. This is packaging of upstream skill content only: no desktop/browser implementation, engine authorization or extension bridge."
+    "note": "The browser skill's engine runtime is build-materialized, never committed (see runtime/.gitignore), exactly as upstream gitignores skills/browser/runtime/omowright/. `--skill-source latest` requires --omowright-runtime <dir> and refuses a content-only browser tree; the staged manifest records this identity plus each runtime file's sha256, and the runtime ships omowright's own LICENSE beside the bundle. This is packaging of upstream skill content only: no desktop/browser implementation, engine authorization or extension bridge."
   },
   "skills": {
     "adversarial-plan": [

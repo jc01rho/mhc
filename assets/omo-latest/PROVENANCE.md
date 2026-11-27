@@ -15,7 +15,7 @@ This file records only the overlay-side provenance.
 | Copy mechanism | byte-exact file copy (mode preserved), filtered by `skill-source-filter.mjs` semantics |
 | Installed loader | `OMO_SENPI_SKILLS_ROOT` → `<install>/skills` (`manifest.json.loader`) |
 | git-bash sibling | native binary name `omo-git-bash`; staged from the single `--git-bash-binary` flag (required by the selected `--skill-source latest` staging) |
-| Browser engine runtime | `browser` ships a build-materialized engine runtime (`runtime/browser/omowright/{index.js,page-bundle.js,manifest.json}`) produced by `assets/omo-latest/stage-omowright-runtime.mjs` from `omowright` `github:code-yeongyu/omowright#293ca5002cbd4c8b0c104c5934683385ef7e0d3a`; staged from the single `--omowright-runtime` flag (required by the selected `--skill-source latest` staging). Packaging of upstream skill content only — no desktop/browser implementation, engine authorization or extension bridge. |
+| Browser engine runtime | `browser` ships a build-materialized engine runtime (`runtime/browser/omowright/{index.js,page-bundle.js,LICENSE,manifest.json}`) produced by `assets/omo-latest/stage-omowright-runtime.mjs` from `omowright` `github:code-yeongyu/omowright#d3b1a5d3c49b28fb670fec2d8b5b8e18bfd6756c` (the v0.3.4 tag, the release omo v5.1.84 resolves); staged from the single `--omowright-runtime` flag (required by the selected `--skill-source latest` staging). Packaging of upstream skill content only — no desktop/browser implementation, engine authorization or extension bridge. |
 
 `PINS.md` is not modified by this overlay or by either staging mode.
 

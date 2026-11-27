@@ -33,7 +33,7 @@ actual built `omo-git-bash` sibling. It is the only staging that delivers the gi
 
 ```bash
 node assets/omo-latest/stage-omowright-runtime.mjs \
-  --source <omowright checkout @ 293ca5002cbd4c8b0c104c5934683385ef7e0d3a> \
+  --source <omowright checkout @ d3b1a5d3c49b28fb670fec2d8b5b8e18bfd6756c> \
   --target assets/omo-latest/runtime/browser/omowright
 bun tools/package-native.mjs --binary "$BIN" --output "$E/install" \
   --skill-source latest --git-bash-binary "$BIN_DIR/omo-git-bash" \
@@ -77,16 +77,18 @@ git-bash flag — there are no aliases. The staged manifest declares the sibling
 
 ## Browser engine runtime (build-materialized, never committed)
 
-Upstream ships `skills/browser/runtime/omowright/{index.js,page-bundle.js,manifest.json}` — the
+Upstream ships `skills/browser/runtime/omowright/{index.js,page-bundle.js,LICENSE,manifest.json}` — the
 `browser` skill's engine, bundled from the root `omowright` devDependency
-(`github:code-yeongyu/omowright#293ca5002cbd4c8b0c104c5934683385ef7e0d3a`) at build/prepack time by
+(`github:code-yeongyu/omowright#d3b1a5d3c49b28fb670fec2d8b5b8e18bfd6756c`, the v0.3.4 tag) at build/prepack time by
 `packages/shared-skills/stage-omowright-runtime.mjs`. The directory is gitignored and shipped through
 the skill's `.npmignore`; without it, `skills/browser/scripts/omowright.mjs` throws *"omowright is
 not staged in this skill"*.
 
 This overlay carries the same content, materialized by its own repository-owned source:
-`assets/omo-latest/stage-omowright-runtime.mjs` (a port of the upstream materializer: same source
-digest entries, same `bun build` invocation, plus the immutable commit in the runtime manifest). The
+`assets/omo-latest/stage-omowright-runtime.mjs` (a port of the upstream materializer: same layout
+order (`src/index.ts`, then `src/index.js`, then `dist/index.js`), same source digest entries, same
+`bun build` invocation, omowright's `LICENSE` staged beside the bundle, plus the immutable commit in the
+runtime manifest). The
 materialized directory is **not** committed (`runtime/.gitignore`); it is produced at the final gate
 and staged explicitly:
 
