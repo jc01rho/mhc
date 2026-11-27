@@ -217,7 +217,7 @@ impl maho_ext_api::Extension for GatewayThreadComponent {
 }
 
 /// The message an engine event carries, as JSON, for the run's reply allowance.
-fn event_message(event: &mut maho_ext_api::ExtensionEvent) -> Option<Value> {
+pub(super) fn event_message(event: &mut maho_ext_api::ExtensionEvent) -> Option<Value> {
     match event {
         maho_ext_api::ExtensionEvent::MessageStart { message }
         | maho_ext_api::ExtensionEvent::MessageEnd { message } => {
@@ -227,13 +227,83 @@ fn event_message(event: &mut maho_ext_api::ExtensionEvent) -> Option<Value> {
     }
 }
 
+/// A thread tool as the extension API registers it: its result is the tool's text, and whole in `details.result`.
+fn tool_definition(tool: ThreadTool) -> maho_ext_api::ToolDefinition {
+    let execute = tool.execute;
+    maho_ext_api::ToolDefinition::new(
+        &tool.name,
+        &tool.description,
+        tool.parameters,
+        Arc::new(move |call| {
+            let execute = execute.clone();
+            Box::pin(async move {
+                let result = execute(call.id, call.params).await;
+                let mut output = maho_ext_api::ToolResult::text(result.to_string());
+                output.details = Some(serde_json::json!({"result": result}));
+                Ok(output)
+            })
+        }),
+    )
+}
+
 impl GatewayThreadComponent {
-    /// The session's own extension tools, on top of the thread tools.
-    pub fn tools_with_extensions(
+    /// A run started (`agent_start`).
+    pub fn note_agent_start(&self) {
+        if let Ok(mut state) = self.run.lock() {
+            state.turn += 1;
+        }
+    }
+
+    /// A message started (`message_start`): a consumed delivery joins the run's reply allowance.
+    pub fn note_message_start(&self, message: &Value) {
+        if let Ok(mut state) = self.run.lock() {
+            state.note_input(message);
+        }
+    }
+
+    /// A message ended (`message_end`).
+    pub fn note_message_end(&self, message: &Value) {
+        if let Ok(mut state) = self.run.lock() {
+            state.note_finished(message);
+        }
+    }
+
+    /// The run settled (`agent_settled`). A settle alone keeps the consumed delivery's senders, hop and cause (#13042):
+    /// the next input decides whether the work continues.
+    pub fn note_settled(&self) {
+        if let Ok(mut state) = self.run.lock() {
+            state.answered = true;
+        }
+    }
+
+    /// Registers `tools` (the thread tools, as the host decorated them) and the extension tools the store declares for
+    /// `caller` (upstream `registerThreadTools` with `registerExtensionTools`). A declared tool whose name the session
+    /// already has is reported, never registered.
+    pub fn register_tools(
+        &self,
+        api: &mut maho_ext_api::ExtensionApi,
+        tools: Vec<ThreadTool>,
+        caller: String,
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let mut present = api
+            .get_all_tools()?
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        present.extend(tools.iter().map(|tool| tool.name.clone()));
+        let admitted = self.extension_tools(Arc::new(move || caller.clone()), &present);
+        for tool in tools.into_iter().chain(admitted) {
+            api.try_register_tool(tool_definition(tool))?;
+        }
+        Ok(())
+    }
+
+    /// The extension tools the store declares for `caller` whose names no tool in `present` has.
+    fn extension_tools(
         &self,
         caller: Arc<dyn Fn() -> String + Send + Sync>,
+        present: &[String],
     ) -> Vec<ThreadTool> {
-        let mut tools = self.tools.clone();
         let resolve = self.engine.options().resolve.clone();
         let resolver: super::tools::CallerResolver = Arc::new(move |runtime_id| {
             let resolve = resolve.clone();
@@ -242,23 +312,30 @@ impl GatewayThreadComponent {
             )
         });
         let declared = build_extension_tools(self.store.clone(), caller, resolver);
+        let log = self.log.clone();
+        self.registration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session_start(declared, present, &|line| {
+                if let Some(log) = &log {
+                    log(line);
+                } else {
+                    maho_ext_api::diagnostic(line);
+                }
+            })
+    }
+
+    /// The session's own extension tools, on top of the thread tools.
+    pub fn tools_with_extensions(
+        &self,
+        caller: Arc<dyn Fn() -> String + Send + Sync>,
+    ) -> Vec<ThreadTool> {
+        let mut tools = self.tools.clone();
         let present = tools
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<Vec<_>>();
-        let log = self.log.clone();
-        tools.extend(
-            self.registration
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .session_start(declared, &present, &|line| {
-                    if let Some(log) = &log {
-                        log(line);
-                    } else {
-                        maho_ext_api::diagnostic(line);
-                    }
-                }),
-        );
+        tools.extend(self.extension_tools(caller, &present));
         tools
     }
 
@@ -283,112 +360,61 @@ impl GatewayThreadComponent {
                         EventBus::default(),
                         runtime,
                     );
-                    let present = session_api
-                        .get_all_tools()?
-                        .into_iter()
-                        .map(|tool| tool.name)
-                        .collect::<Vec<_>>();
-                    let caller = ctx.session_manager.session_id().to_owned();
-                    let resolve = component.engine.options().resolve.clone();
-                    let resolver: super::tools::CallerResolver = Arc::new(move |id| {
-                        let resolve = resolve.clone();
-                        Box::pin(async move {
-                            super::tools::resolve_caller_durable_id(&resolve, &id).await
-                        })
-                    });
-                    let tools = build_extension_tools(
-                        component.store.clone(),
-                        Arc::new(move || caller.clone()),
-                        resolver,
-                    );
-                    let admitted = component
-                        .registration
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .session_start(tools, &present, &|line| {
-                            if let Some(log) = &component.log {
-                                log(line);
-                            } else {
-                                diagnostic(line);
-                            }
-                        });
-                    for tool in admitted {
-                        let execute = tool.execute.clone();
-                        session_api.try_register_tool(ToolDefinition::new(
-                            &tool.name,
-                            &tool.description,
-                            tool.parameters,
-                            Arc::new(move |call| {
-                                let execute = execute.clone();
-                                Box::pin(async move {
-                                    let result = execute(call.id, call.params).await;
-                                    let mut output = ToolResult::text(result.to_string());
-                                    output.details = Some(serde_json::json!({"result":result}));
-                                    Ok(output)
-                                })
-                            }),
-                        ))?;
-                    }
+                    component.register_tools(
+                        &mut session_api,
+                        Vec::new(),
+                        ctx.session_manager.session_id().to_owned(),
+                    )?;
                     Ok(EventResult::None)
                 })
             }),
         );
-        let run_message_start = self.run.clone();
-        let run_agent_start = self.run.clone();
+        let agent_start = Arc::clone(self);
         api.on(
             EventKind::AgentStart,
             Arc::new(move |_, _ctx| {
-                let run = run_agent_start.clone();
+                let component = agent_start.clone();
                 Box::pin(async move {
-                    if let Ok(mut state) = run.lock() {
-                        state.turn += 1;
-                    }
+                    component.note_agent_start();
                     Ok(EventResult::None)
                 })
             }),
         );
+        let message_start = Arc::clone(self);
         api.on(
             EventKind::MessageStart,
             Arc::new(move |event, _ctx| {
-                let run = run_message_start.clone();
+                let component = message_start.clone();
                 let message = event_message(event);
                 Box::pin(async move {
-                    if let Some(message) = message
-                        && let Ok(mut state) = run.lock()
-                    {
-                        state.note_input(&message);
+                    if let Some(message) = message {
+                        component.note_message_start(&message);
                     }
                     Ok(EventResult::None)
                 })
             }),
         );
-        let run_message_end = self.run.clone();
+        let message_end = Arc::clone(self);
         api.on(
             EventKind::MessageEnd,
             Arc::new(move |event, _ctx| {
-                let run = run_message_end.clone();
+                let component = message_end.clone();
                 let message = event_message(event);
                 Box::pin(async move {
-                    if let Some(message) = message
-                        && let Ok(mut state) = run.lock()
-                    {
-                        state.note_finished(&message);
+                    if let Some(message) = message {
+                        component.note_message_end(&message);
                     }
                     Ok(EventResult::None)
                 })
             }),
         );
-        let run_settled = self.run.clone();
+        let settled = Arc::clone(self);
         api.on(
             EventKind::AgentSettled,
             Arc::new(move |_, _ctx| {
-                let run = run_settled.clone();
+                let component = settled.clone();
                 Box::pin(async move {
-                    // A settle alone keeps the consumed delivery's senders, hop and cause (#13042): the next input
-                    // decides whether the work continues (note_input).
-                    if let Ok(mut state) = run.lock() {
-                        state.answered = true;
-                    }
+                    component.note_settled();
                     Ok(EventResult::None)
                 })
             }),

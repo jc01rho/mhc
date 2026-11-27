@@ -60,6 +60,9 @@ pub struct OmoComponentOptions {
     pub state_dir: PathBuf,
     pub env: BTreeMap<String, String>,
     pub facts_read_only_bootstrap: bool,
+    /// The engine side of the thread component: the wire to this device's session hosts and the session's
+    /// `pi.session`. The default binds neither, so the session-control tools answer `host_unavailable`.
+    pub thread_host: maho_omo_gateway::thread::native::NativeThreadHost,
 }
 
 impl Default for OmoComponentOptions {
@@ -76,6 +79,7 @@ impl Default for OmoComponentOptions {
             ),
             env,
             facts_read_only_bootstrap: false,
+            thread_host: Default::default(),
         }
     }
 }
@@ -460,7 +464,9 @@ pub fn omo_components(
     components.push(task);
     components.push(component(
         "thread",
-        maho_omo_gateway::thread::native::NativeThreadComponent,
+        maho_omo_gateway::thread::native::NativeThreadComponent {
+            host: options.thread_host.clone(),
+        },
     ));
     components.push(memory);
     components.push(component(

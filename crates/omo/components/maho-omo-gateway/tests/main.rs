@@ -16,6 +16,8 @@ mod gateway_schema_tests;
 mod gateway_store_tests;
 #[path = "intake_tests.rs"]
 mod intake_tests;
+#[path = "native_thread_host_tests.rs"]
+mod native_thread_host_tests;
 #[path = "prompt_tests.rs"]
 mod prompt_tests;
 #[path = "remote_consumers_tests.rs"]

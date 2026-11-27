@@ -60,6 +60,7 @@ impl OmoMount {
                 }
             }
         }
+        let thread_parent = parent.clone();
         let task = super::default_extensions::task_entry(parent.clone(), environment.clone());
         let memory = memory_for_parent(parent, cwd, agent_dir, environment.clone())?;
         // Installed skills win; fall back to the library default root and only warn when the
@@ -102,6 +103,10 @@ impl OmoMount {
                     .is_some_and(|value| value == "1")
                     && maho_core::lockfile_policy::facts_lock_broker_enabled(),
                 env: environment,
+                thread_host: maho_omo_remote::thread_host::native_thread_host(
+                    Arc::new(move || thread_parent.get().and_then(|session| session())),
+                    agent_dir,
+                ),
             },
             OmoRuntimeOptions {
                 logger: Some(Arc::new(maho_omo::logger::SinkLogger::new(Arc::new(

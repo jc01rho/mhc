@@ -40,6 +40,7 @@ pub fn component_options(
             .is_some_and(|value| value == "1")
             && maho_core::lockfile_policy::facts_lock_broker_enabled(),
         env: env.clone(),
+        thread_host: Default::default(),
     }
 }
 
