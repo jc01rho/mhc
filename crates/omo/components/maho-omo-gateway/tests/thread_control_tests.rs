@@ -163,7 +163,6 @@ fn component(
             })
         }),
         endpoints: GatewayEndpointPort::inert(),
-        locate: Arc::new(|_| Box::pin(async { None })),
         notify: None,
         log: None,
         host,
@@ -781,7 +780,6 @@ fn thread_list_reports_engine_version_waiting_on_unnamed_archived_incomplete_and
             })
         }),
         endpoints: GatewayEndpointPort::inert(),
-        locate: Arc::new(|_| Box::pin(async { None })),
         notify: None,
         log: None,
         host: Some(surface),

@@ -1,4 +1,4 @@
-//! The thread tools: what a model calls to reach another session or a bound conversation.
+//! The thread tools: what a model calls to reach another session.
 //!
 //! Upstream counterpart: `thread/tools.ts`. Every failure is data (`{ kind: "error", error }`), and a
 //! session op's tool is its own namespace (`ext_<extension>_<toolName>`).
@@ -15,10 +15,9 @@ use super::control::locate::RemoteControlLocator;
 use super::engine::{GatewayDeliverRequest, GatewayEngine};
 use super::errors::thread_tool_failure;
 use super::host_view::ThreadHost;
-use super::relay::{AnswerRequest, GatewayRelay, Keyed};
+use super::relay::Keyed;
 use super::store_api::GatewayStoreApi;
 use super::store_extensions::{DeclaredSessionOp, SessionCaller, StoreExtensionResult};
-use super::store_relay_ops::{BindInput, BindingsFilter, ReportOpRequest};
 use super::types::{GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender};
 
 #[derive(Clone)]
@@ -41,7 +40,6 @@ impl std::fmt::Debug for ThreadTool {
 pub struct ThreadToolsOptions {
     pub store: Arc<dyn GatewayStoreApi>,
     pub engine: GatewayEngine,
-    pub relay: GatewayRelay,
     /// The calling session's durable id, resolved by the engine, never taken from a tool argument.
     pub caller_session_id: Arc<dyn Fn() -> String + Send + Sync>,
     pub caller_name: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
@@ -254,220 +252,6 @@ pub fn create_thread_tools(options: Arc<ThreadToolsOptions>) -> Vec<ThreadTool> 
                     let caller_id = (options.caller_session_id)();
                     let caller_name = options.caller_name.as_ref().and_then(|name| name());
                     deliver_thread_send(&options, caller_id, caller_name, &call_id, args).await
-                })
-            }),
-        });
-    }
-
-    {
-        let options = options.clone();
-        tools.push(ThreadTool {
-            name: "thread_report".into(),
-            description: "Report an event to the conversation bound to this session.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "event": { "type": "string", "enum": ["milestone", "report", "question", "completion"] },
-                    "text": { "type": "string", "minLength": 1 },
-                    "binding_id": { "type": "string" },
-                    "request_id": { "type": "string" },
-                    "request_kind": { "type": "string", "enum": ["question", "select", "confirm", "input", "editor"] },
-                },
-                "required": ["event", "text"],
-                "additionalProperties": false,
-            }),
-            execute: Arc::new(move |call_id: &str, args: Value| {
-                let options = options.clone();
-                let call_id = call_id.to_owned();
-                Box::pin(async move {
-                    let (Some(event), Some(text)) = (args.get("event").and_then(Value::as_str), args.get("text").and_then(Value::as_str)) else {
-                        return invalid_arguments("event and text are required");
-                    };
-                    let request = ReportOpRequest {
-                        session_durable_id: (options.caller_session_id)(),
-                        binding_id: args.get("binding_id").and_then(Value::as_str).map(str::to_owned),
-                        origin_delivery_ids: Vec::new(),
-                        origin_local_input: false,
-                        event: event.to_owned(),
-                        text: text.to_owned(),
-                        ui_request_id: args.get("request_id").and_then(Value::as_str).map(str::to_owned),
-                        ui_request_kind: args.get("request_kind").and_then(Value::as_str).map(str::to_owned),
-                    };
-                    let _ = call_id;
-                    match options.relay.report(&request) {
-                        Ok(report) => ok_result(json!({
-                            "binding_id": report.binding_id,
-                            "revision": report.revision,
-                            "event": report.event,
-                            "cursor": report.cursor,
-                            "reply_token": report.reply_token,
-                            "armed": report.armed,
-                            "deduplicated": false,
-                        })),
-                        Err(error) => error_result(error),
-                    }
-                })
-            }),
-        });
-    }
-
-    {
-        let options = options.clone();
-        tools.push(ThreadTool {
-            name: "thread_bind".into(),
-            description: "Bind this session to a conversation thread.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "platform": { "type": "string" },
-                    "account_id": { "type": "string" },
-                    "chat_id": { "type": "string" },
-                    "thread_id": { "type": "string" },
-                    "ttl_seconds": { "type": "integer" },
-                },
-                "required": ["platform", "account_id", "chat_id"],
-                "additionalProperties": false,
-            }),
-            execute: Arc::new(move |_call_id: &str, args: Value| {
-                let options = options.clone();
-                Box::pin(async move {
-                    let mut input: BindInput = match serde_json::from_value(json!({
-                        "platform": args.get("platform").cloned().unwrap_or(Value::Null),
-                        "account_id": args.get("account_id").cloned().unwrap_or(Value::Null),
-                        "chat_id": args.get("chat_id").cloned().unwrap_or(Value::Null),
-                        "thread_id": args.get("thread_id").cloned(),
-                        "session_durable_id": (options.caller_session_id)(),
-                        "ttl_seconds": args.get("ttl_seconds").cloned(),
-                    })) {
-                        Ok(input) => input,
-                        Err(error) => return invalid_arguments(error.to_string()),
-                    };
-                    input.ttl_seconds = args.get("ttl_seconds").and_then(Value::as_i64);
-                    match options.relay.bind(&input) {
-                        Ok(binding) => {
-                            ok_result(json!({ "binding": binding, "deduplicated": false }))
-                        }
-                        Err(error) => error_result(error),
-                    }
-                })
-            }),
-        });
-    }
-
-    {
-        let options = options.clone();
-        tools.push(ThreadTool {
-            name: "thread_bindings".into(),
-            description: "List this session's conversation bindings.".into(),
-            parameters: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            execute: Arc::new(move |_call_id: &str, _args: Value| {
-                let options = options.clone();
-                Box::pin(async move {
-                    let filter = BindingsFilter { session_durable_id: Some((options.caller_session_id)()), ..Default::default() };
-                    match options.relay.bindings(&filter, None, None) {
-                        Ok((bindings, next_cursor)) => ok_result(json!({ "bindings": bindings, "next_cursor": next_cursor })),
-                        Err(error) => error_result(error),
-                    }
-                })
-            }),
-        });
-    }
-
-    {
-        let options = options.clone();
-        tools.push(ThreadTool {
-            name: "thread_outbox".into(),
-            description: "Read the rows this session reported to a binding.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": { "binding_id": { "type": "string" }, "after_cursor": { "type": "integer" }, "limit": { "type": "integer" } },
-                "required": ["binding_id"],
-                "additionalProperties": false,
-            }),
-            execute: Arc::new(move |_call_id: &str, args: Value| {
-                let options = options.clone();
-                Box::pin(async move {
-                    let Some(binding_id) = args.get("binding_id").and_then(Value::as_str) else {
-                        return invalid_arguments("binding_id is required");
-                    };
-                    match options.relay.outbox(binding_id, args.get("after_cursor").and_then(Value::as_i64), args.get("limit").and_then(Value::as_i64)) {
-                        Ok(page) => ok_result(json!(page)),
-                        Err(error) => error_result(error),
-                    }
-                })
-            }),
-        });
-    }
-
-    {
-        let options = options.clone();
-        tools.push(ThreadTool {
-            name: "thread_outbox_ack".into(),
-            description: "Marks outbox rows up to a cursor as posted to the chat, for when a connector confirms delivery.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "binding_id": { "type": "string", "minLength": 1 },
-                    "cursor": { "type": "integer", "minimum": 1 },
-                    "provider_message_id": { "type": "string", "minLength": 1, "maxLength": 256 },
-                },
-                "required": ["binding_id", "cursor"],
-                "additionalProperties": false,
-            }),
-            execute: Arc::new(move |_call_id: &str, args: Value| {
-                let options = options.clone();
-                Box::pin(async move {
-                    let (Some(binding_id), Some(cursor)) = (
-                        args.get("binding_id").and_then(Value::as_str),
-                        args.get("cursor").and_then(Value::as_i64).filter(|cursor| *cursor >= 1),
-                    ) else {
-                        return invalid_arguments("binding_id and a cursor of at least 1 are required");
-                    };
-                    let provider_message_id = args.get("provider_message_id").and_then(Value::as_str);
-                    match options.relay.ack(binding_id, cursor, provider_message_id) {
-                        Ok((acked_cursor, changed)) => ok_result(json!({
-                            "binding_id": binding_id,
-                            "acked_cursor": acked_cursor,
-                            "changed": changed,
-                        })),
-                        Err(error) => error_result(error),
-                    }
-                })
-            }),
-        });
-    }
-
-    {
-        let options = options.clone();
-        tools.push(ThreadTool {
-            name: "thread_answer".into(),
-            description: "Answer a question this session asked through a binding.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": { "binding_id": { "type": "string" }, "reply_token": { "type": "string" }, "answer": { "type": "string" } },
-                "required": ["binding_id", "reply_token", "answer"],
-                "additionalProperties": false,
-            }),
-            execute: Arc::new(move |_call_id: &str, args: Value| {
-                let options = options.clone();
-                Box::pin(async move {
-                    let (Some(binding_id), Some(reply_token), Some(answer)) = (
-                        args.get("binding_id").and_then(Value::as_str),
-                        args.get("reply_token").and_then(Value::as_str),
-                        args.get("answer").and_then(Value::as_str),
-                    ) else {
-                        return invalid_arguments("binding_id, reply_token and answer are required");
-                    };
-                    let request = AnswerRequest { binding_id: binding_id.to_owned(), reply_token: reply_token.to_owned(), answer: answer.to_owned(), author: None };
-                    match options.relay.answer(&request).await {
-                        Ok((claim, answered_by)) => ok_result(json!({
-                            "binding_id": binding_id,
-                            "cursor": claim.cursor,
-                            "session_durable_id": claim.session_durable_id,
-                            "answered_by": answered_by,
-                        })),
-                        Err(error) => error_result(error),
-                    }
                 })
             }),
         });

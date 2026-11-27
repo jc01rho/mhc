@@ -1,4 +1,5 @@
-//! Native registration of the durable binding/reporting surface.
+//! Native registration of the thread surface a host without session admission can serve: the operator alerts and,
+//! with a device service, `thread_send` to another device.
 //! Cross-session admission requires a host adapter; it is not simulated here.
 use super::adapter::{GatewayEndpointPort, RuntimePhase, SessionAdmissionGate, SessionRuntimePort};
 use super::component::{GatewayThreadComponentOptions, create_gateway_thread_component};
@@ -71,7 +72,6 @@ impl Extension for NativeThreadComponent {
                                 })
                             }),
                             endpoints: GatewayEndpointPort::inert(),
-                            locate: Arc::new(|_| Box::pin(async { None })),
                             notify: None,
                             log: Some(Arc::new(maho_ext_api::diagnostic)),
                             host: None,
@@ -103,16 +103,10 @@ impl Extension for NativeThreadComponent {
                     } else {
                         component.tools
                     };
-                    for tool in tools.into_iter().filter(|tool| {
-                        matches!(
-                            tool.name.as_str(),
-                            "thread_report"
-                                | "thread_bind"
-                                | "thread_bindings"
-                                | "thread_outbox"
-                                | "thread_outbox_ack"
-                        ) || (reach_devices && tool.name == "thread_send")
-                    }) {
+                    for tool in tools
+                        .into_iter()
+                        .filter(|tool| reach_devices && tool.name == "thread_send")
+                    {
                         let execute = tool.execute;
                         session_api.try_register_tool(ToolDefinition::new(
                             &tool.name,
