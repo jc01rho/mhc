@@ -23,22 +23,20 @@ pub async fn create_http_client(
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
-    // omo #11591: an explicit `type: "sse"` server speaks the legacy HTTP+SSE transport (GET
-    // event stream plus the POST endpoint it announces), not Streamable HTTP.
-    let spec = if config["type"] == "sse" {
-        maho_ext_mcp::transport_sdk::McpTransportSpec::Sse { url, headers }
-    } else {
-        maho_ext_mcp::transport_sdk::McpTransportSpec::Http { url, headers }
-    };
+    let spec = maho_ext_mcp::transport_sdk::McpTransportSpec::Http { url, headers };
     let logger = maho_ext_mcp::log::McpLogger::new(
         &info.server_name,
         &std::env::temp_dir().join("omo-mcp-logs"),
         None,
     )
     .map_err(|e| e.to_string())?;
-    let client = McpClient::materialize(&info.server_name, &spec, Arc::new(Mutex::new(logger)))
-        .await
-        .map_err(|e| e.to_string())?;
+    let logger = Arc::new(Mutex::new(logger));
+    let client = if config["type"] == "sse" {
+        McpClient::materialize_sse(&info.server_name, &spec, logger).await
+    } else {
+        McpClient::materialize(&info.server_name, &spec, logger).await
+    }
+    .map_err(|e| e.to_string())?;
     if config.get("oauth").is_some() {
         use maho_ext_mcp::auth::{
             oauth_provider::McpOAuthProvider, oauth_refresh::McpRefreshManager,

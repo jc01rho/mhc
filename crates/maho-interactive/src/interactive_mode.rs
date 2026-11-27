@@ -267,6 +267,10 @@ struct ParkedAction {
     /// Settles on its own, outside park order: a clipboard paste only touches the editor, so it
     /// must not wait behind (or hold up) a slow enqueue, reload, or settings write.
     independent: bool,
+    /// Original submitted text when this action is a `park_prompt_enqueue` targeting the current
+    /// turn; ESC restores and drops it, and `/new` drops stale entries so they cannot block or
+    /// leak into the replacement session.
+    prompt_enqueue_text: Option<String>,
     future: ParkedFuture,
 }
 
@@ -748,7 +752,7 @@ enum AuthUiEvent {
     LogoutFinished {
         provider_name: String,
         auth_type: crate::components::oauth_selector::AuthSelectorAuthType,
-        result: Result<(), String>,
+        result: Result<Option<maho_ai::auth::types::OAuthRevocationResult>, String>,
     },
 }
 
@@ -6287,6 +6291,13 @@ impl InteractiveMode {
         if text.is_empty() {
             return Ok(());
         }
+        // Alt+Enter during a live turn normally sends extension commands straight to the
+        // session. Keep account add on the same consent-gated path as ordinary Enter.
+        if self.dispatch_chatgpt_account_command(&text)? {
+            self.editor.editor.add_to_history(&text);
+            self.set_active_editor_text("");
+            return Ok(());
+        }
         if self.host_is_compacting() {
             if self.is_extension_command(&text) {
                 self.editor.editor.add_to_history(&text);
@@ -6500,7 +6511,13 @@ impl InteractiveMode {
                 self.session.is_bash_running() || self.pending_bash.is_some(),
             ),
         };
-        if !self.agent_idle || self.host_is_streaming() || retrying {
+        if !self.agent_idle
+            || self.host_is_streaming()
+            || retrying
+            || self.pending_turn.is_some()
+            || self.provisional_working
+            || self.working_started_ms.is_some()
+        {
             self.abort_and_restore_queue();
             return;
         }
@@ -6838,7 +6855,9 @@ impl InteractiveMode {
         options: PromptOptions,
     ) -> Result<PromptDisposition, String> {
         let (text, internal) = split_internal_command(text);
-        self.queue_tool_renderer_refresh();
+        if text.trim() != "/new" {
+            self.queue_tool_renderer_refresh();
+        }
         if !text.trim_start().starts_with('/')
             && !text.trim_start().starts_with('!')
             && let Some(request_id) = self.questions.composer_request_id().map(str::to_owned)
@@ -7415,10 +7434,25 @@ impl InteractiveMode {
         F: Future<Output = T> + 'static,
         A: FnOnce(&mut InteractiveMode, T) + 'static,
     {
+        self.push_parked_action_tagged(work, apply, independent, None);
+    }
+
+    fn push_parked_action_tagged<T, F, A>(
+        &mut self,
+        work: F,
+        apply: A,
+        independent: bool,
+        prompt_enqueue_text: Option<String>,
+    ) where
+        T: 'static,
+        F: Future<Output = T> + 'static,
+        A: FnOnce(&mut InteractiveMode, T) + 'static,
+    {
         let painted = self.applying_parked;
         self.parked_actions.push_back(ParkedAction {
             painted,
             independent,
+            prompt_enqueue_text,
             future: Box::pin(async move {
                 let value = work.await;
                 Box::new(move |mode: &mut InteractiveMode| apply(mode, value)) as ParkedApply
@@ -7449,7 +7483,21 @@ impl InteractiveMode {
         self.request_remote_stats();
     }
 
+    fn clear_turn_ui_after_session_replacement(&mut self) {
+        self.take_provisional_user_echo();
+        self.provisional_working = false;
+        self.working_started_ms = None;
+        self.agent_idle = true;
+        self.keyword_turn_glow = false;
+        self.clear_status_indicator(None);
+        self.frame_dirty = true;
+    }
+
     fn park_new_session(&mut self) {
+        // Stale queued prompts for the old turn must neither block `/new` in the ordered park
+        // chain nor execute against the replacement session.
+        self.parked_actions
+            .retain(|action| action.prompt_enqueue_text.is_none());
         let host = self.session_host.clone();
         let session = self.session.clone();
         self.park_action(
@@ -7488,6 +7536,7 @@ impl InteractiveMode {
         match result {
             Ok(true) => {
                 self.reset_compaction_queue();
+                self.clear_turn_ui_after_session_replacement();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.chat.add_component(Rc::new(RefCell::new(
@@ -7585,6 +7634,7 @@ impl InteractiveMode {
             SwitchTail::Replaced(snapshot) => {
                 self.install_remote_replacement(Some(snapshot));
                 self.reset_compaction_queue();
+                self.clear_turn_ui_after_session_replacement();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
@@ -7599,6 +7649,7 @@ impl InteractiveMode {
             }
             SwitchTail::Local => {
                 self.reset_compaction_queue();
+                self.clear_turn_ui_after_session_replacement();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
@@ -7764,6 +7815,7 @@ impl InteractiveMode {
             ForkTail::Local(result) => result.editor_text,
         };
         self.reset_compaction_queue();
+        self.clear_turn_ui_after_session_replacement();
         self.rebuild_history();
         self.apply_theme_from_settings();
         if cloned {
@@ -8245,32 +8297,100 @@ impl InteractiveMode {
         else {
             return;
         };
+        self.start_logout(provider.id, provider.name, provider.auth_type, None);
+    }
+
+    fn start_logout(
+        &mut self,
+        provider_id: String,
+        provider_name: String,
+        auth_type: crate::components::oauth_selector::AuthSelectorAuthType,
+        slot_id: Option<String>,
+    ) {
+        use maho_ai::auth::types::{AuthOperationOptions, LogoutOptions};
+        use maho_core::credential_accounts::CHATGPT_SUBSCRIPTION;
+
         let runtime = self.session.model_registry().model_runtime.clone();
         let sender = self.auth_ui_sender.clone();
-        let auth_type = provider.auth_type;
         tokio::spawn(async move {
             let abort = maho_ai::utils::abort::AbortController::new();
-            let options = maho_ai::auth::types::AuthOperationOptions {
-                signal: Some(abort.signal()),
+            let signal = Some(abort.signal());
+            let chatgpt = provider_id == CHATGPT_SUBSCRIPTION;
+            let operation = async {
+                if chatgpt {
+                    runtime
+                        .logout_with_revocation(
+                            &provider_id,
+                            LogoutOptions {
+                                signal,
+                                slot_id,
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                } else {
+                    runtime
+                        .logout(
+                            &provider_id,
+                            slot_id.as_deref(),
+                            AuthOperationOptions { signal },
+                        )
+                        .await
+                        .map(|()| None)
+                }
             };
+            tokio::pin!(operation);
             let result = match tokio::time::timeout(
                 std::time::Duration::from_secs(15),
-                runtime.logout(&provider.id, None, options),
+                &mut operation,
             )
             .await
             {
                 Ok(result) => result.map_err(|error| error.to_string()),
                 Err(_) => {
+                    // Let a committed local clear return its unconfirmed result after aborting
+                    // remote I/O, rather than dropping the whole logout future.
                     abort.abort(None);
-                    Err("The operation was aborted due to timeout".to_owned())
+                    if chatgpt {
+                        operation.await.map_err(|error| error.to_string())
+                    } else {
+                        Err("The operation was aborted due to timeout".to_owned())
+                    }
                 }
             };
             let _ = sender.send(AuthUiEvent::LogoutFinished {
-                provider_name: provider.name,
+                provider_name,
                 auth_type,
                 result,
             });
         });
+    }
+
+    fn list_chatgpt_accounts(&mut self) {
+        use maho_core::credential_accounts::{CHATGPT_SUBSCRIPTION, get_credential_accounts};
+        use maho_core::credential_pool::state_store::{
+            CredentialSlotRepository, credential_pool_state_path,
+        };
+
+        let storage = self.session.model_registry().auth_storage.clone();
+        let repository =
+            CredentialSlotRepository::new(&credential_pool_state_path(&self.session.agent_dir()));
+        self.park_action(
+            async move {
+                get_credential_accounts(
+                    &storage,
+                    CHATGPT_SUBSCRIPTION,
+                    &|key| std::env::var(key).ok(),
+                    &repository,
+                    maho_ai::utils::diagnostics::now_ms().max(0) as u64,
+                )
+                .await
+            },
+            |mode, result| match result {
+                Ok(accounts) => mode.show_status(format_chatgpt_accounts(&accounts)),
+                Err(error) => mode.show_error(&error),
+            },
+        );
     }
 
     fn park_text_copy(&mut self, text: String, flash: CopyFlash) {
@@ -8755,9 +8875,10 @@ impl InteractiveMode {
     /// parked future settles, in park order.
     fn park_prompt_enqueue(&mut self, text: String, options: PromptOptions) {
         let submitted = text.clone();
+        let enqueue_tag = text.clone();
         let host = self.session_host.clone();
         let session = self.session.clone();
-        self.park_action(
+        self.push_parked_action_tagged(
             async move {
                 match host {
                     Some(host) => host.prompt(text, options).await,
@@ -8775,6 +8896,8 @@ impl InteractiveMode {
                     mode.drain_events();
                 }
             },
+            false,
+            Some(enqueue_tag),
         );
     }
 
@@ -9051,11 +9174,23 @@ impl InteractiveMode {
     /// `wait_for_idle` here would deadlock behind a held provider.
     pub fn abort_and_restore_queue(&mut self) -> usize {
         let queued = self.host_clear_queue(true);
+        let mut parked_enqueues = Vec::new();
+        let mut remaining = std::collections::VecDeque::with_capacity(self.parked_actions.len());
+        while let Some(action) = self.parked_actions.pop_front() {
+            if let Some(text) = action.prompt_enqueue_text {
+                parked_enqueues.push(text);
+            } else {
+                remaining.push_back(action);
+            }
+        }
+        self.parked_actions = remaining;
         self.request_abort();
-        if !queued.is_empty() {
+        let restored_count = queued.len() + parked_enqueues.len();
+        if restored_count > 0 {
             let text = queued
                 .iter()
                 .map(|message| message.text.as_str())
+                .chain(parked_enqueues.iter().map(String::as_str))
                 .collect::<Vec<_>>()
                 .join("\n\n");
             let current = self.editor.editor.get_text();
@@ -9067,11 +9202,11 @@ impl InteractiveMode {
                     .join("\n\n"),
             );
         }
-        queued.len()
+        restored_count
     }
 
     /// Queue the abort request for `poll_turn` to drive. No `tokio::spawn`, so the mode keeps its
-    /// non-`Send` shape.
+    /// non-`Send` shape. Joins any still-settling prior abort instead of dropping it mid-flight.
     fn request_abort(&mut self) {
         let abort: AbortFuture = match self.session_host.clone() {
             Some(host) => Box::pin(async move {
@@ -9084,7 +9219,13 @@ impl InteractiveMode {
                 })
             }
         };
-        self.pending_abort = Some(abort);
+        let prior = self.pending_abort.take();
+        self.pending_abort = Some(match prior {
+            Some(prior) => Box::pin(async move {
+                tokio::join!(prior, abort);
+            }),
+            None => abort,
+        });
     }
 
     pub async fn steer(&self, text: &str) -> Result<(), String> {
@@ -9332,8 +9473,54 @@ impl InteractiveMode {
         self.last_status = Some((self.chat.children().len(), component, raw));
     }
 
+    fn dispatch_chatgpt_account_command(&mut self, text: &str) -> Result<bool, String> {
+        if let Some(args) = text.strip_prefix("/gpt-account")
+            && (args.is_empty() || args.starts_with(char::is_whitespace))
+            && self.is_extension_command(text)
+        {
+            use maho_core::credential_accounts::{CHATGPT_SUBSCRIPTION, selected_oauth_account};
+            let mut args = args.split_whitespace();
+            match args.next() {
+                None | Some("list") => {
+                    self.list_chatgpt_accounts();
+                    return Ok(true);
+                }
+                Some("add") => {
+                    // SAFETY-DIVERGENCE (SD-4): account add uses the same consent gate as /login.
+                    return self.dispatch_command("/login chatgpt-subscription");
+                }
+                Some("signout") => {
+                    if let Some(name) = args.next() {
+                        let registry = self.session.model_registry();
+                        match selected_oauth_account(
+                            &registry.auth_storage,
+                            CHATGPT_SUBSCRIPTION,
+                            name,
+                        ) {
+                            Ok(_) => self.start_logout(
+                                CHATGPT_SUBSCRIPTION.to_owned(),
+                                format!("ChatGPT Subscription OAuth account '{name}'"),
+                                crate::components::oauth_selector::AuthSelectorAuthType::OAuth,
+                                Some(name.to_owned()),
+                            ),
+                            Err(error) => self.show_error(&error),
+                        }
+                    } else {
+                        self.show_error("Usage: /gpt-account signout <id>");
+                    }
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
         let text = text.trim();
+        if self.dispatch_chatgpt_account_command(text)? {
+            return Ok(true);
+        }
         if text == "/login" || text.starts_with("/login ") {
             // senpi `handleLoginCommand`.
             let provider_ref = text
@@ -12170,10 +12357,10 @@ impl InteractiveMode {
                     .send(AuthLifecycleEvent::LogoutCompleted {
                         provider_name: provider_name.clone(),
                         auth_type,
-                        outcome: result.clone(),
+                        outcome: result.as_ref().map(|_| ()).map_err(Clone::clone),
                     });
                 match result {
-                    Ok(()) => {
+                    Ok(revocation) => {
                         // senpi `updateAvailableProviderCount` after a successful logout.
                         self.footer_data.set_available_provider_count(
                             self.host_available_models()
@@ -12185,10 +12372,17 @@ impl InteractiveMode {
                         if let Some(footer) = &mut self.footer {
                             footer.invalidate();
                         }
-                        self.show_status(match auth_type {
-                        crate::components::oauth_selector::AuthSelectorAuthType::OAuth => format!("Logged out of {provider_name}"),
-                        crate::components::oauth_selector::AuthSelectorAuthType::ApiKey => format!("Removed stored API key for {provider_name}. Environment variables and models.json config are unchanged."),
-                    });
+                        let message = match auth_type {
+                            crate::components::oauth_selector::AuthSelectorAuthType::OAuth => {
+                                format!("Logged out of {provider_name}")
+                            }
+                            crate::components::oauth_selector::AuthSelectorAuthType::ApiKey => {
+                                format!(
+                                    "Removed stored API key for {provider_name}. Environment variables and models.json config are unchanged."
+                                )
+                            }
+                        };
+                        self.show_status(logout_status(message, revocation));
                     }
                     Err(error) => self.show_error(&format!("Logout failed: {error}")),
                 }
@@ -15396,6 +15590,68 @@ fn auth_type_order(auth_type: crate::components::oauth_selector::AuthSelectorAut
 }
 
 /// senpi `getLoginProviderCompletionOptions`.
+fn logout_status(
+    mut message: String,
+    revocation: Option<maho_ai::auth::types::OAuthRevocationResult>,
+) -> String {
+    if revocation == Some(maho_ai::auth::types::OAuthRevocationResult::RemoteRevocationUnconfirmed)
+    {
+        message.push_str(
+            " Remote revocation was not confirmed; disconnect the app in ChatGPT Settings.",
+        );
+    }
+    message
+}
+
+fn format_chatgpt_accounts(
+    accounts: &[maho_core::credential_accounts::CredentialAccountSummary],
+) -> String {
+    use maho_core::credential_accounts::ChatGptAccountRoute;
+
+    let mut lines = vec!["ChatGPT Subscription OAuth accounts:".to_owned()];
+    if accounts.is_empty() {
+        lines.push("  (none)".to_owned());
+    }
+    for account in accounts {
+        let label = match &account.display_name {
+            Some(display_name) => format!("{display_name} ({})", account.name),
+            None => account.name.clone(),
+        };
+        let health = if account.signed_out {
+            "signed out"
+        } else if account.plan_usage_enabled == Some(false) {
+            "plan usage not enabled: enable it or use an API key"
+        } else if account.unused {
+            "unused"
+        } else if account.blocked {
+            account
+                .blocked_reason
+                .map_or("blocked", |reason| reason.as_str())
+        } else {
+            "available"
+        };
+        let mut states = vec![label.as_str(), account.source.as_str(), health];
+        if account.pinned {
+            states.push("pinned");
+        }
+        if account.active {
+            states.push("active");
+        }
+        match account.route {
+            Some(ChatGptAccountRoute::Siwc) => states.push("SIWC"),
+            Some(ChatGptAccountRoute::Legacy) => states.push("legacy"),
+            None => {}
+        }
+        if !account.signed_out && account.plan_usage_enabled == Some(true) {
+            states.push("Using ChatGPT plan");
+        }
+        lines.push(format!("  {}", states.join(" | ")));
+    }
+    lines
+        .push("Manage usage: https://chatgpt.com/settings/usage (ChatGPT Settings > Usage)".into());
+    lines.join("\n")
+}
+
 fn get_login_provider_completion_options(
     provider_options: &[crate::components::oauth_selector::AuthSelectorProvider],
 ) -> Vec<LoginProviderCompletionOption> {
@@ -16321,6 +16577,22 @@ impl crate::unknown_command_feedback::UnknownCommandFeedbackTarget for Interacti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chatgpt_logout_status_warns_only_when_remote_revocation_is_unconfirmed() {
+        use maho_ai::auth::types::OAuthRevocationResult;
+        let message = "Logged out of ChatGPT Subscription";
+        for revocation in [None, Some(OAuthRevocationResult::Revoked)] {
+            assert_eq!(logout_status(message.to_owned(), revocation), message);
+        }
+        let unconfirmed = logout_status(
+            message.to_owned(),
+            Some(OAuthRevocationResult::RemoteRevocationUnconfirmed),
+        );
+        assert!(unconfirmed.starts_with(message));
+        assert!(unconfirmed.contains("Remote revocation was not confirmed"));
+        assert!(unconfirmed.contains("disconnect the app in ChatGPT Settings"));
+    }
 
     #[test]
     fn local_replay_consumes_the_cardinality_of_the_core_projection() {

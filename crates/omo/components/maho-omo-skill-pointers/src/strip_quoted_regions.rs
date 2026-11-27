@@ -189,7 +189,9 @@ pub fn strip_quoted_spans(text: &str) -> String {
 }
 
 pub fn mask_negated_invocations(text: &str) -> String {
-    let after_negated = masked_replace_all(&NEGATED_INVOCATION, text).unwrap_or_else(|| mask(text));
+    let visible = maho_ultrawork::mask_keyword_advice(text);
+    let after_negated =
+        masked_replace_all(&NEGATED_INVOCATION, &visible).unwrap_or_else(|| mask(text));
     masked_replace_all(&PROHIBITED_KEYWORD, &after_negated).unwrap_or_else(|| mask(text))
 }
 

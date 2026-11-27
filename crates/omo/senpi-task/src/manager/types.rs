@@ -8,6 +8,7 @@ use crate::DelegateFallbackEntry;
 use crate::isolation::IsolationRuntime;
 use crate::lifecycle::DestroyCause;
 use crate::manager::ManagedChildHandle;
+use crate::manager::cloud_router::CloudOffloadConfig;
 use crate::manager::concurrency::TaskConcurrencyConfig;
 use crate::manager::execution_mode::ExecutionMode;
 use crate::manager::isolation_wiring::IsolationSettings;
@@ -102,7 +103,7 @@ impl ManagedRunners {
     pub fn get(&self, mode: ExecutionMode) -> &Arc<dyn ManagedRunner> {
         match mode {
             ExecutionMode::InProcess => &self.in_process,
-            ExecutionMode::Process => &self.process,
+            ExecutionMode::Process | ExecutionMode::Cloud => &self.process,
         }
     }
 }
@@ -427,6 +428,9 @@ pub struct TaskManagerOptions {
     /// omo.json `task.parent_model_fallback` (fork policy gate for omo #12010/#12761): `true` keeps
     /// the parent-model rung; `false` holds a child to its designated chain only.
     pub parent_model_fallback: bool,
+    pub cloud_runner: Option<Arc<dyn ManagedRunner>>,
+    pub cloud_available: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    pub cloud_offload: CloudOffloadConfig,
 }
 
 impl TaskManagerOptions {
@@ -463,6 +467,9 @@ impl TaskManagerOptions {
             isolation: None,
             isolation_settings: IsolationSettings::default(),
             parent_model_fallback: true,
+            cloud_runner: None,
+            cloud_available: None,
+            cloud_offload: CloudOffloadConfig::default(),
         }
     }
 }

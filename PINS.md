@@ -20,6 +20,7 @@ The oh-my-openagent row is release `v5.1.83` (`69a1863a45`). Its sync ledgers ar
 
 - `PINS.md` senpi row: latest upstream commit whose behavior has been ported (parity baseline).
 - `tools/golden/pin.mjs` `SENPI_PIN`: commit the golden fixtures were generated from.
+- `tools/golden/pin.mjs` `SENPI_CATALOG_PIN`: senpi commit `crates/maho-ai/data/models.json` is generated from (currently v2026.11.19-5, `99a26322f4`); it may lead the parity pin, see docs/divergences.md CAT-1.
 - `.github/workflows/ci.yml` `SENPI_PIN`: must equal pin.mjs (fixtures checkout).
 
 ## User extensions

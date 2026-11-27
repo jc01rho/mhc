@@ -96,7 +96,7 @@ pub fn build_query_configuration(input: QueryOptionsInput<'_>) -> anyhow::Result
         input.stream_options["reasoning"].as_str(),
         input.stream_options.get("thinkingBudgets"),
     ));
-    options.extend(json!({"cwd":input.cwd,"model":crate::context_window::sdk_model_id_now(input.model["id"].as_str().unwrap_or_default(),input.model["contextWindow"].as_u64().unwrap_or(0)),"permissionMode":"dontAsk","includePartialMessages":true,"systemPrompt":system_prompt,"settings":{"autoCompactEnabled":crate::settings::resolve_compaction_owner(input.settings)=="senpi"},"settingSources":setting_sources(input.settings,&mode,input.lane)}).as_object().expect("configuration object").clone());
+    options.extend(json!({"cwd":input.cwd,"model":crate::context_window::sdk_model_id_now(input.model["id"].as_str().unwrap_or_default(),input.model["contextWindow"].as_u64().unwrap_or(0)),"permissionMode":"dontAsk","includePartialMessages":true,"hooks":crate::tools::host_tool_denial_hooks(),"systemPrompt":system_prompt,"settings":{"autoCompactEnabled":crate::settings::resolve_compaction_owner(input.settings)=="senpi"},"settingSources":setting_sources(input.settings,&mode,input.lane)}).as_object().expect("configuration object").clone());
     let senpi_owns_compaction =
         crate::settings::resolve_compaction_owner(input.settings) == "senpi";
     options.insert(
@@ -277,6 +277,9 @@ mod tests {
         assert_eq!(options["thinking"]["type"], "adaptive");
         assert_eq!(options["settingSources"], json!([]));
         assert_eq!(options["pathToClaudeCodeExecutable"], "/synthetic/claude");
+        // options.ts `hooks: HOST_TOOL_DENIAL_HOOKS`: under dontAsk only this hook hands a tool call to the host.
+        assert_eq!(options["permissionMode"], "dontAsk");
+        assert_eq!(options["hooks"], crate::tools::host_tool_denial_hooks());
     }
     #[test]
     fn senpi_owned_compaction_plans_the_window_and_disables_native_compaction() {

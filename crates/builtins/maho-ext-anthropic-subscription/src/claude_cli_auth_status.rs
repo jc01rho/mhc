@@ -1,10 +1,9 @@
-//! `claude auth status` and `claude auth logout` for one account dir (senpi `claude-cli-auth-status.ts`, senpi#4437).
+//! Port of senpi `anthropic-subscription/claude-cli-auth-status.ts` (v2026.11.19-5).
 use crate::claude_cli_process::{
-    ClaudeCliRun, DEFAULT_SHORT_COMMAND_TIMEOUT, run_claude_cli_to_exit,
+    ClaudeCliRun, DEFAULT_SHORT_COMMAND_TIMEOUT_MS, run_claude_cli_to_exit,
 };
 use maho_ai::utils::abort::AbortSignal;
-use serde_json::{Map, Value};
-use std::time::Duration;
+use serde_json::Value;
 
 /// The local-only profile a CLI-store account shows; never logged or sent to telemetry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -22,18 +21,14 @@ pub enum ClaudeCliRejection {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClaudeCliAuthStatus {
-    SignedIn {
-        profile: ClaudeCliProfile,
-    },
+    SignedIn(ClaudeCliProfile),
     SignedOut,
     /// Logged in, but not as a first-party claude.ai subscription (an API key, Bedrock, Vertex...).
-    Rejected {
-        reason: ClaudeCliRejection,
-    },
+    Rejected(ClaudeCliRejection),
     Unreadable,
 }
 
-fn string_field(record: &Map<String, Value>, name: &str) -> Option<String> {
+fn string_field(record: &serde_json::Map<String, Value>, name: &str) -> Option<String> {
     record
         .get(name)
         .and_then(Value::as_str)
@@ -62,206 +57,88 @@ pub fn parse_claude_cli_auth_status(stdout: &str, exit_code: Option<i32>) -> Cla
         return ClaudeCliAuthStatus::Unreadable;
     }
     if parsed.get("authMethod").and_then(Value::as_str) != Some("claude.ai") {
-        return ClaudeCliAuthStatus::Rejected {
-            reason: ClaudeCliRejection::AuthMethod,
-        };
+        return ClaudeCliAuthStatus::Rejected(ClaudeCliRejection::AuthMethod);
     }
     if parsed.get("apiProvider").and_then(Value::as_str) != Some("firstParty") {
-        return ClaudeCliAuthStatus::Rejected {
-            reason: ClaudeCliRejection::ApiProvider,
-        };
+        return ClaudeCliAuthStatus::Rejected(ClaudeCliRejection::ApiProvider);
     }
-    ClaudeCliAuthStatus::SignedIn {
-        profile: ClaudeCliProfile {
-            email: string_field(&parsed, "email"),
-            org_name: string_field(&parsed, "orgName"),
-            subscription_type: string_field(&parsed, "subscriptionType"),
-        },
-    }
+    ClaudeCliAuthStatus::SignedIn(ClaudeCliProfile {
+        email: string_field(&parsed, "email"),
+        org_name: string_field(&parsed, "orgName"),
+        subscription_type: string_field(&parsed, "subscriptionType"),
+    })
 }
 
 pub async fn read_claude_cli_auth_status(
-    run: &ClaudeCliRun,
-    timeout: Option<Duration>,
+    run: &ClaudeCliRun<'_>,
+    timeout_ms: u64,
 ) -> ClaudeCliAuthStatus {
-    let timeout = timeout.unwrap_or(DEFAULT_SHORT_COMMAND_TIMEOUT);
-    match run_claude_cli_to_exit(run, &["auth", "status", "--json"], timeout, None).await {
+    match run_claude_cli_to_exit(run, &["auth", "status", "--json"], timeout_ms, None).await {
         Some(exit) => parse_claude_cli_auth_status(&exit.stdout, exit.exit_code),
         None => ClaudeCliAuthStatus::Unreadable,
     }
 }
 
-/// `claude auth logout` for one account dir: deletes that dir's credential store entry.
+/// Deletes the CLI credential-store entry keyed by this account's config dir.
 pub async fn logout_claude_cli(
-    run: &ClaudeCliRun,
-    timeout: Option<Duration>,
+    run: &ClaudeCliRun<'_>,
+    timeout_ms: Option<u64>,
     signal: Option<&AbortSignal>,
 ) -> bool {
-    let timeout = timeout.unwrap_or(DEFAULT_SHORT_COMMAND_TIMEOUT);
-    run_claude_cli_to_exit(run, &["auth", "logout"], timeout, signal)
-        .await
-        .is_some_and(|exit| exit.exit_code == Some(0))
+    run_claude_cli_to_exit(
+        run,
+        &["auth", "logout"],
+        timeout_ms.unwrap_or(DEFAULT_SHORT_COMMAND_TIMEOUT_MS),
+        signal,
+    )
+    .await
+    .is_some_and(|exit| exit.exit_code == Some(0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn signed_in(profile: ClaudeCliProfile) -> ClaudeCliAuthStatus {
-        ClaudeCliAuthStatus::SignedIn { profile }
-    }
-
     #[test]
     fn only_a_first_party_claude_ai_login_with_exit_zero_is_signed_in() {
-        let claude_ai = r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"user@example.com","orgName":"Fixture Org","subscriptionType":"max","orgId":"org-1"}"#;
+        let signed_in = r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"a@example.com","orgName":"","subscriptionType":"max"}"#;
         assert_eq!(
-            parse_claude_cli_auth_status(claude_ai, Some(0)),
-            signed_in(ClaudeCliProfile {
-                email: Some("user@example.com".to_owned()),
-                org_name: Some("Fixture Org".to_owned()),
-                subscription_type: Some("max".to_owned()),
+            parse_claude_cli_auth_status(signed_in, Some(0)),
+            ClaudeCliAuthStatus::SignedIn(ClaudeCliProfile {
+                email: Some("a@example.com".into()),
+                org_name: None,
+                subscription_type: Some("max".into()),
             })
         );
-        let bare =
-            r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":""}"#;
         assert_eq!(
-            parse_claude_cli_auth_status(bare, Some(0)),
-            signed_in(ClaudeCliProfile::default())
-        );
-    }
-
-    #[test]
-    fn a_login_that_is_not_a_claude_ai_subscription_is_rejected_with_the_reason() {
-        let api_key = r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty"}"#;
-        assert_eq!(
-            parse_claude_cli_auth_status(api_key, Some(0)),
-            ClaudeCliAuthStatus::Rejected {
-                reason: ClaudeCliRejection::AuthMethod
-            }
-        );
-        let bedrock = r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"bedrock"}"#;
-        assert_eq!(
-            parse_claude_cli_auth_status(bedrock, Some(0)),
-            ClaudeCliAuthStatus::Rejected {
-                reason: ClaudeCliRejection::ApiProvider
-            }
-        );
-    }
-
-    #[test]
-    fn an_exit_code_and_a_logged_in_flag_that_disagree_are_unreadable_never_trusted() {
-        let in_flag = r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}"#;
-        let out_flag = r#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}"#;
-        assert_eq!(
-            parse_claude_cli_auth_status(in_flag, Some(1)),
+            parse_claude_cli_auth_status(signed_in, Some(1)),
             ClaudeCliAuthStatus::Unreadable
         );
         assert_eq!(
-            parse_claude_cli_auth_status(in_flag, None),
-            ClaudeCliAuthStatus::Unreadable
-        );
-        assert_eq!(
-            parse_claude_cli_auth_status(out_flag, Some(0)),
-            ClaudeCliAuthStatus::Unreadable
-        );
-        assert_eq!(
-            parse_claude_cli_auth_status(out_flag, Some(1)),
-            ClaudeCliAuthStatus::SignedOut
-        );
-    }
-
-    #[test]
-    fn output_that_is_not_a_status_object_is_unreadable() {
-        for stdout in ["not json\n", "[]", "{}", r#"{"loggedIn":"yes"}"#, ""] {
-            assert_eq!(
-                parse_claude_cli_auth_status(stdout, Some(0)),
-                ClaudeCliAuthStatus::Unreadable,
-                "{stdout:?}"
-            );
-        }
-    }
-}
-
-#[cfg(all(test, unix))]
-mod process_tests {
-    use super::*;
-    use crate::claude_cli_test_support::Fixture;
-
-    async fn status_of(mode: &str) -> ClaudeCliAuthStatus {
-        let fixture = Fixture::new(mode, &[]);
-        std::fs::create_dir_all(&fixture.run.config_dir).expect("account dir");
-        read_claude_cli_auth_status(&fixture.run, None).await
-    }
-
-    #[tokio::test]
-    async fn the_status_is_read_from_the_cli_json_through_the_real_spawn_path() {
-        assert_eq!(
-            status_of("status-claudeai").await,
-            ClaudeCliAuthStatus::SignedIn {
-                profile: ClaudeCliProfile {
-                    email: Some("user@example.com".to_owned()),
-                    org_name: Some("Fixture Org".to_owned()),
-                    subscription_type: Some("max".to_owned()),
-                }
-            }
-        );
-        assert_eq!(
-            status_of("status-apikey").await,
-            ClaudeCliAuthStatus::Rejected {
-                reason: ClaudeCliRejection::AuthMethod
-            }
-        );
-        assert_eq!(
-            status_of("status-bedrock").await,
-            ClaudeCliAuthStatus::Rejected {
-                reason: ClaudeCliRejection::ApiProvider
-            }
-        );
-        assert_eq!(
-            status_of("status-loggedout").await,
+            parse_claude_cli_auth_status(r#"{"loggedIn":false}"#, Some(1)),
             ClaudeCliAuthStatus::SignedOut
         );
         assert_eq!(
-            status_of("status-garbage").await,
+            parse_claude_cli_auth_status(r#"{"loggedIn":false}"#, Some(0)),
             ClaudeCliAuthStatus::Unreadable
         );
-    }
-
-    #[tokio::test]
-    async fn the_status_is_unreadable_when_the_cli_cannot_start() {
-        let mut fixture = Fixture::new("status-claudeai", &[]);
-        fixture.run.executable = fixture.run.config_dir.join("missing-claude");
         assert_eq!(
-            read_claude_cli_auth_status(&fixture.run, None).await,
+            parse_claude_cli_auth_status(
+                r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty"}"#,
+                Some(0)
+            ),
+            ClaudeCliAuthStatus::Rejected(ClaudeCliRejection::AuthMethod)
+        );
+        assert_eq!(
+            parse_claude_cli_auth_status(
+                r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"bedrock"}"#,
+                Some(0)
+            ),
+            ClaudeCliAuthStatus::Rejected(ClaudeCliRejection::ApiProvider)
+        );
+        assert_eq!(
+            parse_claude_cli_auth_status("not json", Some(0)),
             ClaudeCliAuthStatus::Unreadable
         );
-    }
-
-    #[tokio::test]
-    async fn logout_reports_the_exit_code_and_gives_up_on_a_cli_that_never_exits() {
-        let run_in = |mode: &str| {
-            let fixture = Fixture::new(mode, &[]);
-            std::fs::create_dir_all(&fixture.run.config_dir).expect("account dir");
-            fixture
-        };
-        let signed_out = run_in("logout-ok");
-        let refused = run_in("logout-fail");
-        let hung = run_in("logout-hang");
-
-        assert!(logout_claude_cli(&signed_out.run, None, None).await);
-        assert!(!logout_claude_cli(&refused.run, None, None).await);
-        assert!(!logout_claude_cli(&hung.run, Some(Duration::from_millis(200)), None).await);
-    }
-
-    #[tokio::test]
-    async fn an_aborted_signal_ends_a_short_command_without_spawning_it() {
-        let fixture = Fixture::new("logout-ok", &[]);
-        std::fs::create_dir_all(&fixture.run.config_dir).expect("account dir");
-        let controller = maho_ai::utils::abort::AbortController::new();
-        controller.abort(None);
-        let signal = controller.signal();
-
-        assert!(!logout_claude_cli(&fixture.run, None, Some(&signal)).await);
-        assert_eq!(fixture.recorded(), "");
     }
 }

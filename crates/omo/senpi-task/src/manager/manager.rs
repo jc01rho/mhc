@@ -23,6 +23,10 @@ use crate::lifecycle::{
 use crate::manager::child_handle::{
     ManagedChildHandle, ManagedChildListener, Unsubscribe, discard_managed_handle,
 };
+use crate::manager::cloud_router::{
+    CloudOffloadConfig, CloudRouteDecision, CloudRouteInput, decide_cloud_offload,
+    has_host_only_extensions,
+};
 use crate::manager::concurrency::{Grant, TaskConcurrency};
 use crate::manager::continue_result::{ContinueResult, to_continue_result};
 use crate::manager::depth_policy::{DepthDecision, DepthPolicyInput, decide_depth_policy};
@@ -100,6 +104,7 @@ struct LaunchContext {
     record: TaskRecord,
     managed_spec: ManagedStartSpec,
     runner: Arc<dyn ManagedRunner>,
+    fallback_runner: Option<Arc<dyn ManagedRunner>>,
     model: String,
 }
 
@@ -251,6 +256,9 @@ struct Inner {
     store: TaskRecordStore,
     saver: Arc<dyn TaskRecordSaver + Send + Sync>,
     runners: crate::manager::types::ManagedRunners,
+    cloud_runner: Option<Arc<dyn ManagedRunner>>,
+    cloud_available: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    cloud_offload: CloudOffloadConfig,
     planner: crate::manager::types::ChildPlanner,
     config: crate::manager::types::ManagerConfig,
     /// `task.parent_model_fallback`; `false` is the designated-chain-only policy (omo #12010).
@@ -563,6 +571,9 @@ impl TaskManager {
                 store: store.clone(),
                 saver,
                 runners: options.runners,
+                cloud_runner: options.cloud_runner,
+                cloud_available: options.cloud_available,
+                cloud_offload: options.cloud_offload,
                 planner: options.planner,
                 cwd: options.cwd,
                 concurrency: Mutex::new(TaskConcurrency::new(options.config.concurrency.clone())),
@@ -894,8 +905,10 @@ impl TaskManager {
     ) -> Result<(), String> {
         let mode = ExecutionMode::parse(&record.execution_mode)
             .ok_or_else(|| "Invalid worker execution mode".to_owned())?;
+        let (runner, fallback_runner) = self.inner.select_runners(mode, ExecutionMode::InProcess);
         let context = LaunchContext {
-            runner: Arc::clone(self.inner.runners.get(mode)),
+            runner,
+            fallback_runner,
             model: record.model.clone(),
             managed_spec,
             record,
@@ -1538,16 +1551,12 @@ impl TaskManager {
             return Err("held admission owner_changed".into());
         }
         managed_spec.admission = Some(scope.clone());
-        let mode = if owned.execution_mode == "in-process" {
-            ExecutionMode::InProcess
-        } else {
-            ExecutionMode::Process
-        };
+        let mode = ExecutionMode::parse(&owned.execution_mode).unwrap_or(ExecutionMode::Process);
+        let (default_runner, fallback_runner) =
+            self.inner.select_runners(mode, ExecutionMode::InProcess);
         let context = LaunchContext {
-            runner: warm.map_or_else(
-                || Arc::clone(self.inner.runners.get(mode)),
-                |warm| warm.runner,
-            ),
+            runner: warm.map_or(default_runner, |warm| warm.runner),
+            fallback_runner,
             record: owned,
             managed_spec,
             model: admission.model.clone(),
@@ -3425,11 +3434,58 @@ impl Inner {
                 max_depth,
             };
         }
-        let execution_mode = resolve_execution_mode(ExecutionModeSources {
+        let base_execution_mode = resolve_execution_mode(ExecutionModeSources {
             spec_mode: spec.execution_mode,
             agent_mode: plan.agent_execution_mode,
             config_mode: Some(self.config.default_execution_mode),
         });
+        let active_children = {
+            let state = lock(&self.state);
+            state.live.len().saturating_add(state.launching.len())
+        };
+        let wants_isolation = self.isolation.isolates(spec);
+        let cloud_ready = self.is_cloud_available();
+        let cloud_decision = decide_cloud_offload(&CloudRouteInput {
+            config: &self.cloud_offload,
+            cloud_available: cloud_ready,
+            base_mode: base_execution_mode,
+            explicit_spec_mode: spec.execution_mode,
+            active_children,
+            run_in_background: spec.run_in_background,
+            isolated: wants_isolation,
+            has_member_scoped_tools: spec
+                .member_scoped_tools
+                .as_ref()
+                .is_some_and(|tools| !tools.is_empty()),
+            has_host_only_extensions: has_host_only_extensions(spec.extensions.as_deref()),
+        });
+        let (execution_mode, cloud_reason) = match cloud_decision {
+            CloudRouteDecision::Cloud { reason } => (ExecutionMode::Cloud, Some(reason)),
+            CloudRouteDecision::Local => (base_execution_mode, None),
+        };
+        if execution_mode == ExecutionMode::Cloud
+            && self.cloud_runner.is_some()
+            && !self.destruction.supports_fenced_eviction()
+        {
+            if let Some(lease) = &admission_lease {
+                lease.release();
+            }
+            return StartResult::StartFailed(StartFailure {
+                task_id: String::new(),
+                name: normalize_spec_name(spec.name.as_deref()).unwrap_or_default(),
+                category: spec.category.clone().or(plan.category.clone()),
+                subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
+                execution_mode,
+                model: plan.model.clone(),
+                resolved_model: plan.resolved_model.clone(),
+                run_in_background: spec.run_in_background,
+                error_message: "cloud tasks require lifecycle destruction with fenced eviction; configure TaskManagerOptions.destruction with a TaskLifecycle adapter, or disable cloud offload".into(),
+            });
+        }
+        let local_fallback_mode = match base_execution_mode {
+            ExecutionMode::Cloud => ExecutionMode::InProcess,
+            other => other,
+        };
         let requested_name = normalize_spec_name(spec.name.as_deref());
         let requested_registration = requested_name
             .as_deref()
@@ -3504,60 +3560,61 @@ impl Inner {
         // Isolation is built BEFORE the record is committed to a launch: a repository that cannot be
         // cloned must refuse the spawn, never silently run the child against the parent checkout,
         // because "isolated" is a safety promise the caller relies on.
-        let prepared: Option<PreparedIsolation> = if self.isolation.isolates(spec) {
-            match self.isolation.prepare(spec, &claimed.task_id) {
-                IsolationPreparation::Prepared {
-                    handle,
-                    baseline,
-                    spec: isolation_spec,
-                } => Some((*handle, *baseline, isolation_spec)),
-                IsolationPreparation::Refused { reason } => {
-                    if Some(registration.name.as_str()) != claimed.name.as_deref() {
-                        lock(&self.names).release(&spec.parent_session_id, &registration.name);
+        let prepared: Option<PreparedIsolation> =
+            if wants_isolation && execution_mode != ExecutionMode::Cloud {
+                match self.isolation.prepare(spec, &claimed.task_id) {
+                    IsolationPreparation::Prepared {
+                        handle,
+                        baseline,
+                        spec: isolation_spec,
+                    } => Some((*handle, *baseline, isolation_spec)),
+                    IsolationPreparation::Refused { reason } => {
+                        if Some(registration.name.as_str()) != claimed.name.as_deref() {
+                            lock(&self.names).release(&spec.parent_session_id, &registration.name);
+                        }
+                        lock(&self.state).background.remove(&claimed.task_id);
+                        let message = format!("isolation_unavailable: {reason}");
+                        let timestamp = self.now_iso();
+                        let started = self.transition(
+                            &claimed.task_id,
+                            &TaskTransition::Start {
+                                timestamp: timestamp.clone(),
+                                pid: None,
+                                child_session_id: None,
+                            },
+                        );
+                        let failed = self.transition(
+                            &claimed.task_id,
+                            &TaskTransition::Fail {
+                                timestamp,
+                                error_message: message.clone(),
+                                killed: false,
+                                run_stats: None,
+                            },
+                        );
+                        assert!(
+                            started && failed,
+                            "isolation refusal transitions were not applied"
+                        );
+                        if let Some(lease) = &admission_lease {
+                            lease.release();
+                        }
+                        return StartResult::StartFailed(StartFailure {
+                            task_id: claimed.task_id.clone(),
+                            name: registration.name.clone(),
+                            category: claimed.category.clone(),
+                            subagent_type: claimed.agent_type.clone(),
+                            execution_mode,
+                            model: claimed.model.clone(),
+                            resolved_model: claimed.resolved_model.clone(),
+                            run_in_background: spec.run_in_background,
+                            error_message: message,
+                        });
                     }
-                    lock(&self.state).background.remove(&claimed.task_id);
-                    let message = format!("isolation_unavailable: {reason}");
-                    let timestamp = self.now_iso();
-                    let started = self.transition(
-                        &claimed.task_id,
-                        &TaskTransition::Start {
-                            timestamp: timestamp.clone(),
-                            pid: None,
-                            child_session_id: None,
-                        },
-                    );
-                    let failed = self.transition(
-                        &claimed.task_id,
-                        &TaskTransition::Fail {
-                            timestamp,
-                            error_message: message.clone(),
-                            killed: false,
-                            run_stats: None,
-                        },
-                    );
-                    assert!(
-                        started && failed,
-                        "isolation refusal transitions were not applied"
-                    );
-                    if let Some(lease) = &admission_lease {
-                        lease.release();
-                    }
-                    return StartResult::StartFailed(StartFailure {
-                        task_id: claimed.task_id.clone(),
-                        name: registration.name.clone(),
-                        category: claimed.category.clone(),
-                        subagent_type: claimed.agent_type.clone(),
-                        execution_mode,
-                        model: claimed.model.clone(),
-                        resolved_model: claimed.resolved_model.clone(),
-                        run_in_background: spec.run_in_background,
-                        error_message: message,
-                    });
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         let isolation_cwd = prepared
             .as_ref()
             .map_or_else(|| self.cwd.clone(), |(_, _, spec)| spec.merged_dir.clone());
@@ -3610,8 +3667,22 @@ impl Inner {
                 .background
                 .insert(final_record.task_id.clone());
         }
+        if let Some(reason) = cloud_reason {
+            let _ = self.store.append_event(
+                &final_record.task_id,
+                &PersistedTaskEvent {
+                    event_type: "cloud_offload_selected".to_string(),
+                    payload: json!({
+                        "reason": reason,
+                        "activeChildren": active_children,
+                    }),
+                },
+            );
+        }
+        let (runner, fallback_runner) = self.select_runners(execution_mode, local_fallback_mode);
         let context = LaunchContext {
-            runner: Arc::clone(self.runners.get(execution_mode)),
+            runner,
+            fallback_runner,
             model: plan.model.clone(),
             managed_spec,
             record: final_record.clone(),
@@ -3869,7 +3940,25 @@ impl Inner {
             self.settle_waiters(&record.task_id);
             return Err("task was cancelled before launch".to_string());
         }
-        let started = self.start_marked(context);
+        let mut effective_context = context.clone();
+        let started = match self.start_marked(&effective_context) {
+            Ok(handle) => Ok(handle),
+            Err(cloud_error) => {
+                if let Some(fallback_runner) = effective_context.fallback_runner.take() {
+                    let _ = self.store.append_event(
+                        &record.task_id,
+                        &PersistedTaskEvent {
+                            event_type: "cloud_fallback_to_local".to_string(),
+                            payload: json!({ "error_message": cloud_error.to_string() }),
+                        },
+                    );
+                    effective_context.runner = fallback_runner;
+                    self.start_marked(&effective_context)
+                } else {
+                    Err(cloud_error)
+                }
+            }
+        };
         let handle = match started {
             Ok(handle) => handle,
             Err(error) => {
@@ -3915,8 +4004,9 @@ impl Inner {
                 && fresh.notification.run_epoch == epoch
                 && fresh.host_pid == record.host_pid
         });
-        if !held_creation && !owns_run(&launch_run_of(&context.record), current.as_ref()) {
-            self.discard_stale_launch(context, handle);
+        if !held_creation && !owns_run(&launch_run_of(&effective_context.record), current.as_ref())
+        {
+            self.discard_stale_launch(&effective_context, handle);
             self.end_launch(&record.task_id);
             return Err(if cancelled {
                 "task was cancelled during launch"
@@ -3925,7 +4015,7 @@ impl Inner {
             }
             .to_string());
         }
-        self.attach_launched(context, &handle);
+        self.attach_launched(&effective_context, &handle);
         if let Some(admission) = &context.managed_spec.admission {
             admission.leave();
         }
@@ -3944,6 +4034,33 @@ impl Inner {
     /// a started-but-unregistered child as an orphan and revive it over the still-running process.
     /// The mark is cleared only after the caller attaches or discards the handle (see
     /// [`Self::end_launch`]) — clearing it here would reopen the window before `live` holds it.
+    fn is_cloud_available(&self) -> bool {
+        if self.cloud_runner.is_none() {
+            return false;
+        }
+        match &self.cloud_available {
+            Some(check) => check(),
+            None => true,
+        }
+    }
+
+    fn select_runners(
+        &self,
+        mode: ExecutionMode,
+        local_fallback_mode: ExecutionMode,
+    ) -> (Arc<dyn ManagedRunner>, Option<Arc<dyn ManagedRunner>>) {
+        if mode == ExecutionMode::Cloud
+            && let Some(cloud_runner) = &self.cloud_runner
+        {
+            let fallback = self
+                .cloud_offload
+                .fallback_to_local
+                .then(|| Arc::clone(self.runners.get(local_fallback_mode)));
+            return (Arc::clone(cloud_runner), fallback);
+        }
+        (Arc::clone(self.runners.get(local_fallback_mode)), None)
+    }
+
     fn start_marked(&self, context: &LaunchContext) -> crate::manager::types::ManagedRunnerResult {
         lock(&self.state)
             .launching
@@ -4212,6 +4329,7 @@ impl Inner {
             model: next.display.clone(),
             record: updated,
             runner: Arc::clone(&context.runner),
+            fallback_runner: context.fallback_runner.clone(),
             managed_spec: ManagedStartSpec {
                 model: Some(next.display.clone()),
                 resolved_model: Some(next),
@@ -5036,6 +5154,7 @@ impl Inner {
             record: next_record,
             managed_spec: next_spec,
             runner,
+            fallback_runner: None,
             model: next_model.display.clone(),
         };
         let context_epoch = context.record.notification.run_epoch;
@@ -5532,6 +5651,32 @@ impl OutcomeTrackerPorts for Inner {
 
     fn settle_waiters(&self, task_id: &str) {
         Inner::settle_waiters(self, task_id);
+    }
+
+    fn evict_finished_cloud(
+        &self,
+        task_id: &str,
+        handle: &Arc<dyn ManagedChildHandle>,
+        epoch: i64,
+    ) -> Result<(), crate::host::HostError> {
+        if !handle.evict_after_outcome() {
+            return Ok(());
+        }
+        let Some(record) = self
+            .store
+            .load(task_id)
+            .map_err(|error| crate::host::HostError {
+                message: format!("cannot load cloud task before lifecycle eviction: {error}"),
+            })?
+        else {
+            return Ok(());
+        };
+        if record.execution_mode != ExecutionMode::Cloud.as_str()
+            || record.notification.run_epoch != epoch
+        {
+            return Ok(());
+        }
+        self.destruction.evict_managed_if_current(task_id, handle)
     }
 
     fn try_runtime_fallback(&self, input: &ErrorOutcomeInput) -> bool {

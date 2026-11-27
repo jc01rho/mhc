@@ -98,6 +98,14 @@ impl TaskLifecycle {
         })
     }
 
+    pub fn evict_managed_if_current(
+        &self,
+        task_id: &str,
+        handle: &Arc<dyn crate::manager::ManagedChildHandle>,
+    ) -> Result<(), LifecycleError> {
+        super::destroy::evict_managed_if_current(&self.context, task_id, handle)
+    }
+
     pub fn admit_resident(
         &self,
         parent_session_id: &str,
