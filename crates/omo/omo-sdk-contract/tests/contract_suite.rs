@@ -587,7 +587,7 @@ fn a_sessions_auth_check_is_the_option_c_shape_with_no_free_string_but_the_provi
     });
     assert!(session_answer_accepts("engine.auth.check", &full));
     assert_eq!(
-        paths_of(&[full.clone()]),
+        paths_of(std::slice::from_ref(&full)),
         set(&[
             "status",
             "provider",
