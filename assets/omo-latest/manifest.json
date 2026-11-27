@@ -3490,9 +3490,9 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 34580,
-        "sha256": "a1bd1b61759d5b545ec06dd1d92a59bae945d7ff651d7e3f2467c3e438cef276",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/SKILL.md"
+        "bytes": 8838,
+        "sha256": "ce6252b1c7af305f4d3cc253eaef115f76a0127035ea41b77a5f8e80135157e9",
+        "source": "lazycodex@ebf7c57:plugins/omo/skills/programming/SKILL.md (MIT)"
       },
       {
         "path": "references/code-smells.md",
@@ -3502,9 +3502,9 @@
       },
       {
         "path": "references/go/README.md",
-        "bytes": 7864,
-        "sha256": "72a6fec478d1a9d161a9158e8fd1bb8adcb5b255e0abe22ebc8b793015a16bdc",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/go/README.md"
+        "bytes": 8024,
+        "sha256": "98000a5bb620ebfe97a021d7f0b0ceb299c2ef31ce173636f3d1ce8373bc73fa",
+        "source": "lazycodex@ebf7c57:plugins/omo/skills/programming/references/go/README.md (MIT)"
       },
       {
         "path": "references/go/backend-stack.md",
@@ -3598,9 +3598,9 @@
       },
       {
         "path": "references/python/README.md",
-        "bytes": 16096,
-        "sha256": "7410d7535b6de42da171b6d55c0f26995cdac86b1d14c7d907143ba1a9bc007d",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/python/README.md"
+        "bytes": 18171,
+        "sha256": "dd0e5b1d959f9e8a922750f6d5b7cfa2ba2cdfcf471418df9af6f34b365ea48a",
+        "source": "lazycodex@ebf7c57:plugins/omo/skills/programming/references/python/README.md (MIT)"
       },
       {
         "path": "references/python/async-anyio.md",
@@ -3622,9 +3622,9 @@
       },
       {
         "path": "references/python/error-handling.md",
-        "bytes": 6123,
-        "sha256": "c8a31325999441f1890e9a35bcef02a316a930bf36bba992e376e6c6a742dcd5",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/python/error-handling.md"
+        "bytes": 6587,
+        "sha256": "9a157e1e6a1f4c3431acef2237868d2c354709fcd42d3ac3f34556630472973e",
+        "source": "lazycodex@ebf7c57:plugins/omo/skills/programming/references/python/error-handling.md (MIT)"
       },
       {
         "path": "references/python/fastapi-stack.md",
@@ -3682,9 +3682,9 @@
       },
       {
         "path": "references/rust/README.md",
-        "bytes": 17027,
-        "sha256": "ee34964be2dad444338530fa62f3c7f802063b76d9a8c3047fb17529520cc1b2",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/rust/README.md"
+        "bytes": 17435,
+        "sha256": "45dbecbadbfaf1f8876af59711517e1a408abf36c23685da57b03d1e479a4903",
+        "source": "lazycodex@ebf7c57:plugins/omo/skills/programming/references/rust/README.md (MIT)"
       },
       {
         "path": "references/rust/api-design.md",
@@ -3796,9 +3796,9 @@
       },
       {
         "path": "references/typescript/README.md",
-        "bytes": 10805,
-        "sha256": "2e382e3cde9acbf50a1bc55aef6ba35e01273006314e0dcb32cbb9447cc49a3a",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/typescript/README.md"
+        "bytes": 11335,
+        "sha256": "3605c5483faf0173c7e9a30377ce207602a54a35dfbe08668115552028373f60",
+        "source": "lazycodex@ebf7c57:plugins/omo/skills/programming/references/typescript/README.md (MIT)"
       },
       {
         "path": "references/typescript/backend-hono.md",
@@ -3820,9 +3820,9 @@
       },
       {
         "path": "references/typescript/error-handling.md",
-        "bytes": 4825,
-        "sha256": "5d99ea45d454723b1d8292357a7a20b434801101336863df89e000c67bf1e807",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/programming/references/typescript/error-handling.md"
+        "bytes": 5526,
+        "sha256": "db4479a526da47c4593ec88586964d32af7070438bfea43fe72b844467712348",
+        "source": "lazycodex@ebf7c57:plugins/omo/skills/programming/references/typescript/error-handling.md (MIT)"
       },
       {
         "path": "references/typescript/oxc-lint.md",
@@ -4346,14 +4346,14 @@
     "ultrawork": [
       {
         "path": "SKILL.md",
-        "bytes": 15183,
-        "sha256": "aa3ca5f10dc7d2ce61c3077ecdaea56e9d272952a3fb4e3ae2fb0fac1971f139",
+        "bytes": 16618,
+        "sha256": "1d3febe41637a7041bdc64d552fe40c1d55b8ae6e52b51009c3fadd56ee47f6a",
         "source": "lazycodex@75b01747:plugins/omo/skills/ultrawork/SKILL.md (MIT)"
       },
       {
         "path": "references/commits.md",
-        "bytes": 2910,
-        "sha256": "ee9db35f309a5ee3216503017373d05118dfb4f0a852b5e32a556fd5bc76bd89",
+        "bytes": 2892,
+        "sha256": "28d67057dfbdefddd9557707500f73f05944fbf5e07408c7a4b15a11bbd315b3",
         "source": "packages/shared-skills/skills/ultrawork/references/commits.md"
       },
       {
