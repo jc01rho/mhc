@@ -1197,6 +1197,9 @@ struct StreamState {
     saw_terminal_response_event: bool,
     open_items: usize,
     saw_item_done: bool,
+    /// Set while an event opens a new output item, so the completion grace starts again even
+    /// when that item is finalized later in the same body chunk.
+    item_opened_since_last_read: bool,
 }
 
 impl StreamState {
@@ -1211,6 +1214,7 @@ impl StreamState {
             saw_terminal_response_event: false,
             open_items: 0,
             saw_item_done: false,
+            item_opened_since_last_read: false,
         }
     }
 }
@@ -1253,7 +1257,16 @@ pub async fn process_responses_stream(
     let mut search_from = 0;
     let mut utf8 = crate::utils::utf8_stream::Utf8ChunkDecoder::default();
     let mut completion_phase_started_at: Option<tokio::time::Instant> = None;
-    while let Some(chunk) = read_chunk(&mut body, &state, &mut completion_phase_started_at).await? {
+    loop {
+        // An item opened while the last chunk was handled restarts the grace, whether or not that
+        // same chunk also finalized it.
+        if std::mem::take(&mut state.item_opened_since_last_read) {
+            completion_phase_started_at = None;
+        }
+        let Some(chunk) = read_chunk(&mut body, &state, &mut completion_phase_started_at).await?
+        else {
+            break;
+        };
         // DIVERGENCE(senpi openai-responses-shared.ts): a multibyte character split across two network chunks is carried to the next chunk instead of becoming two U+FFFD; Node's TextDecoder in stream mode keeps split characters, so this matches upstream behavior. A truncated tail at stream end is never framed (the buffer tail is dropped), so no flush is needed.
         utf8.push(&chunk, &mut buffer);
         while let Some((index, length)) = find_sse_boundary(&buffer, search_from) {
@@ -1340,6 +1353,12 @@ async fn read_chunk(
     let grace_left = Duration::from_millis(RESPONSES_COMPLETION_GRACE_MS)
         .checked_sub(started_at.elapsed())
         .unwrap_or_default();
+    if grace_left.is_zero() {
+        // A chunk that is already queued would win a zero timeout, and the budget would never end.
+        return Err(ResponsesStreamError::new(
+            format_responses_completion_stall(RESPONSES_COMPLETION_GRACE_MS),
+        ));
+    }
     match tokio::time::timeout(grace_left, body.next()).await {
         Ok(None) => Ok(None),
         Ok(Some(chunk)) => chunk
@@ -1702,6 +1721,7 @@ fn handle_event(
             let item = event.get("item").cloned().unwrap_or(Value::Null);
             create_slot(output_index, &item, output, stream, options, state)?;
             state.open_items += 1;
+            state.item_opened_since_last_read = true;
         }
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             let delta = field_str(&event, "delta").unwrap_or_default().to_owned();
@@ -2870,6 +2890,76 @@ mod tests {
             keepalives_sent.load(std::sync::atomic::Ordering::SeqCst) >= 3,
             "the stream was not fed inside the grace budget"
         );
+        sender.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_item_opened_in_a_chunk_restarts_the_completion_grace() {
+        // Given: one item is finalized, then a chunk opens and finalizes another item at once.
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<bytes::Bytes, reqwest::Error>>();
+        tx.send(Ok(bytes::Bytes::from(item_done_event())))
+            .expect("send item done");
+        let grace = Duration::from_millis(RESPONSES_COMPLETION_GRACE_MS);
+        let sender = tokio::spawn(async move {
+            tokio::time::sleep(grace * 3 / 4).await;
+            let opened_and_done = format!(
+                "data: {}\n\ndata: {}\n\n",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": 1,
+                    "item": { "type": "message", "id": "msg_2", "role": "assistant",
+                              "content": [] },
+                }),
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": 1,
+                    "item": { "type": "message", "id": "msg_2", "role": "assistant",
+                              "content": [] },
+                })
+            );
+            let _ = tx.send(Ok(bytes::Bytes::from(opened_and_done)));
+            // Past the deadline the first budget would have set, inside the restarted one.
+            tokio::time::sleep(grace / 2).await;
+            let completed = format!(
+                "data: {}\n\n",
+                json!({
+                    "type": "response.completed",
+                    "response": { "id": "resp_1", "status": "completed", "output": [] },
+                })
+            );
+            let _ = tx.send(Ok(bytes::Bytes::from(completed)));
+            std::future::pending::<()>().await;
+        });
+        let body = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        let mut output: AssistantMessage = serde_json::from_value(json!({
+            "role": "assistant", "api": "openai-responses", "provider": "openai", "model": "m",
+            "content": [], "stopReason": "pending", "timestamp": 1,
+            "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 } }
+        }))
+        .expect("responses output");
+        let events = AssistantMessageEventStream::assistant();
+        let model = test_model("openai-responses", "m", None);
+
+        // When
+        let result = tokio::time::timeout(
+            grace * 2,
+            process_responses_stream(
+                Box::pin(body),
+                &mut output,
+                &events,
+                &model,
+                &ResponsesStreamOptions::default(),
+            ),
+        )
+        .await
+        .expect("the stream ends");
+
+        // Then: the completion lands inside the restarted grace, so the stream completes.
+        assert!(result.is_ok(), "{result:?}");
         sender.abort();
     }
 }
