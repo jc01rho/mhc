@@ -21,6 +21,7 @@ use super::endpoint_controls::{
 };
 use super::gateway_replies::{release_reply, wake_reply};
 use super::host_view::{SessionCommandPort, ThreadHost, ThreadHostSession, ThreadHostView};
+use super::thread_state::holder_version;
 use super::types::GatewayEndpointKind;
 
 pub const REQUEST_TIMEOUT_MS: u64 = 60_000;
@@ -690,12 +691,13 @@ async fn list_endpoint(
         .and_then(|frame| data_record(&frame, "get_protocol_info"))
         .ok()
         .map(Value::Object);
+    // omo-relay-spec #314: the engine's own version when the key is present, the legacy serverVersion only when it is
+    // absent; either one only when it is a holder version.
     let engine_version = protocol.as_ref().and_then(|info| {
-        ["engineVersion", "serverVersion"]
-            .iter()
-            .filter_map(|key| info.get(*key).and_then(Value::as_str))
-            .find(|version| !version.is_empty())
-            .map(str::to_owned)
+        holder_version(
+            info.get("engineVersion")
+                .or_else(|| info.get("serverVersion")),
+        )
     });
     let controls = if kind == GatewayEndpointKind::Tui {
         accepted_controls(kind, Some(&tui_commands_from(protocol.as_ref())))

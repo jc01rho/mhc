@@ -103,6 +103,16 @@ pub fn retry_wait(running: bool, waiting: Option<&Value>) -> Option<ThreadRetryW
     })
 }
 
+/// omo-relay-spec #314: a holder version is an opaque, nonempty string of at most 128 UTF-16 code units (a Rust
+/// string is always well-formed); anything else is unknown and shown as nothing.
+const ENGINE_VERSION_MAX_UNITS: usize = 128;
+
+pub fn holder_version(value: Option<&Value>) -> Option<String> {
+    let version = value?.as_str()?;
+    (!version.is_empty() && version.encode_utf16().count() <= ENGINE_VERSION_MAX_UNITS)
+        .then(|| version.to_owned())
+}
+
 /// A reported model, when it is exactly a non-empty provider and id.
 pub fn thread_model(value: Option<&Value>) -> Option<ThreadModel> {
     let value = value?;
@@ -128,6 +138,27 @@ pub fn listed_states(asked: Option<&[ThreadState]>) -> BTreeSet<ThreadState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_holder_version_is_a_nonempty_string_of_at_most_128_utf16_units() {
+        let at_limit = "x".repeat(128);
+        let over = "x".repeat(129);
+        assert_eq!(
+            holder_version(Some(&Value::from("2026.11.19-3"))).as_deref(),
+            Some("2026.11.19-3")
+        );
+        assert_eq!(
+            holder_version(Some(&Value::from(at_limit.clone()))),
+            Some(at_limit)
+        );
+        assert_eq!(holder_version(Some(&Value::from(over))), None);
+        assert_eq!(holder_version(Some(&Value::from(""))), None);
+        assert_eq!(holder_version(Some(&Value::from(7))), None);
+        assert_eq!(holder_version(Some(&Value::Null)), None);
+        assert_eq!(holder_version(None), None);
+        let wide = "\u{1f600}".repeat(65);
+        assert_eq!(holder_version(Some(&Value::from(wide))), None);
+    }
 
     #[test]
     fn the_archived_flag_wins_then_holding_then_activity() {
