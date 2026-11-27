@@ -27,7 +27,7 @@ use crate::thread::host_view::{ThreadHost, ThreadHostView};
 use crate::thread::remote::ports::{RemoteThreadSurface, escape_for_display, keyed};
 
 use super::local_control::LocalControl;
-use super::port::SessionControl;
+use super::port::{SessionControl, SessionHost};
 use super::relay_control::create_relay_control;
 
 /// What an address names for a control tool.

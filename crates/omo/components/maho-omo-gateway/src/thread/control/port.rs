@@ -174,6 +174,9 @@ pub struct SessionOpenRequest {
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
     pub durable_session_id: Option<String>,
+    /// The session a device reopens by, for a reopen carried to another device's engine (`mhc.session.open { session }`):
+    /// this device's own opens never name one, they name the file to resume.
+    pub remote_session: Option<String>,
 }
 
 /// Host-only hints for `SessionHost::open`, never forwarded on the engine's `open_session` frame.

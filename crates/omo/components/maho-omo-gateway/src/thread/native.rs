@@ -77,7 +77,9 @@ impl Extension for NativeThreadComponent {
                             host: None,
                             caller_workspace_root: Arc::new(move || workspace_root.clone()),
                             sessions_directory: Some(ctx.agent_dir.join("sessions")),
-                            remote: None,
+                            // A device whose `relayd.json` peer carries an `agentd` object reaches other devices over
+                            // agentd (listing, locate, open/fork, follow, delivery); with none it stays as it was.
+                            remote: super::remote::agentd::locator_for_process(),
                             caller_reply_targets: Arc::new(Vec::new),
                             caller_reply_senders: Arc::new(Vec::new),
                         }));

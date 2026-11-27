@@ -8,6 +8,8 @@
 //! it and the create answers that delivery (#14335). Another device, the account alias registry and the tool receipts a
 //! retry reads (`retrying`) are the surface's: see `docs/omo-sync/v5.1.83/thread-control.md`.
 
+use std::sync::Arc;
+
 use serde_json::{Map, Value, json};
 
 use crate::thread::adapter::BoxFuture;
@@ -265,11 +267,24 @@ async fn create_made(
             } => (request, creates, previous_name, local_alias),
         };
     // #13031: an engine that does not fork on open would start a blank thread for an open carrying forkFrom, so the fork
-    // is refused before anything opens (`cross-device.ts` `planCreate`, `plan.host.forks()`).
+    // is refused before anything opens (`cross-device.ts` `planCreate`, `plan.host.forks()`). An open placement sent past
+    // this device asks that device's engine, not this one's.
+    let device_host: Option<Arc<dyn SessionHost>> = request.remote.as_deref().and_then(|device| {
+        call.remote
+            .as_deref()
+            .and_then(|remote| remote.session_host(device))
+    });
+    let opener: &dyn SessionHost = match &device_host {
+        Some(host) => host.as_ref(),
+        None => &host,
+    };
     if let Some(source) = request.fork_from.as_deref()
-        && !host.forks().await?
+        && !opener.forks().await?
     {
-        return Ok(Made::answer(fork_unsupported(source, None)));
+        return Ok(Made::answer(fork_unsupported(
+            source,
+            request.remote.as_deref(),
+        )));
     }
     let name = if local_alias.is_none() {
         value.name.clone()
@@ -292,7 +307,7 @@ async fn create_made(
         && !deduplicated
         && let Some(wanted) = name.as_deref()
     {
-        let visible = host.visible().await?;
+        let visible = opener.visible().await?;
         if let Err(conflict) = check_name_conflict(&visible, wanted) {
             return Ok(Made::answer(error_json(*conflict)));
         }
@@ -308,6 +323,7 @@ async fn create_made(
         fork_from: request.fork_from.clone(),
         name: if creates { name.clone() } else { None },
         durable_session_id: created_id.clone(),
+        remote_session: request.remote_session.clone(),
         ..SessionOpenRequest::default()
     };
     if creates {
@@ -330,7 +346,7 @@ async fn create_made(
             )
             .await?
         }
-        _ => match host
+        _ => match opener
             .open(
                 open,
                 SessionOpenOptions {
@@ -359,7 +375,7 @@ async fn create_made(
     let recorded = if creates {
         record_creator(call, surface, &caller_id, created)?
     } else {
-        keep_name(surface, &host, created, kept.as_deref(), &thread.thread).await?
+        keep_name(surface, opener, created, kept.as_deref(), &thread.thread).await?
     };
     let mut answered = recorded;
     if let Some(reason) = local_alias
@@ -438,7 +454,7 @@ fn record_creator(
 /// be set is a warning on the reopened thread, never an error: it runs.
 async fn keep_name(
     surface: &dyn CreateSurface,
-    host: &LocalSessionHost,
+    host: &dyn SessionHost,
     mut created: Value,
     wanted: Option<&str>,
     thread_id: &str,

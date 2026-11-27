@@ -225,11 +225,15 @@ impl AgentdLink {
             });
         }
         Box::pin(async move {
-            receiver.await.unwrap_or_else(|_| {
-                Err(AgentdError::Unavailable(
-                    "the agentd link closed before it answered".to_owned(),
-                ))
-            })
+            match tokio::time::timeout(timeout, receiver).await {
+                Ok(result) => result.unwrap_or_else(|_| {
+                    Err(AgentdError::Unavailable(
+                        "the agentd link closed before it answered".to_owned(),
+                    ))
+                }),
+                // A link that never completes its handshake never ticks the sweep: the call's own bound ends it.
+                Err(_) => Err(AgentdError::Timeout),
+            }
         })
     }
 

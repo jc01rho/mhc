@@ -28,3 +28,29 @@ pub use ports::{
     command_outcome, launch_of, opened_summary, outcome_of as command_error_outcome, reason_of,
     row_key_of, rows_of,
 };
+
+use std::sync::Arc;
+
+use crate::thread::control::locate::RemoteControlLocator;
+use crate::thread::control::relay_control::RelayControlLocator;
+use crate::thread::remote::ports::RemoteThreadSurface;
+
+/// The locator this process's thread tools reach other devices through: the agentd client over the peers
+/// `relayd.json` names, when at least one device carries an `agentd` object. `None` leaves every remote leg exactly as
+/// it is on a device with no agentd peer (the relay path, unchanged).
+pub fn locator_in(state_dir: &std::path::Path) -> Option<Arc<dyn RemoteControlLocator>> {
+    let client = Arc::new(AgentdClient::new(state_dir));
+    if !client.configured() {
+        return None;
+    }
+    let ports = Arc::new(AgentdPorts::new(Arc::clone(&client)));
+    let surface = Arc::new(RemoteThreadSurface::new(ports.clone(), ports, None));
+    Some(Arc::new(
+        RelayControlLocator::new(surface).with_agentd(client),
+    ))
+}
+
+/// [`locator_in`] over this device's own device-service state dir.
+pub fn locator_for_process() -> Option<Arc<dyn RemoteControlLocator>> {
+    locator_in(&device_service_core::device_service_state_dir())
+}

@@ -19,7 +19,9 @@ use crate::thread::addressing::{ThreadAddressEntry, to_thread_address_entries};
 use crate::thread::contracts_create_params::ThreadCreateInput;
 use crate::thread::contracts_results::{ThreadResultSummary, ThreadStatus};
 use crate::thread::errors::{ThreadToolFailure, thread_tool_failure};
-use crate::thread::remote::ports::{RemoteCommandOutcome, RemoteThreadSurface, row_status};
+use crate::thread::remote::ports::{
+    RemoteCommandOutcome, RemoteThreadSurface, row_folder, row_status,
+};
 use crate::thread::remote::remote_ops::reply_data;
 use crate::thread::thread_row::opened_result;
 
@@ -36,6 +38,10 @@ pub struct OpenFields {
     pub cwd: Option<String>,
     pub session_path: Option<String>,
     pub fork_from: Option<String>,
+    /// The account device whose engine opens, when placement sent the open past this device (agentd).
+    pub remote: Option<String>,
+    /// The session that device reopens by, for a reopen of a thread it holds and this one does not.
+    pub remote_session: Option<String>,
 }
 
 /// What this device answers for an existing thread named to thread_create: it is live here, or its session file is here,
@@ -180,6 +186,7 @@ async fn open_here(call: &ThreadCall, address: &str, caller_id: &str) -> CreateP
                 cwd,
                 session_path: Some(session_path),
                 fork_from: None,
+                ..OpenFields::default()
             },
             creates: false,
             previous_name: name,
@@ -276,11 +283,11 @@ async fn relay_forks(remote: &RemoteThreadSurface, device: &str) -> bool {
 /// thread_create under A3: an id or alias OPENS that session wherever it is (never with a device) - answered without an
 /// open when it is live there already (#14335); no id creates on this device; a fork is created on its source's device.
 /// When a `RemoteThreadSurface` is attached, live threads on another device resolve via `resolve_address` and return
-/// `already_live(displayed_thread(...))` so a create with a prompt sends to them; opening a non-live remote session or
-/// creating on another device remains refused until `RelaySessionHost` `open_session`/`find_session` lands. A fork whose
+/// `already_live(displayed_thread(...))` so a create with a prompt sends to them; opening a non-live remote session,
+/// creating on another device and forking there are carried to a device the locator opens on (agentd, `mhc.session.open`)
+/// and stay refused `relay_session_host_unsupported` for a device it reaches only through the relay. A fork whose
 /// source is on another device asks that device's engine whether it forks: one that does not is refused
-/// `fork_unsupported`, as upstream; one that does stays refused `relay_session_host_unsupported`, the open this build
-/// cannot carry there.
+/// `fork_unsupported`, as upstream.
 pub async fn plan_create(
     call: &ThreadCall,
     value: &ThreadCreateInput,
@@ -401,14 +408,38 @@ pub async fn plan_create(
                     if row_status(&row) == ThreadStatus::Live {
                         return already_live(Box::new(displayed_thread(&row, None)));
                     }
-                    return relay_host_unsupported(
-                        format!(
-                            "Reopening a non-live thread on remote device {} needs RelaySessionHost and find_session/open_session RPCs, which are not wired on this build.",
-                            row.device
-                        ),
-                        "Open the thread on that device.",
-                        Some(&row.device),
-                    );
+                    if call
+                        .remote
+                        .as_deref()
+                        .and_then(|remote| remote.session_host(&row.device))
+                        .is_none()
+                    {
+                        return relay_host_unsupported(
+                            format!(
+                                "Reopening a non-live thread on remote device {} needs a device this build can open sessions on (agentd); this device reaches it only through the relay, which cannot open one.",
+                                row.device
+                            ),
+                            "Open the thread on that device.",
+                            Some(&row.device),
+                        );
+                    }
+                    return CreatePlan::Open {
+                        request: OpenFields {
+                            cwd: Some(row_folder(&row).to_owned())
+                                .filter(|folder| folder != "unknown"),
+                            session_path: None,
+                            fork_from: None,
+                            remote: Some(row.device.clone()),
+                            remote_session: Some(
+                                row.durable_id
+                                    .clone()
+                                    .unwrap_or_else(|| row.session_id.clone()),
+                            ),
+                        },
+                        creates: false,
+                        previous_name: None,
+                        local_alias: None,
+                    };
                 }
             }
         } else if let Some(fork_from) = value.fork_from.as_deref() {
@@ -424,23 +455,53 @@ pub async fn plan_create(
                         .durable_id
                         .clone()
                         .unwrap_or_else(|| row.session_id.clone());
-                    if !relay_forks(remote, &row.device).await {
+                    // An agentd device answers its own capability (`capabilities` in its listing); the relay path
+                    // asks the engine endpoint. Either way a device that does not fork is refused as upstream does.
+                    let forks = match call
+                        .remote
+                        .as_deref()
+                        .and_then(|remote| remote.session_host(&row.device))
+                    {
+                        Some(host) => host.forks().await?,
+                        None => relay_forks(remote, &row.device).await,
+                    };
+                    if !forks {
                         return CreatePlan::done(fork_unsupported(&source, Some(&row.device)));
                     }
-                    return relay_host_unsupported(
-                        format!(
-                            "Forking a thread on remote device {} needs RelaySessionHost and remote open_session RPCs, which are not wired on this build.",
-                            row.device
-                        ),
-                        "Fork the thread on that device.",
-                        Some(&row.device),
-                    );
+                    if call
+                        .remote
+                        .as_deref()
+                        .and_then(|remote| remote.session_host(&row.device))
+                        .is_none()
+                    {
+                        return relay_host_unsupported(
+                            format!(
+                                "Forking a thread on remote device {} needs a device this build can open sessions on (agentd); this device reaches it only through the relay, which cannot fork there.",
+                                row.device
+                            ),
+                            "Fork the thread on that device.",
+                            Some(&row.device),
+                        );
+                    }
+                    return CreatePlan::Open {
+                        request: OpenFields {
+                            cwd: value.cwd.clone(),
+                            session_path: None,
+                            fork_from: Some(source),
+                            remote: Some(row.device.clone()),
+                            remote_session: None,
+                        },
+                        creates: true,
+                        previous_name: None,
+                        local_alias,
+                    };
                 }
                 ResolvedWhere::Here { .. } => CreatePlan::Open {
                     request: OpenFields {
                         cwd: value.cwd.clone(),
                         session_path: None,
                         fork_from: Some(hit.thread),
+                        ..OpenFields::default()
                     },
                     creates: true,
                     previous_name: None,
@@ -448,19 +509,39 @@ pub async fn plan_create(
                 },
             }
         } else if let Some(device) = value.device.as_deref() {
-            return relay_host_unsupported(
-                format!(
-                    "Creating a new thread on remote device {device} needs RelaySessionHost and remote open_session RPCs, which are not wired on this build."
-                ),
-                "Create the thread on that device directly.",
-                Some(device),
-            );
+            if call
+                .remote
+                .as_deref()
+                .and_then(|remote| remote.session_host(device))
+                .is_none()
+            {
+                return relay_host_unsupported(
+                    format!(
+                        "Creating a new thread on remote device {device} needs a device this build can open sessions on (agentd); this device reaches it only through the relay, which cannot open one there."
+                    ),
+                    "Create the thread on that device directly.",
+                    Some(device),
+                );
+            }
+            CreatePlan::Open {
+                request: OpenFields {
+                    cwd: value.cwd.clone(),
+                    session_path: None,
+                    fork_from: None,
+                    remote: Some(device.to_owned()),
+                    remote_session: None,
+                },
+                creates: true,
+                previous_name: None,
+                local_alias,
+            }
         } else {
             CreatePlan::Open {
                 request: OpenFields {
                     cwd: value.cwd.clone().or_else(|| caller_cwd.map(str::to_owned)),
                     session_path: None,
                     fork_from: None,
+                    ..OpenFields::default()
                 },
                 creates: true,
                 previous_name: None,
@@ -489,6 +570,7 @@ pub async fn plan_create(
                     cwd,
                     session_path: None,
                     fork_from: value.fork_from.clone(),
+                    ..OpenFields::default()
                 },
                 creates: true,
                 previous_name: None,

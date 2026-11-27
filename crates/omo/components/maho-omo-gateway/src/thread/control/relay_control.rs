@@ -13,6 +13,7 @@ use crate::thread::contracts_results::ThreadResultSummary;
 use crate::thread::contracts_state::ThreadModel;
 use crate::thread::model_match::ModelChoice;
 use crate::thread::remote::address_book::relay_address_entry;
+use crate::thread::remote::agentd::{AgentdClient, AgentdSessionHost};
 use crate::thread::remote::closed_rows::with_closed_rows;
 use crate::thread::remote::outcome::relay_outcome_failure;
 use crate::thread::remote::ports::{
@@ -27,7 +28,8 @@ use super::interrupt::{InterruptOutcome, interrupt_over};
 use super::locate::{LocatedControl, RemoteControlLocator};
 use super::port::{
     CloseAnswer, CloseOptions, CloseOutcome, ControlError, ControlResult, ModelCatalog,
-    SESSION_ONLY_THINKING_SCOPE, SessionControl, SessionModelState, refuse, session_model_state,
+    SESSION_ONLY_THINKING_SCOPE, SessionControl, SessionHost, SessionModelState, refuse,
+    session_model_state,
 };
 use super::relay_session_host::displayed_thread;
 
@@ -456,16 +458,26 @@ impl SessionControl for RelayControl {
 }
 
 /// [`RemoteControlLocator`] backed by a [`RemoteThreadSurface`], resolving remote addresses and returning
-/// [`RelayControl`] handles over a [`with_closed_rows`] ledger.
+/// [`RelayControl`] handles over a [`with_closed_rows`] ledger. A device whose peer entry names an agentd daemon
+/// (`relayd.json` peers with an `agentd` object) is also opened through it, so an open or fork placement sends to that
+/// device's engine instead of refusing; every other device keeps the relay path.
 pub struct RelayControlLocator {
     remote: Arc<RemoteThreadSurface>,
+    agentd: Option<Arc<AgentdClient>>,
 }
 
 impl RelayControlLocator {
     pub fn new(remote: Arc<RemoteThreadSurface>) -> Self {
         Self {
             remote: with_closed_rows(remote),
+            agentd: None,
         }
+    }
+
+    /// The same locator, opening on the devices whose peer entry names an agentd daemon.
+    pub fn with_agentd(mut self, agentd: Arc<AgentdClient>) -> Self {
+        self.agentd = Some(agentd);
+        self
     }
 
     pub fn surface(&self) -> Arc<RemoteThreadSurface> {
@@ -474,6 +486,13 @@ impl RelayControlLocator {
 }
 
 impl RemoteControlLocator for RelayControlLocator {
+    fn session_host(&self, device: &str) -> Option<Arc<dyn SessionHost>> {
+        let client = self.agentd.as_ref()?;
+        if !client.reaches(device) {
+            return None;
+        }
+        Some(Arc::new(AgentdSessionHost::new(Arc::clone(client), device)))
+    }
     fn locate(
         &self,
         address: String,

@@ -196,6 +196,11 @@ impl AgentdClient {
         self.peers.keys().cloned().collect()
     }
 
+    /// Whether this device has an agentd entry for `device`.
+    pub fn reaches(&self, device: &str) -> bool {
+        self.peers.contains_key(device)
+    }
+
     fn links(&self) -> MutexGuard<'_, BTreeMap<String, Arc<AgentdLink>>> {
         self.links.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -749,6 +754,9 @@ impl SessionHost for AgentdSessionHost {
         };
         Box::pin(async move {
             let mut args = Map::new();
+            if let Some(session) = &request.remote_session {
+                args.insert("session".to_owned(), json!(session));
+            }
             if let Some(fork_from) = &request.fork_from {
                 args.insert("fork_from".to_owned(), json!(fork_from));
             }
