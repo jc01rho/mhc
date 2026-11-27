@@ -403,7 +403,7 @@ fn normalizes_the_anthropic_model_thinking_level_map() {
     );
     assert_eq!(
         get_builtin_model_data_generated_at(),
-        Some(1_795_241_279_232)
+        Some(1_795_400_923_265)
     );
 }
 

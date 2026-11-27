@@ -17,7 +17,7 @@ fn builtin(provider: &str, id: &str) -> Model {
 #[test]
 fn catalog_matches_senpi_generated_counts_and_order() {
     assert_eq!(get_builtin_providers().len(), 43);
-    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1998);
+    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1999);
     assert_eq!(
         get_builtin_providers().first().copied(),
         Some("alibaba-token-plan")
@@ -33,6 +33,14 @@ fn catalog_matches_senpi_generated_counts_and_order() {
             "grok-4.6",
             "grok-4.7"
         ]
+    );
+    let longcat = builtin("opencode-go", "longcat-2.5");
+    assert_eq!(longcat.name, "LongCat-2.5");
+    assert_eq!(longcat.deprecated, None);
+    assert_eq!(builtin("opencode-go", "longcat-2.0").deprecated, Some(true));
+    assert_eq!(
+        builtin("opencode", "longcat-2.5-free").deprecated,
+        Some(true)
     );
 }
 
