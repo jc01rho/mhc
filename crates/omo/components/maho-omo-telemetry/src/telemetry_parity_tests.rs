@@ -256,6 +256,7 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
     let enabled = Arc::clone(&opted_in);
     let consent_clock = Arc::new(std::sync::atomic::AtomicU64::new(10_000));
     let read_clock = Arc::clone(&consent_clock);
+    crate::telemetry_test_support::seed_consent(&dir.path().join("native"));
     let options = SenpiTelemetryOptions {
         consent_now: Some(Arc::new(move || read_clock.load(Ordering::SeqCst) as f64)),
         env: Some(env(dir.path())),

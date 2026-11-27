@@ -26,6 +26,7 @@ Incoming work is triaged at the outset into one of two ceremony tiers to balance
 Triage follows strict progression rules:
 - **Monotonic Tier Escalation**: Always default to lightweight execution initially. If subsequent code inspection reveals unexpected architectural dependencies, cross-module impacts, or security boundaries, escalate to heavyweight execution immediately. Downgrading an active task from heavyweight to lightweight mid-execution is prohibited.
 - **Control-Plane Sizing Rule**: Control-plane actions that dispatch, coordinate, steer, or inspect delegated background workers or external workflows are classified as lightweight, regardless of the magnitude or complexity of the underlying delegated workload.
+- **Tier Scope**: The tier sets how much proof and review a change needs. It never limits how much context is gathered or how many skills are read before planning.
 
 ---
 
@@ -35,7 +36,9 @@ Before modifying workspace files, the execution environment and task context are
 - **Outer Orchestration Precedence**: When an external runner (such as a loop engine or workflow orchestrator) already manages goal records, execution plans, and progress state, internal goal registration, plan authoring, and checklist initialization steps yield to the outer runner's authoritative state.
 - **Isolated Scratch Environments**: Allocate task-isolated temporary directories and private compilation cache paths (such as private cargo target directories or ephemeral scratch roots) for process activity to prevent workspace pollution and build lock contention across concurrent processes.
 - **Deterministic Scratch Teardown**: All task-owned temporary scratch directories, private compiler caches, and intermediate run artifacts must be purged at task conclusion, leaving shared environments untouched.
-- **Skill Survey and Dynamic Loading**: Survey installed skills at the start of a task to identify applicable domain capabilities. Load specialized skill instructions into working memory only when actively executing a workflow governed by that specific skill.
+- **Precedence Over Host Defaults**: Where the host's own prompt loads a skill only on a description match, stops searching once one wave answers, or commits only on explicit request, this contract wins for those behaviors, because typing ulw is that request.
+- **Wide Skill Search and Full Reads**: Search the installed skills and any skill catalog the surface offers, matching on the task's domain, tools, and file types as well as the request's wording. Read the full body of every skill that is even slightly related; when in doubt, read it. Skipping a skill that applied is a defect. Record the skills the task will follow, each with a one-line reason.
+- **Exhaustive Context Gathering**: Before planning or editing, collect what the task needs from every source that holds it: code (semantic, structural, and text search), history of the paths to be touched, memory, earlier session evidence, issue and pull-request trackers, documentation and the web for outside APIs, and any session or machine the task names. Issue these lookups as one parallel wave, and read a source whenever its relevance is unclear.
 - **Pre-Edit Architecture Survey**: Inspect repository layout, existing coding conventions, build manifests, dependency configurations, and baseline runtime behavior before making code modifications to establish clear target outcomes.
 - **Concrete Goal Registration**: For heavyweight tasks requiring formal tracking, register an explicit goal containing unambiguous success conditions and observable stop criteria prior to introducing structural edits. Lightweight tasks dispense with goal registration.
 - **Goal Blocked Status Semantics**: The goal management tool's blocked status is strictly reserved for genuine external obstacles that the agent cannot overcome independently. When a task is merely waiting for an asynchronous event, background job completion, or scheduled monitor callback, the goal remains active and the turn concludes cleanly.
@@ -62,6 +65,7 @@ Execution progress and resource lifecycles are tracked systematically to ensure 
 - **Real-Time Checklist Synchronization**: Synchronize execution progress with the checklist tool in real time, updating task items immediately as work transitions between pending, active, and completed states rather than batching updates at turn boundaries.
 - **Immediate Teardown Registration**: Whenever a background daemon, test listener, or temporary directory is spawned, immediately register a corresponding teardown and cleanup item in the active checklist.
 - **Actionable Task Formatting**: Formulate checklist task descriptions with clear target file paths, concise technical rationale, and specific verification checks.
+- **Smallest-Step Granularity**: Split the plan into the smallest actions that can be named, one edit, one check, or one command each, and register every one as its own checklist item.
 - **Elimination of Redundant Scratchpads**: State tracking is owned exclusively by registered goals and the live checklist tool. Authoring, updating, or querying temporary markdown scratchpad files in the system temp directory is strictly eliminated.
 
 ---
@@ -101,11 +105,11 @@ User communication, turn handoffs, and completion criteria adhere to structured 
 - **Approach Orientation**: Provide a concise summary of the intended strategy and scope after completing initial task analysis.
 - **Standardized Milestone Handoffs**: Structure progress reporting at phase boundaries using standardized handoff summaries (`Ask`, `wanted`, `For you`, `Now`, `Next`), eliminating conversational commentary between handoffs.
 - **Empirical Completion Reports**: Present final completion summaries detailing verified criteria, concrete paths to captured evidence artifacts, and a clean workspace state.
-- **Immediate Cessation Upon Satisfaction**: Conclude execution promptly once the user's explicit request or problem is satisfied by verified evidence. Avoid unrequested enhancements or speculative changes.
+- **Immediate Cessation Upon Satisfaction**: Once the opening skill reads and context wave are finished, conclude execution promptly when the user's explicit request or problem is satisfied by verified evidence. Avoid unrequested enhancements or speculative changes.
 - **Verification and Cleanup Validation**: Ensure that all success conditions are satisfied and all registered resource cleanup items are executed before declaring completion.
 - **Clean Environment Invariant**: Declaring task completion is forbidden while background servers, open listener ports, or temporary scratch directories remain active.
 - **Human Escalation on Repeated Failure**: Escalate to the human user for clarification using `ask_user_question` or `request_user_input` after two consecutive failed attempts to resolve an obstacle.
-- **Bounded Exploration Threshold**: Discontinue background codebase searches when two consecutive exploration waves yield no novel or actionable information.
+- **Bounded Exploration Threshold**: Discontinue exploration only after every source that could bear on the task has been read and two further consecutive waves yield no novel or actionable information.
 - **Mandatory Intent Gate Routing**: Open every turn with the designated routing line: `I read this as [intent] - [plan]. I'll stop when [observable condition].`. Artificial greeting strings or banner lines are forbidden.
 - **Direct Answers for Informational Queries**: Queries asking for explanations, code locations, or assessments are answered immediately with zero goal creation, no checklist initialization, and no code edits.
-- **Commit Authorization Boundary**: Git commits are authored only when the user has explicitly requested or authorized them, formatted according to Conventional Commits matching repository history.
+- **Commit Authorization Boundary**: Typing ulw is the user's standing, explicit request to commit: author one atomic commit per verified increment, formatted per Conventional Commits and matching repository history. If the user has forbidden commits in the current session, leave the change staged and only draft the message.

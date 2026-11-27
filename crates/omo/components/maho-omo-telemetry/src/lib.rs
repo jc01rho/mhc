@@ -13,6 +13,7 @@ pub mod model_vocabulary;
 mod omo_native_category_config;
 pub mod omo_native_component;
 mod omo_native_consent;
+pub mod omo_native_consent_marker;
 // Automatic crash reporting is retired (omo v5.1.52): only the schema projection and its tests remain.
 #[allow(dead_code)]
 mod omo_native_crash;

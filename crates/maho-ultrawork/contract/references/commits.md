@@ -6,8 +6,8 @@ This reference defines authorization boundaries, message formatting standards, a
 
 ## 1. Commit Authorization Boundary
 
-Automated or unrequested git commits are strictly prohibited:
-- **Explicit User Authorization**: Git commits may only be authored when the user has explicitly requested a commit or granted unambiguous permission to create commits in the current task. In the absence of direct authorization, all modifications remain staged or unstaged in the working tree.
+Commits follow the user's authorization, and ultrawork is that authorization:
+- **Standing Request**: Typing ulw is the user's explicit, standing request to commit each verified increment. If the user has forbidden commits in the current session, every change stays staged or unstaged in the working tree and only the message is drafted.
 - **Atomic Verified Units**: When commits are authorized, each commit must represent a single, self-contained unit of work that leaves the repository in a fully compiling, green-test state. Intermediate half-broken commits are forbidden.
 
 ---

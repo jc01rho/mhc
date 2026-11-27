@@ -1,0 +1,42 @@
+# omo v5.1.83..v5.1.84 sync ledger — `misc-skills` track
+
+Source range: `69a1863a457` (`v5.1.83`) .. `8dbccd12842f` (`v5.1.84`)
+Upstream paths: `packages/{omo-config-core,model-core,get-worker,claude-code-compat-core,lsp-core,telemetry-core,utils}`, `omo-senpi` components `{agent-home,telemetry,native-badge,claim-receipt,feedback,ultrawork,skill-pointers}`, skills `ultrawork`, `mass-ulw`, `shared-skills`, `skills-loader-core` (28 non-merge commits in 14 rows)
+mhc counterparts: `crates/omo/telemetry-core`, `crates/omo/components/maho-omo-{telemetry,feedback}`, `crates/omo/get-worker`, `crates/maho-ultrawork`, `crates/omo/maho-omo/src/ultrawork_gpt.md`, `assets/omo-latest/skills`
+
+`omo-config-core`, `model-core`, `claude-code-compat-core`, `lsp-core`, `native-badge`, `claim-receipt`, `skill-pointers` and `skills-loader-core` have no functional change in this range (the only `omo-config-core` edits are TypeScript strictness in `cb743c97ea`).
+
+## Summary
+
+| verdict | count |
+|---|---:|
+| port | 5 |
+| ported | 1 |
+| gap | 0 |
+| n/a | 7 |
+| blocked | 1 |
+| **total** | **14** |
+
+## Per-PR verdicts
+
+| omo PR | verdict | mhc location or reason |
+|---|---|---|
+| #14920 (`6de9001778`, `305f739577`) | port | `crates/omo/telemetry-core/src/destinations.rs` (`TELEMETRY_DESTINATIONS`, `telemetry_destinations_phrase`), `src/install_disclosure.rs` (`telemetry_install_disclosure_lines`), `src/env.rs` (`yes` no longer opts a sender out; `OTEL_SDK_DISABLED=true` opts every sender out), `lib.rs`; `crates/omo/get-worker/assets/install.sh` and `install.ps1` name both destinations; tests `tests/all/env.rs` (`opt_out_env_matrix`, 20 cases) and `tests/all/install_disclosure.rs` (3 tests: shipped copies and destination hosts). The docs-destination test reads omo's own `docs/` tree and has no mhc counterpart. |
+| #14920 wave B (`e35a90f54c`) | port | `crates/omo/components/maho-omo-telemetry/src/omo_native_consent_marker.rs` (new: `read_omo_native_consent`, `record_omo_native_consent`, exclusive first-answer-wins marker `consent-answer`, 9 tests), `src/omo_native_notice.rs` (`register_omo_native_notice` asks once through `ctx.ui.confirm`, records the answer, asks nothing without a UI, under an opt-out, in an automated run or with the unconfigured key; 9 tests), `src/omo_native_session.rs` (`is_omo_native_telemetry_enabled` also needs a recorded `accepted` answer in `consent_state_dir`), `src/telemetry_test_support.rs` (`seed_consent`, `context_with_confirm`), seeded fixtures in `omo_native_consent.rs`, `omo_native_component.rs`, `telemetry_parity_tests.rs`. Divergence SD-6: the question is put only when the omo config already enables telemetry (mhc telemetry stays opt-in), see `docs/divergences.md`. |
+| `cb743c97ea` | n/a | The omo-config-core edits are TypeScript strictness only (`exactOptionalPropertyTypes`, indexed access); the Rust schema types carry no such distinction. Removing `isConfigEnabled` from the notice is not ported: mhc keeps the config gate in the notice (SD-6, see the #14920 wave B row). |
+| `db60f63080`, `87f6a3c732` (#14920 wave B) | port | `crates/omo/components/maho-omo-feedback/src/collect_host.rs` (`telemetry_allowed` now goes through `is_omo_native_telemetry_enabled`, so feedback hashes need the env opt-out matrix, the automation gate, the config gate and an `accepted` answer); tests `hashes_need_a_recorded_accepted_consent` (unanswered, declined, accepted) and `an_accepted_answer_does_not_override_a_disabled_config_or_an_env_opt_out`. |
+| `c7fc422d04` | n/a | Formatting of three TypeScript telemetry files (`bun fmt`); rustfmt already covers the Rust files. |
+| `6771031c19`, `e666a6028c` | n/a | Removes two exports TypeScript `knip` flags as unused in `destinations.ts`; Rust has no unused-export lint for `pub` items and `TELEMETRY_DESTINATIONS` is used by `install_disclosure.rs`. |
+| `d2eb6f1edf` | n/a | `isUnlaunchedSourceRun` tells a module running unbundled from `.ts` source (`bun test`, `bun <script>`) from shipped `.js`/`.mjs` bundles. A native binary has no unbundled-source mode; the dev-build guard already in `crates/omo/components/maho-omo-agent-home/src/dev_build_runtime.rs` (`is_dev_build_runtime`, consumed by `maho-omo-gateway/src/thread/store_ops.rs` `migrate_guarded`) is the Rust equivalent. |
+| `454480a0c7`, `802ebceef2` (#14994) | n/a | Bun test fixture only: a Linux-facts passwd line must carry a POSIX home on win32. The Rust `account_home.rs` tests build their record from `PlatformFacts` fixtures that are platform-independent. |
+| `944c86d6a4`, `61d0c0283e`, `a29c2980b8` (#13304) | ported | Display escaping is already in mhc: `crates/omo/components/maho-omo-remote/src/render.rs` (`escape_for_display`, `escape_for_display_keep_lf`) and `maho-omo-gateway/src/thread/remote/ports.rs` (`escape_for_display`) escape every Cc, Cf, Zl and Zp code point; `maho-omo-gateway/src/thread/addressing.rs` `has_control_character` refuses every control character, C1 included, and leaves format characters addressable; tests in `maho-omo-remote/tests/display_escape.rs`. The one new class upstream adds, lone surrogates (Cs), cannot occur in a Rust `&str`. |
+| `6f0971c90c`, `461b514047` (ultrawork directive) | port | Restated in fresh prose in the MIT contract: `crates/maho-ultrawork/contract/core.md` (wide skill search and full reads, exhaustive context gathering, tier scope, smallest-step todos, bounded exploration, ulw is the standing commit request, precedence over host defaults), `contract/references/commits.md`, their shipped copies `assets/omo-latest/skills/ultrawork/SKILL.md` and `references/commits.md` (`tests/shipped_copy.rs` keeps them equal), `build.rs` core size cap raised to the 10% ceiling of the new measured size (16,883 bytes). The SUL GPT directive ships byte-exact from v5.1.84 as `crates/omo/maho-omo/src/ultrawork_gpt.md`. `assets/omo-latest/manifest.json` carries the new bytes and sha256. |
+| `d0b2a31508` | n/a | Regenerates `generated-directive.ts`, the TypeScript build embed of the two directive files; mhc embeds `core.md` and `ultrawork_gpt.md` with `include_str!`. |
+| `cbc5e9737c` (#15044) | n/a | Folds the `dag-library` skill into `mass-ulw/references/library.md` and drops `dag-library` from `BUILTIN_SKILL_NAMES`. mhc retired `mass-ulw` (`assets/omo-latest/manifest.json` `retired`) and ships its own clean-room `dag-library` skill, so the skill set and `maho-omo-telemetry` `BUILTIN_SKILL_NAMES` keep `dag-library`. The `omo-relay` `ports.ts` `opening` state in the same range already landed with the omo-sdk track. |
+| `90f5745fdb`, `61ffd67e1b`, `a1f4bf81e8`, `719757d860`, `baf89a6ae8` (programming skill) | port | MIT bytes from the lazycodex marketplace sync v5.1.84 (`code-yeongyu/lazycodex@ebf7c57`, delta over `fb10b41`), which mhc's copy equalled before: `assets/omo-latest/skills/programming/SKILL.md` (cut to the axioms, smells and gates), `references/{go,python,rust,typescript}/README.md` (per-language tables moved in, Python naive-primitive and annotation rules, thread and process pool rules), `references/python/error-handling.md` and `references/typescript/error-handling.md` (`using`, `await using`, `AsyncDisposableStack`, `AsyncExitStack`); `assets/omo-latest/manifest.json` bytes, sha256 and source; `tools/check-skill-refs.mjs` reports 0 unresolved references. |
+| `a160f55ea5`, `9ae70c3e1a`, `9bdd640262`, `3dda9ef757` (browser skill) | blocked | These document the omowright 0.3.4 / BrowserSkill 0.5 engine (shared control, per-policy `expect` reasons, waiting on a page state, token-budget reads) across `browser/**`, `ultimate-browsing`, `visual-qa/references/browser-setup.md` and `debugging/references/tools/browser-qa.md`. The browser engine runtime is materialized from the omowright commit pinned in `assets/omo-latest/manifest.json` `browserRuntime`, `tools/package-native.mjs` and `stage-omowright-runtime.mjs` (`293ca500`, runtime 0.3.2); the docs and the runtime must move together, and a runtime bump can only be verified by a release packaging run. Landing the docs alone would describe commands the staged engine does not have. |
+
+## Notes
+
+- Skill documents under `assets/omo-latest/skills` are MIT (lazycodex-based or clean-room); no SUL skill text was copied. The ultrawork behavior changes were restated in fresh prose, and only the SUL crate `maho-omo` carries the upstream GPT directive bytes.
+- Shared files touched: none of the root `Cargo.toml`, `Cargo.lock`, `scripts/ci-shard.py` or `PINS.md`.

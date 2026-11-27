@@ -2,7 +2,7 @@ use crate::constants::UNCONFIGURED_POSTHOG_API_KEY;
 use crate::types::TelemetryEnv;
 
 const TRUTHY_DISABLE_VALUES: [&str; 3] = ["1", "true", "yes"];
-const SEND_OPT_OUT_VALUES: [&str; 4] = ["0", "false", "no", "yes"];
+const SEND_OPT_OUT_VALUES: [&str; 3] = ["0", "false", "no"];
 const DEFAULT_GLOBAL_ENV_PREFIX: &str = "OMO";
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -37,6 +37,14 @@ pub fn should_disable_telemetry(input: &ShouldDisableTelemetryInput<'_>) -> bool
             &TRUTHY_DISABLE_VALUES,
             read_env(input.env, &format!("{global_prefix}_DISABLE_TELEMETRY")),
         )
+    {
+        return true;
+    }
+
+    // OTEL_SDK_DISABLED=true stops every sender, not only the OTLP branch (omo #14920): a machine that asked
+    // the OpenTelemetry SDK to go away must not keep receiving PostHog events.
+    if read_env(input.env, "OTEL_SDK_DISABLED")
+        .is_some_and(|value| value.trim().to_lowercase() == "true")
     {
         return true;
     }
