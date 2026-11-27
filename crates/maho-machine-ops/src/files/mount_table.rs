@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -5,9 +6,7 @@ use std::time::Duration;
 
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-
-use crate::files::automount_trigger::{depth_within, resolved_segments_of};
-use crate::node_path::{normalize, resolve};
+use unicode_normalization::UnicodeNormalization;
 
 const MOUNT_TABLE_TIMEOUT_MS: u64 = 2000;
 
@@ -151,48 +150,90 @@ pub async fn read_mount_table() -> Vec<MountEntry> {
         .unwrap_or_default()
 }
 
-pub(crate) async fn read_mount_view() -> MountView {
-    let mounts = read_mount_table().await;
-    let roots: Vec<String> = mounts
-        .iter()
-        .filter(|entry| entry.fs_type == "autofs")
-        .map(|entry| entry.mount_point.clone())
-        .collect();
-    let case_insensitive = cfg!(target_os = "macos");
-    let mut aliases = BTreeMap::new();
-    if !roots.is_empty()
-        && let Ok(mut entries) = tokio::fs::read_dir("/").await
-    {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            if !entry.file_type().await.is_ok_and(|ft| ft.is_symlink()) {
-                continue;
+fn raw_segments_of(path: &str) -> Vec<&str> {
+    path.split(['/', '\\']).filter(|s| !s.is_empty()).collect()
+}
+
+pub(crate) fn resolved_segments_of(path: &Path) -> Vec<String> {
+    let text = path.to_string_lossy();
+    let full = if text.starts_with('/') || path.is_absolute() {
+        text.into_owned()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        format!("{}/{text}", cwd.to_string_lossy())
+    } else {
+        text.into_owned()
+    };
+    let mut out = Vec::new();
+    for segment in raw_segments_of(&full) {
+        match segment {
+            "." => {}
+            ".." => {
+                out.pop();
             }
-            let name = entry.file_name();
-            let Some(name_str) = name.to_str() else {
-                continue;
-            };
-            let alias = format!("/{name_str}");
-            let Ok(link) = tokio::fs::read_link(&alias).await else {
-                continue;
-            };
-            let target_path = if link.is_absolute() {
-                normalize(&link)
-            } else {
-                resolve(Path::new("/"), &link)
-            };
-            let target = target_path.to_string_lossy().into_owned();
-            let target_segments = resolved_segments_of(Path::new(&target));
-            if roots
-                .iter()
-                .any(|root| depth_within(root, &target_segments, case_insensitive).is_some())
-            {
-                aliases.insert(alias, target);
-            }
+            other => out.push(other.to_owned()),
         }
     }
-    MountView {
-        mounts,
-        aliases,
-        case_insensitive,
+    out
+}
+
+fn fold_segment(segment: &str, case_insensitive: bool) -> Cow<'_, str> {
+    if case_insensitive {
+        Cow::Owned(segment.nfc().collect::<String>().to_lowercase())
+    } else {
+        Cow::Borrowed(segment)
     }
+}
+
+pub(crate) fn depth_within(root: &str, path: &[String], case_insensitive: bool) -> Option<usize> {
+    let root_segments = raw_segments_of(root);
+    if root_segments.len() > path.len() {
+        return None;
+    }
+    let matches_prefix = root_segments.iter().enumerate().all(|(index, segment)| {
+        fold_segment(segment, case_insensitive) == fold_segment(&path[index], case_insensitive)
+    });
+    matches_prefix.then_some(root_segments.len())
+}
+
+fn through_alias(path: Vec<String>, view: &MountView) -> Vec<String> {
+    for (alias, target) in &view.aliases {
+        if let Some(depth) = depth_within(alias, &path, view.case_insensitive) {
+            let mut mapped: Vec<String> = raw_segments_of(target)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            mapped.extend_from_slice(&path[depth..]);
+            return mapped;
+        }
+    }
+    path
+}
+
+pub fn unmounted_automount_path(path: impl AsRef<Path>, view: &MountView) -> Option<String> {
+    let mapped = through_alias(resolved_segments_of(path.as_ref()), view);
+    let mut owners: Vec<&MountEntry> = Vec::new();
+    let mut owner_depth: Option<usize> = None;
+    for entry in &view.mounts {
+        let Some(depth) = depth_within(&entry.mount_point, &mapped, view.case_insensitive) else {
+            continue;
+        };
+        if owner_depth.is_some_and(|current| depth < current) {
+            continue;
+        }
+        if owner_depth != Some(depth) {
+            owners.clear();
+        }
+        owner_depth = Some(depth);
+        owners.push(entry);
+    }
+    let owner = *owners.first()?;
+    if owners.iter().any(|entry| entry.fs_type != "autofs") {
+        return None;
+    }
+    let depth = owner_depth?;
+    if depth >= mapped.len() {
+        return Some(owner.mount_point.clone());
+    }
+    let prefix = owner.mount_point.trim_end_matches('/');
+    Some(format!("{prefix}/{}", mapped[depth..].join("/")))
 }

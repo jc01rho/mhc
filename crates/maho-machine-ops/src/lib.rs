@@ -47,9 +47,8 @@ pub use files::automount_realpath::{
     canonicalize_by_opening_sync, realpath_out_of_process,
 };
 pub use files::automount_trigger::{
-    AutomountTriggerGuard, AutomountTriggerLookup, MountView, ReadMountViewFn,
-    answer_automount_triggers_from, automount_trigger_path, create_automount_trigger_lookup,
-    realpath_under_automount, unmounted_automount_path,
+    AutomountTriggerGuard, AutomountTriggerLookup, ReadMountViewFn, answer_automount_triggers_from,
+    automount_trigger_path, create_automount_trigger_lookup, realpath_under_automount,
 };
 pub use files::bounded_realpath::{
     RESOLUTION_DEADLINE, RESOLUTION_DEADLINE_MS, ResolutionTimedOut,
@@ -58,7 +57,8 @@ pub use files::bounded_realpath::{
 pub use files::glob::glob_to_regex;
 pub use files::local_files::{LocalFileOps, create_local_file_ops};
 pub use files::mount_table::{
-    MountEntry, parse_darwin_mount_table, parse_linux_mount_info, read_mount_table,
+    MountEntry, MountView, parse_darwin_mount_table, parse_linux_mount_info, read_mount_table,
+    unmounted_automount_path,
 };
 pub use files::path_lock::{FileMutationLock, acquire_file_mutation_lock, mutation_queue_key};
 pub use files::realpath_without_open::{realpath_without_open, realpath_without_open_strict};
