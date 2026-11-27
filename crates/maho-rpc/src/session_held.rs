@@ -95,6 +95,9 @@ impl<P: ProcessProbes> ProcessProbes for HostGenerationProbes<'_, P> {
     fn boot_at_ms(&self) -> u64 {
         self.inner.boot_at_ms()
     }
+    fn own_boot_at_ms(&self, fresh: bool) -> u64 {
+        self.inner.own_boot_at_ms(fresh)
+    }
     fn now(&self) -> u64 {
         self.inner.now()
     }

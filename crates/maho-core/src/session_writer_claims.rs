@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::schedule::native_probes::read_process_start_ms;
-use crate::schedule::runner_lease::{native_identity, native_pid_alive, same_boot};
+use crate::schedule::runner_lease::{
+    native_boot_at_ms, native_identity, native_pid_alive, same_boot,
+};
 
 const WRITERS_DIR: &str = "session-writers";
 
@@ -33,6 +35,12 @@ pub trait WriterProbes: Sync {
     fn pid_alive(&self, pid: u32) -> bool;
     async fn read_process_start_ms(&self, pid: u32) -> Option<u64>;
     fn boot_at_ms(&self) -> u64;
+    /// This process's boot instant (`ownBootAtMs({ fresh })`): the cached kernel record, or with
+    /// `fresh` a new read of it so a wall-clock step does not make a live peer look stale.
+    fn own_boot_at_ms(&self, fresh: bool) -> u64 {
+        let _ = fresh;
+        self.boot_at_ms()
+    }
     fn host(&self) -> String;
     /// `(pid, process_started_at_ms)` of this process.
     fn own(&self) -> (u32, u64);
@@ -88,7 +96,7 @@ impl WriterProbes for RealWriterProbes {
         if pid == self.own.0 {
             return Some(self.own.1);
         }
-        let boot = self.boot;
+        let boot = self.own_boot_at_ms(false);
         tokio::task::spawn_blocking(move || read_process_start_ms(pid, boot))
             .await
             .ok()
@@ -96,7 +104,10 @@ impl WriterProbes for RealWriterProbes {
             .flatten()
     }
     fn boot_at_ms(&self) -> u64 {
-        self.boot
+        native_boot_at_ms(false).unwrap_or(self.boot)
+    }
+    fn own_boot_at_ms(&self, fresh: bool) -> u64 {
+        native_boot_at_ms(fresh).unwrap_or(self.boot)
     }
     fn host(&self) -> String {
         host_name()
@@ -147,8 +158,17 @@ pub async fn acquire_writer_claim(
 ) -> Result<WriterClaim, WriterClaimError> {
     tokio::fs::create_dir_all(dir).await?;
     let current = latest_claim(dir).await?;
+    // Resolved before the claim check: a claim from another boot is checked against a fresh read
+    // first so a cached record that a wall-clock step made stale never calls a live writer's claim gone.
+    let mut boot_at_ms = probes.own_boot_at_ms(false);
     if let Some(current) = current.as_ref()
-        && !owner_gone(dir, current, probes).await?
+        && current.host == probes.host()
+        && !same_boot(boot_at_ms, current.boot_at_ms)
+    {
+        boot_at_ms = probes.own_boot_at_ms(true);
+    }
+    if let Some(current) = current.as_ref()
+        && !owner_gone(dir, current, probes, boot_at_ms).await?
     {
         return Err(WriterClaimError::Busy(Box::new(current.clone())));
     }
@@ -158,7 +178,7 @@ pub async fn acquire_writer_claim(
         nonce: uuid::Uuid::new_v4().to_string(),
         host: probes.host(),
         pid,
-        boot_at_ms: probes.boot_at_ms(),
+        boot_at_ms,
         process_started_at_ms,
         canonical_path: canonical_path.to_owned(),
     };
@@ -244,6 +264,7 @@ async fn owner_gone(
     dir: &Path,
     claim: &WriterClaim,
     probes: &dyn WriterProbes,
+    boot_at_ms: u64,
 ) -> Result<bool, WriterClaimError> {
     if released_with(dir, claim).await? {
         return Ok(true);
@@ -253,7 +274,7 @@ async fn owner_gone(
     if claim.host != probes.host() {
         return Ok(false);
     }
-    if !same_boot(probes.boot_at_ms(), claim.boot_at_ms) {
+    if !same_boot(boot_at_ms, claim.boot_at_ms) {
         return Ok(true);
     }
     if !probes.pid_alive(claim.pid) {
@@ -515,6 +536,56 @@ mod tests {
         w.boot = 9_999_999;
         assert!(busy(
             acquire_writer_claim(dir.path(), "/s.jsonl", &probes_on(&w, 200, "host-a")).await
+        ));
+    }
+
+    #[tokio::test]
+    async fn keeps_a_live_writer_after_a_wall_clock_step_made_this_processs_cached_boot_record_stale()
+     {
+        struct StaleCacheProbes {
+            inner: Probes,
+            cached_before_step: u64,
+        }
+        #[async_trait::async_trait]
+        impl WriterProbes for StaleCacheProbes {
+            fn pid_alive(&self, pid: u32) -> bool {
+                self.inner.pid_alive(pid)
+            }
+            async fn read_process_start_ms(&self, pid: u32) -> Option<u64> {
+                self.inner.read_process_start_ms(pid).await
+            }
+            fn boot_at_ms(&self) -> u64 {
+                self.cached_before_step
+            }
+            fn own_boot_at_ms(&self, fresh: bool) -> u64 {
+                if fresh {
+                    self.inner.world.boot
+                } else {
+                    self.cached_before_step
+                }
+            }
+            fn host(&self) -> String {
+                self.inner.host()
+            }
+            fn own(&self) -> (u32, u64) {
+                self.inner.own()
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("dir");
+        let mut w = world();
+        let cached_before_step = w.boot;
+        w.boot += 300_000;
+        acquire_writer_claim(dir.path(), "/s.jsonl", &probes_for(&w, 100))
+            .await
+            .expect("first");
+        let contender = StaleCacheProbes {
+            inner: probes_for(&w, 200),
+            cached_before_step,
+        };
+
+        assert!(busy(
+            acquire_writer_claim(dir.path(), "/s.jsonl", &contender).await
         ));
     }
 

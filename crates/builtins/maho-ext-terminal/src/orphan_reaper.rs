@@ -1,6 +1,6 @@
 //! Port of senpi `terminal/orphan-reaper.ts`: confirm that a pid left by a crashed generation is
 //! still that watcher before killing it on respawn. A pid alone is never trusted.
-use crate::process_identity::{ChildProcessIdentity, process_boot_at_ms, same_boot};
+use crate::process_identity::{ChildProcessIdentity, same_boot_as_own, same_boot_as_own_with};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -176,11 +176,11 @@ pub async fn confirm_owner(
     probes: &OwnerProbes,
 ) -> OwnerVerdict {
     let platform = probes.platform.unwrap_or_else(Platform::current);
-    let boot = probes
-        .boot_at_ms
-        .as_ref()
-        .map_or_else(|| process_boot_at_ms(None), |boot| boot());
-    if !same_boot(runtime.boot_at_ms, Some(boot)) {
+    let same_boot = match &probes.boot_at_ms {
+        Some(boot) => same_boot_as_own_with(Some(runtime.boot_at_ms), |_| boot()),
+        None => same_boot_as_own(Some(runtime.boot_at_ms)),
+    };
+    if !same_boot {
         return OwnerVerdict::Dead;
     }
     let alive = probes
@@ -512,6 +512,27 @@ mod tests {
             OwnerVerdict::Dead
         );
         assert!(!*probed.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn boot_mismatch_re_reads_once_before_calling_a_live_owner_dead() {
+        let calls = Arc::new(Mutex::new(0usize));
+        let seen = calls.clone();
+        let mut probe = probes(
+            Platform::Linux,
+            true,
+            evidence(START, "other", Some("SENPI_MONITOR_ID=mon_1\0")),
+        );
+        probe.boot_at_ms = Some(Box::new(move || {
+            let mut count = seen.lock().unwrap();
+            *count += 1;
+            if *count == 1 { BOOT - 300_000.0 } else { BOOT }
+        }));
+        assert_eq!(
+            confirm_owner(&runtime(&["x"]), Some("mon_1"), &probe).await,
+            OwnerVerdict::Confirmed
+        );
+        assert_eq!(*calls.lock().unwrap(), 2);
     }
 
     #[tokio::test]

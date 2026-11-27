@@ -4,7 +4,9 @@
 use crate::agent_session::AgentSession;
 use crate::agent_session_services::{AgentSessionRuntimeDiagnostic, MountedAgentSessionServices};
 use crate::session_cwd::assert_session_cwd_exists;
-use crate::session_holders::{SessionHolderEndpoint, hold_active_session, was_flushed};
+use crate::session_holders::{
+    SessionHolderEndpoint, hold_active_session, hold_runtime_session, was_flushed,
+};
 
 pub struct ExtensionModelRuntimeActions(pub std::sync::Mutex<crate::model_runtime::ModelRuntime>);
 impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
@@ -562,10 +564,21 @@ impl AgentSessionRuntime {
     ) -> Result<(), String> {
         self.holder_endpoint = endpoint;
         let hold = self.session.with_session_manager(|manager| {
-            hold_active_session(manager, was_flushed(manager), self.holder_endpoint.as_ref())
+            hold_runtime_session(manager, self.holder_endpoint.as_ref())
         })?;
         *self.lock_hold() = hold;
         Ok(())
+    }
+
+    /// Binds a pre-acquired session hold directly without touching the holder record on disk
+    /// (senpi `new AgentSessionRuntime(..., sessionHold)`).
+    #[cfg(test)]
+    pub(crate) fn with_session_hold(
+        self,
+        hold: Option<crate::schedule::runner_lease::SessionHold>,
+    ) -> Self {
+        *self.lock_hold() = hold;
+        self
     }
 
     /// senpi `setPromptSurface` (the runtime half): later replacements keep it.
@@ -3017,6 +3030,54 @@ mod tests {
         assert_eq!(
             extract_user_message_text(&serde_json::json!("plain")),
             "plain"
+        );
+    }
+
+    // senpi rpc-session-registry.test.ts: "constructs a runtime around a passed-in hold without touching
+    // the holder record" and "takes the replacement runtime's session hold before the switched runtime
+    // releases its own".
+    #[tokio::test]
+    async fn constructs_a_runtime_around_a_passed_in_hold_and_keeps_the_replacement_hold_across_switch()
+     {
+        let (_dir, mut runtime) = saved_trust_fixture().await;
+        let initial_file = runtime.session().session_file().expect("initial file");
+        let initial_id = runtime.session().session_id();
+        let hold = runtime
+            .session()
+            .with_session_manager(|manager| hold_runtime_session(manager, None))
+            .expect("hold");
+        runtime = runtime.with_session_hold(hold);
+        assert!(runtime.has_session_hold());
+        let initial_holders = crate::schedule::runner_lease::session_holders_dir(
+            std::path::Path::new(&initial_file),
+            &initial_id,
+        )
+        .expect("holders dir");
+        let own_record = initial_holders.join(format!("{}.json", std::process::id()));
+        assert!(own_record.exists());
+
+        runtime.release_session_hold();
+        assert!(!runtime.has_session_hold());
+        assert!(!own_record.exists());
+
+        // Re-bind the hold and switch into a sibling session: the replacement hold is taken before the
+        // outgoing session's hold is released.
+        runtime.set_holder_endpoint(None).expect("re-hold");
+        assert!(own_record.exists());
+        let (_other_dir, other_cwd, other_path) = other_project_session();
+        switch_into(&mut runtime, &other_cwd, &other_path).await;
+        assert!(runtime.has_session_hold());
+        assert!(!own_record.exists());
+        let switched_id = runtime.session().session_id();
+        let switched_holders = crate::schedule::runner_lease::session_holders_dir(
+            std::path::Path::new(&other_path),
+            &switched_id,
+        )
+        .expect("switched holders dir");
+        assert!(
+            switched_holders
+                .join(format!("{}.json", std::process::id()))
+                .exists()
         );
     }
 }

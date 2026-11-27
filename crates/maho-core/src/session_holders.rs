@@ -23,6 +23,18 @@ fn is_assistant_message(entry: &Value) -> bool {
             == Some("assistant")
 }
 
+/// senpi `holdRuntimeSession`: takes the hold a new runtime for `session_manager`'s session carries.
+pub(crate) fn hold_runtime_session(
+    session_manager: &SessionManager,
+    holder_endpoint: Option<&SessionHolderEndpoint>,
+) -> Result<Option<SessionHold>, String> {
+    hold_active_session(
+        session_manager,
+        was_flushed(session_manager),
+        holder_endpoint,
+    )
+}
+
 /// senpi `holdActiveSession`: `None` for an in-memory session or one without a file. A hold that cannot be
 /// taken (the file is being moved, or was moved away) is reported to the caller, never swallowed.
 pub(crate) fn hold_active_session(
