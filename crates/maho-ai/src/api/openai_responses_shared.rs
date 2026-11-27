@@ -1252,7 +1252,10 @@ pub async fn process_responses_stream(
     let mut body = body;
     let mut search_from = 0;
     let mut utf8 = crate::utils::utf8_stream::Utf8ChunkDecoder::default();
-    while let Some(chunk) = read_chunk(&mut body, &state).await? {
+    let mut completion_phase_started_at: Option<tokio::time::Instant> = None;
+    while let Some(chunk) =
+        read_chunk(&mut body, &state, &mut completion_phase_started_at).await?
+    {
         // DIVERGENCE(senpi openai-responses-shared.ts): a multibyte character split across two network chunks is carried to the next chunk instead of becoming two U+FFFD; Node's TextDecoder in stream mode keeps split characters, so this matches upstream behavior. A truncated tail at stream end is never framed (the buffer tail is dropped), so no flush is needed.
         utf8.push(&chunk, &mut buffer);
         while let Some((index, length)) = find_sse_boundary(&buffer, search_from) {
@@ -1312,23 +1315,34 @@ fn finish(
 
 /// The next body chunk, bounded by `withResponsesCompletionGrace`'s deadline once every output item
 /// has been finalized.
+///
+/// The grace is one budget for the whole all-items-done phase. Starting it again on every body chunk
+/// let a provider that keeps sending keepalive bytes after its last output item, but never
+/// `response.completed`, hold the stream until the caller aborted (owner, 2026-11-27).
 async fn read_chunk(
     body: &mut Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     state: &StreamState,
+    completion_phase_started_at: &mut Option<tokio::time::Instant>,
 ) -> Result<Option<Bytes>, ResponsesStreamError> {
-    let bounded = state.saw_item_done && state.open_items == 0 && RESPONSES_COMPLETION_GRACE_MS > 0;
-    if !bounded {
+    let in_completion_phase =
+        state.saw_item_done && state.open_items == 0 && RESPONSES_COMPLETION_GRACE_MS > 0;
+    if !in_completion_phase {
+        *completion_phase_started_at = None;
+    } else if completion_phase_started_at.is_none() {
+        *completion_phase_started_at = Some(tokio::time::Instant::now());
+    }
+    let Some(started_at) = *completion_phase_started_at else {
         return match body.next().await {
             None => Ok(None),
             Some(chunk) => chunk
                 .map(Some)
                 .map_err(|error| ResponsesStreamError::new(error.to_string())),
         };
-    }
-    match tokio::time::timeout(
-        Duration::from_millis(RESPONSES_COMPLETION_GRACE_MS),
-        body.next(),
-    )
+    };
+    let grace_left = Duration::from_millis(RESPONSES_COMPLETION_GRACE_MS)
+        .checked_sub(started_at.elapsed())
+        .unwrap_or_default();
+    match tokio::time::timeout(grace_left, body.next())
     .await
     {
         Ok(None) => Ok(None),
@@ -2776,5 +2790,85 @@ mod tests {
         assert_eq!(multi.expect("event").value, json!({"a": 1}));
         assert!(parse_sse_event("data: [DONE]").expect("parse").is_none());
         assert!(parse_sse_event(": keep-alive").expect("parse").is_none());
+    }
+
+    /// `response.output_item.done` for a message item, which is all `handle_event` needs to enter
+    /// the all-items-done phase.
+    fn item_done_event() -> String {
+        format!(
+            "data: {}\n\n",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": { "type": "message", "id": "msg_1", "role": "assistant", "content": [] },
+            })
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn completion_grace_is_one_budget_for_the_whole_phase() {
+        // Given: every output item is finalized, then a chunk keeps arriving before each grace
+        // interval would run out, but `response.completed` never comes.
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<bytes::Bytes, reqwest::Error>>();
+        tx.send(Ok(bytes::Bytes::from_static(
+            b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n",
+        )))
+        .expect("send created");
+        tx.send(Ok(bytes::Bytes::from(item_done_event())))
+            .expect("send item done");
+        let keepalives_sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sent = Arc::clone(&keepalives_sent);
+        let sender = tokio::spawn(async move {
+            let grace = Duration::from_millis(RESPONSES_COMPLETION_GRACE_MS);
+            // Every quarter of the budget, for twice the budget: a per-chunk grace would never
+            // expire, and the last keepalive lands well after the one budget has run out.
+            for _ in 0..8 {
+                tokio::time::sleep(grace / 4).await;
+                // The receiver is dropped once the stall ends the stream, so a late send is expected.
+                if tx.send(Ok(bytes::Bytes::from_static(b": keepalive\n\n"))).is_ok() {
+                    sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            std::future::pending::<()>().await;
+        });
+        let body = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        let mut output: AssistantMessage = serde_json::from_value(json!({
+            "role": "assistant", "api": "openai-responses", "provider": "openai", "model": "m",
+            "content": [], "stopReason": "pending", "timestamp": 1,
+            "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 } }
+        }))
+        .expect("responses output");
+        let events = AssistantMessageEventStream::assistant();
+        let model = test_model("openai-responses", "m", None);
+
+        // When
+        let result = tokio::time::timeout(
+            Duration::from_millis(RESPONSES_COMPLETION_GRACE_MS) * 2,
+            process_responses_stream(
+                Box::pin(body),
+                &mut output,
+                &events,
+                &model,
+                &ResponsesStreamOptions::default(),
+            ),
+        )
+        .await
+        .expect("the stall ends the stream");
+
+        // Then
+        assert_eq!(
+            result.expect_err("stall").to_string(),
+            format_responses_completion_stall(RESPONSES_COMPLETION_GRACE_MS)
+        );
+        // The chunks really kept arriving inside the one budget, so the stall is not a plain timeout.
+        assert!(
+            keepalives_sent.load(std::sync::atomic::Ordering::SeqCst) >= 3,
+            "the stream was not fed inside the grace budget"
+        );
+        sender.abort();
     }
 }
