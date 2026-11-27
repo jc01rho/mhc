@@ -20,6 +20,8 @@ mod prompt_tests;
 mod remote_list_and_close_tests;
 #[path = "remote_thread_tests.rs"]
 mod remote_thread_tests;
+#[path = "reply_scope_tests.rs"]
+mod reply_scope_tests;
 #[path = "rules_block_tests.rs"]
 mod rules_block_tests;
 #[path = "run_alerts_tests.rs"]

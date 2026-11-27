@@ -334,6 +334,8 @@ fn make_component(
         caller_workspace_root: Arc::new(move || cwd.clone()),
         sessions_directory: sessions_dir,
         remote: Some(locator),
+        caller_reply_targets: Arc::new(Vec::new),
+        caller_reply_senders: Arc::new(Vec::new),
     }))
 }
 

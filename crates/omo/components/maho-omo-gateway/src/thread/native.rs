@@ -78,6 +78,8 @@ impl Extension for NativeThreadComponent {
                             caller_workspace_root: Arc::new(move || workspace_root.clone()),
                             sessions_directory: Some(ctx.agent_dir.join("sessions")),
                             remote: None,
+                            caller_reply_targets: Arc::new(Vec::new),
+                            caller_reply_senders: Arc::new(Vec::new),
                         }));
                     *start_alerts
                         .lock()
