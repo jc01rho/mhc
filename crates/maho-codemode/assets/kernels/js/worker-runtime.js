@@ -78,7 +78,15 @@ export class JsWorkerRuntime {
 				({ prelude, code: cellCode } = prepared);
 			}
 			if (prelude) indirectEval(prelude, `${cellId}:prelude`);
-			const value = await awaitMaybePromise(indirectEval(bindKernelBun(wrapUserCode(cellCode)), cellId));
+			let pending;
+			try {
+				pending = indirectEval(bindKernelBun(wrapUserCode(cellCode)), cellId);
+			} catch (error) {
+				// User code runs inside an async function: its exceptions reject the promise instead.
+				if (error instanceof SyntaxError) error.code = "js_cell_parse_error";
+				throw error;
+			}
+			const value = await awaitMaybePromise(pending);
 			await this.#drainPendingDisplays();
 			this.#lastMemoryReport = { memory: this.#memory?.afterCell() };
 			return value;

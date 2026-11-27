@@ -23,6 +23,7 @@ pub mod eval_tool_options;
 pub mod image;
 pub mod image_resize;
 pub mod interrupt_note;
+pub mod js_cell_parse_message;
 pub mod json_tree;
 pub mod load_cell;
 pub mod magic_cell_host;
