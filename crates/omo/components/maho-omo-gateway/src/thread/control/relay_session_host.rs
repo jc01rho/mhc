@@ -693,6 +693,11 @@ impl SessionHost for RelaySessionHost {
             if let Some(ref preset) = request.permission_preset {
                 frame.insert("permissionPreset".to_owned(), json!(preset));
             }
+            if let Some(ref name) = request.name
+                && !name.is_empty()
+            {
+                frame.insert("name".to_owned(), json!(name));
+            }
             let reopens = request.session_path.is_some() || request.remote_session.is_some();
             let outcome = host
                 .remote

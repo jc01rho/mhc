@@ -26,6 +26,7 @@ use crate::thread::control::relay_session_host::{
 };
 use crate::thread::control::session_host::{OPEN_SESSION_FORK, opened_thread};
 use crate::thread::host_view::ThreadHostSession;
+use crate::thread::initial_skills::INITIAL_SKILLS_CONTEXT_KEY;
 use crate::thread::remote::address_book::relay_address_entry;
 use crate::thread::remote::attach_pool::{AttachTransport, AttachedClient};
 use crate::thread::remote::lookup_gate::{LookupGate, LookupStart};
@@ -690,16 +691,22 @@ impl RemoteSessionsPort for AgentdPorts {
                 }
                 "open_session" => {
                     let mut args = Map::new();
-                    if let Some(session) = rpc.get("session").and_then(Value::as_str) {
+                    if let Some(session) = rpc
+                        .get("session")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                    {
                         args.insert("session".to_owned(), json!(session));
                     }
-                    if let Some(fork_from) = rpc.get("forkFrom").and_then(Value::as_str) {
+                    if let Some(fork_from) = rpc
+                        .get("forkFrom")
+                        .or_else(|| rpc.get("fork_from"))
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                    {
                         args.insert("fork_from".to_owned(), json!(fork_from));
                     }
-                    let mut launch = rpc.as_object().cloned().unwrap_or_default();
-                    launch.remove("type");
-                    launch.remove("retain_on_disconnect");
-                    args.insert("launch".to_owned(), Value::Object(launch));
+                    args.insert("launch".to_owned(), launch_from_open_rpc(&rpc));
                     match client
                         .call(
                             &device,
@@ -1123,38 +1130,109 @@ impl AgentdSessionHost {
     }
 }
 
-/// The engine's `open_session` fields an open carries.
-pub fn launch_of(request: &SessionOpenRequest) -> Value {
+fn non_empty_text<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    map.get(key)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+}
+
+fn launch_from_open_rpc(rpc: &Value) -> Value {
     let mut launch = Map::new();
-    if let Some(cwd) = &request.cwd {
+    let Some(obj) = rpc.as_object() else {
+        return Value::Object(launch);
+    };
+    if let Some(cwd) = non_empty_text(obj, "cwd") {
         launch.insert("cwd".to_owned(), json!(cwd));
     }
-    if let Some(path) = &request.session_path {
-        launch.insert("sessionPath".to_owned(), json!(path));
+    if let (Some(provider), Some(model_id)) = (
+        non_empty_text(obj, "provider"),
+        non_empty_text(obj, "modelId").or_else(|| non_empty_text(obj, "model_id")),
+    ) {
+        launch.insert("model".to_owned(), json!(format!("{provider}/{model_id}")));
+    } else if let Some(model) = non_empty_text(obj, "model") {
+        launch.insert("model".to_owned(), json!(model));
     }
-    if let Some(fork_from) = &request.fork_from {
-        launch.insert("forkFrom".to_owned(), json!(fork_from));
+    for (target, keys) in [
+        ("thinking_level", &["thinking_level", "thinkingLevel"][..]),
+        (
+            "permission_preset",
+            &["permission_preset", "permissionPreset"][..],
+        ),
+        ("name", &["name"][..]),
+        ("kind", &["kind"][..]),
+        ("prompt_surface", &["prompt_surface", "promptSurface"][..]),
+        ("browser_engine", &["browser_engine", "browserEngine"][..]),
+    ] {
+        if let Some(val) = keys.iter().find_map(|key| non_empty_text(obj, key)) {
+            launch.insert(target.to_owned(), json!(val));
+        }
     }
-    if let Some(name) = &request.name {
+    for (target, keys) in [
+        ("context", &["context"][..]),
+        ("auto_title", &["auto_title", "autoTitle"][..]),
+        ("attended", &["attended"][..]),
+        ("retry_fallback", &["retry_fallback", "retryFallback"][..]),
+        ("spawned_by", &["spawned_by", "spawnedBy"][..]),
+        ("env", &["env"][..]),
+    ] {
+        if let Some(val) = keys
+            .iter()
+            .find_map(|key| obj.get(*key))
+            .filter(|val| !val.is_null())
+        {
+            launch.insert(target.to_owned(), val.clone());
+        }
+    }
+    if !launch.contains_key("context")
+        && let Some(skills) = obj
+            .get("initialSkills")
+            .and_then(Value::as_array)
+            .filter(|skills| !skills.is_empty())
+    {
+        let encoded = serde_json::to_string(skills).unwrap_or_default();
+        launch.insert(
+            "context".to_owned(),
+            json!({ INITIAL_SKILLS_CONTEXT_KEY: encoded }),
+        );
+    }
+    Value::Object(launch)
+}
+
+/// The contract's `mhc.session.open` `launch` fields an open carries (`AGENTD-CONTRACT.md`).
+pub fn launch_of(request: &SessionOpenRequest) -> Value {
+    let mut launch = Map::new();
+    if let Some(cwd) = request.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
+        launch.insert("cwd".to_owned(), json!(cwd));
+    }
+    if let (Some(provider), Some(model_id)) = (
+        request.provider.as_deref().filter(|s| !s.is_empty()),
+        request.model_id.as_deref().filter(|s| !s.is_empty()),
+    ) {
+        launch.insert("model".to_owned(), json!(format!("{provider}/{model_id}")));
+    }
+    if let Some(level) = request
+        .thinking_level
+        .as_deref()
+        .filter(|level| !level.is_empty())
+    {
+        launch.insert("thinking_level".to_owned(), json!(level));
+    }
+    if let Some(preset) = request
+        .permission_preset
+        .as_deref()
+        .filter(|preset| !preset.is_empty())
+    {
+        launch.insert("permission_preset".to_owned(), json!(preset));
+    }
+    if let Some(name) = request.name.as_deref().filter(|name| !name.is_empty()) {
         launch.insert("name".to_owned(), json!(name));
     }
-    if let Some(preset) = &request.permission_preset {
-        launch.insert("permissionPreset".to_owned(), json!(preset));
-    }
-    if let Some(provider) = &request.provider {
-        launch.insert("provider".to_owned(), json!(provider));
-    }
-    if let Some(model) = &request.model_id {
-        launch.insert("modelId".to_owned(), json!(model));
-    }
-    if let Some(level) = &request.thinking_level {
-        launch.insert("thinkingLevel".to_owned(), json!(level));
-    }
-    if let Some(durable) = &request.durable_session_id {
-        launch.insert("durableSessionId".to_owned(), json!(durable));
-    }
     if !request.initial_skills.is_empty() {
-        launch.insert("initialSkills".to_owned(), json!(request.initial_skills));
+        let encoded = serde_json::to_string(&request.initial_skills).unwrap_or_default();
+        launch.insert(
+            "context".to_owned(),
+            json!({ INITIAL_SKILLS_CONTEXT_KEY: encoded }),
+        );
     }
     Value::Object(launch)
 }
@@ -1254,10 +1332,18 @@ impl SessionHost for AgentdSessionHost {
         };
         Box::pin(async move {
             let mut args = Map::new();
-            if let Some(session) = &request.remote_session {
+            if let Some(session) = request
+                .remote_session
+                .as_deref()
+                .filter(|session| !session.is_empty())
+            {
                 args.insert("session".to_owned(), json!(session));
             }
-            if let Some(fork_from) = &request.fork_from {
+            if let Some(fork_from) = request
+                .fork_from
+                .as_deref()
+                .filter(|fork_from| !fork_from.is_empty())
+            {
                 args.insert("fork_from".to_owned(), json!(fork_from));
             }
             args.insert("launch".to_owned(), launch_of(&request));
@@ -1579,21 +1665,94 @@ mod tests {
     }
 
     #[test]
-    fn an_open_request_reaches_the_daemon_as_the_engines_own_field_names() {
+    fn an_open_request_reaches_the_daemon_as_the_contracts_own_field_names() {
         let launch = launch_of(&SessionOpenRequest {
             cwd: Some("/work/app".to_owned()),
+            session_path: Some("/sessions/a.jsonl".to_owned()),
             fork_from: Some("rk-1".to_owned()),
             name: Some("child".to_owned()),
+            permission_preset: Some("read-only".to_owned()),
             provider: Some("openai".to_owned()),
             model_id: Some("gpt-6".to_owned()),
             thinking_level: Some("high".to_owned()),
+            durable_session_id: Some("dur-1".to_owned()),
+            initial_skills: vec!["programming".to_owned()],
             ..SessionOpenRequest::default()
         });
         assert_eq!(launch["cwd"], json!("/work/app"));
-        assert_eq!(launch["forkFrom"], json!("rk-1"));
-        assert_eq!(launch["modelId"], json!("gpt-6"));
-        assert_eq!(launch["thinkingLevel"], json!("high"));
-        assert!(launch.get("sessionPath").is_none());
+        assert_eq!(launch["model"], json!("openai/gpt-6"));
+        assert_eq!(launch["thinking_level"], json!("high"));
+        assert_eq!(launch["permission_preset"], json!("read-only"));
+        assert_eq!(launch["name"], json!("child"));
+        assert_eq!(
+            launch["context"],
+            json!({ INITIAL_SKILLS_CONTEXT_KEY: "[\"programming\"]" })
+        );
+        for forbidden in [
+            "forkFrom",
+            "sessionPath",
+            "modelId",
+            "thinkingLevel",
+            "permissionPreset",
+            "durableSessionId",
+            "initialSkills",
+            "provider",
+        ] {
+            assert!(launch.get(forbidden).is_none(), "unexpected {forbidden}");
+        }
+
+        let partial_model = launch_of(&SessionOpenRequest {
+            provider: Some("openai".to_owned()),
+            ..SessionOpenRequest::default()
+        });
+        assert!(partial_model.get("model").is_none());
+    }
+
+    #[test]
+    fn an_open_rpc_frame_maps_only_contract_keys_into_launch() {
+        let launch = launch_from_open_rpc(&json!({
+            "type": "open_session",
+            "retain_on_disconnect": true,
+            "cwd": "/work/app",
+            "session": "dur-1",
+            "sessionPath": "/sessions/a.jsonl",
+            "forkFrom": "rk-1",
+            "durableSessionId": "dur-2",
+            "name": "child",
+            "provider": "openai",
+            "modelId": "gpt-6",
+            "thinkingLevel": "high",
+            "permissionPreset": "ask",
+            "kind": "interactive",
+            "context": { "k": "v" },
+            "autoTitle": false,
+            "attended": false,
+            "promptSurface": "chat",
+            "browserEngine": "builtin",
+            "retryFallback": { "mode": "none" },
+            "spawnedBy": { "taskId": "t1" },
+            "env": { "FOO": "bar" },
+            "unknownExtra": "drop-me",
+        }));
+        assert_eq!(
+            launch,
+            json!({
+                "cwd": "/work/app",
+                "model": "openai/gpt-6",
+                "thinking_level": "high",
+                "permission_preset": "ask",
+                "name": "child",
+                "kind": "interactive",
+                "context": { "k": "v" },
+                "auto_title": false,
+                "attended": false,
+                "prompt_surface": "chat",
+                "browser_engine": "builtin",
+                "retry_fallback": { "mode": "none" },
+                "spawned_by": { "taskId": "t1" },
+                "env": { "FOO": "bar" },
+            })
+        );
     }
 
     #[test]
