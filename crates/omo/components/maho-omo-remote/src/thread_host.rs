@@ -255,19 +255,20 @@ mod wire {
             return Err(format!("auth_required:{socket}"));
         }
         {
-            let request: maho_omo_gateway::thread::attachment_fence::ConversationRequest =
-                Arc::new(move |command| {
-                    let socket = socket.to_owned();
-                    let shared = shared.clone();
-                    Box::pin(async move {
-                        shared
-                            .lock()
-                            .await
-                            .request(command)
-                            .await
-                            .map_err(|error| io_failure(&socket, &error))
-                    })
-                });
+            let socket_for_request = socket.to_owned();
+            let shared_for_request = shared.clone();
+            let request: ConversationRequest = Arc::new(move |command| {
+                let socket = socket_for_request.clone();
+                let shared = shared_for_request.clone();
+                Box::pin(async move {
+                    shared
+                        .lock()
+                        .await
+                        .request(command)
+                        .await
+                        .map_err(|error| io_failure(&socket, &error))
+                })
+            });
             followups(answer.clone(), request).await?;
         }
         // `request` (and its clone of `shared`) is dropped here; reclaim the held connection.
