@@ -494,7 +494,6 @@ mod tests {
     #[test]
     fn conversation_runs_first_and_followup_on_the_same_transport() {
         let commands = Arc::new(Mutex::new(Vec::new()));
-        let commands_for_followup = commands.clone();
         let transport = Arc::new(Recorder {
             commands: commands.clone(),
             attach: serde_json::json!({ "success": true }),
@@ -504,7 +503,6 @@ mod tests {
             serde_json::json!({ "id": 1, "type": "open_session", "sessionId": "r-1" }),
             None,
             Arc::new(move |_reply, request| {
-                let commands = commands_for_followup.clone();
                 Box::pin(async move {
                     let _ = request(serde_json::json!({
                         "type": "set_session_name",
