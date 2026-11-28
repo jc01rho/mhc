@@ -156,6 +156,7 @@ mod wire {
     use maho_omo_gateway::thread::live_surface::{ENDPOINT_LIST_TIMEOUT_MS, REQUEST_TIMEOUT_MS};
     use maho_rpc::socket_client::RpcSocket;
     use serde_json::Value;
+    use tokio::sync::Mutex as AsyncMutex;
 
     type Attached = Mutex<HashMap<(String, String), RpcSocket>>;
 
@@ -239,11 +240,16 @@ mod wire {
             None => None,
         };
         let reused = held.is_some();
-        let mut connection = match held {
+        let connection = match held {
             Some(connection) => connection,
             None => open(socket, &kind, agent_dir).await?,
         };
-        let answer = connection
+        // `RpcSocket::request` needs `&mut self`, but the per-conversation request is shared through
+        // a `Fn` closure, so hold the connection behind a tokio mutex for the whole conversation.
+        let shared = Arc::new(AsyncMutex::new(connection));
+        let answer = shared
+            .lock()
+            .await
             .request(first)
             .await
             .map_err(|error| io_failure(socket, &error))?;
@@ -254,8 +260,11 @@ mod wire {
             let request: maho_omo_gateway::thread::attachment_fence::ConversationRequest =
                 Arc::new(move |command| {
                     let socket = socket.to_owned();
+                    let shared = shared.clone();
                     Box::pin(async move {
-                        connection
+                        shared
+                            .lock()
+                            .await
                             .request(command)
                             .await
                             .map_err(|error| io_failure(&socket, &error))
@@ -263,6 +272,10 @@ mod wire {
                 });
             followups(answer.clone(), request).await?;
         }
+        // `request` (and its clone of `shared`) is dropped here; reclaim the held connection.
+        let connection = Arc::try_unwrap(shared)
+            .expect("conversation request outlived its follow-ups")
+            .into_inner();
         // An `open_session` attach remains on the connection it opened, like the fence's attach.
         let keep = reused && kind != "release_attachment";
         if keep && let Some(key) = key {

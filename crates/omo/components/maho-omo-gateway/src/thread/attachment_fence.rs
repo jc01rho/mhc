@@ -60,9 +60,7 @@ const UNFENCED: [&str; 37] = [
 const TYPED_REFUSAL: [&str; 1] = ["release_session"];
 
 /// Sends one command on the connection that is already open, returning its reply.
-pub type ConversationRequest = Arc<
-    dyn Fn(Value) -> BoxFuture<Result<Value, String>> + Send + Sync,
->;
+pub type ConversationRequest = Arc<dyn Fn(Value) -> BoxFuture<Result<Value, String>> + Send + Sync>;
 
 /// One request on an authenticated connection.
 pub trait RpcTransport: Send + Sync {
@@ -89,7 +87,9 @@ pub trait RpcTransport: Send + Sync {
     ) -> BoxFuture<Result<Value, String>> {
         let socket = socket.to_owned();
         Box::pin(async move {
-            let reply = self.request(&socket, first, durable_session_id.clone()).await?;
+            let reply = self
+                .request(&socket, first, durable_session_id.clone())
+                .await?;
             let transport: ConversationRequest = Arc::new({
                 let socket = socket.clone();
                 let transport = self.clone();
@@ -489,5 +489,45 @@ mod tests {
             error,
             "session_identity_mismatch:missing selected durable session id"
         );
+    }
+
+    #[test]
+    fn conversation_runs_first_and_followup_on_the_same_transport() {
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let transport = Arc::new(Recorder {
+            commands: commands.clone(),
+            attach: serde_json::json!({ "success": true }),
+        });
+        let reply = futures::executor::block_on(transport.clone().conversation(
+            "/run/host.sock",
+            serde_json::json!({ "id": 1, "type": "open_session", "sessionId": "r-1" }),
+            None,
+            Arc::new(move |_reply, request| {
+                let commands = commands.clone();
+                Box::pin(async move {
+                    let _ = request(serde_json::json!({
+                        "type": "set_session_name",
+                        "sessionId": "rpc-9",
+                        "name": "child",
+                    }))
+                    .await?;
+                    Ok(())
+                })
+            }),
+        ))
+        .expect("conversation");
+        assert_eq!(reply["sessionId"], "rpc-9");
+        let seen: Vec<String> = commands
+            .lock()
+            .expect("commands")
+            .iter()
+            .filter_map(|command| {
+                command
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(seen, vec!["open_session", "set_session_name"]);
     }
 }

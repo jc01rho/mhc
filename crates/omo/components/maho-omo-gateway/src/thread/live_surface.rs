@@ -555,7 +555,9 @@ impl LiveThreadSurface {
                     None,
                     Arc::new(move |reply, request| {
                         Box::pin(async move {
-                            let Some(name) = name else { return Ok(()); };
+                            let Some(name) = name else {
+                                return Ok(());
+                            };
                             let opened = match data_record(&reply, "open_session") {
                                 Ok(opened) => opened,
                                 Err(_) => return Ok(()),
