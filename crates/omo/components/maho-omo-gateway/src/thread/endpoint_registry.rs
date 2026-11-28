@@ -16,11 +16,13 @@ pub fn is_tui_control_socket(socket: &str) -> bool {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    // t-<16 hex>.sock
+    // t-<16 lowercase hex>.sock — upstream TUI_SOCKET_NAME = /^t-[0-9a-f]{16}\.sock$/
     name.len() == 19
         && name.starts_with("t-")
         && name.ends_with(".sock")
-        && name[2..18].chars().all(|c| c.is_ascii_hexdigit())
+        && name.as_bytes()[2..18]
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
 }
 
 pub fn control_socket_secret_path(socket: &str) -> String {

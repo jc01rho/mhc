@@ -32,6 +32,12 @@ impl RpcSocket {
             deadline,
         })
     }
+    /// Access the connection's reader, e.g. to write the terminal secret handshake before
+    /// the first request (tui control endpoints authenticate with 32 bytes from `<socket>.secret`).
+    pub fn reader_mut(&mut self) -> &mut tokio::io::BufReader<tokio::net::UnixStream> {
+        &mut self.reader
+    }
+
     /// Transfer an authenticated, pre-session connection to the persistent mux.
     pub fn into_stream(self) -> std::io::Result<tokio::net::UnixStream> {
         if !self.reader.buffer().is_empty() {

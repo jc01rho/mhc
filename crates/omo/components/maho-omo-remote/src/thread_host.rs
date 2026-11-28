@@ -210,7 +210,7 @@ mod wire {
                     .await
                     .map_err(|error| io_failure(socket, &error))?;
             maho_rpc::socket_transport::send_socket_handshake(
-                &mut connection.reader.get_mut(),
+                connection.reader_mut().get_mut(),
                 &secret,
             )
             .await

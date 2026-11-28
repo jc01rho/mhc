@@ -116,6 +116,8 @@ pub(crate) fn validate_open_args(args: &serde_json::Value) -> Result<(), String>
 
 #[path = "agentd_client_tests.rs"]
 mod agentd_client_tests;
+#[path = "endpoint_registry_tests.rs"]
+mod endpoint_registry_tests;
 #[path = "gateway_receipt_tests.rs"]
 mod gateway_receipt_tests;
 #[path = "gateway_schema_tests.rs"]
@@ -124,6 +126,8 @@ mod gateway_schema_tests;
 mod gateway_store_tests;
 #[path = "intake_tests.rs"]
 mod intake_tests;
+#[path = "live_surface_endpoints_tests.rs"]
+mod live_surface_endpoints_tests;
 #[path = "native_thread_host_tests.rs"]
 mod native_thread_host_tests;
 #[path = "prompt_tests.rs"]
@@ -162,5 +166,3 @@ mod wake_session_waker_tests;
 mod wake_store_tests;
 #[path = "wake_support.rs"]
 mod wake_support;
-#[path = "endpoint_registry_tests.rs"]
-mod endpoint_registry_tests;
