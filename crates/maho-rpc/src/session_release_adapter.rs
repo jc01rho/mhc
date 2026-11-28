@@ -184,6 +184,12 @@ impl ReleasableSession for AgentSessionRelease {
         self.session.record_closed_on_request();
     }
 
+    fn hold_for_close(&self) {}
+    fn release_close_hold(&self) {}
+    fn turn_epoch(&self) -> u64 {
+        self.session.external_admission().turn_epoch()
+    }
+
     fn append_custom_entry(&self, custom_type: &str, data: Value) -> Result<(), ReleaseWriteError> {
         let (file, persisted, flushed) = self.session.with_session_manager(|manager| {
             (

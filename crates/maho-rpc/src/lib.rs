@@ -221,6 +221,7 @@ pub mod session_context_patch;
 pub mod session_control_actions_data;
 pub mod session_control_wake;
 pub mod session_drain;
+pub mod session_graceful_close;
 pub mod session_drain_hold;
 pub mod session_effect_status;
 pub mod session_event_decode;
