@@ -5,10 +5,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use maho_omo_gateway::thread::control::port::{SessionHost, SessionOpenRequest};
+use maho_omo_gateway::thread::remote::agentd::AGENTD_ENTRY_REQUIRED;
 use maho_omo_gateway::thread::remote::agentd::{
     AgentdClient, AgentdDeliveryPort, AgentdError, AgentdFollowPort, AgentdPeer, AgentdPorts,
     AgentdSessionHost, DeliveryOutcome, DeliveryPushOutcome,
 };
+use maho_omo_gateway::thread::remote::outcome::relay_outcome_failure;
 use maho_omo_gateway::thread::remote::ports::{
     RemoteCommandOutcome, RemoteLocateOutcome, RemoteLookupOutcome, RemoteSessionsPort,
 };
@@ -453,8 +455,55 @@ fn an_op_the_daemon_does_not_serve_answers_unsupported_and_an_unconfigured_devic
     assert_eq!(
         block_on(stranger.lookup("c".to_owned(), "dur-1".to_owned())),
         RemoteLookupOutcome::Silent {
-            reason: "daemon_unavailable".to_owned()
+            reason: AGENTD_ENTRY_REQUIRED.to_owned()
         }
+    );
+    let error = block_on(stranger.client().call(
+        "c",
+        "mhc.session.read",
+        json!({}),
+        Duration::from_secs(1),
+    ))
+    .expect_err("a peer without agentd is not reached");
+    let AgentdError::Refused { reason, detail } = &error else {
+        panic!("expected a missing-agentd refusal: {error:?}");
+    };
+    assert_eq!(reason, AGENTD_ENTRY_REQUIRED);
+    assert!(
+        detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("relayd.json")),
+        "{detail:?}"
+    );
+    let failure = relay_outcome_failure(
+        &maho_omo_gateway::thread::remote::agentd::outcome_of(&error),
+        "c",
+    );
+    assert_eq!(failure.code.as_str(), "host_unavailable");
+    let details = failure.details.as_ref().and_then(|value| value.as_object());
+    assert_eq!(
+        details
+            .and_then(|map| map.get("reason"))
+            .and_then(Value::as_str),
+        Some(AGENTD_ENTRY_REQUIRED)
+    );
+    let fix = details
+        .and_then(|map| map.get("fix"))
+        .and_then(Value::as_str);
+    assert!(
+        fix.is_some_and(|fix| fix.contains("relayd.json")),
+        "{fix:?}"
+    );
+    assert_eq!(
+        details
+            .and_then(|map| map.get("device"))
+            .and_then(Value::as_str),
+        Some("c")
+    );
+    assert!(
+        failure.next_action.contains("`agentd` object"),
+        "{}",
+        failure.next_action
     );
 }
 

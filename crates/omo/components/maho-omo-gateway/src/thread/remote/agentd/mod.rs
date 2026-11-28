@@ -22,7 +22,10 @@ pub use frame::{
     EventFrame, FrameError, RELAY_PROTOCOL, ResultFrame, ServerFrame, WelcomeFrame, parse_line,
 };
 pub use link::{AgentdError, AgentdLink};
-pub use peer_config::{AgentdPeer, peer_map, peers_from_config, peers_in, read_token};
+pub use peer_config::{
+    AGENTD_ENTRY_REQUIRED, AGENTD_REFUSAL, AgentdPeer, AgentdRefusal, peer_map, peers_from_config,
+    peers_in, read_token,
+};
 pub use ports::{
     AgentdAttach, AgentdClient, AgentdFollow, AgentdFollowPort, AgentdPorts, AgentdSessionHost,
     command_outcome, launch_of, opened_summary, outcome_of as command_error_outcome, reason_of,

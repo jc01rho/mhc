@@ -53,5 +53,16 @@ or `{"id","type":"peer.response","ok":false,"error":{"code","reason"}}`.
 
 A `command` is deduplicated per sending device and `command_id`: the same id with the same target
 and payload answers the first outcome and runs nothing; another payload is `command_id_conflict`.
+
+## Refused requests
+
+The local API also defines these names but `mhc-relayd` does not serve them: `refresher.register`,
+`device.adopt`, `enforcement.report`, `owner.shutdown_for_upgrade`, `session.endpoints`,
+`session.locate`, `session.read`, `session.command_part`, `sessions.events.subscribe` and
+`deliveries.serve`. They answer `unsupported`; the reason says they are served over the agentd path
+and the action says to add an `agentd` object (`address`, `port`, `tokenFile`) to the peer in
+`relayd.json`. The relay does not fall back to them: remote sessions, forks and deliveries go over
+the tailnet agentd path. A caller aimed at a peer without that object gets `agentd_entry_required`
+with the same fix hint in its failure details.
 The engine records carried are `prompt`, `steer`, `follow_up`, `abort`, `set_model`, `get_state` and
 `close_session`; the local API refuses any other method before anything leaves the device.
