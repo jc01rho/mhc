@@ -162,6 +162,15 @@ pub fn command_outcome(data: &Value) -> RemoteCommandOutcome {
             local: false,
             located: None,
         },
+        // agentd answers `session_not_running` when no engine host of the device holds the session any more: the
+        // relay contract's `route_unlisted` (nothing was dispatched), so the close ladder and the reopen path read it
+        // as a session that is gone rather than as a refusal of the command.
+        "engine_refused" if reason.as_deref() == Some("session_not_running") => {
+            RemoteCommandOutcome::Refused {
+                reason: "route_unlisted".to_owned(),
+                detail,
+            }
+        }
         "engine_refused" => RemoteCommandOutcome::Refused {
             reason: reason.unwrap_or_else(|| "engine_refused".to_owned()),
             detail,
@@ -1622,6 +1631,13 @@ mod tests {
             command_outcome(&json!({ "state": "engine_refused", "reason": "not_steerable" })),
             RemoteCommandOutcome::Refused {
                 reason: "not_steerable".to_owned(),
+                detail: None,
+            }
+        );
+        assert_eq!(
+            command_outcome(&json!({ "state": "engine_refused", "reason": "session_not_running" })),
+            RemoteCommandOutcome::Refused {
+                reason: "route_unlisted".to_owned(),
                 detail: None,
             }
         );
