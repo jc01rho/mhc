@@ -10,7 +10,7 @@ use maho_core::agent_session::AgentSession;
 use maho_core::extensions::session_control_types::{self as engine, SessionControlActions};
 use maho_core::session_control_actions::GenerationSessionControlActions;
 use maho_omo_gateway::thread::adapter::BoxFuture;
-use maho_omo_gateway::thread::attachment_fence::{ConversationRequest, RpcTransport};
+use maho_omo_gateway::thread::attachment_fence::{ConversationFollowups, RpcTransport};
 use maho_omo_gateway::thread::native::{NativeThreadHost, ThreadHostWire};
 use maho_omo_gateway::thread::registration::{
     RegisterControlEndpointOptions, SessionControlActionsPort, SessionControlRegistration,
@@ -134,9 +134,7 @@ impl RpcTransport for HostTransport {
         socket: &str,
         first: Value,
         _durable_session_id: Option<String>,
-        followups: Arc<
-            dyn Fn(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
-        >,
+        followups: ConversationFollowups,
     ) -> BoxFuture<Result<Value, String>> {
         let socket = socket.to_owned();
         let agent_dir = self.agent_dir.clone();
@@ -153,8 +151,7 @@ mod wire {
     use std::path::Path;
     use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-    use maho_omo_gateway::thread::adapter::BoxFuture;
-    use maho_omo_gateway::thread::attachment_fence::ConversationRequest;
+    use maho_omo_gateway::thread::attachment_fence::{ConversationFollowups, ConversationRequest};
 
     use maho_omo_gateway::thread::live_surface::{ENDPOINT_LIST_TIMEOUT_MS, REQUEST_TIMEOUT_MS};
     use maho_rpc::socket_client::RpcSocket;
@@ -217,9 +214,7 @@ mod wire {
         first: Value,
         agent_dir: &Path,
         attached: &Attached,
-        followups: Arc<
-            dyn Fn(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
-        >,
+        followups: ConversationFollowups,
     ) -> Result<Value, String> {
         // Upstream's `requestFrame` runs `open_session` and its `set_session_name` inside one
         // `withRpcSocket`. Keep one authenticated connection and pass it to each follow-up, so the
@@ -358,10 +353,9 @@ mod wire {
 mod wire {
     use std::collections::HashMap;
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
-    use maho_omo_gateway::thread::adapter::BoxFuture;
-    use maho_omo_gateway::thread::attachment_fence::ConversationRequest;
+    use maho_omo_gateway::thread::attachment_fence::ConversationFollowups;
     use serde_json::Value;
 
     /// maho-rpc reaches a session host over a unix socket only, so on this platform no conversation opens.
@@ -370,9 +364,7 @@ mod wire {
         first: Value,
         agent_dir: &Path,
         attached: &Mutex<HashMap<(String, String), ()>>,
-        followups: Arc<
-            dyn Fn(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
-        >,
+        followups: ConversationFollowups,
     ) -> Result<Value, String> {
         let _ = (first, agent_dir, attached, followups);
         Err(format!("host_unavailable:{socket}"))

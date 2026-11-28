@@ -14,7 +14,7 @@ use maho_ext_api::ExtensionMode;
 
 use super::wake::carrier_connection::{carrier_connect, carrier_socket};
 use super::wake::host_ensure::native_ensure_host;
-use super::wake::runtime::{OMO_SENPI_TASK_RPC_CHILD, RunningThreadWake, ThreadWakeOptions};
+use super::wake::runtime::{RunningThreadWake, ThreadWakeOptions};
 use super::wake::wake_runtime::{WakeAtSessionInput, start_wake_at_session};
 
 /// One `session_start` of the thread component: the engine's mode, the agent directory, and the env the wake reads.

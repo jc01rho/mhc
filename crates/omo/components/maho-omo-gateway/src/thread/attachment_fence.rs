@@ -62,6 +62,10 @@ const TYPED_REFUSAL: [&str; 1] = ["release_session"];
 /// Sends one command on the connection that is already open, returning its reply.
 pub type ConversationRequest = Arc<dyn Fn(Value) -> BoxFuture<Result<Value, String>> + Send + Sync>;
 
+/// What runs after a conversation's first command, given its reply and a way to send on the same connection.
+pub type ConversationFollowups =
+    Arc<dyn Fn(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync>;
+
 /// One request on an authenticated connection.
 pub trait RpcTransport: Send + Sync + 'static {
     fn request(
@@ -81,9 +85,7 @@ pub trait RpcTransport: Send + Sync + 'static {
         socket: &str,
         first: Value,
         durable_session_id: Option<String>,
-        followups: Arc<
-            dyn Fn(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
-        >,
+        followups: ConversationFollowups,
     ) -> BoxFuture<Result<Value, String>> {
         let socket = socket.to_owned();
         Box::pin(async move {
