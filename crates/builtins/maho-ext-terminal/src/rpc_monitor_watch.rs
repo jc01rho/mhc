@@ -190,26 +190,31 @@ impl RpcRemoteFeed {
                 );
                 RpcRemoteHandlers {
                     record: Arc::new(move |record| {
+                        let record_self = record_self.clone();
                         run_when_ready(&record_ready, &record_pending, move || {
                             record_self.record(record);
                         });
                     }),
                     resynced: Arc::new(move |state| {
+                        let resync_self = resync_self.clone();
                         run_when_ready(&resync_ready, &resync_pending, move || {
                             resync_self.resync(state);
                         });
                     }),
                     cursor: Some(Arc::new(move |cursor| {
+                        let cursor_self = cursor_self.clone();
                         run_when_ready(&cursor_ready, &cursor_pending, move || {
                             cursor_self.set_cursor(cursor);
                         });
                     })),
                     lost: Arc::new(move |reason| {
+                        let lost_self = lost_self.clone();
                         run_when_ready(&lost_ready, &lost_pending, move || {
                             lost_self.lost(reason);
                         });
                     }),
                     ended: Arc::new(move |reason| {
+                        let ended_self = ended_self.clone();
                         run_when_ready(&ended_ready, &ended_pending, move || {
                             ended_self.ended(reason);
                         });

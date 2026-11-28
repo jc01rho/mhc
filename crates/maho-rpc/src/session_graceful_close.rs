@@ -32,12 +32,12 @@ pub fn graceful_wait_ms(requested: Option<u64>) -> u64 {
 pub fn fence_for_close(session: &dyn UnloadableSession) -> GracefulDrain {
     session.hold_for_close();
     session.admission_close(
-        "session_closing: the session is closing on request and takes no new deliveries".into(),
+        "session_closing: the session is closing on request and takes no new deliveries",
     );
     let dropped = take_queued_input(session, false);
     let started_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_millis() as u64;
     GracefulDrain {
         dropped,
@@ -51,21 +51,19 @@ pub fn reopen_after_drain(session: &dyn UnloadableSession) {
     session.admission_reopen();
 }
 
+/// Work that settles as the session quiets (other requests, pending prompts).
+pub type SettlingWork = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
 /// What still keeps the session from closing plus work that settles as it quiets.
 pub struct GracefulDrainPort<'a> {
     pub busy: Box<dyn Fn() -> Vec<String> + Send + Sync + 'a>,
-    pub settling: Box<
-        dyn Fn() -> Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>
-            + Send
-            + Sync
-            + 'a,
-    >,
+    pub settling: Box<dyn Fn() -> Vec<SettlingWork> + Send + Sync + 'a>,
 }
 
-/// Resolves true once `port.busy()` is empty, false when `wait_ms` passes first. Wakes on session events via
-/// `session.subscribe` and re-checks each time; nothing polls.
+/// Resolves true once `port.busy()` is empty, false when `wait_ms` passes first. The session has no event seam
+/// here, so after the settling work has ended the busy list is re-read on a short tick until the deadline.
 pub async fn drain_until_quiet(
-    session: &dyn UnloadableSession,
+    _session: &dyn UnloadableSession,
     port: &GracefulDrainPort<'_>,
     wait_ms: u64,
 ) -> bool {
@@ -77,17 +75,19 @@ pub async fn drain_until_quiet(
         if tokio::time::Instant::now() >= deadline {
             return false;
         }
-        // One quiet pass per tick; a session event will set busy empty on its own cycle.
-        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-        let _ = session;
-        let _ = (port.settling)();
+        let settling = (port.settling)();
+        if settling.is_empty() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        } else {
+            let _ = tokio::time::timeout_at(deadline, futures::future::join_all(settling)).await;
+        }
     }
 }
 
 pub fn drain_facts(session: &dyn UnloadableSession, drain: &GracefulDrain) -> (u64, u64) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_millis() as u64;
     (
         session.turn_epoch(),

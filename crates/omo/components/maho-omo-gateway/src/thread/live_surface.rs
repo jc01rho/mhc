@@ -653,6 +653,8 @@ impl LiveThreadSurface {
             // opened, so the host has attached the caller by the time the naming command arrives.
             let name = name.filter(|name| !name.trim().is_empty());
             let name_for_closure = name.clone();
+            let transport_for_closure = transport.clone();
+            let socket_for_closure = socket.clone();
             let frame = transport
                 .clone()
                 .conversation(
@@ -661,8 +663,8 @@ impl LiveThreadSurface {
                     None,
                     Arc::new(move |reply, request| {
                         let name = name_for_closure.clone();
-                        let transport_for_naming = transport.clone();
-                        let socket_for_naming = socket.clone();
+                        let transport_for_naming = transport_for_closure.clone();
+                        let socket_for_naming = socket_for_closure.clone();
                         Box::pin(async move {
                             let Some(name) = name else {
                                 return Ok(());

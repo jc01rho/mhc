@@ -32,12 +32,9 @@ use crate::effect_record::{
 };
 use crate::effect_session::EffectSession;
 use crate::session_graceful_close::{
-    GracefulDrain, drain_until_quiet, fence_for_close, graceful_wait_ms, record_graceful_close,
-    reopen_after_drain,
+    GracefulDrain, fence_for_close, record_graceful_close, reopen_after_drain,
 };
-use crate::session_release_interrupt::{
-    ReleasableSession, ReleaseDropped, ReleaseSettlePort, abort_and_settle,
-};
+use crate::session_release_interrupt::{ReleasableSession, ReleaseSettlePort, abort_and_settle};
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -255,12 +252,16 @@ async fn close_gracefully(
             }
             reasons
         }),
-        settling: Box::new(|| Vec::new()),
+        settling: Box::new(Vec::new),
     };
     let wait_ms = crate::session_graceful_close::graceful_wait_ms(command["waitMs"].as_u64());
     let quiet = {
-        let quiet = crate::session_graceful_close::drain_until_quiet(&*first.session, &port_graceful, wait_ms)
-            .await;
+        let quiet = crate::session_graceful_close::drain_until_quiet(
+            &*first.session,
+            &port_graceful,
+            wait_ms,
+        )
+        .await;
         drop(port_graceful);
         quiet
     };
