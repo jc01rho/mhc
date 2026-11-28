@@ -113,6 +113,7 @@ fn canonical_socket(socket: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::thread::wake::runtime::OMO_SENPI_TASK_RPC_CHILD;
 
     fn args(mode: ExtensionMode, env: BTreeMap<String, String>) -> WakeStartAtSessionArgs {
         let dir = std::env::temp_dir().join("wake-wiring-test");
