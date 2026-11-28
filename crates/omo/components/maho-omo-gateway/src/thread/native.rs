@@ -4,7 +4,7 @@
 //! Upstream counterpart: `thread/component.ts` `createThreadComponent`. The engine side it reads off `pi` (the wire to
 //! the session hosts and the session's own `pi.session`) is what the host binds as [`NativeThreadHost`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -23,9 +23,10 @@ use super::component::{
     event_message,
 };
 use super::control::locate::{ThreadCall, book_of, send_address_book};
+use super::endpoint_registry::{RegistryEndpoint, list_registry_endpoints};
 use super::engine::{GatewayResolution, GatewayResolve, resolve_from_entries};
 use super::host_view::ThreadHost;
-use super::live_surface::{LiveThreadSurface, LiveThreadSurfaceOptions};
+use super::live_surface::{LiveThreadSurface, LiveThreadSurfaceOptions, SharedEnumeration};
 use super::registration::{
     ControlEndpoint, SessionActivity, SessionControlActionsPort, register_control_endpoint,
     session_runtime_port, waits_for_answer,
@@ -115,6 +116,16 @@ fn unconnected_resolve() -> GatewayResolve {
     })
 }
 
+/// Every surface in this process enumerates through one map, so a session that a delivery just
+/// created reuses the listing another session took inside the cache window (#12989).
+fn shared_enumerations() -> Arc<Mutex<BTreeMap<String, SharedEnumeration>>> {
+    static SHARED: std::sync::OnceLock<Arc<Mutex<BTreeMap<String, SharedEnumeration>>>> =
+        std::sync::OnceLock::new();
+    SHARED
+        .get_or_init(|| Arc::new(Mutex::new(BTreeMap::new())))
+        .clone()
+}
+
 /// The engine's resolve over this device's address book (upstream `createGatewayServices`): the send path's view, in
 /// which nothing live is no failure, and the session files on disk the address names.
 fn address_book_resolve(
@@ -183,6 +194,11 @@ impl Extension for NativeThreadComponent {
                     let project = ctx.cwd.to_string_lossy().into_owned();
                     let workspace_root = project.clone();
                     let sessions_directory = ctx.agent_dir.join("sessions");
+                    // The registry reader for this device's agent dir: every endpoint that bound a
+                    // socket there, including the shards and terminals the engine does not report.
+                    let registry_dir = ctx.agent_dir.to_string_lossy().into_owned();
+                    let registry: Arc<dyn Fn() -> Vec<RegistryEndpoint> + Send + Sync> =
+                        Arc::new(move || list_registry_endpoints(&registry_dir));
                     let (thread_host, endpoints, resolve) = match &host.wire {
                         Some(wire) => {
                             let surface =
@@ -191,6 +207,8 @@ impl Extension for NativeThreadComponent {
                                     transport: wire.transport.clone(),
                                     status_all: None,
                                     now: None,
+                                    enumerations: Some(shared_enumerations()),
+                                    registry: Some(registry),
                                 }));
                             let thread_host: Arc<dyn ThreadHost> = surface.clone();
                             let resolve = address_book_resolve(

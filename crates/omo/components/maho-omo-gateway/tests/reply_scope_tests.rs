@@ -101,6 +101,8 @@ fn receiver(
         transport: Arc::new(ForeignHost { sessions }),
         status_all: None,
         now: None,
+        enumerations: None,
+        registry: None,
     }));
     let targets = {
         let senders = senders.clone();

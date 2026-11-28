@@ -208,6 +208,8 @@ fn faux_device() -> (tempfile::TempDir, Arc<FakeHost>, GatewayThreadComponent) {
         transport: host.clone(),
         status_all: None,
         now: None,
+        enumerations: None,
+        registry: None,
     }));
     let component = component(&dir, Some(surface), cwd);
     (dir, host, component)
@@ -367,6 +369,8 @@ fn a_control_on_a_thread_still_opening_answers_host_unavailable_naming_the_threa
         transport: Arc::new(OpeningHost { cwd: cwd.clone() }),
         status_all: None,
         now: None,
+        enumerations: None,
+        registry: None,
     }));
     let component = component(&dir, Some(surface), cwd);
     let listed = run(&component, "thread_list", json!({}));
@@ -636,6 +640,8 @@ fn graceful_close_and_thinking_suffix_rollback_run_through_live_surface() {
         transport: host.clone(),
         status_all: None,
         now: None,
+        enumerations: None,
+        registry: None,
     }));
     let now = "2026-11-22T00:00:00Z".to_owned();
     let view = block_on(surface.list_view()).expect("list_view");
@@ -851,6 +857,8 @@ fn thread_list_reports_engine_version_waiting_on_unnamed_archived_incomplete_and
         transport: Arc::new(MultiEndpointListTransport { cwd: cwd.clone() }),
         status_all: Some(Arc::new(move || Some(reports.clone()))),
         now: None,
+        enumerations: None,
+        registry: None,
     }));
 
     let store_dir = tempfile::tempdir().expect("store dir");
