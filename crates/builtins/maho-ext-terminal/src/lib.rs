@@ -42,6 +42,13 @@ pub mod rpc_monitor_render;
 pub mod rpc_monitor_source;
 pub mod rpc_monitor_targets;
 pub mod rpc_monitor_watch;
+pub use maho_ext_api::rpc_remote_source::{
+    RpcRemoteEvents, RpcRemoteHandlers, RpcRemoteOpenOptions, RpcRemoteSource, RpcRemoteState,
+    RpcRemoteSubscription, RpcRemoteTarget, register_rpc_remote_source,
+};
+pub fn current_rpc_remote_source() -> Option<RpcRemoteSource> {
+    maho_ext_api::current_rpc_remote_source()
+}
 pub mod run_jobs;
 pub mod runtime_session;
 pub mod screen;

@@ -10,6 +10,7 @@ pub mod closed_rows;
 pub mod cross_device;
 pub mod device_service;
 pub mod lookup_gate;
+pub mod monitor_source;
 pub mod outcome;
 pub mod ports;
 pub mod receipt;

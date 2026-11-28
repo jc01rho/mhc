@@ -50,6 +50,8 @@ pub struct GatewayThreadComponent {
     pub send_as: ThreadSendAs,
     pub alerts: Arc<super::run_alerts::RunAlerts>,
     pub durable_id: String,
+    /// The agentd-backed remote surface a monitor source can be registered for.
+    pub(crate) remote: Option<Arc<dyn super::control::locate::RemoteControlLocator>>,
     /// The current run's reply allowance, driven by `agent_start`, `message_start`, `message_end` and `agent_settled`.
     run: Arc<std::sync::Mutex<super::run_context::RunContext>>,
     registration: Arc<std::sync::Mutex<super::tools::ExtensionToolRegistration>>,
@@ -158,6 +160,7 @@ pub fn create_gateway_thread_component_with_alerts(
     }
     GatewayThreadComponent {
         registration: Default::default(),
+        remote: options.remote.clone(),
         log: options.log.clone(),
         store: options.store.clone(),
         engine,
@@ -285,6 +288,22 @@ impl GatewayThreadComponent {
         tools: Vec<ThreadTool>,
         caller: String,
     ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        if let Some(remote) = self.remote.clone()
+            && let Some(surface) = remote.remote_surface_arc()
+        {
+            let register = maho_ext_api::register_rpc_remote_source;
+            let source = maho_ext_api::RpcRemoteSource {
+                open: Arc::new(move |target, options, handlers| {
+                    let surface = surface.clone();
+                    Box::pin(async move {
+                        super::remote::monitor_source::create_remote_monitor_source(surface)
+                            .open(target, options, handlers)
+                            .await
+                    })
+                }),
+            };
+            register(source);
+        }
         let mut present = api
             .get_all_tools()?
             .into_iter()

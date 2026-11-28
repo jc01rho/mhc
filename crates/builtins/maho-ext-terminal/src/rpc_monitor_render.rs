@@ -12,7 +12,7 @@ struct SessionView {
 
 /// Upstream clears the per-batch "named once" set on the next microtask; the native port clears
 /// it when the caller ends a delivery batch (`end_batch`), the same boundary.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RpcMonitorRenderer {
     sessions: HashMap<String, SessionView>,
     order: Vec<String>,

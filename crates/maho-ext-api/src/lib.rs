@@ -8,6 +8,7 @@ pub mod mcp_wire;
 pub mod offload;
 pub mod private_dir;
 pub mod process_env;
+pub mod rpc_remote_source;
 pub mod run_background_jobs;
 pub use run_background_jobs::*;
 pub mod secret_input;
@@ -18,6 +19,7 @@ pub mod types;
 pub use maho_tools::secret_output_redactor::{RedactedStream, SecretOutputRedactor};
 pub use maho_tui::utils::wrap_text_with_ansi as notice_wrap_text;
 pub use offload::*;
+pub use rpc_remote_source::*;
 pub use types::*;
 
 /// Write one diagnostic line to the process stderr sink. While the interactive TUI owns the

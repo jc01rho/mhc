@@ -43,6 +43,10 @@ pub struct RegisterRpcMonitorOptions {
     /// A restore's saved view: the lines for what changed are injected once the watch has joined.
     pub restored_from: Option<RpcMonitorCheckpoint>,
     pub on_checkpoint: Option<RpcCheckpointSink>,
+    /// The source serving a remote target.
+    pub remote: Option<crate::RpcRemoteSource>,
+    /// A remote target's access ended for good: the monitor settles with this summary.
+    pub ended: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 }
 
 /// Upstream `RpcMonitorRecord`.
@@ -292,6 +296,9 @@ impl RpcMonitorSource {
             }),
             checkpoint,
             opener: options.opener,
+            remote_source: options.remote,
+            restored_from: options.restored_from,
+            ended: options.ended,
         });
         let now = (host.now_ms)();
         let timed = !options.persistent && options.timeout_ms.is_some();
@@ -435,6 +442,8 @@ mod tests {
             )),
             restored_from: None,
             on_checkpoint: None,
+            remote: None,
+            ended: None,
         }
     }
     fn status(fixture: &Fixture, to: &str) {

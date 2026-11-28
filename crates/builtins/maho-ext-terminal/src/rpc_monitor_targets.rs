@@ -8,6 +8,7 @@ pub enum RpcTarget {
     All,
     Id { id: String },
     Task { task_id: String },
+    Remote { device: String, session: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +27,10 @@ pub fn endpoint_sockets(agent_dir: &std::path::Path) -> Vec<String> {
 }
 
 const STATUS_KINDS: [&str; 2] = ["session_status", "effect_status"];
+
+pub fn remote_target_text(device: &str, session: &str) -> String {
+    format!("{device}/{session}")
+}
 
 pub fn parse_rpc_target(target: &str, self_durable_id: Option<&str>) -> Result<RpcTarget, String> {
     let trimmed = target.trim();
@@ -47,6 +52,27 @@ pub fn parse_rpc_target(target: &str, self_durable_id: Option<&str>) -> Result<R
     if trimmed.starts_with("st_") {
         return Ok(RpcTarget::Task {
             task_id: trimmed.to_owned(),
+        });
+    }
+    if let Some((device, session)) = trimmed.split_once('/')
+        && !device.is_empty()
+        && !session.is_empty()
+        && !session.contains('/')
+        && !trimmed.to_ascii_lowercase().ends_with(".jsonl")
+        && !trimmed.contains('\\')
+        && !device.starts_with(['.', '~'])
+        && !(device.len() == 2
+            && device.chars().next().is_some_and(char::is_ascii_alphabetic)
+            && device.chars().nth(1) == Some(':'))
+    {
+        if crate::current_rpc_remote_source().is_none() {
+            return Err(format!(
+                "target \"{trimmed}\" names a session on another device; remote targets need the omo remote surface"
+            ));
+        }
+        return Ok(RpcTarget::Remote {
+            device: device.to_owned(),
+            session: session.to_owned(),
         });
     }
     Ok(RpcTarget::Id {
@@ -127,6 +153,7 @@ pub fn matches_task(target: &RpcTarget, row: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     /// rpc-monitor-targets.ts `endpointSockets`: every endpoint directory that names a socket is
     /// listed; one whose record names no socket (a foreign record) is skipped.
@@ -173,6 +200,36 @@ mod tests {
             parse_rpc_target("abc", None),
             Ok(RpcTarget::Id { id: "abc".into() })
         );
+        for local in ["/tmp/a/session.jsonl", "./x/y", "C:/x/y", "~/.a/b"] {
+            assert!(!matches!(
+                parse_rpc_target(local, None),
+                Ok(RpcTarget::Remote { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn remote_targets_need_a_registered_source() {
+        assert!(parse_rpc_target("b/dur-1", None).is_err());
+        let unregister = register_rpc_remote_source(crate::RpcRemoteSource {
+            open: Arc::new(|_, _, _| Box::pin(async { Err("unused".to_owned()) })),
+        });
+        assert_eq!(
+            parse_rpc_target("b/dur-1", None),
+            Ok(RpcTarget::Remote {
+                device: "b".into(),
+                session: "dur-1".into(),
+            })
+        );
+        assert_eq!(
+            parse_rpc_target("b/*", None),
+            Ok(RpcTarget::Remote {
+                device: "b".into(),
+                session: "*".into(),
+            })
+        );
+        unregister();
+        assert!(parse_rpc_target("b/dur-1", None).is_err());
     }
 
     #[test]

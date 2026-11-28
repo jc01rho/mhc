@@ -708,6 +708,7 @@ async fn create_rpc_monitor_call(
             agent_dir: maho_core::config::get_agent_dir().into(),
             endpoints: None,
             opener: None,
+            remote: crate::current_rpc_remote_source(),
             now_ms: manifest_now_ms(),
         },
         input,
