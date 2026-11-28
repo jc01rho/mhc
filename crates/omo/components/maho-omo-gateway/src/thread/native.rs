@@ -33,6 +33,7 @@ use super::registration::{
 use super::store::{GatewayStoreOptions, create_gateway_store};
 use super::store_api::GatewayStoreApi;
 use super::types::{AdmissionLedger, Provenance};
+use super::wake_wiring::{WakeStartAtSessionArgs, start_wake_at_session_wired};
 
 /// How a thread tool reaches this device's session hosts: the shared host's socket, which `thread_create` opens on
 /// (senpi `resolveThreadSocket`), and the authenticated wire every request travels.
@@ -171,6 +172,21 @@ impl Extension for NativeThreadComponent {
                 let active = start_active.clone();
                 let questions = start_questions.clone();
                 Box::pin(async move {
+                    // The process's wake starts at the session start (upstream `pi.on("session_start", () =>
+                    // startWake(eventCtx))`), before the component's own store: one carrier per agent directory, and
+                    // with it the delivery consumer. Every other session of the process joins the same wake; a mode
+                    // other than `tui`/`rpc`, CI and a task child start none.
+                    let _ = start_wake_at_session_wired(WakeStartAtSessionArgs {
+                        mode: ctx.mode,
+                        agent_dir: ctx.agent_dir.clone(),
+                        sessions_directory: ctx.agent_dir.join("sessions"),
+                        cwd: ctx.cwd.clone(),
+                        env: maho_core::config::current_env().into_iter().collect(),
+                        engine_version: Some(
+                            maho_core::engine_build_identity::ENGINE_VERSION.to_owned(),
+                        ),
+                        warn: Arc::new(maho_ext_api::diagnostic),
+                    });
                     let store = create_gateway_store(GatewayStoreOptions::new(
                         ctx.agent_dir.to_string_lossy(),
                     ))
@@ -326,9 +342,6 @@ impl Extension for NativeThreadComponent {
                 })
             }),
         );
-        // Wake runtime start at session_start (gap closure track 4); one-line wiring per task brief.
-        let wake_host = self.host.clone();
-        let _ = &wake_host;
         let agent_start = active.clone();
         api.on(
             EventKind::AgentStart,
