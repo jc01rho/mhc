@@ -33,7 +33,7 @@ use crate::rpc_types::{
 };
 use crate::session_release_interrupt::{
     ReleasableSession, ReleaseDropped, ReleaseSettlePort, ReleaseWriteError, abort_and_settle,
-    take_queued_input,
+    take_queued_input_aborting as take_queued_input,
 };
 use async_trait::async_trait;
 use maho_core::session_manager::load_entries_from_file;

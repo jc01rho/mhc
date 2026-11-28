@@ -99,6 +99,14 @@ pub trait ReleasableSession: Send + Sync {
     fn turn_epoch(&self) -> u64 {
         0
     }
+    /// `sessionManager.appendCustomEntry(customType, data)`.
+    fn append_custom_entry(
+        &self,
+        _custom_type: &str,
+        _data: Value,
+    ) -> Result<(), ReleaseWriteError> {
+        Ok(())
+    }
     /// `extensionRunner.emitSessionMove({ type: "session_move_export", moveId, dir })`: the session's extensions write
     /// the state that must follow it into `dir`, while their runtime is still live. The first failing handler's report
     /// is the release's failure.
@@ -349,7 +357,7 @@ mod tests {
         let fake = Arc::new(FakeSession::default());
         *fake.queued.lock().unwrap() = vec!["first".into(), "second".into()];
         *fake.pending.lock().unwrap() = vec!["d1".into(), "kept".into()];
-        let dropped = take_queued_input(&FakeHandle(Arc::clone(&fake)));
+        let dropped = take_queued_input(&FakeHandle(Arc::clone(&fake)), true);
         assert_eq!(dropped.user_messages, vec!["first", "second"]);
         assert_eq!(dropped.deliveries, vec!["d1"]);
         assert_eq!(
