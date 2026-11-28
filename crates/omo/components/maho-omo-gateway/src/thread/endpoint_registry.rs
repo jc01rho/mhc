@@ -82,7 +82,7 @@ fn hash_name(endpoint: &str) -> String {
     hex[..16].to_owned()
 }
 
-pub fn socket_names_directory(socket: &str, name: &str) -> bool {
+fn socket_names_directory(socket: &str, name: &str) -> bool {
     hash_name(&canonical_endpoint_path(socket)) == name || hash_name(socket) == name
 }
 
@@ -233,7 +233,8 @@ pub fn list_registry_endpoints(agent_dir: &str) -> Vec<RegistryEndpoint> {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir())
         .filter(|e| {
-            let name = e.file_name().to_string_lossy();
+            let file_name = e.file_name();
+            let name = file_name.to_string_lossy();
             name.len() == 16 && name.chars().all(|c| c.is_ascii_hexdigit())
         })
         .map(|e| e.path())
@@ -242,29 +243,4 @@ pub fn list_registry_endpoints(agent_dir: &str) -> Vec<RegistryEndpoint> {
     dirs.iter()
         .map(|d| identify(&d.to_string_lossy()))
         .collect()
-}
-
-pub fn endpoint_kind_of(socket: &str, registry: &[RegistryEndpoint]) -> EndpointKind {
-    if is_tui_control_socket(socket) {
-        return EndpointKind::Tui;
-    }
-    let canonical = canonical_endpoint_path(socket);
-    let recorded = registry.iter().find(|e| {
-        if let Some(s) = &e.socket {
-            s == socket || canonical_endpoint_path(s) == canonical
-        } else {
-            false
-        }
-    });
-    recorded
-        .map(|e| e.endpoint_kind.clone())
-        .unwrap_or(EndpointKind::RpcHost)
-}
-
-// re-export alias
-pub fn endpoint_kind_to_gateway(s: &EndpointKind) -> &'static str {
-    match s {
-        EndpointKind::RpcHost => "rpc_host",
-        EndpointKind::Tui => "tui",
-    }
 }

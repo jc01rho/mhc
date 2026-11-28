@@ -31,8 +31,6 @@ pub const ENDPOINT_LIST_TIMEOUT_MS: u64 = 10_000;
 pub const TUI_REQUEST_TIMEOUT_MS: u64 = 1_500;
 /// How long one `host status --all` enumeration is reused before the engine is asked again.
 pub const HOST_ENDPOINTS_CACHE_TTL_MS: i64 = 5_000;
-/// How long a caller waits behind an enumeration that has not answered before it starts a fresh one.
-pub const HOST_ENDPOINTS_ENUMERATION_DEADLINE_MS: i64 = 30_000;
 pub const HOST_STATUS_ALL_ARGS: [&str; 5] =
     ["host", "status", "--all", "--include-workers", "--json"];
 
@@ -188,29 +186,23 @@ pub struct KnownEndpoint {
     pub verdict: EndpointVerdict,
 }
 
-pub type SharedEnumerationInner = Arc<SharedEnumeration>;
-
-/// One enumeration running (`result` is None) or answered (`expires_at` is Some). Shared by every
-/// surface over one agent dir through the injected map, so a session that a delivery just created
-/// reuses the listing another session took inside the window (#12989).
+/// One answered enumeration: the endpoints it found and the instant its cache window closes.
+/// Shared by every surface over one agent dir through the injected map, so a session that a
+/// delivery just created reuses the listing another session took inside the window (#12989).
 pub struct SharedEnumeration {
-    abandon_at: i64,
-    expires_at: Option<i64>,
-    result: Option<Vec<KnownEndpoint>>,
-    ready: tokio::sync::watch::Sender<Option<Vec<KnownEndpoint>>>,
+    expires_at: i64,
+    result: Vec<KnownEndpoint>,
 }
 
-/// The surface's view over one agent dir: it enumerates every endpoint once per cache window,
-/// sharing an in-flight enumeration across every caller that arrives while it runs, and abandoning
-/// one that stays unsettled past its deadline.
+/// The surface's view over one agent dir: it enumerates every endpoint once per cache window and
+/// shares that enumeration with every surface over the same agent dir.
 pub struct LiveThreadSurface {
     legacy: String,
     transport: Arc<dyn RpcTransport>,
     status_all: Arc<dyn Fn() -> Option<Vec<HostEndpointReport>> + Send + Sync>,
-    registry: Arc<dyn Fn() -> Vec<super::endpoint_registry::RegistryEndpoint> + Send + Sync>,
+    registry: Arc<dyn Fn() -> Vec<RegistryEndpoint> + Send + Sync>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
-    monotonic: Arc<dyn Fn() -> i64 + Send + Sync>,
-    enumerations: Arc<Mutex<BTreeMap<String, SharedEnumerationInner>>>,
+    enumerations: Arc<Mutex<BTreeMap<String, SharedEnumeration>>>,
     kinds: Mutex<BTreeMap<String, GatewayEndpointKind>>,
 }
 
@@ -220,19 +212,14 @@ pub struct LiveThreadSurfaceOptions {
     /// Replaces the engine CLI enumeration; a test answers it without spawning anything.
     pub status_all: Option<Arc<dyn Fn() -> Option<Vec<HostEndpointReport>> + Send + Sync>>,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
-    pub monotonic: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
     /// Shared enumeration map; surfaces agreeing on agent dir + legacy socket share one entry.
-    pub enumerations: Option<Arc<Mutex<BTreeMap<String, SharedEnumerationInner>>>>,
-    pub registry:
-        Option<Arc<dyn Fn() -> Vec<super::endpoint_registry::RegistryEndpoint> + Send + Sync>>,
+    pub enumerations: Option<Arc<Mutex<BTreeMap<String, SharedEnumeration>>>>,
+    pub registry: Option<Arc<dyn Fn() -> Vec<RegistryEndpoint> + Send + Sync>>,
 }
 
 /// The thread tools' client: it never starts or replaces a host.
 impl LiveThreadSurface {
     pub fn new(options: LiveThreadSurfaceOptions) -> Self {
-        let monotonic = options
-            .monotonic
-            .unwrap_or_else(|| Arc::new(std::time::Instant::now));
         let now = options.now.unwrap_or_else(|| {
             Arc::new(|| {
                 std::time::SystemTime::now()
@@ -248,15 +235,10 @@ impl LiveThreadSurface {
             legacy: options.socket,
             transport: options.transport,
             status_all: options.status_all.unwrap_or_else(|| Arc::new(|| None)),
-            registry: options.registry.unwrap_or_else(|| {
-                Arc::new(|| {
-                    crate::thread::endpoint_registry::list_registry_endpoints(
-                        &std::env::var("OMO_AGENT_DIR").unwrap_or_default(),
-                    )
-                })
-            }),
+            // The registry is read only when a caller supplies its reader (the engine side reads
+            // this device's agent dir); a surface built without one lists the report alone.
+            registry: options.registry.unwrap_or_else(|| Arc::new(Vec::new)),
             now,
-            monotonic,
             enumerations,
             kinds: Mutex::new(BTreeMap::new()),
         }
@@ -280,145 +262,95 @@ impl LiveThreadSurface {
         }
     }
 
-    /// The answer depends on the agent dir whose registry is read and the legacy socket merged
-    /// into it; surfaces agreeing on both share one enumeration (#12989).
-    fn key_of_enumeration(&self) -> String {
-        let agent_dir = std::env::var("OMO_AGENT_DIR").unwrap_or_default();
-        format!("{}|{}", agent_dir, self.legacy)
-    }
-
-    /// Build the list of known endpoints from the status-all report and the on-disk registry.
+    /// Build the list of known endpoints from the status-all report and the on-disk registry: the
+    /// report says what the engine sees, and the registry adds every endpoint that bound a socket
+    /// even when the engine does not report it — the host shards and terminals `listView` must list.
+    /// A registry directory also holds the session claims read from disk when its endpoint does not
+    /// answer (#13452).
     fn enumerate_endpoints(
         &self,
         reports: Option<Vec<HostEndpointReport>>,
         recorded: Vec<RegistryEndpoint>,
     ) -> Vec<KnownEndpoint> {
-        let found: Vec<KnownEndpoint> = match reports {
-            None => recorded
-                .into_iter()
-                .filter_map(|entry| {
-                    Some(KnownEndpoint {
-                        socket: entry.socket?,
-                        paths: Vec::new(),
-                        claim_dirs: vec![entry.dir],
-                        kind: Some(match entry.endpoint_kind {
-                            RegistryEndpointKind::Tui => GatewayEndpointKind::Tui,
-                            RegistryEndpointKind::RpcHost => GatewayEndpointKind::RpcHost,
-                        }),
-                        verdict: EndpointVerdict::default(),
-                    })
+        let mut found: Vec<KnownEndpoint> = reports
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|report| {
+                Some(KnownEndpoint {
+                    socket: report.socket?,
+                    paths: report.session_paths,
+                    claim_dirs: Vec::new(),
+                    kind: report.endpoint_kind,
+                    verdict: EndpointVerdict {
+                        alive: report.alive,
+                        reason: report.reason,
+                    },
                 })
-                .collect(),
-            Some(reports) => reports
-                .into_iter()
-                .filter_map(|report| {
-                    Some(KnownEndpoint {
-                        socket: report.socket?,
-                        paths: report.session_paths,
-                        claim_dirs: Vec::new(),
-                        kind: report.endpoint_kind,
-                        verdict: EndpointVerdict {
-                            alive: report.alive,
-                            reason: report.reason,
-                        },
-                    })
-                })
-                .collect(),
-        };
+            })
+            .collect();
 
-        // The legacy endpoint keeps its own socket name and, when present in the report, its session
-        // files; it is always listed first.
-        let is_legacy = |endpoint: &KnownEndpoint| endpoint.socket == self.legacy;
-        let mut legacy_paths: Vec<String> = Vec::new();
-        let mut legacy_dirs: Vec<String> = Vec::new();
-        for endpoint in &found {
-            if is_legacy(endpoint) {
-                legacy_paths.extend(endpoint.paths.iter().cloned());
-                legacy_dirs.extend(endpoint.claim_dirs.iter().cloned());
+        for entry in recorded {
+            let Some(socket) = entry.socket else {
+                continue;
+            };
+            match found.iter().position(|known| known.socket == socket) {
+                Some(index) => found[index].claim_dirs.push(entry.dir),
+                None => found.push(KnownEndpoint {
+                    socket,
+                    paths: Vec::new(),
+                    claim_dirs: vec![entry.dir],
+                    kind: Some(match entry.endpoint_kind {
+                        RegistryEndpointKind::Tui => GatewayEndpointKind::Tui,
+                        RegistryEndpointKind::RpcHost => GatewayEndpointKind::RpcHost,
+                    }),
+                    verdict: EndpointVerdict::default(),
+                }),
             }
         }
-        legacy_paths.sort();
-        legacy_paths.dedup();
-        legacy_dirs.sort();
-        legacy_dirs.dedup();
+        for endpoint in &mut found {
+            endpoint.claim_dirs.sort();
+            endpoint.claim_dirs.dedup();
+        }
 
-        let mut result = Vec::with_capacity(found.len() + 1);
-        result.push(KnownEndpoint {
+        // The legacy endpoint is always listed first; a report that already names it keeps its
+        // session files, kind and liveness verdict.
+        let mut rest: Vec<KnownEndpoint> = Vec::with_capacity(found.len());
+        let mut legacy: Option<KnownEndpoint> = None;
+        for endpoint in found {
+            if legacy.is_none() && endpoint.socket == self.legacy {
+                legacy = Some(endpoint);
+            } else {
+                rest.push(endpoint);
+            }
+        }
+        let mut result = Vec::with_capacity(rest.len() + 1);
+        result.push(legacy.unwrap_or_else(|| KnownEndpoint {
             socket: self.legacy.clone(),
-            paths: legacy_paths,
-            claim_dirs: legacy_dirs,
-            kind: None,
-            verdict: EndpointVerdict::default(),
-        });
-        result.extend(found.into_iter().filter(|endpoint| !is_legacy(endpoint)));
+            ..KnownEndpoint::default()
+        }));
+        result.extend(rest);
         result
     }
 
-    /// The shared enumeration: an answered entry still inside its cache window is shared; an
-    /// in-flight one before its monotonic deadline is shared too; only past the deadline does a
-    /// fresh enumeration start (#12989). Called by `list_view`.
-    async fn endpoints(&self) -> Vec<KnownEndpoint> {
-        let key = self.key_of_enumeration();
+    /// The shared enumeration: an entry still inside its cache window is returned as it was
+    /// recorded, so surfaces over one agent dir ask the engine and the registry once per window
+    /// (#12989). A stale or absent entry is enumerated here; the enumeration is synchronous
+    /// (the registry read and the `host status --all` callback), so no caller ever observes a
+    /// half-finished one.
+    pub fn known_endpoints(&self) -> Vec<KnownEndpoint> {
+        // The legacy socket names the agent dir a surface enumerates (one process serves one agent
+        // dir), so surfaces over the same dir share one entry in the injected map (#12989).
+        let key = self.legacy.clone();
         let current = (self.now)();
-        let elapsed = (self.monotonic)();
-        let enumerations = self.enumerations.clone();
-
-        // Fast path: answered and still inside its cache window.
+        if let Some(cached) = self
+            .enumerations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .filter(|entry| entry.expires_at > current)
         {
-            let guard = enumerations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(entry) = guard.get(&key) {
-                if let Some(result) = &entry.result {
-                    if entry
-                        .expires_at
-                        .map(|expires| expires > current)
-                        .unwrap_or(false)
-                    {
-                        return result.clone();
-                    }
-                }
-            }
+            return cached.result.clone();
         }
-
-        // Publish an in-flight entry (or reuse one from a concurrent caller) so every caller shares
-        // the same enumeration up to its deadline.
-        let (ready_tx, mut ready_rx) =
-            tokio::sync::watch::channel::<Option<Vec<KnownEndpoint>>>(None);
-        let entry = SharedEnumeration {
-            abandon_at: elapsed + HOST_ENDPOINTS_ENUMERATION_DEADLINE_MS,
-            expires_at: None,
-            ready: ready_tx,
-        };
-        let existing_receiver = {
-            let mut guard = enumerations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match guard.get_mut(&key) {
-                Some(existing) if existing.result.is_none() && elapsed < existing.abandon_at => {
-                    Some(existing.ready.subscribe())
-                }
-                Some(_) => {
-                    guard.insert(key.clone(), entry);
-                    None
-                }
-                None => {
-                    guard.insert(key.clone(), entry);
-                    None
-                }
-            }
-        };
-        if let Some(mut rx) = existing_receiver {
-            while rx.borrow().is_none() {
-                if rx.changed().await.is_err() {
-                    break;
-                }
-            }
-            return rx.borrow().clone().unwrap_or_default();
-        }
-
-        // Enumerate (synchronously: the registry read and status-all callback are blocking but cheap
-        // compared to a spawned engine CLI process), then stamp the cache window and wake waiters.
         let reports = (self.status_all)();
         let recorded = (self.registry)();
         let found = self.enumerate_endpoints(reports, recorded);
@@ -429,39 +361,21 @@ impl LiveThreadSurface {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for endpoint in &found {
                 if let Some(kind) = &endpoint.kind {
-                    kinds.insert(endpoint.socket.clone(), kind.clone());
+                    kinds.insert(endpoint.socket.clone(), *kind);
                 }
             }
         }
-        let expires = (self.now)() + HOST_ENDPOINTS_CACHE_TTL_MS;
-        {
-            let mut guard = enumerations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(slot) = guard.get_mut(&key) {
-                slot.expires_at = Some(expires);
-                slot.result = Some(found.clone());
-                let _ = slot.ready.send(Some(found.clone()));
-            }
-        }
-        let _ = ready_rx.changed();
-        found
-    }
-
-    /// The synchronous seam retained for callers that are not async; `list_view` uses `endpoints()`.
-    pub fn known_endpoints(&self) -> Vec<KnownEndpoint> {
-        let reports = (self.status_all)();
-        let recorded = (self.registry)();
-        let found = self.enumerate_endpoints(reports, recorded);
-        let mut kinds = self
-            .kinds
+        let _ = self
+            .enumerations
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for endpoint in &found {
-            if let Some(kind) = &endpoint.kind {
-                kinds.insert(endpoint.socket.clone(), kind.clone());
-            }
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                key,
+                SharedEnumeration {
+                    expires_at: current + HOST_ENDPOINTS_CACHE_TTL_MS,
+                    result: found.clone(),
+                },
+            );
         found
     }
 
@@ -929,30 +843,22 @@ impl ThreadHost for LiveThreadSurface {
     /// Every known endpoint listed at once. When no endpoint answers, the first failure (the legacy endpoint first) is
     /// the view's failure, `host_unavailable:<socket>`.
     fn list_view(&self) -> BoxFuture<Result<ThreadHostView, String>> {
-        let enumeration = self.endpoints();
+        let endpoints = self.known_endpoints();
+        let kinds: Vec<GatewayEndpointKind> = endpoints
+            .iter()
+            .map(|endpoint| {
+                if let Some(kind) = endpoint.kind {
+                    self.set_kind(&endpoint.socket, kind);
+                }
+                endpoint
+                    .kind
+                    .unwrap_or_else(|| self.kind_of(&endpoint.socket))
+            })
+            .collect();
         let transport = self.transport.clone();
         let legacy = self.legacy.clone();
-        let kinds = self.kinds.clone();
         Box::pin(async move {
-            let endpoints = enumeration.await;
-            let kinds_for_list: Vec<GatewayEndpointKind> = endpoints
-                .iter()
-                .map(|endpoint| {
-                    if let Some(kind) = &endpoint.kind {
-                        if let Ok(mut map) = kinds.lock() {
-                            map.insert(endpoint.socket.clone(), *kind);
-                        }
-                        *kind
-                    } else {
-                        kinds
-                            .lock()
-                            .ok()
-                            .and_then(|map| map.get(&endpoint.socket).copied())
-                            .unwrap_or(GatewayEndpointKind::RpcHost)
-                    }
-                })
-                .collect();
-            let listed = futures::future::join_all(endpoints.into_iter().zip(kinds_for_list).map(
+            let listed = futures::future::join_all(endpoints.into_iter().zip(kinds).map(
                 |(endpoint, kind)| {
                     let is_legacy = endpoint.socket == legacy;
                     list_endpoint(transport.clone(), endpoint, kind, is_legacy)
