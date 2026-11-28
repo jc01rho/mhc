@@ -319,6 +319,8 @@ mod tests {
                     opener: None,
                     restored_from: None,
                     on_checkpoint: None,
+                    remote: None,
+                    ended: None,
                 })
                 .unwrap();
             id
