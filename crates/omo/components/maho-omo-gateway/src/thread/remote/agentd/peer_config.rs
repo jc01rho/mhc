@@ -1,13 +1,41 @@
-//! The account's agentd peers: where each device's daemon listens and the shared token that admits this client.
-//!
-//! The list is the existing `relayd.json` peer list extended with an optional `agentd` object per peer
-//! (`{ address, port, tokenFile }`), the shape omo-nyang's own `worker.relay` uses. A peer without that
-//! object keeps the mhc-relayd path it has today; nothing here removes or reconfigures it.
+//! The account-wide sessions and deliveries ops (`session.locate`, `session.read`,
+//! `session.command_part`, `sessions.events.subscribe`, `deliveries.serve`, ...) go over the
+//! agentd path: a peer in `relayd.json` must carry an `agentd` object for mhc to reach it there.
+//! A caller aimed at a peer without one gets [`AGENTD_REFUSAL`]: the relay itself deliberately
+//! refuses those ten names, so there is no silent relay fallback for them.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+
+/// Machine-readable cause for a remote op aimed at a peer with no `agentd` entry.
+pub const AGENTD_ENTRY_REQUIRED: &str = "agentd_entry_required";
+
+/// The refusal such a caller sees: cause, the fix, and the code it keeps from the relay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentdRefusal {
+    pub code: &'static str,
+    pub reason: &'static str,
+    pub fix: &'static str,
+}
+
+impl AgentdRefusal {
+    pub fn to_json(&self, device: &str) -> Value {
+        Value::Object(serde_json::Map::from_iter([
+            ("code".to_owned(), Value::from(self.code)),
+            ("reason".to_owned(), Value::from(self.reason)),
+            ("fix".to_owned(), Value::from(self.fix)),
+            ("device".to_owned(), Value::from(device)),
+        ]))
+    }
+}
+
+pub const AGENTD_REFUSAL: AgentdRefusal = AgentdRefusal {
+    code: "unsupported",
+    reason: AGENTD_ENTRY_REQUIRED,
+    fix: "add an `agentd` object (address, port, tokenFile) to this peer in relayd.json",
+};
 
 /// Where one device's agentd listens, and the token file that admits this client.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +159,15 @@ mod tests {
         assert_eq!(peers[0].device, "mac-mini");
         assert_eq!(peers[0].socket_address(), "100.64.0.2:7811");
         assert_eq!(peers[0].token_file, PathBuf::from("/keys/mini"));
+        let refusal = AGENTD_REFUSAL.to_json("laptop");
+        assert_eq!(refusal["code"], serde_json::json!("unsupported"));
+        assert_eq!(refusal["reason"], serde_json::json!(AGENTD_ENTRY_REQUIRED));
+        assert!(
+            refusal["fix"]
+                .as_str()
+                .is_some_and(|fix| fix.contains("relayd.json"))
+        );
+        assert_eq!(refusal["device"], serde_json::json!("laptop"));
     }
 
     #[test]

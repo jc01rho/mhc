@@ -238,6 +238,7 @@ async fn start(api: &ExtensionApi, ctx: &ExtensionContext, reason: SessionReason
 }
 async fn shutdown(api: &ExtensionApi, ctx: &ExtensionContext, reason: SessionReason) {
     let mut event = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason,
         target_session_file: None,
         signal: None,

@@ -89,8 +89,24 @@ pub trait ReleasableSession: Send + Sync {
     async fn prepare_move_state(&self, _move_id: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
-    /// `sessionManager.appendCustomEntry(customType, data)`: on disk or not at all.
-    fn append_custom_entry(&self, custom_type: &str, data: Value) -> Result<(), ReleaseWriteError>;
+    /// senpi `session.recordClosedOnRequest`: marks the teardown's `session_shutdown` as `closed: true`.
+    fn record_closed_on_request(&self) {}
+    /// senpi `session.holdForClose`: keeps the running turn alive while a graceful close drains.
+    fn hold_for_close(&self) {}
+    /// senpi `session.releaseCloseHold`: releases the closing hold.
+    fn release_close_hold(&self) {}
+    /// senpi `session.externalAdmission.turnEpoch`.
+    fn turn_epoch(&self) -> u64 {
+        0
+    }
+    /// `sessionManager.appendCustomEntry(customType, data)`.
+    fn append_custom_entry(
+        &self,
+        _custom_type: &str,
+        _data: Value,
+    ) -> Result<(), ReleaseWriteError> {
+        Ok(())
+    }
     /// `extensionRunner.emitSessionMove({ type: "session_move_export", moveId, dir })`: the session's extensions write
     /// the state that must follow it into `dir`, while their runtime is still live. The first failing handler's report
     /// is the release's failure.
@@ -106,9 +122,28 @@ pub trait ReleaseSettlePort: Send + Sync {
     fn pending_prompts(&self, session_id: &str) -> Vec<BoxFuture<'static, ()>>;
 }
 
-/// Empties both queues. Queued deliveries leave the ledger unwritten, so their sender redelivers them to the
-/// next owner; the user's queued text is returned in enqueue order for the caller to restore.
-pub fn take_queued_input(session: &dyn ReleasableSession) -> ReleaseDropped {
+pub fn take_queued_input(
+    session: &dyn ReleasableSession,
+    abort_will_follow: bool,
+) -> ReleaseDropped {
+    let admitted_before = session.admission_pending();
+    let cleared = session.clear_queue(abort_will_follow);
+    let still_admitted: HashSet<String> = session.admission_pending().into_iter().collect();
+    ReleaseDropped {
+        deliveries: admitted_before
+            .into_iter()
+            .filter(|delivery_id| !still_admitted.contains(delivery_id))
+            .collect(),
+        user_messages: cleared
+            .ordered
+            .into_iter()
+            .map(|queued| queued.text)
+            .collect(),
+    }
+}
+
+/// Empties both queues.
+pub fn take_queued_input_aborting(session: &dyn ReleasableSession) -> ReleaseDropped {
     let admitted_before = session.admission_pending();
     let cleared = session.clear_queue(true);
     let still_admitted: HashSet<String> = session.admission_pending().into_iter().collect();
@@ -322,7 +357,7 @@ mod tests {
         let fake = Arc::new(FakeSession::default());
         *fake.queued.lock().unwrap() = vec!["first".into(), "second".into()];
         *fake.pending.lock().unwrap() = vec!["d1".into(), "kept".into()];
-        let dropped = take_queued_input(&FakeHandle(Arc::clone(&fake)));
+        let dropped = take_queued_input(&FakeHandle(Arc::clone(&fake)), true);
         assert_eq!(dropped.user_messages, vec!["first", "second"]);
         assert_eq!(dropped.deliveries, vec!["d1"]);
         assert_eq!(

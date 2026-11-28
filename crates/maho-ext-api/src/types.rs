@@ -3243,6 +3243,8 @@ pub struct SessionShutdownEvent {
     pub reason: SessionReason,
     pub target_session_file: Option<String>,
     pub signal: Option<AbortSignal>,
+    /// `true` when the session was closed gracefully (the `close_session` command) rather than quit, replaced or reloaded.
+    pub closed: bool,
 }
 #[derive(Clone, Debug)]
 pub struct ResourcesDiscoverEvent {

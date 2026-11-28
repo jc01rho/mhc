@@ -5,7 +5,8 @@
 //! status, the enable/control/wake switches, device info and forget, devices, endpoints, session
 //! listing rounds, attach/detach and commands with the command_id ledger. Requests this service
 //! defines but does not serve (machine operations, uploads, delegated commands, history reads,
-//! upgrade hand-off, device adoption) answer `unsupported`.
+//! upgrade hand-off, device adoption) answer `unsupported`, pointing to the agentd path the
+//! account-wide sessions and deliveries ops use instead.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -76,6 +77,12 @@ const UNSUPPORTED_REQUESTS: [&str; 10] = [
     "sessions.events.subscribe",
     "deliveries.serve",
 ];
+
+/// Why the 10 names above are refused here, and how a caller reaches them instead. The code stays
+/// `unsupported`; this is the reason and the next action, not a new request the relay serves.
+const AGENTD_ONLY_REASON: &str =
+    "mhc-relayd does not serve this request; it is served over the agentd path";
+const AGENTD_ONLY_ACTION: &str = "Add an `agentd` object (address, port, tokenFile) to this peer in relayd.json, then retry over agentd.";
 
 /// Binds the private socket. A socket a live service still answers on is refused (another device
 /// service runs here); a stale one is replaced; anything else at that path is refused.
@@ -402,8 +409,9 @@ impl Connection {
             "session.command" => return self.command(id, message),
             other if UNSUPPORTED_REQUESTS.contains(&other) => Err(error(
                 "unsupported",
-                "mhc-relayd defines this request but does not serve it",
-            )),
+                &format!("{AGENTD_ONLY_REASON}: {other}"),
+            )
+            .with_action(Some(AGENTD_ONLY_ACTION.to_owned()))),
             _ => Err(error(
                 "unknown_type",
                 "this service does not define that request",

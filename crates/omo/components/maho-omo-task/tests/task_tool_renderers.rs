@@ -230,6 +230,7 @@ async fn member_process_registers_scoped_send_and_steers_inbox_mail_on_session_s
         assert_eq!(injected[0].1.deliver_as, Some(DeliverAs::Steer));
     }
     let mut stop = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,

@@ -310,6 +310,7 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
     dispatch(
         &api,
         ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,

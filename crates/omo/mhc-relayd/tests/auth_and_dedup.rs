@@ -251,3 +251,44 @@ async fn a_command_id_binds_once_to_its_target_and_payload() {
     api.close().await;
     relayd.shutdown().await;
 }
+
+#[tokio::test]
+async fn account_wide_requests_are_refused_with_the_agentd_fix() {
+    let device = Device::new("box");
+    let relayd = device
+        .start(RelaydConfig::default(), FakeHost::with_sessions(&[]))
+        .await;
+    let api = client(&device.state_dir).await;
+
+    for request in [
+        "refresher.register",
+        "device.adopt",
+        "enforcement.report",
+        "owner.shutdown_for_upgrade",
+        "session.endpoints",
+        "session.locate",
+        "session.read",
+        "session.command_part",
+        "sessions.events.subscribe",
+        "deliveries.serve",
+    ] {
+        let failure = api.request(request, json!({})).await.expect_err("refused");
+        assert_eq!(failure.code, "unsupported", "for {request}");
+        assert!(
+            failure.reason.contains("agentd path"),
+            "for {request}: {}",
+            failure.reason
+        );
+        assert!(
+            failure
+                .action
+                .as_deref()
+                .is_some_and(|action| action.contains("relayd.json")),
+            "for {request}: {:?}",
+            failure.action
+        );
+    }
+
+    api.close().await;
+    relayd.shutdown().await;
+}

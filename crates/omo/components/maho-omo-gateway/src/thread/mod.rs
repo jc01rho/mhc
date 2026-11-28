@@ -25,6 +25,7 @@ pub mod delivery_ledger;
 pub mod drain;
 pub mod drain_admit;
 pub mod endpoint_controls;
+pub mod endpoint_registry;
 pub mod engine;
 pub mod errors;
 pub mod extension_registrations;
@@ -78,6 +79,7 @@ pub mod tool_receipts;
 pub mod tools;
 pub mod types;
 pub mod wake;
+pub mod wake_wiring;
 pub mod woken_types;
 pub mod worktree;
 

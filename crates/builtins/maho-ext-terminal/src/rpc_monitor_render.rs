@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 const UNKNOWN_JSON_LIMIT: usize = 160;
 
+#[derive(Clone)]
 struct SessionView {
     label: String,
     status: String,
@@ -12,7 +13,7 @@ struct SessionView {
 
 /// Upstream clears the per-batch "named once" set on the next microtask; the native port clears
 /// it when the caller ends a delivery batch (`end_batch`), the same boundary.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RpcMonitorRenderer {
     sessions: HashMap<String, SessionView>,
     order: Vec<String>,

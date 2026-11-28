@@ -1774,6 +1774,7 @@ async fn run_idle_retry_prompt_scenario(prompt_arrives: bool) {
         Some(tokio::time::timeout(std::time::Duration::from_secs(10), starts.recv()).await)
     };
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,

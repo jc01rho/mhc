@@ -18,6 +18,7 @@ use super::endpoint_controls::{
     LEGACY_TUI_COMMANDS as TUI_READ_COMMANDS, accepted_controls, control_commands,
     tui_commands_from,
 };
+use super::endpoint_registry::{EndpointKind as RegistryEndpointKind, RegistryEndpoint};
 use super::gateway_replies::{release_reply, wake_reply};
 use super::host_view::{SessionCommandPort, ThreadHost, ThreadHostSession, ThreadHostView};
 use super::thread_state::holder_version;
@@ -167,14 +168,42 @@ pub fn data_record(frame: &Value, command: &str) -> Result<Map<String, Value>, S
     }
 }
 
+/// The verdict of one endpoint's liveness.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EndpointVerdict {
+    pub alive: Option<bool>,
+    pub reason: Option<String>,
+}
+
 /// What the surface knows about one endpoint, as the last enumeration said.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KnownEndpoint {
     pub socket: String,
     pub paths: Vec<String>,
+    /// Registry directories whose `reservations/` claims are read when the endpoint does not answer.
+    pub claim_dirs: Vec<String>,
     pub kind: Option<GatewayEndpointKind>,
-    pub alive: Option<bool>,
-    pub reason: Option<String>,
+    pub verdict: EndpointVerdict,
+}
+
+/// One answered enumeration: the endpoints it found and the instant its cache window closes.
+/// Shared by every surface over one agent dir through the injected map, so a session that a
+/// delivery just created reuses the listing another session took inside the window (#12989).
+pub struct SharedEnumeration {
+    expires_at: i64,
+    result: Vec<KnownEndpoint>,
+}
+
+/// The surface's view over one agent dir: it enumerates every endpoint once per cache window and
+/// shares that enumeration with every surface over the same agent dir.
+pub struct LiveThreadSurface {
+    legacy: String,
+    transport: Arc<dyn RpcTransport>,
+    status_all: Arc<dyn Fn() -> Option<Vec<HostEndpointReport>> + Send + Sync>,
+    registry: Arc<dyn Fn() -> Vec<RegistryEndpoint> + Send + Sync>,
+    now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    enumerations: Arc<Mutex<BTreeMap<String, SharedEnumeration>>>,
+    kinds: Mutex<BTreeMap<String, GatewayEndpointKind>>,
 }
 
 pub struct LiveThreadSurfaceOptions {
@@ -183,33 +212,34 @@ pub struct LiveThreadSurfaceOptions {
     /// Replaces the engine CLI enumeration; a test answers it without spawning anything.
     pub status_all: Option<Arc<dyn Fn() -> Option<Vec<HostEndpointReport>> + Send + Sync>>,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
+    /// Shared enumeration map; surfaces agreeing on agent dir + legacy socket share one entry.
+    pub enumerations: Option<Arc<Mutex<BTreeMap<String, SharedEnumeration>>>>,
+    pub registry: Option<Arc<dyn Fn() -> Vec<RegistryEndpoint> + Send + Sync>>,
 }
 
 /// The thread tools' client: it never starts or replaces a host.
-pub struct LiveThreadSurface {
-    legacy: String,
-    transport: Arc<dyn RpcTransport>,
-    status_all: Arc<dyn Fn() -> Option<Vec<HostEndpointReport>> + Send + Sync>,
-    now: Arc<dyn Fn() -> i64 + Send + Sync>,
-    enumeration: Mutex<Option<(i64, Vec<KnownEndpoint>)>>,
-    kinds: Mutex<BTreeMap<String, GatewayEndpointKind>>,
-}
-
 impl LiveThreadSurface {
     pub fn new(options: LiveThreadSurfaceOptions) -> Self {
+        let now = options.now.unwrap_or_else(|| {
+            Arc::new(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis() as i64)
+                    .unwrap_or(0)
+            })
+        });
+        let enumerations = options
+            .enumerations
+            .unwrap_or_else(|| Arc::new(Mutex::new(BTreeMap::new())));
         Self {
             legacy: options.socket,
             transport: options.transport,
             status_all: options.status_all.unwrap_or_else(|| Arc::new(|| None)),
-            now: options.now.unwrap_or_else(|| {
-                Arc::new(|| {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|elapsed| elapsed.as_millis() as i64)
-                        .unwrap_or(0)
-                })
-            }),
-            enumeration: Mutex::new(None),
+            // The registry is read only when a caller supplies its reader (the engine side reads
+            // this device's agent dir); a surface built without one lists the report alone.
+            registry: options.registry.unwrap_or_else(|| Arc::new(Vec::new)),
+            now,
+            enumerations,
             kinds: Mutex::new(BTreeMap::new()),
         }
     }
@@ -232,44 +262,120 @@ impl LiveThreadSurface {
         }
     }
 
-    pub fn known_endpoints(&self) -> Vec<KnownEndpoint> {
-        if let Ok(cached) = self.enumeration.lock()
-            && let Some((expires_at, endpoints)) = cached.as_ref()
-            && *expires_at > (*self.now)()
-        {
-            return endpoints.clone();
-        }
-        let mut found: Vec<KnownEndpoint> = (self.status_all)()
-            .map(|reports| {
-                reports
-                    .into_iter()
-                    .filter_map(|report| {
-                        Some(KnownEndpoint {
-                            socket: report.socket?,
-                            paths: report.session_paths,
-                            kind: report.endpoint_kind,
-                            alive: report.alive,
-                            reason: report.reason,
-                        })
-                    })
-                    .collect()
+    /// Build the list of known endpoints from the status-all report and the on-disk registry: the
+    /// report says what the engine sees, and the registry adds every endpoint that bound a socket
+    /// even when the engine does not report it — the host shards and terminals `listView` must list.
+    /// A registry directory also holds the session claims read from disk when its endpoint does not
+    /// answer (#13452).
+    fn enumerate_endpoints(
+        &self,
+        reports: Option<Vec<HostEndpointReport>>,
+        recorded: Vec<RegistryEndpoint>,
+    ) -> Vec<KnownEndpoint> {
+        let mut found: Vec<KnownEndpoint> = reports
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|report| {
+                Some(KnownEndpoint {
+                    socket: report.socket?,
+                    paths: report.session_paths,
+                    claim_dirs: Vec::new(),
+                    kind: report.endpoint_kind,
+                    verdict: EndpointVerdict {
+                        alive: report.alive,
+                        reason: report.reason,
+                    },
+                })
             })
-            .unwrap_or_default();
-        if !found.iter().any(|endpoint| endpoint.socket == self.legacy) {
-            found.insert(
-                0,
-                KnownEndpoint {
-                    socket: self.legacy.clone(),
+            .collect();
+
+        for entry in recorded {
+            let Some(socket) = entry.socket else {
+                continue;
+            };
+            match found.iter().position(|known| known.socket == socket) {
+                Some(index) => found[index].claim_dirs.push(entry.dir),
+                None => found.push(KnownEndpoint {
+                    socket,
                     paths: Vec::new(),
-                    kind: None,
-                    alive: None,
-                    reason: None,
+                    claim_dirs: vec![entry.dir],
+                    kind: Some(match entry.endpoint_kind {
+                        RegistryEndpointKind::Tui => GatewayEndpointKind::Tui,
+                        RegistryEndpointKind::RpcHost => GatewayEndpointKind::RpcHost,
+                    }),
+                    verdict: EndpointVerdict::default(),
+                }),
+            }
+        }
+        for endpoint in &mut found {
+            endpoint.claim_dirs.sort();
+            endpoint.claim_dirs.dedup();
+        }
+
+        // The legacy endpoint is always listed first; a report that already names it keeps its
+        // session files, kind and liveness verdict.
+        let mut rest: Vec<KnownEndpoint> = Vec::with_capacity(found.len());
+        let mut legacy: Option<KnownEndpoint> = None;
+        for endpoint in found {
+            if legacy.is_none() && endpoint.socket == self.legacy {
+                legacy = Some(endpoint);
+            } else {
+                rest.push(endpoint);
+            }
+        }
+        let mut result = Vec::with_capacity(rest.len() + 1);
+        result.push(legacy.unwrap_or_else(|| KnownEndpoint {
+            socket: self.legacy.clone(),
+            ..KnownEndpoint::default()
+        }));
+        result.extend(rest);
+        result
+    }
+
+    /// The shared enumeration: an entry still inside its cache window is returned as it was
+    /// recorded, so surfaces over one agent dir ask the engine and the registry once per window
+    /// (#12989). A stale or absent entry is enumerated here; the enumeration is synchronous
+    /// (the registry read and the `host status --all` callback), so no caller ever observes a
+    /// half-finished one.
+    pub fn known_endpoints(&self) -> Vec<KnownEndpoint> {
+        // The legacy socket names the agent dir a surface enumerates (one process serves one agent
+        // dir), so surfaces over the same dir share one entry in the injected map (#12989).
+        let key = self.legacy.clone();
+        let current = (self.now)();
+        if let Some(cached) = self
+            .enumerations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .filter(|entry| entry.expires_at > current)
+        {
+            return cached.result.clone();
+        }
+        let reports = (self.status_all)();
+        let recorded = (self.registry)();
+        let found = self.enumerate_endpoints(reports, recorded);
+        {
+            let mut kinds = self
+                .kinds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for endpoint in &found {
+                if let Some(kind) = &endpoint.kind {
+                    kinds.insert(endpoint.socket.clone(), *kind);
+                }
+            }
+        }
+        let _ = self
+            .enumerations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                key,
+                SharedEnumeration {
+                    expires_at: current + HOST_ENDPOINTS_CACHE_TTL_MS,
+                    result: found.clone(),
                 },
             );
-        }
-        if let Ok(mut cached) = self.enumeration.lock() {
-            *cached = Some(((*self.now)() + HOST_ENDPOINTS_CACHE_TTL_MS, found.clone()));
-        }
         found
     }
 
@@ -543,17 +649,66 @@ impl LiveThreadSurface {
                 object.insert("type".into(), Value::String("open_session".into()));
                 object.insert("retain_on_disconnect".into(), Value::Bool(true));
             }
-            let frame = transport.request(&socket, command, None).await?;
+            // Upstream `requestFrame` sends `set_session_name` on the connection `open_session`
+            // opened, so the host has attached the caller by the time the naming command arrives.
+            let name = name.filter(|name| !name.trim().is_empty());
+            let name_for_closure = name.clone();
+            let transport_for_closure = transport.clone();
+            let socket_for_closure = socket.clone();
+            let frame = transport
+                .clone()
+                .conversation(
+                    &socket,
+                    command,
+                    None,
+                    Arc::new(move |reply, request| {
+                        let name = name_for_closure.clone();
+                        let transport_for_naming = transport_for_closure.clone();
+                        let socket_for_naming = socket_for_closure.clone();
+                        Box::pin(async move {
+                            let Some(name) = name else {
+                                return Ok(());
+                            };
+                            let opened = match data_record(&reply, "open_session") {
+                                Ok(opened) => opened,
+                                Err(_) => return Ok(()),
+                            };
+                            let routing_id = opened
+                                .get("sessionId")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            let naming = request(serde_json::json!({
+                                "type": "set_session_name",
+                                "sessionId": routing_id,
+                                "name": name,
+                            }))
+                            .await;
+                            if naming.is_err() {
+                                let _ = transport_for_naming
+                                    .request(
+                                        &socket_for_naming,
+                                        serde_json::json!({
+                                            "type": "set_session_name",
+                                            "sessionId": routing_id,
+                                            "name": name,
+                                        }),
+                                        None,
+                                    )
+                                    .await;
+                            }
+                            Ok(())
+                        })
+                    }),
+                )
+                .await?;
             let mut opened = data_record(&frame, "open_session")?;
             let routing_id = opened
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
-                let _ = transport.request(&socket, serde_json::json!({ "type": "set_session_name", "sessionId": routing_id, "name": name }), None).await;
-            }
             let listing = transport
+                .clone()
                 .request(
                     &socket,
                     serde_json::json!({ "type": "list_sessions", "observe": true }),
@@ -603,10 +758,19 @@ async fn list_endpoint(
         socket: endpoint.socket.clone(),
         list_sessions: Some(list_sessions),
         endpoint_kind: Some(kind),
-        alive: endpoint.alive,
-        reason: endpoint.reason.clone(),
+        alive: endpoint.verdict.alive,
+        reason: endpoint.verdict.reason.clone(),
         legacy,
     };
+    // A session held by a terminal or a task-host shard can be absent from `list_sessions`: its
+    // file is the record of its threads when the endpoint does not answer. Complete the disk list
+    // with the claims its registry directory still holds (#13452).
+    let mut disk_paths = endpoint.paths.clone();
+    for dir in &endpoint.claim_dirs {
+        disk_paths.extend(crate::thread::endpoint_registry::claimed_session_paths(dir));
+    }
+    disk_paths.sort();
+    disk_paths.dedup();
     let listing = transport
         .request(
             &endpoint.socket,
@@ -623,8 +787,7 @@ async fn list_endpoint(
                 failed: true,
                 sessions: Vec::new(),
                 host: host(HostListSessions::failed(error)),
-                disk: endpoint
-                    .paths
+                disk: disk_paths
                     .iter()
                     .filter_map(|path| {
                         read_disk_session(

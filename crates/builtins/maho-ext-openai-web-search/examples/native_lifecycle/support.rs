@@ -218,6 +218,7 @@ pub async fn run(native: bool, ui_enabled: bool) -> Result<(), Box<dyn std::erro
     assert_eq!(prompt.is_some(), native && enabled);
     runner
         .emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,

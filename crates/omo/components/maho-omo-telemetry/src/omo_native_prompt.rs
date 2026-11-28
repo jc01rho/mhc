@@ -486,6 +486,7 @@ mod tests {
         dispatch(
             &api,
             ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
+                closed: false,
                 reason: maho_ext_api::SessionReason::Quit,
                 target_session_file: None,
                 signal: None,

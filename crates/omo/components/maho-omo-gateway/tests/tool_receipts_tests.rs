@@ -82,6 +82,8 @@ fn component(dir: &tempfile::TempDir, host: Arc<PeerHost>, cwd: &str) -> Gateway
         transport: host,
         status_all: None,
         now: None,
+        enumerations: None,
+        registry: None,
     }));
     create_gateway_thread_component(Arc::new(GatewayThreadComponentOptions {
         store: create_gateway_store(GatewayStoreOptions::new(

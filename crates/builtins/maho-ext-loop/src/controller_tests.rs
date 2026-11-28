@@ -300,6 +300,7 @@ async fn registered_session_creation_dispatch_wakeup_pause_and_shutdown() {
     );
     controller
         .event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,
@@ -432,6 +433,7 @@ async fn registered_command_and_tool_share_live_runtime_attribution() {
     assert!(controller.get_wakeup_target().is_none());
     controller
         .event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,
@@ -486,6 +488,7 @@ async fn unreadable_store_fails_closed_without_dispatch() {
     }));
     controller
         .event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,

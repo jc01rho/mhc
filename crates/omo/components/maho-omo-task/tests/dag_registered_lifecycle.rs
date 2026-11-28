@@ -568,6 +568,7 @@ async fn live_lifecycle(shutdown_live: bool, peer_live: bool) {
             &api,
             EventKind::SessionShutdown,
             &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                closed: false,
                 reason: SessionReason::Quit,
                 target_session_file: None,
                 signal: None,
@@ -696,6 +697,7 @@ async fn live_lifecycle(shutdown_live: bool, peer_live: bool) {
         &api,
         EventKind::SessionShutdown,
         &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,

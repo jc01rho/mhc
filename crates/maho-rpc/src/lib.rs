@@ -227,6 +227,7 @@ pub mod session_event_decode;
 pub mod session_event_fanout;
 pub mod session_event_writer;
 pub mod session_extension_ui_requests;
+pub mod session_graceful_close;
 pub mod session_held;
 pub mod session_hold_errors;
 pub mod session_move_commands;

@@ -331,6 +331,7 @@ async fn print_session_emits_disabled_readiness_and_shutdown_joins() {
         serde_json::json!({"enabled":false})
     );
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -847,6 +848,7 @@ async fn invalid_settings_event_is_rejected_and_logged_without_change_delivery()
     assert_eq!(rejection["paths"], serde_json::json!([path]));
     assert!(!rejection["errors"].as_array().unwrap().is_empty());
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -957,6 +959,7 @@ async fn external_bus_registration_rebuilds_watches_and_delivers_its_group() {
         );
     }
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -1082,6 +1085,7 @@ async fn watcher_awaits_registered_validator_and_cancellation_discards_its_resul
     assert!(changed_rx.try_recv().is_err());
     assert!(rejected_rx.try_recv().is_err());
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -1156,6 +1160,7 @@ async fn active_session_delivers_validated_change_and_joins_shutdown() {
         serde_json::json!({"registrationId":"builtin","paths":[path],"deferred":true})
     );
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -1379,6 +1384,7 @@ async fn missing_prompt_directory_rearms_before_observing_its_files() {
         .unwrap();
     assert_eq!(change["paths"], serde_json::json!([path]));
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -1485,6 +1491,7 @@ async fn omo_directory_creation_is_not_a_config_change_but_its_config_file_is() 
         serde_json::json!({"registrationId":"omo","paths":[user.join("omo.jsonc")],"deferred":true})
     );
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,

@@ -83,6 +83,7 @@ async fn registered_native_image_handler_uses_effective_model_and_scrubs_history
     }.await;
     let shutdown = (api.registered.handlers[&EventKind::SessionShutdown][0])(
         &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,

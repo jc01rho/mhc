@@ -94,6 +94,8 @@ pub fn restore_checkpointed_rpc(
         opener: None,
         restored_from: monitor.rpc_checkpoint.clone(),
         on_checkpoint: deps.writer,
+        remote: crate::current_rpc_remote_source(),
+        ended: None,
     };
     match (deps.arm)(options) {
         Ok(id) => {

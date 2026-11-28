@@ -8,12 +8,20 @@ use crate::rpc_monitor_render::{RpcMonitorRenderer, session_key};
 use crate::rpc_monitor_targets::{
     RpcEvents, RpcTarget, endpoint_sockets, matches_task, subscription_for, wants_record,
 };
+use crate::{
+    RpcRemoteEvents, RpcRemoteHandlers, RpcRemoteOpenOptions, RpcRemoteSettledTurn,
+    RpcRemoteSource, RpcRemoteState, RpcRemoteSubscription, RpcRemoteTarget,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+
+/// Reports one record of a remote feed: the host's name for it and the record.
+pub type RpcRecordCallback = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 
 pub const RPC_RESCAN_MS: u64 = 30_000;
 
@@ -46,6 +54,417 @@ pub type ObserverOpener = Arc<
 pub type LineSink = Arc<dyn Fn(String) + Send + Sync>;
 pub type CheckpointSink = Arc<dyn Fn(RpcMonitorCheckpoint) + Send + Sync>;
 
+pub type RemoteFeedRecord = Value;
+
+pub type RemoteFeedBoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+/// A remote target's resume position and settled turns, saved in the monitor checkpoint.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RpcRemoteCheckpoint {
+    pub cursor: Option<String>,
+    pub settled: BTreeMap<String, Vec<String>>,
+}
+
+/// The watch's side of a remote source subscription.
+pub struct RpcRemoteFeedHost {
+    pub renderer: Arc<Mutex<RpcMonitorRenderer>>,
+    pub hosts: Arc<Mutex<indexmap::IndexMap<String, RpcHostIdentity>>>,
+    pub record: RpcRecordCallback,
+    pub line: Arc<dyn Fn(String) + Send + Sync>,
+    pub checkpoint: Arc<dyn Fn() + Send + Sync>,
+    pub ended: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+/// Options of one remote feed.
+pub struct RpcRemoteFeedOptions {
+    pub events: RpcEvents,
+    pub exclude: Vec<String>,
+    pub source: RpcRemoteSource,
+    pub saved: Option<RpcRemoteCheckpoint>,
+}
+
+/// The remote half of an rpc watch: one `RpcRemoteSource` subscription for a `<device>/<session>` or `<device>/*`
+/// target. Records go through the watch's own render path with the device in the socket's place.
+///
+/// The source reports from its own tasks, so everything a callback moves is interior-mutable: the settled turns and the
+/// resume cursor a checkpoint saves, the subscription a stop ends, and the flags that keep a lost or an ended report
+/// single.
+pub struct RpcRemoteFeed {
+    target: RpcRemoteTarget,
+    options: RpcRemoteFeedOptions,
+    host: RpcRemoteFeedHost,
+    settled: Mutex<BTreeMap<String, Vec<String>>>,
+    cursor: Mutex<Option<String>>,
+    opened: Mutex<Vec<RpcRemoteSettledTurn>>,
+    subscription: Mutex<Option<RpcRemoteSubscription>>,
+    lost_reported: AtomicBool,
+    stopped: AtomicBool,
+}
+
+const REMOTE_INSTANCE: &str = "remote";
+const SETTLED_KEPT: usize = 16;
+
+/// Callbacks a remote source delivered before its open resolved: they run, in order, once it does.
+type PendingSteps = Arc<Mutex<Vec<Box<dyn FnOnce() + Send + Sync>>>>;
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn turn_key(device: &str, turn: &RpcRemoteSettledTurn) -> String {
+    format!("{device}#{}", turn.session_id)
+}
+
+fn settled_line(key: &str, turn_id: &str) -> String {
+    let label: String = key
+        .chars()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("rpc {label} turn {turn_id} settled while detached")
+}
+
+impl RpcRemoteFeed {
+    pub fn new(
+        target: RpcRemoteTarget,
+        options: RpcRemoteFeedOptions,
+        host: RpcRemoteFeedHost,
+    ) -> Self {
+        let mut settled = BTreeMap::new();
+        if let Some(saved) = &options.saved {
+            for (key, turns) in &saved.settled {
+                settled.insert(key.clone(), turns.clone());
+            }
+        }
+        let cursor = options
+            .saved
+            .as_ref()
+            .and_then(|saved| saved.cursor.clone());
+        Self {
+            target,
+            options,
+            host,
+            settled: Mutex::new(settled),
+            cursor: Mutex::new(cursor),
+            opened: Mutex::new(Vec::new()),
+            subscription: Mutex::new(None),
+            lost_reported: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+        }
+    }
+
+    /// Opens the subscription; resolves to the arm-time rows. Callbacks before the open resolves wait for it.
+    pub fn start(self: Arc<Self>) -> RemoteFeedBoxFuture<Result<Vec<String>, String>> {
+        Box::pin(async move {
+            let pending: PendingSteps = Arc::new(Mutex::new(Vec::new()));
+            let ready = Arc::new(AtomicBool::new(false));
+            let source = self.options.source.clone();
+            let target = self.target.clone();
+            let events = match &self.options.events {
+                RpcEvents::All => RpcRemoteEvents::All,
+                RpcEvents::Kinds(kinds) => RpcRemoteEvents::Kinds(kinds.clone()),
+            };
+            let handlers = {
+                let (record_self, resync_self, cursor_self, lost_self, ended_self) = (
+                    self.clone(),
+                    self.clone(),
+                    self.clone(),
+                    self.clone(),
+                    self.clone(),
+                );
+                let (record_ready, resync_ready, cursor_ready, lost_ready, ended_ready) = (
+                    ready.clone(),
+                    ready.clone(),
+                    ready.clone(),
+                    ready.clone(),
+                    ready.clone(),
+                );
+                let (record_pending, resync_pending, cursor_pending, lost_pending, ended_pending) = (
+                    pending.clone(),
+                    pending.clone(),
+                    pending.clone(),
+                    pending.clone(),
+                    pending.clone(),
+                );
+                RpcRemoteHandlers {
+                    record: Arc::new(move |record| {
+                        let record_self = record_self.clone();
+                        run_when_ready(&record_ready, &record_pending, move || {
+                            record_self.record(record);
+                        });
+                    }),
+                    resynced: Arc::new(move |state| {
+                        let resync_self = resync_self.clone();
+                        run_when_ready(&resync_ready, &resync_pending, move || {
+                            resync_self.resync(state);
+                        });
+                    }),
+                    cursor: Some(Arc::new(move |cursor| {
+                        let cursor_self = cursor_self.clone();
+                        run_when_ready(&cursor_ready, &cursor_pending, move || {
+                            cursor_self.set_cursor(cursor);
+                        });
+                    })),
+                    lost: Arc::new(move |reason| {
+                        let lost_self = lost_self.clone();
+                        run_when_ready(&lost_ready, &lost_pending, move || {
+                            lost_self.lost(reason);
+                        });
+                    }),
+                    ended: Arc::new(move |reason| {
+                        let ended_self = ended_self.clone();
+                        run_when_ready(&ended_ready, &ended_pending, move || {
+                            ended_self.ended(reason);
+                        });
+                    }),
+                }
+            };
+            // Read before the open: a guard held across the await would make this future non-Send.
+            let resume_from = lock(&self.cursor).clone();
+            let opened = (source.open)(
+                target,
+                RpcRemoteOpenOptions {
+                    events,
+                    exclude: self.options.exclude.clone(),
+                    resume_from,
+                },
+                handlers,
+            )
+            .await?;
+            if self.stopped.load(Ordering::SeqCst) {
+                opened.stop();
+                return Ok(Vec::new());
+            }
+            let device = self.target.device.clone();
+            {
+                let mut hosts = lock(&self.host.hosts);
+                hosts.insert(
+                    device.clone(),
+                    RpcHostIdentity {
+                        instance_id: REMOTE_INSTANCE.to_owned(),
+                        generation: opened.initial.generation.clone().unwrap_or_default(),
+                    },
+                );
+            }
+            let settled_turns = opened.initial.settled_turns.clone().unwrap_or_default();
+            for turn in &settled_turns {
+                self.remember(&turn_key(&device, turn), &turn.turn_id);
+            }
+            *lock(&self.opened) = settled_turns;
+            if let Some(cursor) = &opened.initial.cursor {
+                *lock(&self.cursor) = Some(cursor.clone());
+            }
+            let rows = {
+                let mut renderer = lock(&self.host.renderer);
+                renderer.seed(&device, &opened.initial.rows)
+            };
+            (self.host.checkpoint)();
+            *lock(&self.subscription) = Some(opened);
+            ready.store(true, Ordering::SeqCst);
+            let steps: Vec<_> = std::mem::take(&mut *lock(&pending));
+            for step in steps {
+                step();
+            }
+            Ok(rows)
+        })
+    }
+
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        if let Some(subscription) = lock(&self.subscription).take() {
+            subscription.stop();
+        }
+    }
+
+    pub fn checkpoint(&self) -> RpcRemoteCheckpoint {
+        RpcRemoteCheckpoint {
+            cursor: lock(&self.cursor).clone(),
+            settled: lock(&self.settled).clone(),
+        }
+    }
+
+    pub fn diff_settled(&self, saved: Option<&RpcRemoteCheckpoint>) -> Vec<String> {
+        let device = self.target.device.clone();
+        let opened = lock(&self.opened).clone();
+        opened
+            .iter()
+            .filter(|turn| {
+                !saved
+                    .and_then(|saved| saved.settled.get(&turn_key(&device, turn)))
+                    .is_some_and(|turns| turns.contains(&turn.turn_id))
+            })
+            .map(|turn| settled_line(&turn_key(&device, turn), &turn.turn_id))
+            .collect()
+    }
+
+    fn record(&self, record: Value) {
+        let device = self.target.device.clone();
+        if record.get("type").and_then(Value::as_str) != Some("agent_settled")
+            || !record.get("turnId").is_some_and(Value::is_string)
+        {
+            (self.host.record)(&device, &record);
+            return;
+        }
+        let Some(turn_id) = record.get("turnId").and_then(Value::as_str) else {
+            (self.host.record)(&device, &record);
+            return;
+        };
+        let key = session_key(&device, &record);
+        if self.seen(&key, turn_id) {
+            return;
+        }
+        self.remember(&key, turn_id);
+        (self.host.record)(&device, &record);
+        (self.host.checkpoint)();
+    }
+
+    fn resync(&self, state: RpcRemoteState) {
+        let device = self.target.device.clone();
+        let mut lines = Vec::new();
+        {
+            let mut hosts = lock(&self.host.hosts);
+            if let Some(generation) = &state.generation {
+                if let Some(host) = hosts.get(&device)
+                    && host.generation != *generation
+                {
+                    lines.push(format!(
+                        "rpc host {device} restarted (generation {} -> {generation})",
+                        host.generation
+                    ));
+                }
+                hosts.insert(
+                    device.clone(),
+                    RpcHostIdentity {
+                        instance_id: REMOTE_INSTANCE.to_owned(),
+                        generation: generation.clone(),
+                    },
+                );
+            }
+        }
+        let prefix = format!("{device}#");
+        let before: BTreeMap<String, String> = {
+            let renderer = lock(&self.host.renderer);
+            renderer
+                .statuses()
+                .into_iter()
+                .filter(|(key, _)| key.starts_with(&prefix))
+                .collect()
+        };
+        let now: BTreeMap<String, String> = state
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    session_key(&device, row),
+                    js_string(Some(row.get("status").unwrap_or(&Value::Null))),
+                )
+            })
+            .collect();
+        for (key, status) in &now {
+            let was = before.get(key).map_or("unknown".to_owned(), Clone::clone);
+            if &was != status {
+                lines.push(format!(
+                    "rpc {} status {was} -> {status} (changed while detached)",
+                    settled_label(key)
+                ));
+            }
+        }
+        for key in before.keys() {
+            if !now.contains_key(key) {
+                lines.push(format!(
+                    "rpc {} closed (gone while detached)",
+                    settled_label(key)
+                ));
+            }
+        }
+        for turn in state.settled_turns.unwrap_or_default() {
+            let key = turn_key(&device, &turn);
+            if self.seen(&key, &turn.turn_id) {
+                continue;
+            }
+            self.remember(&key, &turn.turn_id);
+            lines.push(settled_line(&key, &turn.turn_id));
+        }
+        {
+            let mut renderer = lock(&self.host.renderer);
+            renderer.forget_socket(&device);
+            renderer.seed(&device, &state.rows);
+        }
+        if let Some(cursor) = state.cursor {
+            *lock(&self.cursor) = Some(cursor);
+        }
+        self.lost_reported.store(false, Ordering::SeqCst);
+        for line in lines {
+            (self.host.line)(line);
+        }
+        (self.host.checkpoint)();
+    }
+
+    fn lost(&self, reason: String) {
+        if self.lost_reported.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        (self.host.line)(format!(
+            "rpc device {} unreachable ({reason}); re-watching",
+            self.target.device
+        ));
+    }
+
+    fn ended(&self, reason: String) {
+        (self.host.line)(format!(
+            "rpc {}/{} access ended ({reason})",
+            self.target.device, self.target.session
+        ));
+        (self.host.ended)(&format!("access ended ({reason})"));
+    }
+
+    fn set_cursor(&self, cursor: String) {
+        *lock(&self.cursor) = Some(cursor);
+        (self.host.checkpoint)();
+    }
+
+    fn seen(&self, key: &str, turn_id: &str) -> bool {
+        lock(&self.settled)
+            .get(key)
+            .is_some_and(|turns| turns.iter().any(|turn| turn == turn_id))
+    }
+
+    fn remember(&self, key: &str, turn_id: &str) {
+        let mut settled = lock(&self.settled);
+        let turns = settled.entry(key.to_owned()).or_default();
+        if turns.iter().any(|turn| turn == turn_id) {
+            return;
+        }
+        turns.push(turn_id.to_owned());
+        if turns.len() > SETTLED_KEPT {
+            turns.remove(0);
+        }
+    }
+}
+
+fn settled_label(key: &str) -> String {
+    let mut chars: Vec<char> = key.chars().rev().take(8).collect();
+    chars.reverse();
+    chars.into_iter().collect()
+}
+
+fn run_when_ready(
+    ready: &Arc<AtomicBool>,
+    pending: &PendingSteps,
+    step: impl FnOnce() + Send + Sync + 'static,
+) {
+    if ready.load(Ordering::SeqCst) {
+        step();
+    } else {
+        lock(pending).push(Box::new(step));
+    }
+}
+
 /// Upstream `RpcWatchOptions`.
 pub struct RpcWatchOptions {
     pub agent_dir: std::path::PathBuf,
@@ -60,6 +479,12 @@ pub struct RpcWatchOptions {
     pub checkpoint: Option<CheckpointSink>,
     /// Defaults to `open_rpc_observer`.
     pub opener: Option<ObserverOpener>,
+    /// The source serving a remote target.
+    pub remote_source: Option<RpcRemoteSource>,
+    /// A restore's saved view: a remote target resumes from its cursor.
+    pub restored_from: Option<RpcMonitorCheckpoint>,
+    /// A remote target's access ended for good: the monitor settles with this summary.
+    pub ended: Option<crate::rpc_monitor_source::RpcEndedCallback>,
 }
 
 type Close = Arc<dyn Fn() + Send + Sync>;
@@ -72,6 +497,8 @@ struct WatchState {
     renderer: RpcMonitorRenderer,
     task_sessions: HashSet<String>,
     rescan: Option<tokio::task::JoinHandle<()>>,
+    /// The remote subscription a `<device>/<session>` or `<device>/*` target opened.
+    feed: Option<Arc<RpcRemoteFeed>>,
     stopped: bool,
     next_token: u64,
 }
@@ -344,6 +771,11 @@ impl RpcMonitorWatch {
     /// Joins every endpoint now; resolves to the arm-time RESULT rows (one per matched session),
     /// then rejoins every `RPC_RESCAN_MS`.
     pub async fn start(&self) -> Vec<String> {
+        if let RpcTarget::Remote { device, session } = &self.inner.options.target {
+            let device = device.clone();
+            let session = session.clone();
+            return self.start_remote(device, session).await;
+        }
         let rows = self.inner.clone().join().await;
         let weak = Arc::downgrade(&self.inner);
         let rescan = tokio::spawn(async move {
@@ -421,22 +853,102 @@ impl RpcMonitorWatch {
         lines
     }
 
+    pub fn start_remote(
+        &self,
+        device: String,
+        session: String,
+    ) -> Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send>> {
+        let inner = self.inner.clone();
+        Box::pin(async move {
+            let source = inner
+                .options
+                .remote_source
+                .clone()
+                .or_else(crate::current_rpc_remote_source);
+            let Some(source) = source else {
+                return vec![];
+            };
+            let (renderer, hosts) = {
+                let state = inner.state();
+                (state.renderer.clone(), state.hosts.clone())
+            };
+            let renderer = Arc::new(Mutex::new(renderer));
+            let hosts = Arc::new(Mutex::new(hosts));
+            let record_watch = Arc::downgrade(&inner);
+            let line = inner.options.line.clone();
+            let checkpoint_sink = inner.options.checkpoint.clone();
+            let ended_sink = inner.options.ended.clone();
+            let (checkpoint_renderer, checkpoint_hosts) = (renderer.clone(), hosts.clone());
+            let host = RpcRemoteFeedHost {
+                renderer: renderer.clone(),
+                hosts: hosts.clone(),
+                record: Arc::new(move |socket, record| {
+                    if let Some(watch) = record_watch.upgrade() {
+                        watch.record(socket, record);
+                    }
+                }),
+                line,
+                checkpoint: Arc::new(move || {
+                    if let Some(sink) = &checkpoint_sink {
+                        let checkpoint = RpcMonitorCheckpoint {
+                            hosts: lock(&checkpoint_hosts).clone().into_iter().collect(),
+                            statuses: lock(&checkpoint_renderer).statuses(),
+                        };
+                        sink(checkpoint);
+                    }
+                }),
+                ended: Arc::new(move |summary| {
+                    if let Some(sink) = &ended_sink {
+                        sink(summary);
+                    }
+                }),
+            };
+            let feed = Arc::new(RpcRemoteFeed::new(
+                RpcRemoteTarget { device, session },
+                RpcRemoteFeedOptions {
+                    events: inner.options.events.clone(),
+                    exclude: inner.options.exclude.clone(),
+                    source,
+                    saved: None,
+                },
+                host,
+            ));
+            let rows = Arc::clone(&feed).start().await.unwrap_or_default();
+            let mut state = inner.state();
+            state.renderer = lock(&renderer).clone();
+            state.hosts = lock(&hosts).clone();
+            if state.stopped {
+                drop(state);
+                feed.stop();
+            } else {
+                state.feed = Some(feed);
+            }
+            rows
+        })
+    }
+
     pub fn stop(&self) {
-        let observers: Vec<Close> = {
+        let (observers, feed): (Vec<Close>, Option<Arc<RpcRemoteFeed>>) = {
             let mut state = self.inner.state();
             state.stopped = true;
             if let Some(rescan) = state.rescan.take() {
                 rescan.abort();
             }
-            state
-                .observers
-                .drain()
-                .map(|(_, (_, close))| close)
-                .collect()
+            (
+                state
+                    .observers
+                    .drain()
+                    .map(|(_, (_, close))| close)
+                    .collect(),
+                state.feed.take(),
+            )
         };
         self.inner.coalescer.dispose();
         for close in observers {
             close();
+        }
+        if let Some(feed) = feed {
+            feed.stop();
         }
     }
 }
@@ -445,7 +957,6 @@ impl RpcMonitorWatch {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct Opened {
         closed: Arc<AtomicBool>,
@@ -502,6 +1013,9 @@ mod tests {
             line: Arc::new(move |line| sink.lock().unwrap().push(line)),
             checkpoint: None,
             opener: Some(mock.opener()),
+            remote_source: None,
+            restored_from: None,
+            ended: None,
         })
     }
 
@@ -583,6 +1097,9 @@ mod tests {
                 saved_sink.lock().unwrap().push(checkpoint)
             })),
             opener: Some(mock.opener()),
+            remote_source: None,
+            restored_from: None,
+            ended: None,
         });
         mock.release.notify_one();
         assert_eq!(subject.start().await, vec!["s1 busy (1 attached)"]);

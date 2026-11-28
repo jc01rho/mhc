@@ -136,6 +136,7 @@ async fn dag_shutdown_pauses_before_task_teardown_then_disposes() {
     });
     let context = support::context();
     let mut event = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,

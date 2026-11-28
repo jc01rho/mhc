@@ -824,6 +824,7 @@ async fn extension_lifecycle_clears_ui_only_interactively() {
             (
                 maho_ext_api::EventKind::SessionShutdown,
                 maho_ext_api::ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
+                    closed: false,
                     reason: maho_ext_api::SessionReason::Quit,
                     target_session_file: None,
                     signal: None,

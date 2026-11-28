@@ -12,6 +12,7 @@ use crate::thread::decision::{DeliveryDecision, Expect, TargetState, decide_deli
 use crate::thread::errors::{
     ThreadToolFailure, pair_loop_guard_message, pair_loop_guard_next_action, thread_tool_failure,
 };
+use crate::thread::remote::agentd::AGENTD_REFUSAL;
 use crate::thread::types::GatewayDeliveryMode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +331,16 @@ pub fn relay_outcome_failure(
     }
     if let Some(not_signed_in) = not_signed_in_failure(raw_reason, device) {
         return not_signed_in;
+    }
+    if raw_reason == AGENTD_REFUSAL.reason {
+        return Box::new(thread_tool_failure(
+            "host_unavailable",
+            format!(
+                "Device {device} is not configured for agentd, so this op cannot be reached; the relay does not serve it."
+            ),
+            AGENTD_REFUSAL.fix,
+            Some(AGENTD_REFUSAL.to_json(device)),
+        ));
     }
     if let Some(cause) = engine_not_ready(outcome) {
         return Box::new(not_ready_failure(device, cause));

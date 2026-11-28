@@ -50,6 +50,8 @@ pub struct GatewayThreadComponent {
     pub send_as: ThreadSendAs,
     pub alerts: Arc<super::run_alerts::RunAlerts>,
     pub durable_id: String,
+    /// The agentd-backed remote surface a monitor source can be registered for.
+    pub(crate) remote: Option<Arc<dyn super::control::locate::RemoteControlLocator>>,
     /// The current run's reply allowance, driven by `agent_start`, `message_start`, `message_end` and `agent_settled`.
     run: Arc<std::sync::Mutex<super::run_context::RunContext>>,
     registration: Arc<std::sync::Mutex<super::tools::ExtensionToolRegistration>>,
@@ -158,6 +160,7 @@ pub fn create_gateway_thread_component_with_alerts(
     }
     GatewayThreadComponent {
         registration: Default::default(),
+        remote: options.remote.clone(),
         log: options.log.clone(),
         store: options.store.clone(),
         engine,
@@ -285,6 +288,13 @@ impl GatewayThreadComponent {
         tools: Vec<ThreadTool>,
         caller: String,
     ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        if let Some(remote) = self.remote.clone()
+            && let Some(surface) = remote.remote_surface_arc()
+        {
+            maho_ext_api::register_rpc_remote_source(
+                super::remote::monitor_source::create_remote_monitor_source(surface),
+            );
+        }
         let mut present = api
             .get_all_tools()?
             .into_iter()
@@ -452,6 +462,42 @@ impl GatewayThreadComponent {
                 Box::pin(async move {
                     if !durable_id.is_empty() {
                         alerts.settled(&durable_id);
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+        let close_returns = Arc::clone(self);
+        api.on(
+            EventKind::SessionShutdown,
+            Arc::new(move |event, ctx| {
+                let component = close_returns.clone();
+                let closed = matches!(
+                    event,
+                    ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
+                        closed: true,
+                        ..
+                    })
+                );
+                let durable_id = ctx.session_manager.session_id().to_owned();
+                let entries = ctx.session_manager.get_entries();
+                Box::pin(async move {
+                    if closed && !durable_id.is_empty() {
+                        let returned = super::graceful_close_returns::returned_at_close(&entries);
+                        if let Err(error) = super::graceful_close_returns::settle_graceful_close(
+                            component.store.as_ref(),
+                            &durable_id,
+                            &returned,
+                        ) {
+                            let line = format!(
+                                "thread gateway: the graceful close's unread messages were not answered: {error}"
+                            );
+                            if let Some(log) = &component.log {
+                                log(&line);
+                            } else {
+                                maho_ext_api::diagnostic(&line);
+                            }
+                        }
                     }
                     Ok(EventResult::None)
                 })

@@ -491,6 +491,7 @@ async fn native_startup_probes_account_home_and_replaces_offline_catalog() {
                     Box::pin(async move {
                         let mut event = maho_ext_api::ExtensionEvent::SessionShutdown(
                             maho_ext_api::SessionShutdownEvent {
+                                closed: false,
                                 reason: maho_ext_api::SessionReason::Quit,
                                 target_session_file: None,
                                 signal: None,

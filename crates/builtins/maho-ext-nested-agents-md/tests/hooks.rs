@@ -273,6 +273,7 @@ async fn lifecycle_events_reset_and_preserve_injection_cache() {
                 },
             )),
             4 => Some(ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                closed: false,
                 reason: SessionReason::Quit,
                 target_session_file: None,
                 signal: None,

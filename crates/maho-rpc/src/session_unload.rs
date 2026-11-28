@@ -31,6 +31,9 @@ use crate::effect_record::{
     EffectActor, EffectCommandKind, EffectDeliveries, EffectOutcome, EffectOutcomeKind, EffectState,
 };
 use crate::effect_session::EffectSession;
+use crate::session_graceful_close::{
+    GracefulDrain, fence_for_close, record_graceful_close, reopen_after_drain,
+};
 use crate::session_release_interrupt::{ReleasableSession, ReleaseSettlePort, abort_and_settle};
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
@@ -186,6 +189,9 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
         }
     }
     let blocked = blockers(port, command, &first).await;
+    if command["graceful"] == true {
+        return close_gracefully(port, command, &first, &blocked).await;
+    }
     // senpi#7004: a busy session's unread deliveries are what its work would still read. With `deliveries: "refuse"`
     // they decide the answer before anything else, with or without `interrupt`: the caller learns their ids and
     // nothing is stopped.
@@ -215,7 +221,71 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
         let session: Arc<dyn ReleasableSession> = first.session.clone();
         abort_and_settle(port, session_id, &session).await
     };
-    claim_and_unload(port, command, handed_back).await
+    claim_and_unload(port, command, handed_back, None).await
+}
+
+/// `graceful` (oh-my-openagent#14313): the turn and the work an interrupt would stop end on their own, bounded by
+/// `waitMs`, behind the fence `fenceForClose` raises; published extension work is stopped cleanly by the teardown.
+/// A drain that outlives the bound is refused `turn_active` with `timed_out`, and the session stays open and admitting.
+async fn close_gracefully(
+    port: &dyn SessionUnloadPort,
+    command: &Value,
+    first: &Loaded,
+    blocked: &[Refusal],
+) -> Value {
+    if let Some(standing) = blocked.iter().find(|r| !interruptible(r)) {
+        return fail(command, first, standing, &[]).await;
+    }
+    let drain = fence_for_close(&*first.session);
+    let port_graceful = crate::session_graceful_close::GracefulDrainPort {
+        busy: Box::new(|| {
+            let activity = first.session.activity_snapshot();
+            let mut reasons: Vec<String> = Vec::new();
+            if activity.is_streaming {
+                reasons.push("an agent run".into());
+            }
+            if activity.is_compacting {
+                reasons.push("compaction".into());
+            }
+            if activity.has_session_work {
+                reasons.push("session work".into());
+            }
+            reasons
+        }),
+        settling: Box::new(Vec::new),
+    };
+    let wait_ms = crate::session_graceful_close::graceful_wait_ms(command["waitMs"].as_u64());
+    let quiet = {
+        let quiet = crate::session_graceful_close::drain_until_quiet(
+            &*first.session,
+            &port_graceful,
+            wait_ms,
+        )
+        .await;
+        drop(port_graceful);
+        quiet
+    };
+    if !quiet {
+        reopen_after_drain(&*first.session);
+        let (turn, waited_ms) = crate::session_graceful_close::drain_facts(&*first.session, &drain);
+        let expired = Refusal {
+            reason: "turn_active",
+            detail: format!("still working after {} ms", waited_ms),
+            action: Some(
+                "the session is still open and admitting again: retry with a longer waitMs, or unload with interrupt: true to stop the turn",
+            ),
+            ..Default::default()
+        };
+        let mut data = refused(&expired);
+        data.insert("timed_out".into(), true.into());
+        data.insert("open".into(), true.into());
+        data.insert("admission".into(), "reopened".into());
+        data.insert("turn".into(), turn.into());
+        insert_dropped(&mut data, &drain.dropped.deliveries);
+        return answer(command, data);
+    }
+    let handed_back = drain.dropped.deliveries.clone();
+    claim_and_unload(port, command, handed_back, Some(drain)).await
 }
 
 /// The final check and the unload, without an await between them and the close claim.
@@ -223,6 +293,7 @@ async fn claim_and_unload(
     port: &dyn SessionUnloadPort,
     command: &Value,
     handed_back: Vec<String>,
+    drain: Option<GracefulDrain>,
 ) -> Value {
     let session_id = command["sessionId"].as_str().unwrap_or_default();
     // Deliveries the interrupt handed back are gone from this runtime whatever the answer: every answer names them.
@@ -259,6 +330,13 @@ async fn claim_and_unload(
             .ok(),
         _ => None,
     };
+    // senpi `recordGracefulClose`: write the `session-closed` record and mark the session closed-on-request,
+    // only when a graceful drain is present.
+    let closed = if let Some(drain) = &drain {
+        Some(record_graceful_close(&*ready.session, drain))
+    } else {
+        None
+    };
     if !port.tear_down(session_id, &ready.session_path).await {
         let mut data = refused(&Refusal {
             reason: "session_closing",
@@ -273,6 +351,16 @@ async fn claim_and_unload(
     data.insert("outcome".into(), "unloaded".into());
     data.insert("sessionPath".into(), json!(ready.session_path));
     insert_dropped(&mut data, &handed_back);
+    if let Some(closed) = &closed {
+        data.insert(
+            "graceful".into(),
+            json!({
+                "turn": closed.turn,
+                "waited_ms": closed.waited_ms,
+                "stopped": { "wake_sources": closed.stopped.wake_sources }
+            }),
+        );
+    }
     if let Some(effect) = &effect {
         extend(&mut data, effect_answer(effect, Some(session_id), false));
     }
@@ -537,7 +625,7 @@ mod tests {
     use maho_core::agent_session::ClearedQueue;
     use maho_core::session_activity::SessionActivitySnapshot;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[derive(Default)]
     struct Live {
@@ -550,6 +638,8 @@ mod tests {
         effects: Mutex<Option<Arc<FakeSession>>>,
         dialogs: AtomicUsize,
         executing: AtomicUsize,
+        closed_on_request: AtomicBool,
+        entries: Mutex<Vec<(String, Value)>>,
     }
 
     struct Handle(Arc<Live>);
@@ -603,8 +693,12 @@ mod tests {
         async fn persist_header_now(&self) -> Result<(), String> {
             Ok(())
         }
-        fn append_custom_entry(&self, _: &str, _: Value) -> Result<(), ReleaseWriteError> {
+        fn append_custom_entry(&self, kind: &str, data: Value) -> Result<(), ReleaseWriteError> {
+            self.0.entries.lock().unwrap().push((kind.into(), data));
             Ok(())
+        }
+        fn record_closed_on_request(&self) {
+            self.0.closed_on_request.store(true, Ordering::SeqCst);
         }
     }
 
@@ -1011,6 +1105,54 @@ mod tests {
         assert_eq!(refused["data"]["outcome"], "refused");
         assert_eq!(refused["data"]["reason"], "turn_active");
         assert_eq!(port.live.aborts.load(Ordering::SeqCst), 0);
+        assert_eq!(port.torn_down.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn graceful_unload_of_a_quiet_session_records_session_closed_and_shuts_closed() {
+        let port = port();
+        let unloaded =
+            unload_session(&port, &unload(json!({"graceful": true, "waitMs": 60_000}))).await;
+        assert_eq!(unloaded["data"]["outcome"], "unloaded");
+        assert_eq!(unloaded["data"]["sessionPath"], "/s.jsonl");
+        assert_eq!(unloaded["data"]["graceful"]["turn"], 0);
+        // session-closed record present with the right shape.
+        let entries = port.live.entries.lock().unwrap();
+        assert!(entries.iter().any(|(kind, data)| {
+            kind == "session-closed" && data["returned"]["deliveries"].is_array()
+        }));
+        drop(entries);
+        assert!(port.live.closed_on_request.load(Ordering::SeqCst));
+        assert_eq!(port.torn_down.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn plain_and_forced_unloads_do_not_record_closed() {
+        for fields in [json!({}), json!({"force": true})] {
+            let port = port();
+            let unloaded = unload_session(&port, &unload(fields)).await;
+            assert_eq!(unloaded["data"]["outcome"], "unloaded");
+            assert_eq!(port.live.entries.lock().unwrap().len(), 0);
+            assert!(!port.live.closed_on_request.load(Ordering::SeqCst));
+            assert_eq!(port.torn_down.load(Ordering::SeqCst), 1);
+            assert!(unloaded["data"].get("graceful").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn graceful_unload_of_a_busy_session_reopens_and_does_not_record() {
+        let port = port();
+        port.live.activity.lock().unwrap().is_streaming = true;
+        let unloaded = unload_session(&port, &unload(json!({"graceful": true, "waitMs": 1}))).await;
+        // waitMs of 1 expires before the busy run settles -> reopened, refused turn_active
+        assert_eq!(unloaded["data"]["outcome"], "refused");
+        assert_eq!(unloaded["data"]["reason"], "turn_active");
+        assert_eq!(unloaded["data"]["timed_out"], true);
+        assert_eq!(unloaded["data"]["admission"], "reopened");
+        assert_eq!(unloaded["data"]["open"], true);
+        // admission fence was lifted by reopen; session still admitting
+        assert!(!port.live.closed_on_request.load(Ordering::SeqCst));
+        assert!(port.live.entries.lock().unwrap().is_empty());
         assert_eq!(port.torn_down.load(Ordering::SeqCst), 0);
     }
 }

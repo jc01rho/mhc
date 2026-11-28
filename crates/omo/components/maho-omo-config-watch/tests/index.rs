@@ -338,6 +338,7 @@ async fn releases_subscriptions_on_shutdown_and_replaces_them_on_repeated_regist
     .await
     .expect("READY publication after re-register");
     let mut event = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Reload,
         target_session_file: None,
         signal: None,

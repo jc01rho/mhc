@@ -9,7 +9,7 @@
 use super::context::{TerminalToolResult, error_result, text_result};
 use super::monitor_schema::{compile_filter, resolve_timeout_ms};
 use crate::rpc_monitor_source::{RegisterRpcMonitorOptions, RpcMonitorSource};
-use crate::rpc_monitor_targets::{RpcEvents, default_events, parse_rpc_target};
+use crate::rpc_monitor_targets::{RpcEvents, RpcTarget, default_events, parse_rpc_target};
 use crate::shared::DURABLE_MONITOR_EXPIRY_MS;
 use crate::terminal_manifest_model::{MonitorRegistration, MonitorSpec, RecordedRegistration};
 use serde_json::{Value, json};
@@ -154,6 +154,8 @@ pub struct RpcMonitorContext {
     /// Endpoint/observer overrides (tests); `None` in production.
     pub endpoints: Option<crate::rpc_monitor_watch::EndpointLister>,
     pub opener: Option<crate::rpc_monitor_watch::ObserverOpener>,
+    /// A remote target's source; `None` uses the registered one.
+    pub remote: Option<crate::RpcRemoteSource>,
     pub now_ms: f64,
 }
 
@@ -239,6 +241,17 @@ pub async fn create_rpc_monitor(
             );
         }) as crate::rpc_monitor_source::RpcCheckpointSink
     });
+    if let RpcTarget::Remote { .. } = target {
+        let refusal = match ctx.remote.as_ref() {
+            Some(_) => None,
+            None => Some(error_result(
+                "remote targets need the omo remote surface".to_owned(),
+            )),
+        };
+        if let Some(refused) = refusal {
+            return (refused, None);
+        }
+    }
     let registered = ctx
         .source
         .register(RegisterRpcMonitorOptions {
@@ -257,6 +270,8 @@ pub async fn create_rpc_monitor(
             agent_dir: ctx.agent_dir,
             endpoints: ctx.endpoints,
             opener: ctx.opener,
+            remote: ctx.remote,
+            ended: None,
             restored_from: None,
             on_checkpoint,
         })
@@ -364,6 +379,7 @@ mod tests {
                 },
             )),
             now_ms: 1_000.0,
+            remote: None,
         }
     }
 
