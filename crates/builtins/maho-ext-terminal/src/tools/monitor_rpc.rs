@@ -9,7 +9,7 @@
 use super::context::{TerminalToolResult, error_result, text_result};
 use super::monitor_schema::{compile_filter, resolve_timeout_ms};
 use crate::rpc_monitor_source::{RegisterRpcMonitorOptions, RpcMonitorSource};
-use crate::rpc_monitor_targets::{RpcEvents, default_events, parse_rpc_target};
+use crate::rpc_monitor_targets::{RpcEvents, RpcTarget, default_events, parse_rpc_target};
 use crate::shared::DURABLE_MONITOR_EXPIRY_MS;
 use crate::terminal_manifest_model::{MonitorRegistration, MonitorSpec, RecordedRegistration};
 use serde_json::{Value, json};

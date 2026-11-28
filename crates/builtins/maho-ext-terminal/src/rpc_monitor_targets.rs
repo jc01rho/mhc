@@ -62,7 +62,10 @@ pub fn parse_rpc_target(target: &str, self_durable_id: Option<&str>) -> Result<R
         && !trimmed.contains('\\')
         && !device.starts_with(['.', '~'])
         && !(device.len() == 2
-            && device.chars().next().is_some_and(char::is_ascii_alphabetic)
+            && device
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
             && device.chars().nth(1) == Some(':'))
     {
         if crate::current_rpc_remote_source().is_none() {

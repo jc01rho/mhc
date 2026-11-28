@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 const UNKNOWN_JSON_LIMIT: usize = 160;
 
+#[derive(Clone)]
 struct SessionView {
     label: String,
     status: String,

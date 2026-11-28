@@ -297,7 +297,7 @@ impl RpcMonitorSource {
             checkpoint,
             opener: options.opener,
             remote_source: options.remote,
-            restored_from: options.restored_from,
+            restored_from: options.restored_from.clone(),
             ended: options.ended,
         });
         let now = (host.now_ms)();

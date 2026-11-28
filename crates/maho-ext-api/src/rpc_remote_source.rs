@@ -8,6 +8,18 @@ use std::sync::Arc;
 
 pub type RpcRemoteBoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+/// One source open's answer: the subscription, or why the target cannot be followed.
+pub type RpcRemoteOpenResult = Result<RpcRemoteSubscription, String>;
+
+/// What a source's `open` does: one target, the options it arms with, and the callbacks it reports to.
+pub type RpcRemoteOpenFn = dyn Fn(
+        RpcRemoteTarget,
+        RpcRemoteOpenOptions,
+        RpcRemoteHandlers,
+    ) -> RpcRemoteBoxFuture<RpcRemoteOpenResult>
+    + Send
+    + Sync;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcRemoteTarget {
     pub device: String,
@@ -66,15 +78,7 @@ impl RpcRemoteSubscription {
 
 #[derive(Clone)]
 pub struct RpcRemoteSource {
-    pub open: Arc<
-        dyn Fn(
-                RpcRemoteTarget,
-                RpcRemoteOpenOptions,
-                RpcRemoteHandlers,
-            ) -> RpcRemoteBoxFuture<Result<RpcRemoteSubscription, String>>
-            + Send
-            + Sync,
-    >,
+    pub open: Arc<RpcRemoteOpenFn>,
 }
 
 // Global registry: latest registration wins.
