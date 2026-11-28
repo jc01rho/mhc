@@ -20,6 +20,9 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
+/// Reports one record of a remote feed: the host's name for it and the record.
+pub type RpcRecordCallback = Arc<dyn Fn(&str, &Value) + Send + Sync>;
+
 pub const RPC_RESCAN_MS: u64 = 30_000;
 
 /// One endpoint's host identity in a checkpoint.
@@ -66,7 +69,7 @@ pub struct RpcRemoteCheckpoint {
 pub struct RpcRemoteFeedHost {
     pub renderer: Arc<Mutex<RpcMonitorRenderer>>,
     pub hosts: Arc<Mutex<indexmap::IndexMap<String, RpcHostIdentity>>>,
-    pub record: Arc<dyn Fn(&str, &Value) + Send + Sync>,
+    pub record: RpcRecordCallback,
     pub line: Arc<dyn Fn(String) + Send + Sync>,
     pub checkpoint: Arc<dyn Fn() + Send + Sync>,
     pub ended: Arc<dyn Fn(&str) + Send + Sync>,
@@ -481,7 +484,7 @@ pub struct RpcWatchOptions {
     /// A restore's saved view: a remote target resumes from its cursor.
     pub restored_from: Option<RpcMonitorCheckpoint>,
     /// A remote target's access ended for good: the monitor settles with this summary.
-    pub ended: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub ended: Option<crate::rpc_monitor_source::RpcEndedCallback>,
 }
 
 type Close = Arc<dyn Fn() + Send + Sync>;

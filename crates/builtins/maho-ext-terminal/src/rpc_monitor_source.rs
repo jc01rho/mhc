@@ -13,6 +13,9 @@ use crate::rpc_monitor_watch::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
+/// A remote target's end-of-access callback: the monitor settles with the summary.
+pub type RpcEndedCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// The summary an RPC watch settles with when its own deadline fires. An RPC watch observes other
 /// sessions and kills nothing, so this must not claim a kill; the same constant feeds the
 /// ended-reason classifier so the two can never drift.
@@ -46,7 +49,7 @@ pub struct RegisterRpcMonitorOptions {
     /// The source serving a remote target.
     pub remote: Option<crate::RpcRemoteSource>,
     /// A remote target's access ended for good: the monitor settles with this summary.
-    pub ended: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub ended: Option<RpcEndedCallback>,
 }
 
 /// Upstream `RpcMonitorRecord`.

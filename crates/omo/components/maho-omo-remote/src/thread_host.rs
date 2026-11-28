@@ -10,7 +10,7 @@ use maho_core::agent_session::AgentSession;
 use maho_core::extensions::session_control_types::{self as engine, SessionControlActions};
 use maho_core::session_control_actions::GenerationSessionControlActions;
 use maho_omo_gateway::thread::adapter::BoxFuture;
-use maho_omo_gateway::thread::attachment_fence::RpcTransport;
+use maho_omo_gateway::thread::attachment_fence::{ConversationRequest, RpcTransport};
 use maho_omo_gateway::thread::native::{NativeThreadHost, ThreadHostWire};
 use maho_omo_gateway::thread::registration::{
     RegisterControlEndpointOptions, SessionControlActionsPort, SessionControlRegistration,
@@ -151,7 +151,10 @@ impl RpcTransport for HostTransport {
 mod wire {
     use std::collections::HashMap;
     use std::path::Path;
-    use std::sync::{Mutex, MutexGuard, PoisonError};
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+    use maho_omo_gateway::thread::adapter::BoxFuture;
+    use maho_omo_gateway::thread::attachment_fence::ConversationRequest;
 
     use maho_omo_gateway::thread::live_surface::{ENDPOINT_LIST_TIMEOUT_MS, REQUEST_TIMEOUT_MS};
     use maho_rpc::socket_client::RpcSocket;
@@ -215,12 +218,7 @@ mod wire {
         agent_dir: &Path,
         attached: &Attached,
         followups: Arc<
-            dyn Fn(
-                    Value,
-                    maho_omo_gateway::thread::attachment_fence::ConversationRequest,
-                ) -> BoxFuture<Result<(), String>>
-                + Send
-                + Sync,
+            dyn Fn(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
         >,
     ) -> Result<Value, String> {
         // Upstream's `requestFrame` runs `open_session` and its `set_session_name` inside one
@@ -357,9 +355,25 @@ mod wire {
 mod wire {
     use std::collections::HashMap;
     use std::path::Path;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
+    use maho_omo_gateway::thread::adapter::BoxFuture;
+    use maho_omo_gateway::thread::attachment_fence::ConversationRequest;
     use serde_json::Value;
+
+    /// maho-rpc reaches a session host over a unix socket only, so on this platform no conversation opens.
+    pub(super) async fn conversation(
+        socket: &str,
+        first: Value,
+        agent_dir: &Path,
+        attached: &Mutex<HashMap<(String, String), ()>>,
+        followups: Arc<
+            dyn Fn(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
+        >,
+    ) -> Result<Value, String> {
+        let _ = (first, agent_dir, attached, followups);
+        Err(format!("host_unavailable:{socket}"))
+    }
 
     /// maho-rpc reaches a session host over a unix socket only, so on this platform no host answers.
     pub(super) async fn converse(

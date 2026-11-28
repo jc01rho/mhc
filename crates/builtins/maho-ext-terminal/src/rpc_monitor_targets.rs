@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn remote_targets_need_a_registered_source() {
         assert!(parse_rpc_target("b/dur-1", None).is_err());
-        let unregister = register_rpc_remote_source(crate::RpcRemoteSource {
+        let unregister = crate::register_rpc_remote_source(crate::RpcRemoteSource {
             open: Arc::new(|_, _, _| Box::pin(async { Err("unused".to_owned()) })),
         });
         assert_eq!(
