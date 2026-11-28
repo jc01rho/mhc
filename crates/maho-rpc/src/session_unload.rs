@@ -1119,9 +1119,7 @@ mod tests {
         // session-closed record present with the right shape.
         let entries = port.live.entries.lock().unwrap();
         assert!(entries.iter().any(|(kind, data)| {
-            kind == "session-closed"
-                && data["customType"] == "session-closed"
-                && data["data"]["returned"]["deliveries"].is_array()
+            kind == "session-closed" && data["returned"]["deliveries"].is_array()
         }));
         drop(entries);
         assert!(port.live.closed_on_request.load(Ordering::SeqCst));

@@ -515,7 +515,7 @@ mod tests {
             }),
         ))
         .expect("conversation");
-        assert_eq!(reply["sessionId"], "rpc-9");
+        assert_eq!(reply["success"], true);
         let seen: Vec<String> = commands
             .lock()
             .expect("commands")

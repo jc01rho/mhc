@@ -17,7 +17,7 @@ pub fn is_tui_control_socket(socket: &str) -> bool {
         .and_then(|n| n.to_str())
         .unwrap_or("");
     // t-<16 lowercase hex>.sock — upstream TUI_SOCKET_NAME = /^t-[0-9a-f]{16}\.sock$/
-    name.len() == 19
+    name.len() == 23
         && name.starts_with("t-")
         && name.ends_with(".sock")
         && name.as_bytes()[2..18]
