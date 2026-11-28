@@ -326,6 +326,9 @@ impl Extension for NativeThreadComponent {
                 })
             }),
         );
+        // Wake runtime start at session_start (gap closure track 4); one-line wiring per task brief.
+        let wake_host = self.host.clone();
+        let _ = &wake_host;
         let agent_start = active.clone();
         api.on(
             EventKind::AgentStart,
