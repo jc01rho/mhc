@@ -259,6 +259,16 @@ async fn claim_and_unload(
             .ok(),
         _ => None,
     };
+    // senpi `recordGracefulClose`: write the `session-closed` record and mark the session closed-on-request,
+    // together with the close claim so the teardown's `session_shutdown` carries `closed: true`.
+    let _ = ready.session.append_custom_entry(
+        "session-closed",
+        json!({
+            "at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "returned": { "deliveries": handed_back.clone() }
+        }),
+    );
+    ready.session.record_closed_on_request();
     if !port.tear_down(session_id, &ready.session_path).await {
         let mut data = refused(&Refusal {
             reason: "session_closing",

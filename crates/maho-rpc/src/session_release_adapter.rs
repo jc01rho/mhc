@@ -180,6 +180,10 @@ impl ReleasableSession for AgentSessionRelease {
         );
         Ok(Some(attempt))
     }
+    fn record_closed_on_request(&self) {
+        self.session.record_closed_on_request();
+    }
+
     fn append_custom_entry(&self, custom_type: &str, data: Value) -> Result<(), ReleaseWriteError> {
         let (file, persisted, flushed) = self.session.with_session_manager(|manager| {
             (

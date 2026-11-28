@@ -89,8 +89,8 @@ pub trait ReleasableSession: Send + Sync {
     async fn prepare_move_state(&self, _move_id: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
-    /// `sessionManager.appendCustomEntry(customType, data)`: on disk or not at all.
-    fn append_custom_entry(&self, custom_type: &str, data: Value) -> Result<(), ReleaseWriteError>;
+    /// senpi `session.recordClosedOnRequest`: marks the teardown's `session_shutdown` as `closed: true`.
+    fn record_closed_on_request(&self) {}
     /// `extensionRunner.emitSessionMove({ type: "session_move_export", moveId, dir })`: the session's extensions write
     /// the state that must follow it into `dir`, while their runtime is still live. The first failing handler's report
     /// is the release's failure.
