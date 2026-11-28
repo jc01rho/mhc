@@ -652,14 +652,17 @@ impl LiveThreadSurface {
             // Upstream `requestFrame` sends `set_session_name` on the connection `open_session`
             // opened, so the host has attached the caller by the time the naming command arrives.
             let name = name.filter(|name| !name.trim().is_empty());
-            let transport_for_naming = transport.clone();
-            let socket_for_naming = socket.clone();
+            let name_for_closure = name.clone();
             let frame = transport
+                .clone()
                 .conversation(
                     &socket,
                     command,
                     None,
                     Arc::new(move |reply, request| {
+                        let name = name_for_closure.clone();
+                        let transport_for_naming = transport.clone();
+                        let socket_for_naming = socket.clone();
                         Box::pin(async move {
                             let Some(name) = name else {
                                 return Ok(());
@@ -678,8 +681,6 @@ impl LiveThreadSurface {
                                 "name": name,
                             }))
                             .await;
-                            // Upstream ignores the naming reply here; a transport without a held connection
-                            // still gets a best-effort separate request, as before.
                             if naming.is_err() {
                                 let _ = transport_for_naming
                                     .request(
@@ -705,6 +706,7 @@ impl LiveThreadSurface {
                 .unwrap_or_default()
                 .to_owned();
             let listing = transport
+                .clone()
                 .request(
                     &socket,
                     serde_json::json!({ "type": "list_sessions", "observe": true }),
