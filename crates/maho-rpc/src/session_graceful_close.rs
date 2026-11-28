@@ -125,7 +125,7 @@ pub fn record_graceful_close(
         stopped: Stopped {
             wake_sources: session.active_wake_sources(),
         },
-        at,
+        at: at.clone(),
     };
     let _ = session.append_custom_entry(
         "session-closed",
