@@ -162,3 +162,5 @@ mod wake_session_waker_tests;
 mod wake_store_tests;
 #[path = "wake_support.rs"]
 mod wake_support;
+#[path = "endpoint_registry_tests.rs"]
+mod endpoint_registry_tests;

@@ -197,6 +197,26 @@ mod wire {
         } else {
             REQUEST_TIMEOUT_MS
         };
+        // Terminal control endpoints authenticate with 32 bytes from `<socket>.secret`, sent before
+        // the first request, instead of the rpc-host identity handshake.
+        if maho_omo_gateway::thread::endpoint_registry::is_tui_control_socket(socket) {
+            let secret_path = std::path::PathBuf::from(
+                maho_omo_gateway::thread::endpoint_registry::control_socket_secret_path(socket),
+            );
+            let secret = maho_rpc::socket_transport::read_socket_secret(&secret_path)
+                .map_err(|error| format!("host_unavailable:{socket}: {error}"))?;
+            let mut connection =
+                RpcSocket::connect(socket, std::time::Duration::from_millis(timeout_ms))
+                    .await
+                    .map_err(|error| io_failure(socket, &error))?;
+            maho_rpc::socket_transport::send_socket_handshake(
+                &mut connection.reader.get_mut(),
+                &secret,
+            )
+            .await
+            .map_err(|error| format!("host_unavailable:{socket}: {error}"))?;
+            return Ok(connection);
+        }
         maho_rpc::host_probe::authenticated_host_socket(
             socket,
             &serde_json::json!({ "type": "get_protocol_info", "observe": true }),

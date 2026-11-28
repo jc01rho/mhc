@@ -183,6 +183,8 @@ pub struct LiveThreadSurfaceOptions {
     /// Replaces the engine CLI enumeration; a test answers it without spawning anything.
     pub status_all: Option<Arc<dyn Fn() -> Option<Vec<HostEndpointReport>> + Send + Sync>>,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
+    pub registry:
+        Option<Arc<dyn Fn() -> Vec<super::endpoint_registry::RegistryEndpoint> + Send + Sync>>,
 }
 
 /// The thread tools' client: it never starts or replaces a host.
@@ -190,6 +192,7 @@ pub struct LiveThreadSurface {
     legacy: String,
     transport: Arc<dyn RpcTransport>,
     status_all: Arc<dyn Fn() -> Option<Vec<HostEndpointReport>> + Send + Sync>,
+    registry: Arc<dyn Fn() -> Vec<super::endpoint_registry::RegistryEndpoint> + Send + Sync>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     enumeration: Mutex<Option<(i64, Vec<KnownEndpoint>)>>,
     kinds: Mutex<BTreeMap<String, GatewayEndpointKind>>,
@@ -201,6 +204,13 @@ impl LiveThreadSurface {
             legacy: options.socket,
             transport: options.transport,
             status_all: options.status_all.unwrap_or_else(|| Arc::new(|| None)),
+            registry: options.registry.unwrap_or_else(|| {
+                Arc::new(|| {
+                    crate::thread::endpoint_registry::list_registry_endpoints(
+                        &std::env::var("OMO_AGENT_DIR").unwrap_or_default(),
+                    )
+                })
+            }),
             now: options.now.unwrap_or_else(|| {
                 Arc::new(|| {
                     std::time::SystemTime::now()
