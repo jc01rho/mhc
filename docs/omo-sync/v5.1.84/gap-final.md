@@ -14,7 +14,7 @@ Counts computed from the slice rows below (E and F are the two rows this track h
 | port | 6 |
 | ported | 1 |
 | gap | 0 |
-| blocked | 1 |
+| n/a | 1 |
 | **total** | **8** |
 
 ## Slices
@@ -62,7 +62,7 @@ drained report runs after it with the refusal notices beside it, never ahead of 
 The local-API client behind the port (`consumer/device-service-port.ts`) is not ported: the device service in this
 repository serves no `deliveries.*` protocol, so the runtime keeps taking a factory and a host that brings one binds it.
 
-## E — the account-wide sessions port: `blocked` on the relay half, `port` over agentd
+## E — the account-wide sessions port: `n/a` on the relay half, `port` over agentd
 
 Upstream's `remote/port/device-service.ts` speaks a `deliveries.*`/`sessions.*` protocol to the device service. mhc's
 relay daemon answers the requests it serves and refuses this list by name (`crates/omo/mhc-relayd/src/local_server.rs`
@@ -71,14 +71,20 @@ relay daemon answers the requests it serves and refuses this list by name (`crat
 `refresher.register`, `device.adopt`, `enforcement.report`, `owner.shutdown_for_upgrade`, `session.endpoints`,
 `session.locate`, `session.read`, `session.command_part`, `sessions.events.subscribe`, `deliveries.serve`.
 
-This track did not port that protocol onto the relay. It built the port mhc uses instead: a device whose `relayd.json`
+This track did not port that protocol onto the relay, and per the owner's 2026-11-27 decision it never will: the relay
+half is `n/a`, not a remaining gap. The relay keeps only its three peer ops (`describe`, `sessions`, `command`) and
+refuses these ten names with code `unsupported`, a reason naming the agentd path and an action to add an `agentd`
+object to the peer in `relayd.json`. A caller sent to a peer without an `agentd` entry gets the same cause
+(`agentd_entry_required`) and fix in its typed failure instead of a bare relay/unsupported error. It built the port
+mhc uses instead: a device whose `relayd.json`
 peer carries an `agentd` object (address, port, tokenFile) answers the contract's ops over one TCP link of
 LF-delimited JSON frames (`crates/omo/components/maho-omo-gateway/src/thread/remote/agentd/`), and every leg that was
 waiting on the port is ported on it — `mhc.sessions.list` with `waiting`/`engine_version` (#14278), `mhc.session.locate`
 and the solo-probe gate (#14748), `mhc.session.open` for a reopen and a fork (#14799, #13031), `mhc.session.command`
 with its chunked parts, `mhc.session.follow` with seq/ack/resume (#14091, `25dc4d8220`), and
-`mhc.delivery.push`/`mhc.delivery.outcome` (#14623). A device with no `agentd` entry keeps the relay path unchanged;
-`mhc-relayd` is not removed, so the six names above stay the gap for that path and the row stays `blocked` for it.
+`mhc.delivery.push`/`mhc.delivery.outcome` (#14623). A device with no `agentd` entry keeps the relay's three peer ops
+unchanged; `mhc-relayd` is not removed, but its half of this port is superseded by the agentd path, so the row is
+`n/a` for the relay.
 The `remote-consumers` track (`docs/omo-sync/v5.1.84/remote-consumers.md`) closes the remaining consumer legs on the
 agentd path: `AgentdPorts::read` sends `mhc.session.read`, `remote_ops.rs` `follow_remote` consumes `AgentdFollow`
 and `mhc.session.read` with the `25dc4d8220` buffered-output retention rule, `lookup_gate.rs` and `remote_watch.rs`

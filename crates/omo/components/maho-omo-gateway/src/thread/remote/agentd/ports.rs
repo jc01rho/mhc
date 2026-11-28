@@ -45,7 +45,7 @@ use crate::thread::types::GatewayEndpointKind;
 
 use super::frame::EventFrame;
 use super::link::{AgentdError, AgentdLink, DEFAULT_CALL_TIMEOUT, now_ms};
-use super::peer_config::{AgentdPeer, peer_map};
+use super::peer_config::{AGENTD_REFUSAL, AgentdPeer, peer_map};
 
 /// A record at or under this size travels as one `cmd`; a bigger one is split into parts.
 const ONE_FRAME_BYTES: usize = 48 * 1024;
@@ -355,9 +355,10 @@ impl AgentdClient {
         timeout: Duration,
     ) -> Result<Value, AgentdError> {
         let Some(link) = self.link(device) else {
-            return Err(AgentdError::Unavailable(format!(
-                "device {device} has no agentd entry"
-            )));
+            return Err(AgentdError::Refused {
+                reason: AGENTD_REFUSAL.reason.to_owned(),
+                detail: Some(AGENTD_REFUSAL.fix.to_owned()),
+            });
         };
         link.call(op, args, timeout).await
     }
@@ -1456,9 +1457,10 @@ impl AgentdFollowPort {
         from_seq: Option<u64>,
     ) -> Result<AgentdFollow, AgentdError> {
         let Some(link) = self.client.link(device) else {
-            return Err(AgentdError::Unavailable(format!(
-                "device {device} has no agentd entry"
-            )));
+            return Err(AgentdError::Refused {
+                reason: AGENTD_REFUSAL.reason.to_owned(),
+                detail: Some(AGENTD_REFUSAL.fix.to_owned()),
+            });
         };
         let mut args = Map::new();
         args.insert("session".to_owned(), json!(session_id));
@@ -1676,6 +1678,16 @@ mod tests {
             RemoteCommandOutcome::Refused {
                 reason: "daemon_unavailable".to_owned(),
                 detail: Some("agentd is unreachable: gone".to_owned()),
+            }
+        );
+        assert_eq!(
+            outcome_of(&AgentdError::Refused {
+                reason: AGENTD_REFUSAL.reason.to_owned(),
+                detail: Some(AGENTD_REFUSAL.fix.to_owned()),
+            }),
+            RemoteCommandOutcome::Refused {
+                reason: AGENTD_REFUSAL.reason.to_owned(),
+                detail: Some(AGENTD_REFUSAL.fix.to_owned()),
             }
         );
     }
