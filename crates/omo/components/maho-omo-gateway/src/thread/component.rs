@@ -483,7 +483,7 @@ impl GatewayThreadComponent {
                                 "thread gateway: the graceful close's unread messages were not answered: {error}"
                             );
                             if let Some(log) = &component.log {
-                                log(line);
+                                log(&line);
                             } else {
                                 maho_ext_api::diagnostic(&line);
                             }
