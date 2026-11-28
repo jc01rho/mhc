@@ -476,7 +476,7 @@ fn an_op_the_daemon_does_not_serve_answers_unsupported_and_an_unconfigured_devic
         "{detail:?}"
     );
     let failure = relay_outcome_failure(
-        &maho_omo_gateway::thread::remote::agentd::outcome_of(&error),
+        &maho_omo_gateway::thread::remote::agentd::ports::outcome_of(&error),
         "c",
     );
     assert_eq!(failure.code.as_str(), "host_unavailable");

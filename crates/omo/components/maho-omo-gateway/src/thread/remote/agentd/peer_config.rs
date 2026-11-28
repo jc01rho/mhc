@@ -160,14 +160,14 @@ mod tests {
         assert_eq!(peers[0].socket_address(), "100.64.0.2:7811");
         assert_eq!(peers[0].token_file, PathBuf::from("/keys/mini"));
         let refusal = AGENTD_REFUSAL.to_json("laptop");
-        assert_eq!(refusal["code"], json!("unsupported"));
-        assert_eq!(refusal["reason"], json!(AGENTD_ENTRY_REQUIRED));
+        assert_eq!(refusal["code"], serde_json::json!("unsupported"));
+        assert_eq!(refusal["reason"], serde_json::json!(AGENTD_ENTRY_REQUIRED));
         assert!(
             refusal["fix"]
                 .as_str()
                 .is_some_and(|fix| fix.contains("relayd.json"))
         );
-        assert_eq!(refusal["device"], json!("laptop"));
+        assert_eq!(refusal["device"], serde_json::json!("laptop"));
     }
 
     #[test]
