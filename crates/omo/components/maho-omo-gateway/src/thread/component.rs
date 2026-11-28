@@ -291,18 +291,9 @@ impl GatewayThreadComponent {
         if let Some(remote) = self.remote.clone()
             && let Some(surface) = remote.remote_surface_arc()
         {
-            let register = maho_ext_api::register_rpc_remote_source;
-            let source = maho_ext_api::RpcRemoteSource {
-                open: Arc::new(move |target, options, handlers| {
-                    let surface = surface.clone();
-                    Box::pin(async move {
-                        super::remote::monitor_source::create_remote_monitor_source(surface)
-                            .open(target, options, handlers)
-                            .await
-                    })
-                }),
-            };
-            register(source);
+            maho_ext_api::register_rpc_remote_source(
+                super::remote::monitor_source::create_remote_monitor_source(surface),
+            );
         }
         let mut present = api
             .get_all_tools()?
