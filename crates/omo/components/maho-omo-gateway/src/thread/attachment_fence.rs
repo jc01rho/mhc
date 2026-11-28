@@ -84,7 +84,7 @@ pub trait RpcTransport: Send + Sync {
         first: Value,
         durable_session_id: Option<String>,
         followups: Arc<
-            dyn FnOnce(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
+            dyn Fn(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
         >,
     ) -> BoxFuture<Result<Value, String>> {
         let socket = socket.to_owned();

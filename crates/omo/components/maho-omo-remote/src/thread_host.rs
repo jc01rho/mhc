@@ -135,12 +135,7 @@ impl RpcTransport for HostTransport {
         first: Value,
         _durable_session_id: Option<String>,
         followups: Arc<
-            dyn FnOnce(
-                    Value,
-                    maho_omo_gateway::thread::attachment_fence::ConversationRequest,
-                ) -> BoxFuture<Result<(), String>>
-                + Send
-                + Sync,
+            dyn Fn(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
         >,
     ) -> BoxFuture<Result<Value, String>> {
         let socket = socket.to_owned();
@@ -219,7 +214,7 @@ mod wire {
         agent_dir: &Path,
         attached: &Attached,
         followups: Arc<
-            dyn FnOnce(
+            dyn Fn(
                     Value,
                     maho_omo_gateway::thread::attachment_fence::ConversationRequest,
                 ) -> BoxFuture<Result<(), String>>
