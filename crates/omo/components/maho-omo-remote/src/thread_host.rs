@@ -271,9 +271,11 @@ mod wire {
             followups(answer.clone(), request).await?;
         }
         // `request` (and its clone of `shared`) is dropped here; reclaim the held connection.
-        let connection = Arc::try_unwrap(shared)
-            .expect("conversation request outlived its follow-ups")
-            .into_inner();
+        // A follow-up that kept the request alive leaves the connection shared: it is dropped, not reused.
+        let connection = match Arc::try_unwrap(shared) {
+            Ok(connection) => connection.into_inner(),
+            Err(_) => return Ok(answer),
+        };
         // An `open_session` attach remains on the connection it opened, like the fence's attach.
         let keep = reused && kind != "release_attachment";
         if keep && let Some(key) = key {
