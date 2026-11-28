@@ -543,16 +543,59 @@ impl LiveThreadSurface {
                 object.insert("type".into(), Value::String("open_session".into()));
                 object.insert("retain_on_disconnect".into(), Value::Bool(true));
             }
-            let frame = transport.request(&socket, command, None).await?;
+            // Upstream `requestFrame` sends `set_session_name` on the connection `open_session`
+            // opened, so the host has attached the caller by the time the naming command arrives.
+            let name = name.filter(|name| !name.trim().is_empty());
+            let transport_for_naming = transport.clone();
+            let socket_for_naming = socket.clone();
+            let frame = transport
+                .conversation(
+                    &socket,
+                    command,
+                    None,
+                    Arc::new(move |reply, request| {
+                        Box::pin(async move {
+                            let Some(name) = name else { return Ok(()); };
+                            let opened = match data_record(&reply, "open_session") {
+                                Ok(opened) => opened,
+                                Err(_) => return Ok(()),
+                            };
+                            let routing_id = opened
+                                .get("sessionId")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            let naming = request(serde_json::json!({
+                                "type": "set_session_name",
+                                "sessionId": routing_id,
+                                "name": name,
+                            }))
+                            .await;
+                            // Upstream ignores the naming reply here; a transport without a held connection
+                            // still gets a best-effort separate request, as before.
+                            if naming.is_err() {
+                                let _ = transport_for_naming
+                                    .request(
+                                        &socket_for_naming,
+                                        serde_json::json!({
+                                            "type": "set_session_name",
+                                            "sessionId": routing_id,
+                                            "name": name,
+                                        }),
+                                        None,
+                                    )
+                                    .await;
+                            }
+                            Ok(())
+                        })
+                    }),
+                )
+                .await?;
             let mut opened = data_record(&frame, "open_session")?;
             let routing_id = opened
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
-                let _ = transport.request(&socket, serde_json::json!({ "type": "set_session_name", "sessionId": routing_id, "name": name }), None).await;
-            }
             let listing = transport
                 .request(
                     &socket,

@@ -128,6 +128,28 @@ impl RpcTransport for HostTransport {
         let attached = self.attached.clone();
         Box::pin(async move { wire::converse(&socket, command, &agent_dir, &attached).await })
     }
+
+    fn conversation(
+        self: Arc<Self>,
+        socket: &str,
+        first: Value,
+        _durable_session_id: Option<String>,
+        followups: Arc<
+            dyn FnOnce(
+                    Value,
+                    maho_omo_gateway::thread::attachment_fence::ConversationRequest,
+                ) -> BoxFuture<Result<(), String>>
+                + Send
+                + Sync,
+        >,
+    ) -> BoxFuture<Result<Value, String>> {
+        let socket = socket.to_owned();
+        let agent_dir = self.agent_dir.clone();
+        let attached = self.attached.clone();
+        Box::pin(async move {
+            wire::conversation(&socket, first, &agent_dir, &attached, followups).await
+        })
+    }
 }
 
 #[cfg(unix)]
@@ -185,6 +207,69 @@ mod wire {
         } else {
             reused && kind != "release_attachment"
         };
+        if keep && let Some(key) = key {
+            attached_connections(attached).insert(key, connection);
+        }
+        Ok(answer)
+    }
+
+    pub(super) async fn conversation(
+        socket: &str,
+        first: Value,
+        agent_dir: &Path,
+        attached: &Attached,
+        followups: Arc<
+            dyn FnOnce(
+                    Value,
+                    maho_omo_gateway::thread::attachment_fence::ConversationRequest,
+                ) -> BoxFuture<Result<(), String>>
+                + Send
+                + Sync,
+        >,
+    ) -> Result<Value, String> {
+        // Upstream's `requestFrame` runs `open_session` and its `set_session_name` inside one
+        // `withRpcSocket`. Keep one authenticated connection and pass it to each follow-up, so the
+        // host sees the naming request on the very connection its open attached.
+        let kind = first
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let key = first
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(|session| (socket.to_owned(), session.to_owned()));
+        let held = match &key {
+            Some(key) => attached_connections(attached).remove(key),
+            None => None,
+        };
+        let reused = held.is_some();
+        let mut connection = match held {
+            Some(connection) => connection,
+            None => open(socket, &kind, agent_dir).await?,
+        };
+        let answer = connection
+            .request(first)
+            .await
+            .map_err(|error| io_failure(socket, &error))?;
+        if refused_for_auth(&answer) {
+            return Err(format!("auth_required:{socket}"));
+        }
+        {
+            let request: maho_omo_gateway::thread::attachment_fence::ConversationRequest =
+                Arc::new(move |command| {
+                    let socket = socket.to_owned();
+                    Box::pin(async move {
+                        connection
+                            .request(command)
+                            .await
+                            .map_err(|error| io_failure(&socket, &error))
+                    })
+                });
+            followups(answer.clone(), request).await?;
+        }
+        // An `open_session` attach remains on the connection it opened, like the fence's attach.
+        let keep = reused && kind != "release_attachment";
         if keep && let Some(key) = key {
             attached_connections(attached).insert(key, connection);
         }

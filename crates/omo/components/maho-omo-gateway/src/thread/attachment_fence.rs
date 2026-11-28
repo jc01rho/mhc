@@ -5,6 +5,7 @@
 //! always was.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
@@ -58,6 +59,11 @@ const UNFENCED: [&str; 37] = [
 /// so an attach refusal is answered as that command's own refusal frame instead of a throw.
 const TYPED_REFUSAL: [&str; 1] = ["release_session"];
 
+/// Sends one command on the connection that is already open, returning its reply.
+pub type ConversationRequest = Arc<
+    dyn Fn(Value) -> BoxFuture<Result<Value, String>> + Send + Sync,
+>;
+
 /// One request on an authenticated connection.
 pub trait RpcTransport: Send + Sync {
     fn request(
@@ -66,6 +72,33 @@ pub trait RpcTransport: Send + Sync {
         command: Value,
         durable_session_id: Option<String>,
     ) -> BoxFuture<Result<Value, String>>;
+
+    /// Runs `first` and then the follow-ups on the same connection. Upstream's `requestFrame` keeps
+    /// `open_session` and its `set_session_name` inside one `withRpcSocket` (`openedName`), so the naming
+    /// command arrives on the connection the host attached. `followups` sees the first reply and a
+    /// request bound to that conversation. A transport that cannot hold a connection open falls back to
+    /// one request per command (the default implementation), which is the old behaviour.
+    fn conversation(
+        self: Arc<Self>,
+        socket: &str,
+        first: Value,
+        durable_session_id: Option<String>,
+        followups: Arc<
+            dyn FnOnce(Value, ConversationRequest) -> BoxFuture<Result<(), String>> + Send + Sync,
+        >,
+    ) -> BoxFuture<Result<Value, String>> {
+        let socket = socket.to_owned();
+        Box::pin(async move {
+            let reply = self.request(&socket, first, durable_session_id.clone()).await?;
+            let transport: ConversationRequest = Arc::new({
+                let socket = socket.clone();
+                let transport = self.clone();
+                move |command| transport.request(&socket, command, durable_session_id.clone())
+            });
+            followups(reply.clone(), transport).await?;
+            Ok(reply)
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
