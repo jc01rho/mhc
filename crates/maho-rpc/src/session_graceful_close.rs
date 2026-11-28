@@ -5,9 +5,9 @@
 //! every new delivery typed `session_closing`, and the queued input leaves the session at once, handed back to its
 //! senders unread. The running turn and its tool calls then end on their own; nothing is aborted. A drain that
 //! outlives its bound reopens the session as it was.
-use crate::session_release_interrupt::{ReleasableSession, ReleaseDropped, take_queued_input};
+use crate::session_release_interrupt::{ReleaseDropped, take_queued_input};
 use crate::session_unload::UnloadableSession;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const GRACEFUL_CLOSE_DEFAULT_WAIT_MS: u64 = 60_000;
@@ -53,9 +53,13 @@ pub fn reopen_after_drain(session: &dyn UnloadableSession) {
 
 /// What still keeps the session from closing plus work that settles as it quiets.
 pub struct GracefulDrainPort<'a> {
-    pub busy: &'a dyn Fn() -> Vec<String>,
-    pub settling:
-        &'a dyn Fn() -> Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    pub busy: Box<dyn Fn() -> Vec<String> + Send + Sync + 'a>,
+    pub settling: Box<
+        dyn Fn() -> Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>
+            + Send
+            + Sync
+            + 'a,
+    >,
 }
 
 /// Resolves true once `port.busy()` is empty, false when `wait_ms` passes first. Wakes on session events via
@@ -76,7 +80,7 @@ pub async fn drain_until_quiet(
         // One quiet pass per tick; a session event will set busy empty on its own cycle.
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
         let _ = session;
-        let _ = port.settling();
+        let _ = (port.settling)();
     }
 }
 

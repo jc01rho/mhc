@@ -36,7 +36,7 @@ use crate::session_graceful_close::{
     reopen_after_drain,
 };
 use crate::session_release_interrupt::{
-    ReleasableSession, ReleaseDropped, ReleaseSettlePort, abort_and_settle, take_queued_input,
+    ReleasableSession, ReleaseDropped, ReleaseSettlePort, abort_and_settle,
 };
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
@@ -241,7 +241,7 @@ async fn close_gracefully(
     }
     let drain = fence_for_close(&*first.session);
     let port_graceful = crate::session_graceful_close::GracefulDrainPort {
-        busy: &|| {
+        busy: Box::new(|| {
             let activity = first.session.activity_snapshot();
             let mut reasons: Vec<String> = Vec::new();
             if activity.is_streaming {
@@ -254,13 +254,16 @@ async fn close_gracefully(
                 reasons.push("session work".into());
             }
             reasons
-        },
-        settling: &|| Vec::new(),
+        }),
+        settling: Box::new(|| Vec::new()),
     };
     let wait_ms = crate::session_graceful_close::graceful_wait_ms(command["waitMs"].as_u64());
-    let quiet =
-        crate::session_graceful_close::drain_until_quiet(&*first.session, &port_graceful, wait_ms)
+    let quiet = {
+        let quiet = crate::session_graceful_close::drain_until_quiet(&*first.session, &port_graceful, wait_ms)
             .await;
+        drop(port_graceful);
+        quiet
+    };
     if !quiet {
         reopen_after_drain(&*first.session);
         let (turn, waited_ms) = crate::session_graceful_close::drain_facts(&*first.session, &drain);
