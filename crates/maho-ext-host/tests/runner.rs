@@ -2039,6 +2039,7 @@ async fn shutdown_budget_is_resolved_only_when_handlers_exist() {
     }));
     let event = || {
         ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,
@@ -2164,6 +2165,7 @@ async fn shutdown_hard_cap_aborts_and_runs_next_handler() {
     runner.shutdown_timeout_ms = 50;
     runner
         .emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,
@@ -2190,6 +2192,7 @@ async fn shutdown_warning_event_releases_handler_without_error() {
     runner.set_warning_listener(Some(Arc::new(move |_| gate.notify_one())));
     runner
         .emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Reload,
             target_session_file: None,
             signal: None,
@@ -2214,6 +2217,7 @@ async fn shutdown_fast_handler_keeps_signal_unaborted() {
     let mut runner = runner(vec![extension("fast", EventKind::SessionShutdown, handler)]);
     runner
         .emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::New,
             target_session_file: Some("next".into()),
             signal: None,
@@ -2232,6 +2236,7 @@ async fn shutdown_error_preserves_extension_error_shape() {
     )]);
     runner
         .emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,

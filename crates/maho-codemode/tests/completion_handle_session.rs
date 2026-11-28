@@ -478,6 +478,7 @@ async fn real_eval_completion_handle_survives_cells_but_not_session_switch() {
     );
 
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,

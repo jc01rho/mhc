@@ -849,6 +849,7 @@ mod tests {
 
     fn shutdown() -> ExtensionEvent {
         ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,

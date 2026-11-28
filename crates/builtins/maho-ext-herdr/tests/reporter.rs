@@ -254,6 +254,7 @@ fn start_event() -> ExtensionEvent {
 }
 fn shutdown_event(reason: SessionReason) -> ExtensionEvent {
     ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason,
         target_session_file: None,
         signal: None,

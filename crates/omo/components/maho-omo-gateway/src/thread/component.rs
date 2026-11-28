@@ -457,6 +457,42 @@ impl GatewayThreadComponent {
                 })
             }),
         );
+        let close_returns = Arc::clone(self);
+        api.on(
+            EventKind::SessionShutdown,
+            Arc::new(move |event, ctx| {
+                let component = close_returns.clone();
+                let closed = matches!(
+                    event,
+                    ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
+                        closed: true,
+                        ..
+                    })
+                );
+                let durable_id = ctx.session_manager.session_id().to_owned();
+                let entries = ctx.session_manager.get_entries();
+                Box::pin(async move {
+                    if closed && !durable_id.is_empty() {
+                        let returned = super::graceful_close_returns::returned_at_close(&entries);
+                        if let Err(error) = super::graceful_close_returns::settle_graceful_close(
+                            component.store.as_ref(),
+                            &durable_id,
+                            &returned,
+                        ) {
+                            let line = format!(
+                                "thread gateway: the graceful close's unread messages were not answered: {error}"
+                            );
+                            if let Some(log) = &component.log {
+                                log(line);
+                            } else {
+                                maho_ext_api::diagnostic(&line);
+                            }
+                        }
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
         let alerts_shutdown = self.alerts.clone();
         api.on(
             EventKind::SessionShutdown,

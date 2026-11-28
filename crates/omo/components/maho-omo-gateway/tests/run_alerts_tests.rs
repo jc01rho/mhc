@@ -469,6 +469,7 @@ impl SeatHarness {
         self.dispatch_event(
             EventKind::SessionShutdown,
             ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                closed: false,
                 reason: SessionReason::Quit,
                 target_session_file: None,
                 signal: None,

@@ -79,6 +79,7 @@ async fn registered_events_capture_input_tool_result_and_shutdown() {
         .expect("result");
     assert!(tracker.state_for("session").has_plan_artifact());
     let mut event = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,

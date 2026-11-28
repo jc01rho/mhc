@@ -13,11 +13,11 @@ Counts computed from the rows below.
 
 | verdict | rows |
 |---|---:|
-| port | 9 |
+| port | 10 |
 | ported | 0 |
 | n/a | 1 |
 | gap | 5 |
-| blocked | 1 |
+| blocked | 0 |
 | **total** | **16** |
 
 ## Scope
@@ -49,7 +49,7 @@ maho-core.
 | `thread/live-surface.ts` `dialFor` on a `tui` endpoint (`<socket>.secret`, 32 bytes before the first request) | gap | `HostTransport` speaks the rpc-host handshake only, so a wake to a terminal's control endpoint fails over to the store's inbox wake hint. Follows the registry reader above. |
 | `thread/component.ts` `startWake` (wake runtime and delivery consumer at `session_start`; cold wake on the operator daemon) | gap | The Rust wake runtime (`wake/runtime.rs`) has no host connector (`CarrierConnect`, `carrier_connection.rs`) and no engine host ensure bound; starting it is its own wiring. |
 | `thread/component.ts` `importLegacyMailbox` (pre-gateway `thread_send` mailbox) | n/a | No Rust counterpart: mhc never wrote the pre-gateway mailbox and the Rust store carries only the `legacy_mailbox_directories` option, no importer. |
-| `thread/component.ts` `settleGracefulClose` on `session_shutdown { closed: true }` (omo#14313) | blocked | `maho_ext_api::SessionShutdownEvent` carries no `closed` flag, so the component cannot tell a graceful close from a quit; `graceful_close_returns.rs` stays unwired until the event carries it. |
+| `thread/component.ts` `settleGracefulClose` on `session_shutdown { closed: true }` (omo#14313) | port | Consumer wired: `crates/omo/components/maho-omo-gateway/src/thread/component.rs` registers a `SessionShutdown` handler calling `settle_graceful_close` only when `closed` is true; `crates/maho-core/src/agent_session.rs` adds the `closed_on_request` flag with `record_closed_on_request`/`closed_on_request` accessors, and `emit_session_shutdown_for_quit` now emits `closed:<flag>`. Not ported: mhc has no drain/`recordGracefulClose` step in `session_unload` / `session_control_close` yet, so `record_closed_on_request` is not called from there (write it into the drain step when that point is ported); `emit_session_shutdown` and `runtime_shutdown_to` keep `closed: false`. |
 | `thread/component.ts` `registerRemoteMonitorTargets(pi, remote)` (monitor `type: "thread"` targets) | gap | `tools/monitor-target.ts` has no counterpart in the gateway crate; the monitor tool's thread targets are their own wiring. |
 | `thread/live-surface.ts` `requestFrame` `openedName`: `set_session_name` on the connection `open_session` opened | gap | `LiveThreadSurface::open_session` sends `set_session_name` as its own request, so it reaches the host unattached: the host warns (`refused from the next release`; refused now under `<BRAND>_RPC_REQUIRE_ATTACH=1`). Needs a conversation-scoped request on `RpcTransport`. |
 

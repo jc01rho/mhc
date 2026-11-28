@@ -554,6 +554,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &api,
         EventKind::SessionShutdown,
         &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,
@@ -1006,6 +1007,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &api,
         EventKind::SessionShutdown,
         &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,

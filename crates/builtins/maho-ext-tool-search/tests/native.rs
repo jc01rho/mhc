@@ -650,6 +650,7 @@ async fn session_shutdown_handler_retires_the_service_with_its_reason() {
         assert!(!service.lock().await.is_disposed());
         let handler = api.registered.handlers[&maho_ext_api::EventKind::SessionShutdown][0].clone();
         let mut event = ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
+            closed: false,
             reason,
             target_session_file: None,
             signal: None,

@@ -793,6 +793,7 @@ mod tests {
         for mut event in [
             ExtensionEvent::SessionAbort,
             ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                closed: false,
                 reason: SessionReason::Quit,
                 target_session_file: None,
                 signal: None,

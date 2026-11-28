@@ -403,6 +403,7 @@ mod tests {
         api.registered.handlers[&EventKind::SessionShutdown][0](
             &mut maho_ext_api::ExtensionEvent::SessionShutdown(
                 maho_ext_api::SessionShutdownEvent {
+                    closed: false,
                     reason: maho_ext_api::SessionReason::Quit,
                     target_session_file: None,
                     signal: None,
@@ -451,6 +452,7 @@ mod tests {
             &serde_json::json!({"source":"task","activeCount":1}),
         );
         let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,
@@ -534,6 +536,7 @@ mod tests {
             result.details["goal"]["objective"]
         );
         let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,
@@ -629,6 +632,7 @@ mod tests {
         assert_eq!(blocked.status, crate::types::GoalStatus::Blocked);
         assert_eq!(blocked.time_used_seconds, 2.0);
         let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,
@@ -678,6 +682,7 @@ mod tests {
         assert!(crate::store::read_goal(&reference).unwrap().is_none());
         api.registered.handlers[&EventKind::SessionShutdown][0](
             &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                closed: false,
                 reason: SessionReason::Quit,
                 target_session_file: None,
                 signal: None,
@@ -762,6 +767,7 @@ mod tests {
         );
         api.registered.handlers[&EventKind::SessionShutdown][0](
             &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                closed: false,
                 reason: SessionReason::Quit,
                 target_session_file: None,
                 signal: None,

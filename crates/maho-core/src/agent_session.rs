@@ -1325,6 +1325,8 @@ pub struct AgentSessionInner {
     >,
     /// Session-file repairs reported inside a session-manager append; emitted only after its lock is released.
     pending_session_recoveries: Mutex<Vec<crate::session_write_recovery::SessionRecovery>>,
+    /// senpi `_closedOnRequest`: the teardown's `session_shutdown` carries `closed: true` after a graceful close.
+    closed_on_request: std::sync::atomic::AtomicBool,
 }
 
 pub type HtmlThemeResolver = Arc<
@@ -4962,6 +4964,7 @@ impl AgentSession {
                 custody_run_id: Mutex::new(uuid::Uuid::new_v4().to_string()),
                 queued_custom_receipts: Mutex::new(Vec::new()),
                 pending_session_recoveries: Mutex::new(Vec::new()),
+                closed_on_request: std::sync::atomic::AtomicBool::new(false),
             }),
         };
         // The hold's callbacks reach the session through this cell; a session that never gets here has no hold users.
@@ -12640,6 +12643,7 @@ impl AgentSession {
         let mut guard = self.extension_runner.lock().await.clone();
         if let Some(runner) = guard.as_mut() {
             let event = maho_ext_api::SessionShutdownEvent {
+                closed: false,
                 reason,
                 target_session_file,
                 signal: Some(maho_ext_api::AbortSignal::default()),
@@ -22470,6 +22474,7 @@ impl AgentSession {
         let mut guard = self.extension_runner.lock().await.clone();
         if let Some(runner) = guard.as_mut() {
             let event = maho_ext_api::SessionShutdownEvent {
+                closed: false,
                 reason,
                 target_session_file: None,
                 signal: Some(maho_ext_api::AbortSignal::default()),
@@ -22512,9 +22517,11 @@ impl AgentSession {
     /// senpi `emitSessionShutdownEvent(runner, {reason: "quit"}, {processExit})`: with `process_exit` the
     /// handlers share the total quit budget counted from this request (senpi#3711).
     pub async fn emit_session_shutdown_for_quit(&self, process_exit: bool) {
+        let closed_on_request = self.closed_on_request.load(Ordering::SeqCst);
         let mut guard = self.extension_runner.lock().await.clone();
         if let Some(runner) = guard.as_mut() {
             let event = maho_ext_api::SessionShutdownEvent {
+                closed: closed_on_request,
                 reason: maho_ext_api::SessionReason::Quit,
                 target_session_file: None,
                 signal: Some(maho_ext_api::AbortSignal::default()),
@@ -22526,6 +22533,18 @@ impl AgentSession {
                 .emit(maho_ext_api::ExtensionEvent::SessionShutdown(event))
                 .await;
         }
+    }
+
+    /// senpi `session.closedOnRequest` getter: a graceful close set this, and the teardown's
+    /// `session_shutdown` carries `closed: true`.
+    pub fn closed_on_request(&self) -> bool {
+        self.closed_on_request.load(Ordering::SeqCst)
+    }
+
+    /// senpi `recordClosedOnRequest(record)`: marks this session as closed on request so its
+    /// teardown's `session_shutdown` carries `closed: true`.
+    pub fn record_closed_on_request(&self) {
+        self.closed_on_request.store(true, Ordering::SeqCst);
     }
 
     fn emit_queue_update(&self) {

@@ -300,6 +300,7 @@ async fn reinjected_after_shutdown() {
         .expect("first injection");
     runner
         .emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Quit,
             target_session_file: None,
             signal: None,

@@ -205,6 +205,7 @@ async fn shutdown_retires_ready_republication() -> Result<(), std::io::Error> {
     let context = support::context();
     for handler in api.registered.handlers[&EventKind::SessionShutdown].clone() {
         let mut event = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+            closed: false,
             reason: SessionReason::Reload,
             target_session_file: None,
             signal: None,

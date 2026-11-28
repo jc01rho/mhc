@@ -86,6 +86,7 @@ async fn completion_ignoring_abort_is_dropped_before_session_shutdown_returns() 
         let _ = run.await;
     }
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -269,6 +270,7 @@ async fn registered_callable_enforces_configured_detached_capacity() {
     let second =
         tokio::time::timeout(std::time::Duration::from_secs(5), run("capacity-second")).await;
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -345,6 +347,7 @@ async fn registered_callable_schema_uses_resolved_language_settings() {
         .parameters
         .clone();
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -470,6 +473,7 @@ async fn concurrent_completion_keeps_each_invocations_context() {
     })
     .await;
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -734,6 +738,7 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
         results.push(tokio::time::timeout(std::time::Duration::from_secs(10),execute(maho_tools::definition::ToolCall {id,params:serde_json::json!({"language":language,"code":code,"summary":"context freshness","on_timeout":"error"}),signal:Default::default(),on_update:None,context:Some(&ctx)})).await);
     }
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,
@@ -920,6 +925,7 @@ async fn native_session_registration_runs_real_worker_and_shutdown_rejects_stale
     let execute = host.tools.lock().unwrap()[0].definition.execute.clone();
     let run=tokio::time::timeout(std::time::Duration::from_secs(10),execute(maho_tools::definition::ToolCall {id:"registered-real",params:serde_json::json!({"language":"js","code":"JSON.stringify({value:process.env.PI_SESSION_ID + ':' + (6*7),pid:process.pid})","summary":"registered worker proof","on_timeout":"error"}),signal:Default::default(),on_update:None,context:Some(&ctx)})).await;
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        closed: false,
         reason: SessionReason::Quit,
         target_session_file: None,
         signal: None,

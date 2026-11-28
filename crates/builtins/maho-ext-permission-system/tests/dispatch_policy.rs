@@ -238,6 +238,7 @@ async fn extension_serves_live_dispatch_policy_until_shutdown() {
     emit(
         EventKind::SessionShutdown,
         ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
+            closed: false,
             reason: maho_ext_api::SessionReason::Reload,
             target_session_file: None,
             signal: None,
