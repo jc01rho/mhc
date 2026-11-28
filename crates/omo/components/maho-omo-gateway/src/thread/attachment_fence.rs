@@ -63,7 +63,7 @@ const TYPED_REFUSAL: [&str; 1] = ["release_session"];
 pub type ConversationRequest = Arc<dyn Fn(Value) -> BoxFuture<Result<Value, String>> + Send + Sync>;
 
 /// One request on an authenticated connection.
-pub trait RpcTransport: Send + Sync {
+pub trait RpcTransport: Send + Sync + 'static {
     fn request(
         &self,
         socket: &str,
